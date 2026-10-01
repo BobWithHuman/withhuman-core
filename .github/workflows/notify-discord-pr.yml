@@ -20,44 +20,43 @@ jobs:
           ITEM_AUTHOR: ${{ github.event.pull_request.user.login }}
           ITEM_BODY: ${{ github.event.pull_request.body }}
           ITEM_URL: ${{ github.event.pull_request.html_url }}
-          ITEM_CREATED_AT: ${{ github.event.pull_request.created_at }}
           BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
           HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
-          REPOSITORY: ${{ github.repository }}
         run: |
           if [ -z "$WEBHOOK_URL" ]; then
             echo "::error::PR_DISCORD_WEBHOOK is not configured"
             exit 1
           fi
 
+          title="${ITEM_TITLE:0:180}"
           description="${ITEM_BODY:-No description provided.}"
-          description="${description:0:1000}"
-          title="PR #${ITEM_NUMBER}: ${ITEM_TITLE}"
-          title="${title:0:256}"
+          description="${description:0:500}"
+          labels=$(jq -r '[.pull_request.labels[].name] | join(" · ")' "$GITHUB_EVENT_PATH")
+          assignees=$(jq -r '[.pull_request.assignees[].login | "@" + .] | join(", ")' "$GITHUB_EVENT_PATH")
+          reviewers=$(jq -r '[.pull_request.requested_reviewers[].login | "@" + .] | join(", ")' "$GITHUB_EVENT_PATH")
+
+          details="👤 @$ITEM_AUTHOR"
+          if [ -n "$labels" ]; then
+            details+=$'\n'"🏷️ ${labels:0:200}"
+          fi
+          if [ -n "$assignees" ]; then
+            details+=$'\n'"👥 Assignee: ${assignees:0:200}"
+          fi
+          if [ -n "$reviewers" ]; then
+            details+=$'\n'"🔍 Reviewers: ${reviewers:0:200}"
+          fi
+          details+=$'\n'"🌿 ${HEAD_BRANCH} → ${BASE_BRANCH}"
+
+          content=$(printf \
+            '🔵 **New Pull Request**\n\n**#%s  %s**\n\n%s\n\n%s\n\n🔗 [View Pull Request](%s)' \
+            "$ITEM_NUMBER" "$title" "$details" "$description" "$ITEM_URL")
 
           payload=$(jq -n \
-            --arg title "$title" \
-            --arg url "$ITEM_URL" \
-            --arg description "$description" \
-            --arg author "@$ITEM_AUTHOR" \
-            --arg repository "$REPOSITORY" \
-            --arg branches "${HEAD_BRANCH} → ${BASE_BRANCH}" \
-            --arg timestamp "$ITEM_CREATED_AT" \
+            --arg content "$content" \
             '{
               username: "GitHub Notifications",
               allowed_mentions: {parse: []},
-              embeds: [{
-                title: $title,
-                url: $url,
-                description: $description,
-                color: 3447003,
-                fields: [
-                  {name: "Author", value: $author, inline: true},
-                  {name: "Repository", value: $repository, inline: true},
-                  {name: "Branches", value: $branches, inline: false}
-                ],
-                timestamp: $timestamp
-              }]
+              content: $content
             }')
 
           curl --fail-with-body --silent --show-error \
