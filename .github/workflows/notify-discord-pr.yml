@@ -1,0 +1,66 @@
+name: Notify Discord of New Pull Request
+
+on:
+  pull_request:
+    types: [opened]
+
+permissions: {}
+
+jobs:
+  notify:
+    name: Send pull request notification
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send notification to Discord
+        env:
+          WEBHOOK_URL: ${{ secrets.PR_DISCORD_WEBHOOK }}
+          ITEM_NUMBER: ${{ github.event.pull_request.number }}
+          ITEM_TITLE: ${{ github.event.pull_request.title }}
+          ITEM_AUTHOR: ${{ github.event.pull_request.user.login }}
+          ITEM_BODY: ${{ github.event.pull_request.body }}
+          ITEM_URL: ${{ github.event.pull_request.html_url }}
+          ITEM_CREATED_AT: ${{ github.event.pull_request.created_at }}
+          BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          if [ -z "$WEBHOOK_URL" ]; then
+            echo "::error::PR_DISCORD_WEBHOOK is not configured"
+            exit 1
+          fi
+
+          description="${ITEM_BODY:-No description provided.}"
+          description="${description:0:1000}"
+          title="PR #${ITEM_NUMBER}: ${ITEM_TITLE}"
+          title="${title:0:256}"
+
+          payload=$(jq -n \
+            --arg title "$title" \
+            --arg url "$ITEM_URL" \
+            --arg description "$description" \
+            --arg author "@$ITEM_AUTHOR" \
+            --arg repository "$REPOSITORY" \
+            --arg branches "${HEAD_BRANCH} → ${BASE_BRANCH}" \
+            --arg timestamp "$ITEM_CREATED_AT" \
+            '{
+              username: "GitHub Notifications",
+              allowed_mentions: {parse: []},
+              embeds: [{
+                title: $title,
+                url: $url,
+                description: $description,
+                color: 3447003,
+                fields: [
+                  {name: "Author", value: $author, inline: true},
+                  {name: "Repository", value: $repository, inline: true},
+                  {name: "Branches", value: $branches, inline: false}
+                ],
+                timestamp: $timestamp
+              }]
+            }')
+
+          curl --fail-with-body --silent --show-error \
+            --header "Content-Type: application/json" \
+            --data "$payload" \
+            "$WEBHOOK_URL"
