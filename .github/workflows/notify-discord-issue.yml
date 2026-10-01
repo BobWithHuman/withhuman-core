@@ -14,10 +14,6 @@ jobs:
       - name: Send notification to Discord
         env:
           WEBHOOK_URL: ${{ secrets.ISSUE_DISCORD_WEBHOOK }}
-          ITEM_NUMBER: ${{ github.event.issue.number }}
-          ITEM_TITLE: ${{ github.event.issue.title }}
-          ITEM_AUTHOR: ${{ github.event.issue.user.login }}
-          ITEM_BODY: ${{ github.event.issue.body }}
           ITEM_URL: ${{ github.event.issue.html_url }}
         run: |
           if [ -z "$WEBHOOK_URL" ]; then
@@ -25,26 +21,8 @@ jobs:
             exit 1
           fi
 
-          title="${ITEM_TITLE:0:180}"
-          description="${ITEM_BODY:-No description provided.}"
-          description="${description:0:500}"
-          labels=$(jq -r '[.issue.labels[].name] | join(" · ")' "$GITHUB_EVENT_PATH")
-          assignees=$(jq -r '[.issue.assignees[].login | "@" + .] | join(", ")' "$GITHUB_EVENT_PATH")
-
-          details="👤 @$ITEM_AUTHOR"
-          if [ -n "$labels" ]; then
-            details+=$'\n'"🏷️ ${labels:0:200}"
-          fi
-          if [ -n "$assignees" ]; then
-            details+=$'\n'"👥 Assignee: ${assignees:0:200}"
-          fi
-
-          content=$(printf \
-            '🟢 **New Issue**\n\n**#%s  %s**\n\n%s\n\n%s\n\n🔗 [View Issue](%s)' \
-            "$ITEM_NUMBER" "$title" "$details" "$description" "$ITEM_URL")
-
           payload=$(jq -n \
-            --arg content "$content" \
+            --arg content "$ITEM_URL" \
             '{
               username: "GitHub Notifications",
               allowed_mentions: {parse: []},
