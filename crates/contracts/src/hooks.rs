@@ -30,7 +30,8 @@ pub enum HookEventName {
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct SessionStartRequest {
     pub session_id: String,
-    pub hook_event_name: HookEventName,
+    #[serde(default)]
+    pub hook_event_name: Option<HookEventName>,
     #[serde(default)]
     pub transcript_path: Option<String>,
     #[serde(default)]
@@ -42,7 +43,8 @@ pub struct SessionStartRequest {
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct UserPromptSubmitRequest {
     pub session_id: String,
-    pub hook_event_name: HookEventName,
+    #[serde(default)]
+    pub hook_event_name: Option<HookEventName>,
     pub prompt: String,
     #[serde(default)]
     pub prompt_id: Option<String>,
@@ -55,7 +57,8 @@ pub struct UserPromptSubmitRequest {
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct PreToolUseRequest {
     pub session_id: String,
-    pub hook_event_name: HookEventName,
+    #[serde(default)]
+    pub hook_event_name: Option<HookEventName>,
     pub tool_name: String,
     pub tool_input: Value,
     pub tool_use_id: String,
@@ -72,9 +75,11 @@ pub struct PreToolUseRequest {
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct PostToolUseRequest {
     pub session_id: String,
-    pub hook_event_name: HookEventName,
+    #[serde(default)]
+    pub hook_event_name: Option<HookEventName>,
     pub tool_name: String,
-    pub tool_input: Value,
+    #[serde(default)]
+    pub tool_input: Option<Value>,
     pub tool_response: Value,
     pub tool_use_id: String,
     #[serde(default)]
@@ -90,9 +95,11 @@ pub struct PostToolUseRequest {
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct PostToolUseFailureRequest {
     pub session_id: String,
-    pub hook_event_name: HookEventName,
+    #[serde(default)]
+    pub hook_event_name: Option<HookEventName>,
     pub tool_name: String,
-    pub tool_input: Value,
+    #[serde(default)]
+    pub tool_input: Option<Value>,
     pub error: String,
     pub tool_use_id: String,
     #[serde(default)]
@@ -108,26 +115,34 @@ pub struct PostToolUseFailureRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct SubagentLifecycleRequest {
     pub session_id: String,
-    pub hook_event_name: HookEventName,
+    #[serde(default)]
+    pub hook_event_name: Option<HookEventName>,
     pub agent_id: String,
-    pub agent_type: String,
+    #[serde(default)]
+    pub agent_type: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct InstructionsLoadedRequest {
     pub session_id: String,
-    pub hook_event_name: HookEventName,
+    #[serde(default)]
+    pub hook_event_name: Option<HookEventName>,
     pub file_path: String,
     #[serde(default)]
     pub memory_type: Option<String>,
     #[serde(default)]
     pub load_reason: Option<String>,
+    #[serde(default)]
+    pub trigger_file_path: Option<String>,
+    #[serde(default)]
+    pub parent_file_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ConfigChangeRequest {
     pub session_id: String,
-    pub hook_event_name: HookEventName,
+    #[serde(default)]
+    pub hook_event_name: Option<HookEventName>,
     pub file_path: String,
     #[serde(default)]
     pub source: Option<String>,
@@ -136,7 +151,8 @@ pub struct ConfigChangeRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct FileChangedRequest {
     pub session_id: String,
-    pub hook_event_name: HookEventName,
+    #[serde(default)]
+    pub hook_event_name: Option<HookEventName>,
     pub file_path: String,
     #[serde(default)]
     pub event: Option<String>,
@@ -145,7 +161,8 @@ pub struct FileChangedRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct MessageDisplayRequest {
     pub session_id: String,
-    pub hook_event_name: HookEventName,
+    #[serde(default)]
+    pub hook_event_name: Option<HookEventName>,
     pub message_id: String,
     pub delta: String,
     #[serde(rename = "final")]
@@ -157,7 +174,8 @@ pub struct MessageDisplayRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct PostToolBatchRequest {
     pub session_id: String,
-    pub hook_event_name: HookEventName,
+    #[serde(default)]
+    pub hook_event_name: Option<HookEventName>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -218,7 +236,7 @@ mod tests {
         }))
         .expect("the final-spec request should deserialize");
 
-        assert_eq!(request.hook_event_name, HookEventName::PreToolUse);
+        assert_eq!(request.hook_event_name, Some(HookEventName::PreToolUse));
         assert_eq!(request.tool_input["command"], "npm install");
     }
 
@@ -233,6 +251,38 @@ mod tests {
         .expect_err("tool_use_id is required");
 
         assert!(error.to_string().contains("tool_use_id"));
+    }
+
+    #[test]
+    fn accepts_nullable_post_tool_input() {
+        let request: PostToolUseRequest = serde_json::from_value(json!({
+            "session_id": "8e789b84",
+            "tool_name": "Read",
+            "tool_response": "done",
+            "tool_use_id": "toolu_01"
+        }))
+        .expect("nullable fields and ignored event name should be optional");
+
+        assert_eq!(request.tool_input, None);
+        assert_eq!(request.hook_event_name, None);
+    }
+
+    #[test]
+    fn preserves_instruction_relationship_paths() {
+        let request: InstructionsLoadedRequest = serde_json::from_value(json!({
+            "session_id": "8e789b84",
+            "hook_event_name": "InstructionsLoaded",
+            "file_path": "/app/.claude/rules/security.md",
+            "trigger_file_path": "/app/CLAUDE.md",
+            "parent_file_path": "/app/.claude/rules"
+        }))
+        .expect("instruction relationship paths should deserialize");
+
+        assert_eq!(request.trigger_file_path.as_deref(), Some("/app/CLAUDE.md"));
+        assert_eq!(
+            request.parent_file_path.as_deref(),
+            Some("/app/.claude/rules")
+        );
     }
 
     #[test]
