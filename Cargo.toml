@@ -1,7 +1,21 @@
-[package]
-name = "withhuman-core"
+[workspace]
+resolver = "3"
+members = [
+    "crates/common",
+    "crates/contracts",
+    "services/collector",
+    "services/decision",
+    "services/generator",
+]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+rust-version = "1.85"
 
-[dependencies]
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
