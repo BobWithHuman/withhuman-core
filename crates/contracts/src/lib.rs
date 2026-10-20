@@ -2,4 +2,5 @@
 
 pub mod decisions;
 pub mod events;
+pub mod ext_authz;
 pub mod hooks;
