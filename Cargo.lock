@@ -3,5 +3,21 @@
 version = 4
 
 [[package]]
-name = "withhuman-core"
+name = "withhuman-collector"
+version = "0.1.0"
+
+[[package]]
+name = "withhuman-common"
+version = "0.1.0"
+
+[[package]]
+name = "withhuman-contracts"
+version = "0.1.0"
+
+[[package]]
+name = "withhuman-decision"
+version = "0.1.0"
+
+[[package]]
+name = "withhuman-generator"
 version = "0.1.0"
