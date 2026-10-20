@@ -5,6 +5,10 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::decisions::DecisionResponse;
+
+pub use crate::decisions::EnforcementMode;
+
 pub type AdditionalFields = BTreeMap<String, Value>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -84,14 +88,6 @@ pub struct EventRequest<T> {
     pub flags: Option<Vec<String>>,
     #[serde(flatten)]
     pub additional_fields: AdditionalFields,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum EnforcementMode {
-    Record,
-    Shadow,
-    Enforce,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -262,12 +258,10 @@ pub struct ParagraphReference {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-pub struct EventResponse<D = Value> {
+pub struct EventResponse<D = DecisionResponse> {
     pub nodes: Vec<CreatedNode>,
-    #[serde(default)]
     pub paragraphs: Option<Vec<ParagraphReference>>,
     pub version: u64,
-    #[serde(default)]
     pub decision_response: Option<D>,
 }
 
