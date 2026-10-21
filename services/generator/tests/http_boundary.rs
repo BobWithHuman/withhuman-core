@@ -7,9 +7,13 @@ use axum::{
 };
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
-use withhuman_contracts::events::EventResponse;
+use withhuman_contracts::{
+    decisions::{CausalStart, Decision, DecisionRequest, DecisionResponse, JevActivity},
+    events::{CreatedNode, EventResponse},
+};
 use withhuman_generator::{
-    GeneratorEvent, GeneratorService, GraphRepository, RepositoryError, app,
+    DecisionClient, DecisionError, GeneratorEvent, GeneratorService, GraphRepository,
+    RepositoryError, app,
 };
 
 #[tokio::test]
@@ -72,6 +76,98 @@ async fn health_reflects_neo4j_readiness() {
 
     assert_eq!(healthy.status(), StatusCode::OK);
     assert_eq!(json["error"], "neo4j_unavailable");
+}
+
+#[tokio::test]
+async fn pre_tool_use_commits_before_requesting_a_decision() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let service = GeneratorService::from_shared_with_decision(
+        Arc::new(CallRepository),
+        Arc::new(RecordingDecisionClient {
+            requests: requests.clone(),
+            fail: false,
+        }),
+    );
+    let response = app(service)
+        .oneshot(json_request(
+            "/v1/events/PreToolUse",
+            with_fields(
+                envelope(3, json!({"tool_name":"Read","tool_input":{}})),
+                json!({"mode":"enforce","deadline_ms":4000}),
+            ),
+        ))
+        .await
+        .unwrap();
+    let body = to_bytes(response.into_body(), 4096).await.unwrap();
+    let body: EventResponse = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(body.decision_response.unwrap().decision, Decision::Deny);
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].call_seq, 23);
+    assert_eq!(requests[0].graph_version, 57);
+    assert!(requests[0].deadline_ms.unwrap() <= 4000);
+}
+
+#[tokio::test]
+async fn record_mode_dispatches_without_returning_the_decision() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let service = GeneratorService::from_shared_with_decision(
+        Arc::new(CallRepository),
+        Arc::new(RecordingDecisionClient {
+            requests: requests.clone(),
+            fail: false,
+        }),
+    );
+    let response = app(service)
+        .oneshot(json_request(
+            "/v1/events/PreToolUse",
+            with_fields(
+                envelope(3, json!({"tool_name":"Read","tool_input":{}})),
+                json!({"mode":"record","deadline_ms":4000}),
+            ),
+        ))
+        .await
+        .unwrap();
+    let body = to_bytes(response.into_body(), 4096).await.unwrap();
+    let body: EventResponse = serde_json::from_slice(&body).unwrap();
+    for _ in 0..10 {
+        if !requests.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+
+    assert!(body.decision_response.is_none());
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].deadline_ms, None);
+}
+
+#[tokio::test]
+async fn decision_failure_returns_a_committed_graph_with_no_decision() {
+    let service = GeneratorService::from_shared_with_decision(
+        Arc::new(CallRepository),
+        Arc::new(RecordingDecisionClient {
+            requests: Arc::default(),
+            fail: true,
+        }),
+    );
+    let response = app(service)
+        .oneshot(json_request(
+            "/v1/events/PreToolUse",
+            with_fields(
+                envelope(3, json!({"tool_name":"Read","tool_input":{}})),
+                json!({"mode":"shadow","deadline_ms":4000}),
+            ),
+        ))
+        .await
+        .unwrap();
+    let body = to_bytes(response.into_body(), 4096).await.unwrap();
+    let body: EventResponse = serde_json::from_slice(&body).unwrap();
+
+    assert_eq!(body.version, 57);
+    assert!(body.decision_response.is_none());
 }
 
 fn event_requests() -> Vec<(&'static str, Value)> {
@@ -186,5 +282,54 @@ impl GraphRepository for UnavailableRepository {
 
     async fn commit(&self, _event: GeneratorEvent) -> Result<EventResponse, RepositoryError> {
         unreachable!()
+    }
+}
+
+struct CallRepository;
+
+#[async_trait]
+impl GraphRepository for CallRepository {
+    async fn health(&self) -> Result<(), RepositoryError> {
+        Ok(())
+    }
+
+    async fn commit(&self, _event: GeneratorEvent) -> Result<EventResponse, RepositoryError> {
+        Ok(EventResponse {
+            nodes: vec![CreatedNode {
+                seq: 23,
+                node_type: "Call".to_owned(),
+            }],
+            paragraphs: None,
+            version: 57,
+            decision_response: None,
+        })
+    }
+}
+
+struct RecordingDecisionClient {
+    requests: Arc<Mutex<Vec<DecisionRequest>>>,
+    fail: bool,
+}
+
+#[async_trait]
+impl DecisionClient for RecordingDecisionClient {
+    async fn decide(&self, request: DecisionRequest) -> Result<DecisionResponse, DecisionError> {
+        self.requests.lock().unwrap().push(request);
+        if self.fail {
+            return Err(DecisionError::Unavailable("offline".to_owned()));
+        }
+        Ok(DecisionResponse {
+            decision: Decision::Deny,
+            reason: "Blocked by WithHuman.".to_owned(),
+            rule: "test".to_owned(),
+            start: CausalStart::OtherDoc,
+            written: true,
+            jev: Some(JevActivity {
+                asked: false,
+                ms: None,
+                reused_from: None,
+                error: None,
+            }),
+        })
     }
 }

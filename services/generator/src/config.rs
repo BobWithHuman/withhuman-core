@@ -4,6 +4,7 @@ const DEFAULT_BIND_ADDRESS: &str = "0.0.0.0:8081";
 const DEFAULT_NEO4J_URL: &str = "http://neo4j:7474";
 const DEFAULT_NEO4J_USER: &str = "neo4j";
 const DEFAULT_NEO4J_DATABASE: &str = "neo4j";
+const DEFAULT_DECISION_URL: &str = "http://decision:8082";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GeneratorConfig {
@@ -12,6 +13,7 @@ pub struct GeneratorConfig {
     pub neo4j_user: String,
     pub neo4j_password: String,
     pub neo4j_database: String,
+    pub decision_url: String,
 }
 
 impl GeneratorConfig {
@@ -33,6 +35,8 @@ impl GeneratorConfig {
             neo4j_password,
             neo4j_database: env::var("NEO4J_DATABASE")
                 .unwrap_or_else(|_| DEFAULT_NEO4J_DATABASE.to_owned()),
+            decision_url: env::var("DECISION_URL")
+                .unwrap_or_else(|_| DEFAULT_DECISION_URL.to_owned()),
         })
     }
 }

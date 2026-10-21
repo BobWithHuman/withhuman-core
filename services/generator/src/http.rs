@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use axum::{
     Json, Router,
@@ -15,23 +15,49 @@ use withhuman_contracts::events::{
     SubagentStartEventRequest, SubagentStopEventRequest, ToolDescriptionsEventRequest,
     UserPromptSubmitEventRequest,
 };
+use withhuman_contracts::{
+    decisions::{DecisionRequest, EnforcementMode},
+    events::EventResponse,
+};
 
-use crate::{GeneratorEvent, GraphRepository};
+use crate::{DecisionClient, GeneratorEvent, GraphRepository};
 
 #[derive(Clone)]
 pub struct GeneratorService {
     repository: Arc<dyn GraphRepository>,
+    decision: Option<Arc<dyn DecisionClient>>,
 }
 
 impl GeneratorService {
     pub fn new(repository: impl GraphRepository) -> Self {
         Self {
             repository: Arc::new(repository),
+            decision: None,
         }
     }
 
     pub fn from_shared(repository: Arc<dyn GraphRepository>) -> Self {
-        Self { repository }
+        Self {
+            repository,
+            decision: None,
+        }
+    }
+
+    pub fn with_decision(repository: impl GraphRepository, decision: impl DecisionClient) -> Self {
+        Self {
+            repository: Arc::new(repository),
+            decision: Some(Arc::new(decision)),
+        }
+    }
+
+    pub fn from_shared_with_decision(
+        repository: Arc<dyn GraphRepository>,
+        decision: Arc<dyn DecisionClient>,
+    ) -> Self {
+        Self {
+            repository,
+            decision: Some(decision),
+        }
     }
 }
 
@@ -101,13 +127,74 @@ event_handler!(
     UserPromptSubmitEventRequest,
     UserPromptSubmit
 );
-event_handler!(pre_tool_use, PreToolUseEventRequest, PreToolUse);
 event_handler!(post_tool_use, PostToolUseEventRequest, PostToolUse);
 event_handler!(
     post_tool_use_failure,
     PostToolUseFailureEventRequest,
     PostToolUseFailure
 );
+
+async fn pre_tool_use(
+    State(service): State<GeneratorService>,
+    StrictJson(request): StrictJson<PreToolUseEventRequest>,
+) -> Response {
+    let started = Instant::now();
+    let session_id = request.event.session_id.clone();
+    let mode = request.mode;
+    let deadline_ms = request.deadline_ms;
+    let mut response = match service
+        .repository
+        .commit(GeneratorEvent::PreToolUse(request))
+        .await
+    {
+        Ok(response) => response,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: "graph_commit_failed",
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let Some(decision) = service.decision else {
+        return Json(response).into_response();
+    };
+    let Some(call_seq) = response
+        .nodes
+        .iter()
+        .find(|node| node.node_type == "Call")
+        .map(|node| node.seq)
+    else {
+        return Json(response).into_response();
+    };
+    let remaining_ms = deadline_ms.map(|budget| {
+        budget.saturating_sub(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX))
+    });
+    let decision_request = DecisionRequest {
+        session_id,
+        call_seq,
+        graph_version: response.version,
+        mode,
+        deadline_ms: if mode == EnforcementMode::Record {
+            None
+        } else {
+            remaining_ms
+        },
+    };
+
+    if mode == EnforcementMode::Record {
+        tokio::spawn(async move {
+            let _ = decision.decide(decision_request).await;
+        });
+    } else if remaining_ms != Some(0) {
+        response.decision_response = decision.decide(decision_request).await.ok();
+    }
+
+    Json::<EventResponse>(response).into_response()
+}
 event_handler!(subagent_start, SubagentStartEventRequest, SubagentStart);
 event_handler!(subagent_stop, SubagentStopEventRequest, SubagentStop);
 event_handler!(
