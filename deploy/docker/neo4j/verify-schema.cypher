@@ -7,9 +7,10 @@ WHERE name IN [
   'verdict_call_unique',
   'file_repository_path_unique',
   'pending_paragraph_enrichment_unique',
-  'pending_request_continuation_unique'
+  'pending_request_continuation_unique',
+  'token_key_unique'
 ]
-RETURN count(*) = 8 AS schema_ready;
+RETURN count(*) = 9 AS schema_ready;
 
 SHOW INDEXES YIELD name
 WHERE name IN [

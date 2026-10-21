@@ -30,6 +30,10 @@ CREATE CONSTRAINT pending_request_continuation_unique IF NOT EXISTS
 FOR (pending:PendingRequestContinuation)
 REQUIRE (pending.session_id, pending.order) IS UNIQUE;
 
+CREATE CONSTRAINT token_key_unique IF NOT EXISTS
+FOR (token:Token)
+REQUIRE (token.session_id, token.key_kind, token.key, token.slot) IS UNIQUE;
+
 CREATE INDEX execution_node_type IF NOT EXISTS
 FOR (node:ExecutionNode)
 ON (node.type);

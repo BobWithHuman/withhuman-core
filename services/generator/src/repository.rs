@@ -87,6 +87,19 @@ CALL (node) { \
   RETURN [] AS paragraph_refs \
 } \
 WITH commit, node, paragraph_refs \
+CALL (node, commit) { \
+  WITH node, commit WHERE node IS NOT NULL AND size($tokens) > 0 \
+  UNWIND $tokens AS token \
+  MERGE (stored_token:Token {session_id: $session_id, key_kind: token.key_kind, key: token.key, slot: token.slot}) \
+  ON CREATE SET stored_token.node_seq = node.seq, stored_token.decoded = token.decoded, \
+                stored_token.version = commit.version \
+  MERGE (node)-[:MENTIONS_TOKEN {slot: token.slot}]->(stored_token) \
+  RETURN count(stored_token) AS token_count \
+  UNION \
+  WITH node, commit WHERE node IS NULL OR size($tokens) = 0 \
+  RETURN 0 AS token_count \
+} \
+WITH commit, node, paragraph_refs \
 OPTIONAL MATCH (pending_request:PendingRequestContinuation {session_id: $session_id, order: $order}) \
 OPTIONAL MATCH (target_commit:EventCommit {session_id: $session_id, order: pending_request.choice_order})-[:CREATED]->(target_request:ExecutionNode {type: 'Request'}) \
 FOREACH (_ IN CASE WHEN node.type = 'Request' AND pending_request IS NOT NULL THEN [1] ELSE [] END | \
@@ -254,6 +267,7 @@ impl Neo4jRepository {
             "payload_json": mutation.payload_json,
             "file_path": mutation.file_path,
             "paragraphs": mutation.paragraphs,
+            "tokens": mutation.tokens,
             "is_tool_result": is_tool_result,
         });
         let data = self.execute(COMMIT_EVENT, parameters).await?;

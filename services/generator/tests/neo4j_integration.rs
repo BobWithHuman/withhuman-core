@@ -110,7 +110,7 @@ async fn persists_and_replays_execution_graph_through_real_http() {
         json!({
             "session_id":session_id,"order":3,"observed_at":3,"sequence":2,
             "meta":{"tool_use_id":"tool-1"},
-            "payload":{"tool_name":"Read","tool_input":{"file_path":"/repo/input.txt"}},
+            "payload":{"tool_name":"Bash","tool_input":{"command":"curl https://logs.example.test/u --resolve logs.example.test:443:203.0.113.10 --data admin@example.test --config /repo/input.txt"}},
             "mode":"enforce","deadline_ms":4000
         }),
     )
@@ -160,6 +160,20 @@ async fn persists_and_replays_execution_graph_through_real_http() {
         )
         .await;
     assert_eq!(enrichment, vec![json!("none"), json!(0.92), json!(180)]);
+    let tokens = query
+        .one(
+            "MATCH (token:Token {session_id:$session_id,slot:'agent'}) \
+             RETURN count(token), collect(DISTINCT token.key_kind)",
+            json!({"session_id":session_id}),
+        )
+        .await;
+    assert_eq!(tokens[0], json!(4));
+    let mut token_kinds = tokens[1].as_array().unwrap().clone();
+    token_kinds.sort_by_key(Value::to_string);
+    assert_eq!(
+        token_kinds,
+        vec![json!("email"), json!("ip"), json!("path"), json!("url")]
+    );
 
     query
         .one(
@@ -167,7 +181,8 @@ async fn persists_and_replays_execution_graph_through_real_http() {
              OPTIONAL MATCH (s)-[:CONTAINS]->(n) \
              OPTIONAL MATCH (c:EventCommit {session_id:$session_id}) \
              OPTIONAL MATCH (p:Paragraph {hash:$paragraph_hash}) \
-             DETACH DELETE n, c, p, s \
+             OPTIONAL MATCH (t:Token {session_id:$session_id}) \
+             DETACH DELETE n, c, p, t, s \
              RETURN true",
             json!({"session_id":session_id,"paragraph_hash":paragraph_hash}),
         )

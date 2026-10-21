@@ -1,5 +1,6 @@
-use std::fmt::Write as _;
+use std::{collections::BTreeSet, fmt::Write as _, net::IpAddr, sync::LazyLock};
 
+use regex::Regex;
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -224,6 +225,7 @@ pub(crate) struct GraphMutation {
     pub(crate) payload_json: String,
     pub(crate) file_path: Option<String>,
     pub(crate) paragraphs: Vec<ParagraphMutation>,
+    pub(crate) tokens: Vec<TokenMutation>,
 }
 
 #[derive(Serialize)]
@@ -234,6 +236,14 @@ pub(crate) struct ParagraphMutation {
     pub(crate) source: String,
     pub(crate) hidden: bool,
     pub(crate) from_user_doc: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub(crate) struct TokenMutation {
+    pub(crate) key_kind: String,
+    pub(crate) key: String,
+    pub(crate) slot: String,
+    pub(crate) decoded: String,
 }
 
 fn mutation<T, E>(
@@ -273,6 +283,22 @@ where
             .unwrap_or_default(),
     };
 
+    let mut tokens = BTreeSet::new();
+    let payload_slot = match event_name {
+        "PreToolUse" | "MessageDisplay" => "agent",
+        "UserPromptSubmit" => "user",
+        _ => "external",
+    };
+    extract_tokens(&payload_json, payload_slot, &mut tokens);
+    for paragraph in &paragraphs {
+        let slot = match paragraph.source.as_str() {
+            "user" | "UserPromptSubmit" => "user",
+            "MessageDisplay" => "agent",
+            _ => "external",
+        };
+        extract_tokens(&paragraph.text, slot, &mut tokens);
+    }
+
     Ok(GraphMutation {
         event_name,
         node_type,
@@ -295,7 +321,47 @@ where
         payload_json,
         file_path,
         paragraphs,
+        tokens: tokens.into_iter().collect(),
     })
+}
+
+fn extract_tokens(value: &str, slot: &str, tokens: &mut BTreeSet<TokenMutation>) {
+    static URL: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"https?://[^\s\"'<>\\]+"#).unwrap());
+    static EMAIL: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}").unwrap());
+    static IP: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b").unwrap());
+    static PATH: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(?:^|[\s\"'=])((?:/|\./|\.\./)[A-Za-z0-9._~/-]+)"#).unwrap()
+    });
+
+    for found in URL.find_iter(value) {
+        insert_token(tokens, "url", found.as_str(), slot);
+    }
+    for found in EMAIL.find_iter(value) {
+        insert_token(tokens, "email", found.as_str(), slot);
+    }
+    for found in IP.find_iter(value) {
+        if found.as_str().parse::<IpAddr>().is_ok() {
+            insert_token(tokens, "ip", found.as_str(), slot);
+        }
+    }
+    for captures in PATH.captures_iter(value) {
+        if let Some(found) = captures.get(1) {
+            insert_token(tokens, "path", found.as_str(), slot);
+        }
+    }
+}
+
+fn insert_token(tokens: &mut BTreeSet<TokenMutation>, kind: &str, value: &str, slot: &str) {
+    let decoded = value.trim_end_matches([',', '.', ')', ']', '}']);
+    tokens.insert(TokenMutation {
+        key_kind: kind.to_owned(),
+        key: decoded.to_owned(),
+        slot: slot.to_owned(),
+        decoded: decoded.to_owned(),
+    });
 }
 
 fn text_content(value: &Value) -> Option<String> {
