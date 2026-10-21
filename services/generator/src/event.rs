@@ -1,3 +1,8 @@
+use std::fmt::Write as _;
+
+use serde::Serialize;
+use serde_json::Value;
+use sha2::{Digest, Sha256};
 use withhuman_contracts::events::{
     ConfigChangeEventRequest, FileChangedEventRequest, InstructionsLoadedEventRequest,
     MessageDisplayEventRequest, PostToolBatchEventRequest, PostToolUseEventRequest,
@@ -5,6 +10,8 @@ use withhuman_contracts::events::{
     SubagentStartEventRequest, SubagentStopEventRequest, ToolDescriptionsEventRequest,
     UserPromptSubmitEventRequest,
 };
+
+use crate::RepositoryError;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum GeneratorEvent {
@@ -77,4 +84,255 @@ impl GeneratorEvent {
             Self::ToolDescriptions(event) => event.order,
         }
     }
+
+    pub(crate) fn into_mutation(self) -> Result<GraphMutation, RepositoryError> {
+        match self {
+            Self::SessionStart(event) => {
+                mutation("SessionStart", None, None, None, event, |event| event)
+            }
+            Self::UserPromptSubmit(event) => {
+                let text = Some(event.payload.prompt.clone());
+                mutation(
+                    "UserPromptSubmit",
+                    Some("Request"),
+                    text,
+                    None,
+                    event,
+                    |event| event,
+                )
+            }
+            Self::PreToolUse(event) => {
+                mutation("PreToolUse", Some("Call"), None, None, event, |event| {
+                    &event.event
+                })
+            }
+            Self::PostToolUse(event) => {
+                let text = text_content(&event.payload.tool_response);
+                mutation(
+                    "PostToolUse",
+                    Some("Sequence"),
+                    text,
+                    None,
+                    event,
+                    |event| event,
+                )
+            }
+            Self::PostToolUseFailure(event) => mutation(
+                "PostToolUseFailure",
+                Some("Error"),
+                None,
+                None,
+                event,
+                |event| event,
+            ),
+            Self::SubagentStart(event) => mutation(
+                "SubagentStart",
+                Some("SubagentStart"),
+                None,
+                None,
+                event,
+                |event| event,
+            ),
+            Self::SubagentStop(event) => mutation(
+                "SubagentStop",
+                Some("SubagentStop"),
+                None,
+                None,
+                event,
+                |event| event,
+            ),
+            Self::InstructionsLoaded(event) => {
+                let file_path = Some(event.payload.file_path.clone());
+                mutation(
+                    "InstructionsLoaded",
+                    Some("Instructions"),
+                    None,
+                    file_path,
+                    event,
+                    |event| event,
+                )
+            }
+            Self::ConfigChange(event) => {
+                let file_path = Some(event.payload.file_path.clone());
+                mutation(
+                    "ConfigChange",
+                    Some("ConfigChange"),
+                    None,
+                    file_path,
+                    event,
+                    |event| event,
+                )
+            }
+            Self::FileChanged(event) => {
+                let file_path = Some(event.payload.file_path.clone());
+                mutation(
+                    "FileChanged",
+                    Some("FileChanged"),
+                    None,
+                    file_path,
+                    event,
+                    |event| event,
+                )
+            }
+            Self::MessageDisplay(event) => {
+                let text = Some(event.payload.text.clone());
+                mutation(
+                    "MessageDisplay",
+                    Some("Message"),
+                    text,
+                    None,
+                    event,
+                    |event| event,
+                )
+            }
+            Self::PostToolBatch(event) => mutation(
+                "PostToolBatch",
+                Some("ToolBatch"),
+                None,
+                None,
+                event,
+                |event| event,
+            ),
+            Self::ToolDescriptions(event) => mutation(
+                "ToolDescriptions",
+                Some("ToolDescriptions"),
+                None,
+                None,
+                event,
+                |event| event,
+            ),
+        }
+    }
+}
+
+pub(crate) struct GraphMutation {
+    pub(crate) event_name: &'static str,
+    pub(crate) node_type: Option<&'static str>,
+    pub(crate) session_id: String,
+    pub(crate) order: i64,
+    pub(crate) observed_at: i64,
+    pub(crate) client_id: Option<String>,
+    pub(crate) sequence: Option<i64>,
+    pub(crate) prompt_id: Option<String>,
+    pub(crate) agent_id: Option<String>,
+    pub(crate) agent_type: Option<String>,
+    pub(crate) cwd: Option<String>,
+    pub(crate) tool_use_id: Option<String>,
+    pub(crate) turn_id: Option<String>,
+    pub(crate) repository: Option<String>,
+    pub(crate) event_json: String,
+    pub(crate) payload_json: String,
+    pub(crate) file_path: Option<String>,
+    pub(crate) paragraphs: Vec<ParagraphMutation>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct ParagraphMutation {
+    pub(crate) index: i64,
+    pub(crate) text: String,
+    pub(crate) hash: String,
+    pub(crate) source: String,
+    pub(crate) hidden: bool,
+    pub(crate) from_user_doc: Option<bool>,
+}
+
+fn mutation<T, E>(
+    event_name: &'static str,
+    node_type: Option<&'static str>,
+    text: Option<String>,
+    file_path: Option<String>,
+    event: T,
+    envelope: impl FnOnce(&T) -> &withhuman_contracts::events::EventRequest<E>,
+) -> Result<GraphMutation, RepositoryError>
+where
+    T: Serialize,
+    E: Serialize,
+{
+    let event_json = serde_json::to_string(&event)
+        .map_err(|error| RepositoryError::InvalidEvent(error.to_string()))?;
+    let envelope = envelope(&event);
+    let payload_json = serde_json::to_string(&envelope.payload)
+        .map_err(|error| RepositoryError::InvalidEvent(error.to_string()))?;
+    let paragraphs = match &envelope.chunks {
+        Some(chunks) => chunks
+            .iter()
+            .map(|chunk| {
+                Ok(ParagraphMutation {
+                    index: signed(chunk.index, "chunk.index")?,
+                    text: chunk.text.clone(),
+                    hash: chunk.hash.clone(),
+                    source: chunk.source.clone(),
+                    hidden: chunk.hidden,
+                    from_user_doc: chunk.from_user_doc,
+                })
+            })
+            .collect::<Result<Vec<_>, RepositoryError>>()?,
+        None => text
+            .as_deref()
+            .map(|text| chunk_text(text, event_name))
+            .unwrap_or_default(),
+    };
+
+    Ok(GraphMutation {
+        event_name,
+        node_type,
+        session_id: envelope.session_id.clone(),
+        order: signed(envelope.order, "order")?,
+        observed_at: signed(envelope.observed_at, "observed_at")?,
+        client_id: envelope.client_id.clone(),
+        sequence: envelope
+            .sequence
+            .map(|value| signed(value, "sequence"))
+            .transpose()?,
+        prompt_id: envelope.meta.prompt_id.clone(),
+        agent_id: envelope.meta.agent_id.clone(),
+        agent_type: envelope.meta.agent_type.clone(),
+        cwd: envelope.meta.cwd.clone(),
+        tool_use_id: envelope.meta.tool_use_id.clone(),
+        turn_id: envelope.meta.turn_id.clone(),
+        repository: envelope.meta.repo.clone(),
+        event_json,
+        payload_json,
+        file_path,
+        paragraphs,
+    })
+}
+
+fn text_content(value: &Value) -> Option<String> {
+    value.as_str().map(str::to_owned).or_else(|| {
+        value
+            .get("content")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    })
+}
+
+fn chunk_text(text: &str, source: &str) -> Vec<ParagraphMutation> {
+    text.split("\n\n")
+        .map(str::trim)
+        .filter(|paragraph| !paragraph.is_empty())
+        .enumerate()
+        .map(|(index, text)| ParagraphMutation {
+            index: i64::try_from(index).unwrap_or(i64::MAX),
+            text: text.to_owned(),
+            hash: sha256(text),
+            source: source.to_owned(),
+            hidden: false,
+            from_user_doc: Some(false),
+        })
+        .collect()
+}
+
+fn sha256(value: &str) -> String {
+    Sha256::digest(value.as_bytes())
+        .iter()
+        .fold(String::with_capacity(64), |mut output, byte| {
+            write!(output, "{byte:02x}").expect("writing to String cannot fail");
+            output
+        })
+}
+
+fn signed(value: u64, field: &str) -> Result<i64, RepositoryError> {
+    i64::try_from(value)
+        .map_err(|_| RepositoryError::InvalidEvent(format!("{field} exceeds Neo4j integer range")))
 }
