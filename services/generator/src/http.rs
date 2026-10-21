@@ -2,25 +2,25 @@ use std::{sync::Arc, time::Instant};
 
 use axum::{
     Json, Router,
-    extract::{FromRequest, Request, State},
+    extract::{FromRequest, Path, Request, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, patch, post},
 };
 use serde::{Serialize, de::DeserializeOwned};
 use withhuman_contracts::events::{
     ConfigChangeEventRequest, FileChangedEventRequest, InstructionsLoadedEventRequest,
-    MessageDisplayEventRequest, PostToolBatchEventRequest, PostToolUseEventRequest,
-    PostToolUseFailureEventRequest, PreToolUseEventRequest, SessionStartEventRequest,
-    SubagentStartEventRequest, SubagentStopEventRequest, ToolDescriptionsEventRequest,
-    UserPromptSubmitEventRequest,
+    MessageDisplayEventRequest, ParagraphClassificationRequest, PostToolBatchEventRequest,
+    PostToolUseEventRequest, PostToolUseFailureEventRequest, PreToolUseEventRequest,
+    RequestContinuationRequest, SessionStartEventRequest, SubagentStartEventRequest,
+    SubagentStopEventRequest, ToolDescriptionsEventRequest, UserPromptSubmitEventRequest,
 };
 use withhuman_contracts::{
     decisions::{DecisionRequest, EnforcementMode},
     events::EventResponse,
 };
 
-use crate::{DecisionClient, GeneratorEvent, GraphRepository};
+use crate::{DecisionClient, GeneratorEvent, GraphRepository, RepositoryError};
 
 #[derive(Clone)]
 pub struct GeneratorService {
@@ -77,6 +77,14 @@ pub fn app(service: GeneratorService) -> Router {
         .route("/v1/events/MessageDisplay", post(message_display))
         .route("/v1/events/PostToolBatch", post(post_tool_batch))
         .route("/v1/events/ToolDescriptions", post(tool_descriptions))
+        .route(
+            "/v1/sessions/{session_id}/paragraphs/{hash}",
+            patch(classify_paragraph),
+        )
+        .route(
+            "/v1/sessions/{session_id}/requests/{order}",
+            patch(continue_request),
+        )
         .with_state(service)
 }
 
@@ -194,6 +202,45 @@ async fn pre_tool_use(
     }
 
     Json::<EventResponse>(response).into_response()
+}
+
+async fn classify_paragraph(
+    State(service): State<GeneratorService>,
+    Path((session_id, hash)): Path<(String, String)>,
+    StrictJson(request): StrictJson<ParagraphClassificationRequest>,
+) -> Response {
+    match service
+        .repository
+        .classify_paragraph(&session_id, &hash, request)
+        .await
+    {
+        Ok(response) => Json(response).into_response(),
+        Err(error) => repository_error_response(error),
+    }
+}
+
+async fn continue_request(
+    State(service): State<GeneratorService>,
+    Path((session_id, order)): Path<(String, u64)>,
+    StrictJson(request): StrictJson<RequestContinuationRequest>,
+) -> Response {
+    match service
+        .repository
+        .continue_request(&session_id, order, request)
+        .await
+    {
+        Ok(response) => Json(response).into_response(),
+        Err(error) => repository_error_response(error),
+    }
+}
+
+fn repository_error_response(error: RepositoryError) -> Response {
+    let (status, message) = match error {
+        RepositoryError::InvalidEvent(_) => (StatusCode::BAD_REQUEST, "invalid_enrichment"),
+        RepositoryError::NotFound => (StatusCode::NOT_FOUND, "graph_resource_not_found"),
+        _ => (StatusCode::INTERNAL_SERVER_ERROR, "graph_update_failed"),
+    };
+    (status, Json(ErrorResponse { error: message })).into_response()
 }
 event_handler!(subagent_start, SubagentStartEventRequest, SubagentStart);
 event_handler!(subagent_stop, SubagentStopEventRequest, SubagentStop);

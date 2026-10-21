@@ -5,9 +5,11 @@ WHERE name IN [
   'execution_node_seq_unique',
   'paragraph_hash_unique',
   'verdict_call_unique',
-  'file_repository_path_unique'
+  'file_repository_path_unique',
+  'pending_paragraph_enrichment_unique',
+  'pending_request_continuation_unique'
 ]
-RETURN count(*) = 6 AS schema_ready;
+RETURN count(*) = 8 AS schema_ready;
 
 SHOW INDEXES YIELD name
 WHERE name IN [

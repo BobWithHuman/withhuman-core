@@ -3,7 +3,10 @@ use std::{error::Error, fmt};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use withhuman_contracts::events::{CreatedNode, EventResponse, ParagraphReference};
+use withhuman_contracts::events::{
+    CreatedNode, EventResponse, ParagraphClassificationRequest, ParagraphClassificationResponse,
+    ParagraphReference, RequestContinuationRequest, RequestContinuationResponse,
+};
 
 use crate::{GeneratorConfig, GeneratorEvent, event::GraphMutation};
 
@@ -72,18 +75,94 @@ CALL (node) { \
                 stored.hidden = paragraph.hidden, stored.from_user_doc = paragraph.from_user_doc, \
                 stored.created_in_seq = node.seq \
   MERGE (node)-[:CONTAINS_PARAGRAPH {index: paragraph.index}]->(stored) \
+  WITH node, stored, paragraph \
+  OPTIONAL MATCH (pending:PendingParagraphEnrichment {session_id: $session_id, hash: paragraph.hash}) \
+  SET stored.instructs = coalesce(pending.instructs, stored.instructs), \
+      stored.jev_ms = coalesce(pending.jev_ms, stored.jev_ms), \
+      stored.jev_error = coalesce(pending.error, stored.jev_error) \
+  FOREACH (_ IN CASE WHEN pending IS NULL THEN [] ELSE [1] END | DELETE pending) \
   RETURN collect({hash: stored.hash, seq: node.seq, new: stored.created_in_seq = node.seq}) AS paragraph_refs \
   UNION \
   WITH node WHERE node IS NULL OR size($paragraphs) = 0 \
   RETURN [] AS paragraph_refs \
 } \
+WITH commit, node, paragraph_refs \
+OPTIONAL MATCH (pending_request:PendingRequestContinuation {session_id: $session_id, order: $order}) \
+OPTIONAL MATCH (target_commit:EventCommit {session_id: $session_id, order: pending_request.choice_order})-[:CREATED]->(target_request:ExecutionNode {type: 'Request'}) \
+FOREACH (_ IN CASE WHEN node.type = 'Request' AND pending_request IS NOT NULL THEN [1] ELSE [] END | \
+  SET node.continues = CASE WHEN pending_request.choice = 'none' THEN NULL ELSE target_request.seq END, \
+      node.continuation_choice = pending_request.choice, \
+      node.continuation_probabilities_json = pending_request.probabilities_json, \
+      node.continuation_jev_ms = pending_request.jev_ms, \
+      node.continuation_error = pending_request.error \
+  DELETE pending_request \
+) \
 RETURN commit.version AS version, node.seq AS node_seq, node.type AS node_type, paragraph_refs, \
        commit.event_json = $event_json AS same_event";
+
+const APPLY_PARAGRAPH_CLASSIFICATION: &str = "\
+MATCH (session:Session {session_id: $session_id}) \
+OPTIONAL MATCH (session)-[:CONTAINS]->(:ExecutionNode)-[:CONTAINS_PARAGRAPH]->(paragraph:Paragraph {hash: $hash}) \
+WITH session, collect(DISTINCT paragraph) AS paragraphs \
+CALL (session, paragraphs) { \
+  WITH session, paragraphs WHERE size(paragraphs) > 0 \
+  UNWIND paragraphs AS paragraph \
+  SET paragraph.instructs = $instructs, paragraph.jev_ms = $jev_ms, paragraph.jev_error = $error \
+  WITH session, count(paragraph) AS updated \
+  OPTIONAL MATCH (pending:PendingParagraphEnrichment {session_id: $session_id, hash: $hash}) \
+  DELETE pending \
+  RETURN true AS applied \
+  UNION \
+  WITH session, paragraphs WHERE size(paragraphs) = 0 \
+  MERGE (pending:PendingParagraphEnrichment {session_id: $session_id, hash: $hash}) \
+  SET pending.instructs = $instructs, pending.jev_ms = $jev_ms, pending.error = $error \
+  RETURN false AS applied \
+} \
+RETURN applied, $instructs AS instructs";
+
+const APPLY_REQUEST_CONTINUATION: &str = "\
+MATCH (session:Session {session_id: $session_id}) \
+OPTIONAL MATCH (commit:EventCommit {session_id: $session_id, order: $order})-[:CREATED]->(request:ExecutionNode {type: 'Request'}) \
+OPTIONAL MATCH (target_commit:EventCommit {session_id: $session_id, order: $choice_order})-[:CREATED]->(target:ExecutionNode {type: 'Request'}) \
+WITH session, request, target \
+CALL (session, request, target) { \
+  WITH session, request, target WHERE request IS NOT NULL \
+  SET request.continues = CASE WHEN $choice = 'none' THEN NULL ELSE target.seq END, \
+      request.continuation_choice = $choice, request.continuation_probabilities_json = $probabilities_json, \
+      request.continuation_jev_ms = $jev_ms, request.continuation_error = $error \
+  WITH session, request \
+  OPTIONAL MATCH (pending:PendingRequestContinuation {session_id: $session_id, order: $order}) \
+  DELETE pending \
+  RETURN true AS applied, request.seq AS request_seq \
+  UNION \
+  WITH session, request, target WHERE request IS NULL \
+  MERGE (pending:PendingRequestContinuation {session_id: $session_id, order: $order}) \
+  SET pending.choice = $choice, pending.choice_order = $choice_order, \
+      pending.probabilities_json = $probabilities_json, pending.jev_ms = $jev_ms, pending.error = $error \
+  RETURN false AS applied, NULL AS request_seq \
+} \
+RETURN applied, request_seq";
 
 #[async_trait]
 pub trait GraphRepository: Send + Sync + 'static {
     async fn health(&self) -> Result<(), RepositoryError>;
     async fn commit(&self, event: GeneratorEvent) -> Result<EventResponse, RepositoryError>;
+    async fn classify_paragraph(
+        &self,
+        _session_id: &str,
+        _hash: &str,
+        _request: ParagraphClassificationRequest,
+    ) -> Result<ParagraphClassificationResponse, RepositoryError> {
+        Err(RepositoryError::NotFound)
+    }
+    async fn continue_request(
+        &self,
+        _session_id: &str,
+        _order: u64,
+        _request: RequestContinuationRequest,
+    ) -> Result<RequestContinuationResponse, RepositoryError> {
+        Err(RepositoryError::NotFound)
+    }
 }
 
 #[derive(Clone)]
@@ -257,6 +336,87 @@ impl GraphRepository for Neo4jRepository {
     async fn commit(&self, event: GeneratorEvent) -> Result<EventResponse, RepositoryError> {
         self.commit_mutation(event.into_mutation()?).await
     }
+
+    async fn classify_paragraph(
+        &self,
+        session_id: &str,
+        hash: &str,
+        request: ParagraphClassificationRequest,
+    ) -> Result<ParagraphClassificationResponse, RepositoryError> {
+        let instructs = request
+            .error
+            .is_none()
+            .then(|| {
+                request
+                    .sentences
+                    .iter()
+                    .map(|sentence| sentence.p)
+                    .reduce(f64::max)
+            })
+            .flatten();
+        let data = self
+            .execute(
+                APPLY_PARAGRAPH_CLASSIFICATION,
+                json!({
+                    "session_id": session_id,
+                    "hash": hash,
+                    "instructs": instructs,
+                    "jev_ms": request.jev_ms,
+                    "error": request.error,
+                }),
+            )
+            .await?;
+        let row = data.values.first().ok_or(RepositoryError::NotFound)?;
+        Ok(ParagraphClassificationResponse {
+            applied: value_at(row, 0, "applied")?.as_bool().ok_or_else(|| {
+                RepositoryError::InvalidResponse("applied is not a boolean".into())
+            })?,
+            instructs: row.get(1).and_then(Value::as_f64),
+        })
+    }
+
+    async fn continue_request(
+        &self,
+        session_id: &str,
+        order: u64,
+        request: RequestContinuationRequest,
+    ) -> Result<RequestContinuationResponse, RepositoryError> {
+        let choice = request.choice.as_deref().unwrap_or("none");
+        let choice_order = parse_choice_order(choice)?;
+        let data = self
+            .execute(
+                APPLY_REQUEST_CONTINUATION,
+                json!({
+                    "session_id": session_id,
+                    "order": order,
+                    "choice": choice,
+                    "choice_order": choice_order,
+                    "probabilities_json": serde_json::to_string(&request.probabilities)
+                        .map_err(|error| RepositoryError::InvalidEvent(error.to_string()))?,
+                    "jev_ms": request.jev_ms,
+                    "error": request.error,
+                }),
+            )
+            .await?;
+        let row = data.values.first().ok_or(RepositoryError::NotFound)?;
+        Ok(RequestContinuationResponse {
+            applied: value_at(row, 0, "applied")?.as_bool().ok_or_else(|| {
+                RepositoryError::InvalidResponse("applied is not a boolean".into())
+            })?,
+            request_seq: row.get(1).and_then(Value::as_u64),
+        })
+    }
+}
+
+fn parse_choice_order(choice: &str) -> Result<Option<u64>, RepositoryError> {
+    if choice == "none" {
+        return Ok(None);
+    }
+    choice
+        .strip_prefix('o')
+        .and_then(|order| order.parse().ok())
+        .map(Some)
+        .ok_or_else(|| RepositoryError::InvalidEvent("choice must be `none` or `o<order>`".into()))
 }
 
 fn value_at<'a>(row: &'a [Value], index: usize, field: &str) -> Result<&'a Value, RepositoryError> {
@@ -305,6 +465,7 @@ pub enum RepositoryError {
     InvalidEvent(String),
     Query(String),
     InvalidResponse(String),
+    NotFound,
 }
 
 impl fmt::Display for RepositoryError {
@@ -314,6 +475,7 @@ impl fmt::Display for RepositoryError {
             Self::InvalidEvent(error) => write!(formatter, "invalid graph event: {error}"),
             Self::Query(error) => write!(formatter, "Neo4j query failed: {error}"),
             Self::InvalidResponse(error) => write!(formatter, "invalid Neo4j response: {error}"),
+            Self::NotFound => formatter.write_str("graph resource not found"),
         }
     }
 }

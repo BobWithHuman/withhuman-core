@@ -22,6 +22,14 @@ CREATE CONSTRAINT file_repository_path_unique IF NOT EXISTS
 FOR (file:File)
 REQUIRE (file.repository, file.path) IS UNIQUE;
 
+CREATE CONSTRAINT pending_paragraph_enrichment_unique IF NOT EXISTS
+FOR (pending:PendingParagraphEnrichment)
+REQUIRE (pending.session_id, pending.hash) IS UNIQUE;
+
+CREATE CONSTRAINT pending_request_continuation_unique IF NOT EXISTS
+FOR (pending:PendingRequestContinuation)
+REQUIRE (pending.session_id, pending.order) IS UNIQUE;
+
 CREATE INDEX execution_node_type IF NOT EXISTS
 FOR (node:ExecutionNode)
 ON (node.type);

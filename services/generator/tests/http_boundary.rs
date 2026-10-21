@@ -9,7 +9,10 @@ use serde_json::{Value, json};
 use tower::ServiceExt as _;
 use withhuman_contracts::{
     decisions::{CausalStart, Decision, DecisionRequest, DecisionResponse, JevActivity},
-    events::{CreatedNode, EventResponse},
+    events::{
+        CreatedNode, EventResponse, ParagraphClassificationRequest,
+        ParagraphClassificationResponse, RequestContinuationRequest, RequestContinuationResponse,
+    },
 };
 use withhuman_generator::{
     DecisionClient, DecisionError, GeneratorEvent, GeneratorService, GraphRepository,
@@ -170,6 +173,38 @@ async fn decision_failure_returns_a_committed_graph_with_no_decision() {
     assert!(body.decision_response.is_none());
 }
 
+#[tokio::test]
+async fn exposes_enrichment_patch_routes() {
+    let app = app(GeneratorService::new(EnrichmentRepository));
+    let paragraph = app
+        .clone()
+        .oneshot(patch_request(
+            "/v1/sessions/session-1/paragraphs/hash-1",
+            json!({
+                "sentences":[{"index":0,"text":"Run it","p":0.92}],
+                "jev_ms":180,
+                "error":null
+            }),
+        ))
+        .await
+        .unwrap();
+    let continuation = app
+        .oneshot(patch_request(
+            "/v1/sessions/session-1/requests/2",
+            json!({
+                "choice":"o1",
+                "probabilities":{"o1":0.8,"none":0.2},
+                "jev_ms":150,
+                "error":null
+            }),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(paragraph.status(), StatusCode::OK);
+    assert_eq!(continuation.status(), StatusCode::OK);
+}
+
 fn event_requests() -> Vec<(&'static str, Value)> {
     vec![
         ("SessionStart", envelope(1, json!({"source":"startup"}))),
@@ -250,6 +285,13 @@ fn json_request(uri: &str, body: Value) -> Request<Body> {
         .unwrap()
 }
 
+fn patch_request(uri: &str, body: Value) -> Request<Body> {
+    Request::patch(uri)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
 #[derive(Default)]
 struct RecordingRepository {
     events: Mutex<Vec<GeneratorEvent>>,
@@ -309,6 +351,49 @@ impl GraphRepository for CallRepository {
 struct RecordingDecisionClient {
     requests: Arc<Mutex<Vec<DecisionRequest>>>,
     fail: bool,
+}
+
+struct EnrichmentRepository;
+
+#[async_trait]
+impl GraphRepository for EnrichmentRepository {
+    async fn health(&self) -> Result<(), RepositoryError> {
+        Ok(())
+    }
+
+    async fn commit(&self, _event: GeneratorEvent) -> Result<EventResponse, RepositoryError> {
+        unreachable!()
+    }
+
+    async fn classify_paragraph(
+        &self,
+        session_id: &str,
+        hash: &str,
+        request: ParagraphClassificationRequest,
+    ) -> Result<ParagraphClassificationResponse, RepositoryError> {
+        assert_eq!(session_id, "session-1");
+        assert_eq!(hash, "hash-1");
+        assert_eq!(request.sentences[0].p, 0.92);
+        Ok(ParagraphClassificationResponse {
+            applied: true,
+            instructs: Some(0.92),
+        })
+    }
+
+    async fn continue_request(
+        &self,
+        session_id: &str,
+        order: u64,
+        request: RequestContinuationRequest,
+    ) -> Result<RequestContinuationResponse, RepositoryError> {
+        assert_eq!(session_id, "session-1");
+        assert_eq!(order, 2);
+        assert_eq!(request.choice.as_deref(), Some("o1"));
+        Ok(RequestContinuationResponse {
+            applied: true,
+            request_seq: Some(31),
+        })
+    }
 }
 
 #[async_trait]
