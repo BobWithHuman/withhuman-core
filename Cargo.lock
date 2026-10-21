@@ -1224,6 +1224,16 @@ version = "0.1.0"
 [[package]]
 name = "withhuman-generator"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower",
+ "withhuman-contracts",
+]
 
 [[package]]
 name = "writeable"
