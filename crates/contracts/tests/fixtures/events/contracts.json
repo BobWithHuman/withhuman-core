@@ -1,0 +1,49 @@
+{
+  "user_prompt_submit": {
+    "session_id": "8e789b84",
+    "order": 40,
+    "observed_at": 1760925599000,
+    "client_id": "team-a/laptop-3",
+    "meta": { "cwd": "/app", "prompt_id": "p_04" },
+    "side_pending": { "paragraphs": [], "requests": [40] },
+    "payload": {
+      "prompt": "응, 계속해",
+      "kind": "user",
+      "user_docs": [{ "kind": "issue", "repo": "org/repo", "number": 12 }],
+      "future_payload_field": "preserved"
+    }
+  },
+  "pre_tool_use": {
+    "session_id": "8e789b84",
+    "order": 43,
+    "observed_at": 1760925600300,
+    "sequence": 5,
+    "meta": { "cwd": "/app", "tool_use_id": "toolu_01" },
+    "side_pending": { "paragraphs": ["a71b"], "requests": [] },
+    "payload": {
+      "tool_name": "Bash",
+      "tool_input": { "command": "npm install" }
+    },
+    "mode": "enforce",
+    "deadline_ms": 3700
+  },
+  "response_without_paragraphs": {
+    "nodes": [{ "seq": 23, "type": "Call" }],
+    "paragraphs": null,
+    "version": 57,
+    "decision_response": {
+      "decision": "ALLOW",
+      "reason": "",
+      "rule": "requested_action",
+      "start": "USER",
+      "written": true,
+      "jev": null
+    }
+  },
+  "response_with_empty_paragraphs": {
+    "nodes": [],
+    "paragraphs": [],
+    "version": 58,
+    "decision_response": null
+  }
+}

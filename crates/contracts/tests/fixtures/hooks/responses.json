@@ -1,0 +1,22 @@
+{
+  "session_start": {
+    "hookSpecificOutput": {
+      "hookEventName": "SessionStart",
+      "watchPaths": ["/app/CLAUDE.md", "/app/.mcp.json"]
+    }
+  },
+  "pre_tool_use_deny": {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "permissionDecision": "deny",
+      "permissionDecisionReason": "Blocked by WithHuman."
+    }
+  },
+  "pre_tool_use_review": {
+    "hookSpecificOutput": {
+      "hookEventName": "PreToolUse",
+      "permissionDecision": "ask",
+      "permissionDecisionReason": "Approval required by WithHuman."
+    }
+  }
+}

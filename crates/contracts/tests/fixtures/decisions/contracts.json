@@ -1,0 +1,35 @@
+{
+  "request": {
+    "session_id": "8e789b84",
+    "call_seq": 23,
+    "graph_version": 57,
+    "mode": "enforce",
+    "deadline_ms": 3600
+  },
+  "responses": [
+    {
+      "decision": "ALLOW",
+      "reason": "",
+      "rule": "requested_action",
+      "start": "USER",
+      "written": true,
+      "jev": null
+    },
+    {
+      "decision": "DENY",
+      "reason": "Blocked by WithHuman.",
+      "rule": "untrusted_destination",
+      "start": "OTHER_DOC",
+      "written": true,
+      "jev": { "asked": false, "ms": null, "reused_from": null }
+    },
+    {
+      "decision": "REVIEW",
+      "reason": "Approval required by WithHuman.",
+      "rule": "unresolved_high_risk",
+      "start": "UNRESOLVED",
+      "written": false,
+      "jev": { "asked": true, "ms": 210, "reused_from": null }
+    }
+  ]
+}
