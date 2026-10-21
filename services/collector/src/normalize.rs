@@ -100,13 +100,14 @@ impl Normalizer {
         let mut sessions = self.sessions.lock();
         let state = sessions.entry(request.session_id.clone()).or_default();
         update_context(state, request.cwd, None);
+        let meta = metadata(state, context, None, None, None, None);
         let envelope = envelope(
             state,
             context,
             request.session_id,
             observed_at,
             None,
-            EventMetadata::default(),
+            meta,
             SessionStartPayload {
                 source: request.source,
                 ..Default::default()
@@ -192,9 +193,8 @@ impl Normalizer {
         let mut sessions = self.sessions.lock();
         let state = sessions.entry(request.session_id.clone()).or_default();
         update_context(state, request.cwd, request.prompt_id);
-        let tool_input = request
-            .tool_input
-            .or_else(|| state.tool_inputs.remove(&request.tool_use_id));
+        let cached_tool_input = state.tool_inputs.remove(&request.tool_use_id);
+        let tool_input = request.tool_input.or(cached_tool_input);
         let sequence = state.next_agent_sequence(request.agent_id.as_deref());
         let meta = metadata(
             state,
@@ -229,9 +229,8 @@ impl Normalizer {
         let mut sessions = self.sessions.lock();
         let state = sessions.entry(request.session_id.clone()).or_default();
         update_context(state, request.cwd, request.prompt_id);
-        let tool_input = request
-            .tool_input
-            .or_else(|| state.tool_inputs.remove(&request.tool_use_id));
+        let cached_tool_input = state.tool_inputs.remove(&request.tool_use_id);
+        let tool_input = request.tool_input.or(cached_tool_input);
         let sequence = state.next_agent_sequence(request.agent_id.as_deref());
         let meta = metadata(
             state,

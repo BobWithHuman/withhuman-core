@@ -59,6 +59,11 @@ fn assigns_gap_free_orders_only_when_an_event_is_emitted() {
     );
 
     assert_eq!(start.order(), 1);
+    let NormalizedEvent::SessionStart(start) = start else {
+        panic!("expected SessionStart");
+    };
+    assert_eq!(start.meta.cwd.as_deref(), Some("/workspace"));
+    assert_eq!(start.meta.repo.as_deref(), Some("github.com/acme/service"));
     assert!(pending_fragment.is_none());
     assert_eq!(prompt.order(), 2);
 }
