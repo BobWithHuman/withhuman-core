@@ -10,9 +10,11 @@ workspace = true
 
 [dependencies]
 axum = "0.8"
+async-trait = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1.0", features = ["macros", "net", "rt-multi-thread", "signal"] }
+tokio = { version = "1.0", features = ["macros", "net", "rt-multi-thread", "signal", "time"] }
 withhuman-contracts = { path = "../../crates/contracts" }
 
 [dev-dependencies]

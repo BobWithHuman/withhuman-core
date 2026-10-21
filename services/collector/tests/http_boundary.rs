@@ -1,32 +1,59 @@
+use async_trait::async_trait;
 use axum::{
     body::{Body, to_bytes},
     http::{Request, StatusCode, header},
 };
 use serde_json::Value;
+use std::sync::Arc;
 use tower::ServiceExt as _;
-use withhuman_collector::app;
+use withhuman_collector::{
+    CollectorConfig, CollectorService, GeneratorError, GeneratorTransport, NormalizedEvent,
+    app_with_transport,
+};
+use withhuman_contracts::events::EventResponse;
 
-const HOOK_ROUTES: [&str; 13] = [
-    "SessionStart",
-    "UserPromptSubmit",
-    "PreToolUse",
-    "PostToolUse",
-    "PostToolUseFailure",
-    "SubagentStart",
-    "SubagentStop",
-    "InstructionsLoaded",
-    "ConfigChange",
-    "FileChanged",
-    "MessageDisplay",
-    "PostToolBatch",
-    "ToolDescriptions",
+const HOOK_REQUESTS: [(&str, &str); 13] = [
+    ("SessionStart", r#"{"session_id":"s","cwd":"/repo"}"#),
+    ("UserPromptSubmit", r#"{"session_id":"s","prompt":"hello"}"#),
+    (
+        "PreToolUse",
+        r#"{"session_id":"s","tool_name":"Read","tool_input":{},"tool_use_id":"t1"}"#,
+    ),
+    (
+        "PostToolUse",
+        r#"{"session_id":"s","tool_name":"Read","tool_response":{},"tool_use_id":"t1"}"#,
+    ),
+    (
+        "PostToolUseFailure",
+        r#"{"session_id":"s","tool_name":"Read","error":"failed","tool_use_id":"t2"}"#,
+    ),
+    ("SubagentStart", r#"{"session_id":"s","agent_id":"a1"}"#),
+    ("SubagentStop", r#"{"session_id":"s","agent_id":"a1"}"#),
+    (
+        "InstructionsLoaded",
+        r#"{"session_id":"s","file_path":"/repo/AGENTS.md"}"#,
+    ),
+    (
+        "ConfigChange",
+        r#"{"session_id":"s","file_path":"/repo/config.json"}"#,
+    ),
+    (
+        "FileChanged",
+        r#"{"session_id":"s","file_path":"/repo/src/lib.rs"}"#,
+    ),
+    (
+        "MessageDisplay",
+        r#"{"session_id":"s","message_id":"m1","delta":"done","final":true}"#,
+    ),
+    ("PostToolBatch", r#"{"session_id":"s"}"#),
+    ("ToolDescriptions", r#"{"session_id":"s","tools":[]}"#),
 ];
 
 #[tokio::test]
 async fn exposes_every_versioned_hook_route() {
-    for event in HOOK_ROUTES {
-        let response = app()
-            .oneshot(json_request(&format!("/v1/hooks/{event}"), "{}"))
+    for (event, body) in HOOK_REQUESTS {
+        let response = test_app()
+            .oneshot(json_request(&format!("/v1/hooks/{event}"), body))
             .await
             .expect("router should respond");
 
@@ -36,7 +63,7 @@ async fn exposes_every_versioned_hook_route() {
 
 #[tokio::test]
 async fn rejects_missing_json_content_type() {
-    let response = app()
+    let response = test_app()
         .oneshot(
             Request::post("/v1/hooks/PreToolUse")
                 .body(Body::from("{}"))
@@ -50,7 +77,7 @@ async fn rejects_missing_json_content_type() {
 
 #[tokio::test]
 async fn maps_malformed_json_to_bad_request() {
-    let response = app()
+    let response = test_app()
         .oneshot(json_request("/v1/hooks/PreToolUse", "{"))
         .await
         .expect("router should respond");
@@ -60,7 +87,7 @@ async fn maps_malformed_json_to_bad_request() {
 
 #[tokio::test]
 async fn reports_collector_health() {
-    let response = app()
+    let response = test_app()
         .oneshot(Request::get("/healthz").body(Body::empty()).unwrap())
         .await
         .expect("router should respond");
@@ -75,11 +102,32 @@ async fn reports_collector_health() {
     assert_eq!(json["service"], "collector");
 }
 
-fn json_request(uri: &str, body: &'static str) -> Request<Body> {
+fn json_request(uri: &str, body: &str) -> Request<Body> {
     Request::post(uri)
         .header(header::CONTENT_TYPE, "application/json")
         .header("x-withhuman-client", "team-a/laptop-3")
         .header("x-withhuman-repo", "github.com/org/repo")
-        .body(Body::from(body))
+        .body(Body::from(body.to_owned()))
         .unwrap()
+}
+
+fn test_app() -> axum::Router {
+    app_with_transport(CollectorService::new(
+        CollectorConfig::default(),
+        Arc::new(AcceptingGenerator),
+    ))
+}
+
+struct AcceptingGenerator;
+
+#[async_trait]
+impl GeneratorTransport for AcceptingGenerator {
+    async fn send(&self, _event: NormalizedEvent) -> Result<EventResponse, GeneratorError> {
+        Ok(EventResponse {
+            nodes: Vec::new(),
+            paragraphs: None,
+            version: 1,
+            decision_response: None,
+        })
+    }
 }
