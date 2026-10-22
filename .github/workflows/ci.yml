@@ -43,6 +43,19 @@ jobs:
   nextest:
     name: Nextest
     runs-on: ubuntu-latest
+    services:
+      neo4j:
+        image: neo4j:5.26.0
+        env:
+          NEO4J_AUTH: neo4j/withhuman-integration
+        ports:
+          - 7474:7474
+          - 7687:7687
+        options: >-
+          --health-cmd "wget --quiet --tries=1 --spider http://localhost:7474 || exit 1"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -54,6 +67,10 @@ jobs:
         uses: taiki-e/install-action@nextest
 
       - name: Run tests
+        env:
+          NEO4J_INTEGRATION_URL: http://127.0.0.1:7474
+          NEO4J_INTEGRATION_USER: neo4j
+          NEO4J_INTEGRATION_PASSWORD: withhuman-integration
         run: cargo nextest run --no-tests=pass
 
   cargo-deny:
