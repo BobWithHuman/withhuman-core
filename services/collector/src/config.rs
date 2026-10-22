@@ -3,6 +3,7 @@ use std::{env, io, net::SocketAddr, time::Duration};
 use withhuman_contracts::events::EnforcementMode;
 
 const DEFAULT_BIND_ADDRESS: &str = "0.0.0.0:8080";
+const DEFAULT_EXT_AUTHZ_ADDRESS: &str = "0.0.0.0:9000";
 const DEFAULT_GENERATOR_URL: &str = "http://generator:8081";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +21,7 @@ pub enum ReviewPolicy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CollectorConfig {
     pub bind_address: SocketAddr,
+    pub ext_authz_address: SocketAddr,
     pub generator_url: String,
     pub decision_budget: Duration,
     pub enforcement_mode: EnforcementMode,
@@ -36,6 +38,9 @@ impl Default for CollectorConfig {
             bind_address: DEFAULT_BIND_ADDRESS
                 .parse()
                 .expect("default address is valid"),
+            ext_authz_address: DEFAULT_EXT_AUTHZ_ADDRESS
+                .parse()
+                .expect("default extAuthz address is valid"),
             generator_url: DEFAULT_GENERATOR_URL.to_owned(),
             decision_budget: Duration::from_millis(4_200),
             enforcement_mode: EnforcementMode::Enforce,
@@ -57,6 +62,14 @@ impl CollectorConfig {
                 format!("invalid COLLECTOR_ADDR {value:?}: {error}"),
             )
         })?;
+        let ext_authz_value = env::var("COLLECTOR_EXT_AUTHZ_ADDR")
+            .unwrap_or_else(|_| DEFAULT_EXT_AUTHZ_ADDRESS.into());
+        let ext_authz_address = ext_authz_value.parse().map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid COLLECTOR_EXT_AUTHZ_ADDR {ext_authz_value:?}: {error}"),
+            )
+        })?;
 
         let decision_budget =
             Duration::from_millis(parse_env("WITHHUMAN_DECISION_TIMEOUT_MS", 4_200)?);
@@ -69,6 +82,7 @@ impl CollectorConfig {
 
         Ok(Self {
             bind_address,
+            ext_authz_address,
             generator_url: env::var("GENERATOR_URL")
                 .unwrap_or_else(|_| DEFAULT_GENERATOR_URL.into()),
             decision_budget,

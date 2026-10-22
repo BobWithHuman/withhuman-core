@@ -10,6 +10,9 @@ pub use envoy_types::ext_authz::v3::pb::{
 use envoy_types::ext_authz::v3::{
     CheckResponseExt as _, DeniedHttpResponseBuilder, ToHttpResponse as _,
 };
+pub use envoy_types::pb::envoy::service::auth::v3::{
+    AttributeContext, attribute_context, authorization_client::AuthorizationClient,
+};
 
 pub const AUTHORIZATION_SERVICE_NAME: &str = "envoy.service.auth.v3.Authorization";
 pub const CHECK_METHOD_PATH: &str = "/envoy.service.auth.v3.Authorization/Check";

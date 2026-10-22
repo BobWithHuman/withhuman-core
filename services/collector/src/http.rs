@@ -25,7 +25,7 @@ use withhuman_contracts::{
 
 use crate::{
     CollectorConfig, FailurePolicy, GeneratorError, GeneratorHttpClient, GeneratorTransport,
-    Normalizer, ReviewPolicy, VerdictStore,
+    Normalizer, ReviewPolicy, StoredVerdict, VerdictStore,
 };
 
 const CLIENT_HEADER: &str = "x-withhuman-client";
@@ -198,6 +198,8 @@ async fn pre_tool_use(
 ) -> Response {
     let tool_use_id = request.tool_use_id.clone();
     let is_mcp = request.tool_name.starts_with("mcp__");
+    let tool_name = request.tool_name.clone();
+    let arguments = request.tool_input.clone();
     let deadline_ms = u64::try_from(service.config.decision_budget.as_millis()).ok();
     let event = service.normalizer.pre_tool_use(
         &trusted(&headers),
@@ -228,7 +230,14 @@ async fn pre_tool_use(
             GeneratorError::InvalidResponse("invalid decision semantics".to_owned()),
         );
     }
-    service.verdicts.insert(tool_use_id, decision.clone());
+    service.verdicts.insert(
+        tool_use_id,
+        StoredVerdict {
+            decision: decision.clone(),
+            tool_name,
+            arguments,
+        },
+    );
     if is_mcp && !service.config.enforce_mcp_at_hook {
         return StatusCode::OK.into_response();
     }
