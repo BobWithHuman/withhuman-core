@@ -1,0 +1,21 @@
+# yaml-language-server: $schema=https://agentgateway.dev/schema/config
+
+# This policy fragment is merged into the full AgentGateway MCP configuration
+# in the Docker Compose environment. MCP targets are defined by the deployment
+# because their addresses and credentials are environment-specific.
+mcp:
+  policies:
+    extAuthz:
+      conditional:
+        # Initialization and discovery requests do not carry a tool call and
+        # therefore do not have a correlated PreToolUse verdict.
+        - condition: has(mcp.tool)
+          host: collector:9000
+          protocol:
+            grpc: {}
+          failureMode: deny
+          includeRequestBody:
+            maxRequestBytes: 1048576
+            # A truncated JSON-RPC body cannot be verified safely.
+            allowPartialMessage: false
+            packAsBytes: true
