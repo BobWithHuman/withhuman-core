@@ -3,8 +3,9 @@
 use std::{error::Error, fmt};
 
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum EnforcementMode {
     Record,
@@ -12,7 +13,7 @@ pub enum EnforcementMode {
     Enforce,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 pub struct DecisionRequest {
     pub session_id: String,
     pub call_seq: u64,
@@ -22,7 +23,7 @@ pub struct DecisionRequest {
     pub deadline_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum Decision {
     Allow,
@@ -30,7 +31,7 @@ pub enum Decision {
     Review,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum CausalStart {
     User,
@@ -42,7 +43,7 @@ pub enum CausalStart {
     Unresolved,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 pub struct JevActivity {
     pub asked: bool,
     #[serde(default)]
@@ -53,7 +54,7 @@ pub struct JevActivity {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 pub struct DecisionResponse {
     pub decision: Decision,
     pub reason: String,

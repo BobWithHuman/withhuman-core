@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use utoipa::ToSchema;
 
 use crate::decisions::DecisionResponse;
 
@@ -11,7 +12,7 @@ pub use crate::decisions::EnforcementMode;
 
 pub type AdditionalFields = BTreeMap<String, Value>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 pub enum EventName {
     SessionStart,
     UserPromptSubmit,
@@ -28,7 +29,7 @@ pub enum EventName {
     ToolDescriptions,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct EventMetadata {
     #[serde(default)]
     pub prompt_id: Option<String>,
@@ -45,10 +46,11 @@ pub struct EventMetadata {
     #[serde(default)]
     pub repo: Option<String>,
     #[serde(flatten)]
+    #[schema(ignore)]
     pub additional_fields: AdditionalFields,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 pub struct SidePending {
     #[serde(default)]
     pub paragraphs: Vec<String>,
@@ -56,7 +58,7 @@ pub struct SidePending {
     pub requests: Vec<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct ParagraphChunk {
     pub index: u64,
     pub text: String,
@@ -66,10 +68,11 @@ pub struct ParagraphChunk {
     #[serde(default)]
     pub from_user_doc: Option<bool>,
     #[serde(flatten)]
+    #[schema(ignore)]
     pub additional_fields: AdditionalFields,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct EventRequest<T> {
     pub session_id: String,
     pub order: u64,
@@ -87,10 +90,11 @@ pub struct EventRequest<T> {
     #[serde(default)]
     pub flags: Option<Vec<String>>,
     #[serde(flatten)]
+    #[schema(ignore)]
     pub additional_fields: AdditionalFields,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct PreToolUseEventRequest {
     #[serde(flatten)]
     pub event: EventRequest<PreToolUsePayload>,
@@ -99,15 +103,16 @@ pub struct PreToolUseEventRequest {
     pub deadline_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct SessionStartPayload {
     #[serde(default)]
     pub source: Option<String>,
     #[serde(flatten)]
+    #[schema(ignore)]
     pub additional_fields: AdditionalFields,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct UserDocumentReference {
     pub kind: String,
     #[serde(default)]
@@ -115,64 +120,75 @@ pub struct UserDocumentReference {
     #[serde(default)]
     pub number: Option<u64>,
     #[serde(flatten)]
+    #[schema(ignore)]
     pub additional_fields: AdditionalFields,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct UserPromptSubmitPayload {
     pub prompt: String,
     pub kind: String,
     #[serde(default)]
     pub user_docs: Vec<UserDocumentReference>,
     #[serde(flatten)]
+    #[schema(ignore)]
     pub additional_fields: AdditionalFields,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct PreToolUsePayload {
     pub tool_name: String,
+    #[schema(value_type = Object)]
     pub tool_input: Value,
     #[serde(flatten)]
+    #[schema(ignore)]
     pub additional_fields: AdditionalFields,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct PostToolUsePayload {
     pub tool_name: String,
     #[serde(default)]
+    #[schema(value_type = Option<Object>)]
     pub tool_input: Option<Value>,
+    #[schema(value_type = Object)]
     pub tool_response: Value,
     #[serde(flatten)]
+    #[schema(ignore)]
     pub additional_fields: AdditionalFields,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct PostToolUseFailurePayload {
     pub tool_name: String,
     #[serde(default)]
+    #[schema(value_type = Option<Object>)]
     pub tool_input: Option<Value>,
     pub error: String,
     #[serde(flatten)]
+    #[schema(ignore)]
     pub additional_fields: AdditionalFields,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct SubagentStartPayload {
     pub agent_id: String,
     #[serde(default)]
     pub agent_type: Option<String>,
     #[serde(flatten)]
+    #[schema(ignore)]
     pub additional_fields: AdditionalFields,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct SubagentStopPayload {
     pub agent_id: String,
     #[serde(flatten)]
+    #[schema(ignore)]
     pub additional_fields: AdditionalFields,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct InstructionsLoadedPayload {
     pub file_path: String,
     #[serde(default)]
@@ -184,49 +200,55 @@ pub struct InstructionsLoadedPayload {
     #[serde(default)]
     pub parent_file_path: Option<String>,
     #[serde(flatten)]
+    #[schema(ignore)]
     pub additional_fields: AdditionalFields,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct ConfigChangePayload {
     pub file_path: String,
     #[serde(default)]
     pub source: Option<String>,
     #[serde(flatten)]
+    #[schema(ignore)]
     pub additional_fields: AdditionalFields,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct FileChangedPayload {
     pub file_path: String,
     #[serde(flatten)]
+    #[schema(ignore)]
     pub additional_fields: AdditionalFields,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct MessageDisplayPayload {
     pub message_id: String,
     pub text: String,
     #[serde(flatten)]
+    #[schema(ignore)]
     pub additional_fields: AdditionalFields,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct PostToolBatchPayload {
     #[serde(flatten)]
+    #[schema(ignore)]
     pub additional_fields: AdditionalFields,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 pub struct ToolDescription {
     pub name: String,
     pub description: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct ToolDescriptionsPayload {
     pub tools: Vec<ToolDescription>,
     #[serde(flatten)]
+    #[schema(ignore)]
     pub additional_fields: AdditionalFields,
 }
 
@@ -243,21 +265,21 @@ pub type MessageDisplayEventRequest = EventRequest<MessageDisplayPayload>;
 pub type PostToolBatchEventRequest = EventRequest<PostToolBatchPayload>;
 pub type ToolDescriptionsEventRequest = EventRequest<ToolDescriptionsPayload>;
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 pub struct CreatedNode {
     pub seq: u64,
     #[serde(rename = "type")]
     pub node_type: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 pub struct ParagraphReference {
     pub hash: String,
     pub seq: u64,
     pub new: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct EventResponse<D = DecisionResponse> {
     pub nodes: Vec<CreatedNode>,
     pub paragraphs: Option<Vec<ParagraphReference>>,
@@ -265,14 +287,14 @@ pub struct EventResponse<D = DecisionResponse> {
     pub decision_response: Option<D>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct SentenceProbability {
     pub index: u64,
     pub text: String,
     pub p: f64,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct ParagraphClassificationRequest {
     pub sentences: Vec<SentenceProbability>,
     #[serde(default)]
@@ -281,14 +303,14 @@ pub struct ParagraphClassificationRequest {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct ParagraphClassificationResponse {
     pub applied: bool,
     #[serde(default)]
     pub instructs: Option<f64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct RequestContinuationRequest {
     #[serde(default)]
     pub choice: Option<String>,
@@ -300,7 +322,7 @@ pub struct RequestContinuationRequest {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 pub struct RequestContinuationResponse {
     pub applied: bool,
     #[serde(default)]
