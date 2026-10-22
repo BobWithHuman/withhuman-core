@@ -50,7 +50,6 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
       args:
-        PACKAGE: withhuman-decision
         BINARY: withhuman-decision
     environment:
       DECISION_ADDR: 0.0.0.0:8082
@@ -80,7 +79,6 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
       args:
-        PACKAGE: withhuman-generator
         BINARY: withhuman-generator
     environment:
       GENERATOR_ADDR: 0.0.0.0:8081
@@ -106,7 +104,6 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
       args:
-        PACKAGE: withhuman-collector
         BINARY: withhuman-collector
     environment:
       COLLECTOR_ADDR: 0.0.0.0:8080
@@ -134,7 +131,6 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
       args:
-        PACKAGE: withhuman-mcp-fixture
         BINARY: withhuman-mcp-fixture
     environment:
       MCP_FIXTURE_ADDR: 0.0.0.0:8090

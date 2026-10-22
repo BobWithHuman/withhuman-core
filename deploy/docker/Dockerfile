@@ -1,7 +1,5 @@
 FROM rust:1.85-bookworm AS builder
 
-ARG PACKAGE
-ARG BINARY
 WORKDIR /workspace
 
 COPY Cargo.toml Cargo.lock ./
@@ -9,8 +7,14 @@ COPY crates ./crates
 COPY services ./services
 COPY tests/fixtures ./tests/fixtures
 
-RUN cargo build --locked --release --package "${PACKAGE}" --bin "${BINARY}" \
-    && cp "/workspace/target/release/${BINARY}" /service
+RUN cargo build --locked --release \
+    --package withhuman-collector \
+    --package withhuman-decision \
+    --package withhuman-generator \
+    --package withhuman-mcp-fixture
+
+ARG BINARY
+RUN cp "/workspace/target/release/${BINARY}" /service
 
 FROM debian:bookworm-slim AS runtime
 
