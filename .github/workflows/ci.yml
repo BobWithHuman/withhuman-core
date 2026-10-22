@@ -71,7 +71,9 @@ jobs:
           NEO4J_INTEGRATION_URL: http://127.0.0.1:7474
           NEO4J_INTEGRATION_USER: neo4j
           NEO4J_INTEGRATION_PASSWORD: withhuman-integration
-        run: cargo nextest run --no-tests=pass
+        # Generator and Decision integration suites share the Neo4j service.
+        # Serialize test binaries so concurrent schema DDL cannot deadlock Neo4j.
+        run: cargo nextest run --no-tests=pass --test-threads=1
 
   cargo-deny:
     name: Cargo Deny
