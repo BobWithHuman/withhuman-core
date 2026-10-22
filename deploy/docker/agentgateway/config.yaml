@@ -1,0 +1,31 @@
+# yaml-language-server: $schema=https://agentgateway.dev/schema/config
+
+gateways:
+  default:
+    port: 3000
+
+routes:
+  - name: claude-hooks
+    matches:
+      - path:
+          pathPrefix: /v1/hooks
+    backends:
+      - host: collector:8080
+
+mcp:
+  policies:
+    extAuthz:
+      conditional:
+        - condition: has(mcp.tool)
+          host: collector:9000
+          protocol:
+            grpc: {}
+          failureMode: deny
+          includeRequestBody:
+            maxRequestBytes: 1048576
+            allowPartialMessage: false
+            packAsBytes: true
+  targets:
+    - name: fixture
+      mcp:
+        host: http://mcp-fixture:8090/mcp

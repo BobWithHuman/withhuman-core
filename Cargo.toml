@@ -6,6 +6,7 @@ members = [
     "services/collector",
     "services/decision",
     "services/generator",
+    "tests/fixtures/mcp-server",
 ]
 
 [workspace.package]

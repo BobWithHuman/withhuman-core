@@ -5,7 +5,7 @@ services:
     image: neo4j:5.26.0
     restart: unless-stopped
     environment:
-      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?set NEO4J_PASSWORD in deploy/docker/.env}
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-withhuman-e2e}
       NEO4J_server_memory_heap_initial__size: ${NEO4J_HEAP_INITIAL_SIZE:-512m}
       NEO4J_server_memory_heap_max__size: ${NEO4J_HEAP_MAX_SIZE:-512m}
       NEO4J_server_memory_pagecache_size: ${NEO4J_PAGECACHE_SIZE:-512m}
@@ -26,8 +26,136 @@ services:
       timeout: 5s
       retries: 20
       start_period: 20s
-    networks:
-      - engine
+    networks: [engine]
+
+  neo4j-bootstrap:
+    image: neo4j:5.26.0
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    environment:
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-withhuman-e2e}
+    volumes:
+      - ./neo4j:/bootstrap:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        cypher-shell --address bolt://neo4j:7687 --username neo4j
+        --password "$${NEO4J_PASSWORD}" --file /bootstrap/schema.cypher
+    restart: "no"
+    networks: [engine]
+
+  decision:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        BINARY: withhuman-decision
+    environment:
+      DECISION_ADDR: 0.0.0.0:8082
+      WITHHUMAN_ENV: test
+      DECISION_PROVIDER: mock
+      MOCK_DECISION: ${MOCK_DECISION:-ALLOW}
+      MOCK_DECISION_REASON: ${MOCK_DECISION_REASON:-}
+      MOCK_DECISION_DELAY_MS: ${MOCK_DECISION_DELAY_MS:-0}
+      NEO4J_URL: http://neo4j:7474
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-withhuman-e2e}
+      NEO4J_DATABASE: neo4j
+    ports:
+      - "${DECISION_PORT:-8082}:8082"
+    depends_on:
+      neo4j-bootstrap:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8082/healthz"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks: [engine]
+
+  generator:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        BINARY: withhuman-generator
+    environment:
+      GENERATOR_ADDR: 0.0.0.0:8081
+      NEO4J_URL: http://neo4j:7474
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-withhuman-e2e}
+      NEO4J_DATABASE: neo4j
+      DECISION_URL: http://decision:8082
+    ports:
+      - "${GENERATOR_PORT:-8081}:8081"
+    depends_on:
+      decision:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8081/healthz"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks: [engine]
+
+  collector:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        BINARY: withhuman-collector
+    environment:
+      COLLECTOR_ADDR: 0.0.0.0:8080
+      COLLECTOR_EXT_AUTHZ_ADDR: 0.0.0.0:9000
+      GENERATOR_URL: http://generator:8081
+      WITHHUMAN_MODE: ${WITHHUMAN_MODE:-enforce}
+      WITHHUMAN_ON_FAILURE: ${WITHHUMAN_ON_FAILURE:-closed}
+      WITHHUMAN_ASK: ${WITHHUMAN_ASK:-ask}
+      WITHHUMAN_DECISION_TIMEOUT_MS: ${WITHHUMAN_DECISION_TIMEOUT_MS:-4200}
+    ports:
+      - "${COLLECTOR_PORT:-8080}:8080"
+      - "${COLLECTOR_EXT_AUTHZ_PORT:-9000}:9000"
+    depends_on:
+      generator:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/healthz"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks: [engine]
+
+  mcp-fixture:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+      args:
+        BINARY: withhuman-mcp-fixture
+    environment:
+      MCP_FIXTURE_ADDR: 0.0.0.0:8090
+    ports:
+      - "${MCP_FIXTURE_PORT:-8090}:8090"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8090/healthz"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks: [engine]
+
+  agentgateway:
+    image: cr.agentgateway.dev/agentgateway:v1.6.0
+    command: ["-f", "/config.yaml"]
+    ports:
+      - "${AGENTGATEWAY_PORT:-3000}:3000"
+    volumes:
+      - ./agentgateway/config.yaml:/config.yaml:ro
+    depends_on:
+      collector:
+        condition: service_healthy
+      mcp-fixture:
+        condition: service_healthy
+    networks: [engine]
 
 volumes:
   neo4j-data:
