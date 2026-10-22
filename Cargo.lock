@@ -1329,6 +1329,16 @@ dependencies = [
 [[package]]
 name = "withhuman-decision"
 version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower",
+ "withhuman-contracts",
+]
 
 [[package]]
 name = "withhuman-generator"
