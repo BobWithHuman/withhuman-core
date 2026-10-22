@@ -179,8 +179,8 @@ start_session e2e-timeout
 timeout_response=$(pre_tool e2e-timeout Write internal-timeout /tmp/timeout)
 test "$(jq -r '.hookSpecificOutput.permissionDecision' <<<"$timeout_response")" = deny
 
-"${compose[@]}" stop decision >/dev/null
 start_session e2e-unavailable
+"${compose[@]}" stop decision >/dev/null
 unavailable_response=$(pre_tool e2e-unavailable Write internal-unavailable /tmp/unavailable)
 test "$(jq -r '.hookSpecificOutput.permissionDecision' <<<"$unavailable_response")" = deny
 set_decision ALLOW '' 0
