@@ -13,7 +13,7 @@ use tokio::sync::Notify;
 use tower::ServiceExt as _;
 use withhuman_collector::{
     CollectorConfig, CollectorService, FailurePolicy, GeneratorError, GeneratorTransport,
-    NormalizedEvent, ReviewPolicy, VerdictStore, app_with_transport,
+    NormalizedEvent, ReviewPolicy, StoredVerdict, VerdictStore, app_with_transport,
 };
 use withhuman_contracts::{
     decisions::{CausalStart, Decision, DecisionResponse},
@@ -150,15 +150,18 @@ async fn retains_mcp_verdict_but_leaves_enforcement_to_ext_authz() {
             .unwrap()
             .is_empty()
     );
-    assert_eq!(verdicts.get("mcp-call-1").unwrap().decision, Decision::Deny);
+    assert_eq!(
+        verdicts.get("mcp-call-1").unwrap().decision.decision,
+        Decision::Deny
+    );
 }
 
 #[test]
 fn evicts_the_oldest_verdict_at_capacity() {
     let verdicts = VerdictStore::new(2);
-    verdicts.insert("one".to_owned(), decision(Decision::Allow, ""));
-    verdicts.insert("two".to_owned(), decision(Decision::Deny, "two"));
-    verdicts.insert("three".to_owned(), decision(Decision::Review, "three"));
+    verdicts.insert("one".to_owned(), stored(Decision::Allow, ""));
+    verdicts.insert("two".to_owned(), stored(Decision::Deny, "two"));
+    verdicts.insert("three".to_owned(), stored(Decision::Review, "three"));
 
     assert!(verdicts.get("one").is_none());
     assert!(verdicts.get("two").is_some());
@@ -232,6 +235,14 @@ fn decision(verdict: Decision, reason: &str) -> DecisionResponse {
         start: CausalStart::User,
         written: true,
         jev: None,
+    }
+}
+
+fn stored(verdict: Decision, reason: &str) -> StoredVerdict {
+    StoredVerdict {
+        decision: decision(verdict, reason),
+        tool_name: "mcp__server__tool".to_owned(),
+        arguments: json!({}),
     }
 }
 
