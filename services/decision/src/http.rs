@@ -4,13 +4,29 @@ use axum::{
     Json, Router,
     extract::{FromRequest, Request, State},
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
 use serde::{Serialize, de::DeserializeOwned};
+use utoipa::{OpenApi, ToSchema};
 use withhuman_contracts::decisions::{DecisionRequest, DecisionResponse};
 
 use crate::{DecisionProvider, DecisionRepository, RepositoryError};
+
+const SWAGGER_UI_HTML: &str = r##"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WithHuman API</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>SwaggerUIBundle({url: "/api-docs/openapi.json", dom_id: "#swagger-ui"});</script>
+</body>
+</html>"##;
 
 #[derive(Clone)]
 pub struct DecisionService {
@@ -41,9 +57,33 @@ pub fn app(service: DecisionService) -> Router {
     Router::new()
         .route("/healthz", get(health))
         .route("/v1/decide", post(decide))
+        .route("/api-docs/openapi.json", get(openapi_document))
+        .route("/swagger-ui", get(swagger_ui))
+        .route("/swagger-ui/", get(swagger_ui))
         .with_state(service)
 }
 
+#[derive(OpenApi)]
+#[openapi(
+    paths(health, decide),
+    tags((name = "Decision", description = "Graph-backed policy decision API"))
+)]
+struct DecisionApiDoc;
+
+async fn openapi_document() -> Json<utoipa::openapi::OpenApi> {
+    Json(DecisionApiDoc::openapi())
+}
+
+async fn swagger_ui() -> Html<&'static str> {
+    Html(SWAGGER_UI_HTML)
+}
+
+#[utoipa::path(
+    get,
+    path = "/healthz",
+    tag = "Decision",
+    responses((status = 200, body = HealthResponse), (status = 503, body = ErrorResponse))
+)]
 async fn health(State(service): State<DecisionService>) -> Response {
     match service.repository.health().await {
         Ok(()) => Json(HealthResponse {
@@ -55,6 +95,21 @@ async fn health(State(service): State<DecisionService>) -> Response {
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/decide",
+    tag = "Decision",
+    request_body = DecisionRequest,
+    responses(
+        (status = 200, description = "Decision produced and persistence attempted", body = DecisionResponse),
+        (status = 400, body = ErrorResponse),
+        (status = 404, body = ErrorResponse),
+        (status = 415, body = ErrorResponse),
+        (status = 500, body = ErrorResponse),
+        (status = 503, body = ErrorResponse),
+        (status = 504, body = ErrorResponse)
+    )
+)]
 async fn decide(
     State(service): State<DecisionService>,
     StrictJson(request): StrictJson<DecisionRequest>,
@@ -129,13 +184,13 @@ where
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct HealthResponse {
     status: &'static str,
     service: &'static str,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct ErrorResponse {
     error: &'static str,
 }
