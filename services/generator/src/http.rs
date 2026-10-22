@@ -4,10 +4,11 @@ use axum::{
     Json, Router,
     extract::{FromRequest, Path, Request, State},
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::{Html, IntoResponse, Response},
     routing::{get, patch, post},
 };
 use serde::{Serialize, de::DeserializeOwned};
+use utoipa::{OpenApi, ToSchema};
 use withhuman_contracts::events::{
     ConfigChangeEventRequest, FileChangedEventRequest, InstructionsLoadedEventRequest,
     MessageDisplayEventRequest, ParagraphClassificationRequest, PostToolBatchEventRequest,
@@ -21,6 +22,21 @@ use withhuman_contracts::{
 };
 
 use crate::{DecisionClient, GeneratorEvent, GraphRepository, RepositoryError};
+
+const SWAGGER_UI_HTML: &str = r##"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WithHuman API</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>SwaggerUIBundle({url: "/api-docs/openapi.json", dom_id: "#swagger-ui"});</script>
+</body>
+</html>"##;
 
 #[derive(Clone)]
 pub struct GeneratorService {
@@ -85,9 +101,50 @@ pub fn app(service: GeneratorService) -> Router {
             "/v1/sessions/{session_id}/requests/{order}",
             patch(continue_request),
         )
+        .route("/api-docs/openapi.json", get(openapi_document))
+        .route("/swagger-ui", get(swagger_ui))
+        .route("/swagger-ui/", get(swagger_ui))
         .with_state(service)
 }
 
+#[derive(OpenApi)]
+#[openapi(
+    paths(
+        health,
+        session_start,
+        user_prompt_submit,
+        pre_tool_use,
+        post_tool_use,
+        post_tool_use_failure,
+        subagent_start,
+        subagent_stop,
+        instructions_loaded,
+        config_change,
+        file_changed,
+        message_display,
+        post_tool_batch,
+        tool_descriptions,
+        classify_paragraph,
+        continue_request
+    ),
+    tags((name = "Generator", description = "Normalized event persistence and graph enrichment API"))
+)]
+struct GeneratorApiDoc;
+
+async fn openapi_document() -> Json<utoipa::openapi::OpenApi> {
+    Json(GeneratorApiDoc::openapi())
+}
+
+async fn swagger_ui() -> Html<&'static str> {
+    Html(SWAGGER_UI_HTML)
+}
+
+#[utoipa::path(
+    get,
+    path = "/healthz",
+    tag = "Generator",
+    responses((status = 200, body = HealthResponse), (status = 503, body = ErrorResponse))
+)]
 async fn health(State(service): State<GeneratorService>) -> Response {
     match service.repository.health().await {
         Ok(()) => Json(HealthResponse {
@@ -106,7 +163,19 @@ async fn health(State(service): State<GeneratorService>) -> Response {
 }
 
 macro_rules! event_handler {
-    ($handler:ident, $request:ty, $variant:ident) => {
+    ($handler:ident, $request:ty, $variant:ident, $path:literal) => {
+        #[utoipa::path(
+            post,
+            path = $path,
+            tag = "Generator",
+            request_body = $request,
+            responses(
+                (status = 200, description = "Graph mutation committed", body = EventResponse),
+                (status = 400, body = ErrorResponse),
+                (status = 415, body = ErrorResponse),
+                (status = 500, body = ErrorResponse)
+            )
+        )]
         async fn $handler(
             State(service): State<GeneratorService>,
             StrictJson(request): StrictJson<$request>,
@@ -129,19 +198,43 @@ macro_rules! event_handler {
     };
 }
 
-event_handler!(session_start, SessionStartEventRequest, SessionStart);
+event_handler!(
+    session_start,
+    SessionStartEventRequest,
+    SessionStart,
+    "/v1/events/SessionStart"
+);
 event_handler!(
     user_prompt_submit,
     UserPromptSubmitEventRequest,
-    UserPromptSubmit
+    UserPromptSubmit,
+    "/v1/events/UserPromptSubmit"
 );
-event_handler!(post_tool_use, PostToolUseEventRequest, PostToolUse);
+event_handler!(
+    post_tool_use,
+    PostToolUseEventRequest,
+    PostToolUse,
+    "/v1/events/PostToolUse"
+);
 event_handler!(
     post_tool_use_failure,
     PostToolUseFailureEventRequest,
-    PostToolUseFailure
+    PostToolUseFailure,
+    "/v1/events/PostToolUseFailure"
 );
 
+#[utoipa::path(
+    post,
+    path = "/v1/events/PreToolUse",
+    tag = "Generator",
+    request_body = PreToolUseEventRequest,
+    responses(
+        (status = 200, description = "Call persisted with an optional decision", body = EventResponse),
+        (status = 400, body = ErrorResponse),
+        (status = 415, body = ErrorResponse),
+        (status = 500, body = ErrorResponse)
+    )
+)]
 async fn pre_tool_use(
     State(service): State<GeneratorService>,
     StrictJson(request): StrictJson<PreToolUseEventRequest>,
@@ -204,6 +297,20 @@ async fn pre_tool_use(
     Json::<EventResponse>(response).into_response()
 }
 
+#[utoipa::path(
+    patch,
+    path = "/v1/sessions/{session_id}/paragraphs/{hash}",
+    tag = "Generator",
+    params(("session_id" = String, Path), ("hash" = String, Path)),
+    request_body = ParagraphClassificationRequest,
+    responses(
+        (status = 200, body = withhuman_contracts::events::ParagraphClassificationResponse),
+        (status = 400, body = ErrorResponse),
+        (status = 404, body = ErrorResponse),
+        (status = 415, body = ErrorResponse),
+        (status = 500, body = ErrorResponse)
+    )
+)]
 async fn classify_paragraph(
     State(service): State<GeneratorService>,
     Path((session_id, hash)): Path<(String, String)>,
@@ -219,6 +326,20 @@ async fn classify_paragraph(
     }
 }
 
+#[utoipa::path(
+    patch,
+    path = "/v1/sessions/{session_id}/requests/{order}",
+    tag = "Generator",
+    params(("session_id" = String, Path), ("order" = u64, Path)),
+    request_body = RequestContinuationRequest,
+    responses(
+        (status = 200, body = withhuman_contracts::events::RequestContinuationResponse),
+        (status = 400, body = ErrorResponse),
+        (status = 404, body = ErrorResponse),
+        (status = 415, body = ErrorResponse),
+        (status = 500, body = ErrorResponse)
+    )
+)]
 async fn continue_request(
     State(service): State<GeneratorService>,
     Path((session_id, order)): Path<(String, u64)>,
@@ -242,21 +363,53 @@ fn repository_error_response(error: RepositoryError) -> Response {
     };
     (status, Json(ErrorResponse { error: message })).into_response()
 }
-event_handler!(subagent_start, SubagentStartEventRequest, SubagentStart);
-event_handler!(subagent_stop, SubagentStopEventRequest, SubagentStop);
+event_handler!(
+    subagent_start,
+    SubagentStartEventRequest,
+    SubagentStart,
+    "/v1/events/SubagentStart"
+);
+event_handler!(
+    subagent_stop,
+    SubagentStopEventRequest,
+    SubagentStop,
+    "/v1/events/SubagentStop"
+);
 event_handler!(
     instructions_loaded,
     InstructionsLoadedEventRequest,
-    InstructionsLoaded
+    InstructionsLoaded,
+    "/v1/events/InstructionsLoaded"
 );
-event_handler!(config_change, ConfigChangeEventRequest, ConfigChange);
-event_handler!(file_changed, FileChangedEventRequest, FileChanged);
-event_handler!(message_display, MessageDisplayEventRequest, MessageDisplay);
-event_handler!(post_tool_batch, PostToolBatchEventRequest, PostToolBatch);
+event_handler!(
+    config_change,
+    ConfigChangeEventRequest,
+    ConfigChange,
+    "/v1/events/ConfigChange"
+);
+event_handler!(
+    file_changed,
+    FileChangedEventRequest,
+    FileChanged,
+    "/v1/events/FileChanged"
+);
+event_handler!(
+    message_display,
+    MessageDisplayEventRequest,
+    MessageDisplay,
+    "/v1/events/MessageDisplay"
+);
+event_handler!(
+    post_tool_batch,
+    PostToolBatchEventRequest,
+    PostToolBatch,
+    "/v1/events/PostToolBatch"
+);
 event_handler!(
     tool_descriptions,
     ToolDescriptionsEventRequest,
-    ToolDescriptions
+    ToolDescriptions,
+    "/v1/events/ToolDescriptions"
 );
 
 struct StrictJson<T>(T);
@@ -299,13 +452,13 @@ impl IntoResponse for StrictJsonRejection {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct HealthResponse {
     status: &'static str,
     service: &'static str,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct ErrorResponse {
     error: &'static str,
 }

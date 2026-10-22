@@ -102,6 +102,31 @@ async fn reports_collector_health() {
     assert_eq!(json["service"], "collector");
 }
 
+#[tokio::test]
+async fn serves_collector_openapi_and_swagger_ui() {
+    let specification = test_app()
+        .clone()
+        .oneshot(
+            Request::get("/api-docs/openapi.json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = to_bytes(specification.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let document: Value = serde_json::from_slice(&body).unwrap();
+    let swagger = test_app()
+        .oneshot(Request::get("/swagger-ui/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(document["openapi"], "3.1.0");
+    assert!(document["paths"]["/v1/hooks/PreToolUse"]["post"].is_object());
+    assert_eq!(swagger.status(), StatusCode::OK);
+}
+
 fn json_request(uri: &str, body: &str) -> Request<Body> {
     Request::post(uri)
         .header(header::CONTENT_TYPE, "application/json")

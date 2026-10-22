@@ -82,6 +82,33 @@ async fn health_reflects_neo4j_readiness() {
 }
 
 #[tokio::test]
+async fn serves_generator_openapi_and_swagger_ui() {
+    let router = app(GeneratorService::new(RecordingRepository::default()));
+    let specification = router
+        .clone()
+        .oneshot(
+            Request::get("/api-docs/openapi.json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = to_bytes(specification.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let document: Value = serde_json::from_slice(&body).unwrap();
+    let swagger = router
+        .oneshot(Request::get("/swagger-ui/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(document["openapi"], "3.1.0");
+    assert!(document["paths"]["/v1/events/PreToolUse"]["post"].is_object());
+    assert!(document["paths"]["/v1/sessions/{session_id}/paragraphs/{hash}"]["patch"].is_object());
+    assert_eq!(swagger.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn pre_tool_use_commits_before_requesting_a_decision() {
     let requests = Arc::new(Mutex::new(Vec::new()));
     let service = GeneratorService::from_shared_with_decision(

@@ -117,6 +117,35 @@ async fn validates_json_and_reports_health() {
     assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
 }
 
+#[tokio::test]
+async fn serves_decision_openapi_and_swagger_ui() {
+    let router = app(DecisionService::new(
+        RecordingRepository::default(),
+        MockDecisionProvider::fixed(Decision::Allow),
+    ));
+    let specification = router
+        .clone()
+        .oneshot(
+            Request::get("/api-docs/openapi.json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = to_bytes(specification.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let document: Value = serde_json::from_slice(&body).unwrap();
+    let swagger = router
+        .oneshot(Request::get("/swagger-ui/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(document["openapi"], "3.1.0");
+    assert!(document["paths"]["/v1/decide"]["post"].is_object());
+    assert_eq!(swagger.status(), StatusCode::OK);
+}
+
 #[test]
 fn production_runtime_rejects_the_mock_provider() {
     let output = Command::new(env!("CARGO_BIN_EXE_withhuman-decision"))

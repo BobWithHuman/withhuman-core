@@ -7,10 +7,11 @@ use axum::{
     Json, Router,
     extract::{FromRequest, Request, State},
     http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
 use serde::{Serialize, de::DeserializeOwned};
+use utoipa::{OpenApi, ToSchema};
 use withhuman_contracts::{
     decisions::{Decision, DecisionResponse},
     events::EventResponse,
@@ -30,6 +31,20 @@ use crate::{
 
 const CLIENT_HEADER: &str = "x-withhuman-client";
 const REPOSITORY_HEADER: &str = "x-withhuman-repo";
+const SWAGGER_UI_HTML: &str = r##"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WithHuman API</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>SwaggerUIBundle({url: "/api-docs/openapi.json", dom_id: "#swagger-ui"});</script>
+</body>
+</html>"##;
 
 #[derive(Clone)]
 pub struct CollectorService {
@@ -72,9 +87,48 @@ pub fn app_with_transport(service: CollectorService) -> Router {
         .route("/v1/hooks/MessageDisplay", post(message_display))
         .route("/v1/hooks/PostToolBatch", post(post_tool_batch))
         .route("/v1/hooks/ToolDescriptions", post(tool_descriptions))
+        .route("/api-docs/openapi.json", get(openapi_document))
+        .route("/swagger-ui", get(swagger_ui))
+        .route("/swagger-ui/", get(swagger_ui))
         .with_state(service)
 }
 
+#[derive(OpenApi)]
+#[openapi(
+    paths(
+        health,
+        session_start,
+        user_prompt_submit,
+        pre_tool_use,
+        post_tool_use,
+        post_tool_use_failure,
+        subagent_start,
+        subagent_stop,
+        instructions_loaded,
+        config_change,
+        file_changed,
+        message_display,
+        post_tool_batch,
+        tool_descriptions
+    ),
+    tags((name = "Collector", description = "Claude Code Hook ingestion and enforcement API"))
+)]
+struct CollectorApiDoc;
+
+async fn openapi_document() -> Json<utoipa::openapi::OpenApi> {
+    Json(CollectorApiDoc::openapi())
+}
+
+async fn swagger_ui() -> Html<&'static str> {
+    Html(SWAGGER_UI_HTML)
+}
+
+#[utoipa::path(
+    get,
+    path = "/healthz",
+    tag = "Collector",
+    responses((status = 200, description = "Collector is ready", body = HealthResponse))
+)]
 async fn health() -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok",
@@ -82,6 +136,22 @@ async fn health() -> Json<HealthResponse> {
     })
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/hooks/SessionStart",
+    tag = "Collector",
+    params(
+        ("X-WithHuman-Repo" = Option<String>, Header, description = "Repository identity"),
+        ("X-WithHuman-Client" = Option<String>, Header, description = "Client identity")
+    ),
+    request_body = SessionStartRequest,
+    responses(
+        (status = 200, description = "Session accepted", body = HookSpecificResponse<SessionStartOutput>),
+        (status = 400, description = "Invalid JSON", body = ErrorResponse),
+        (status = 415, description = "Content-Type is not application/json", body = ErrorResponse),
+        (status = 502, description = "Generator unavailable", body = ErrorResponse)
+    )
+)]
 async fn session_start(
     State(service): State<CollectorService>,
     headers: HeaderMap,
@@ -109,7 +179,23 @@ async fn session_start(
 }
 
 macro_rules! regular_handler {
-    ($name:ident, $request:ty, $normalize:ident) => {
+    ($name:ident, $request:ty, $normalize:ident, $path:literal) => {
+        #[utoipa::path(
+            post,
+            path = $path,
+            tag = "Collector",
+            params(
+                ("X-WithHuman-Repo" = Option<String>, Header, description = "Repository identity"),
+                ("X-WithHuman-Client" = Option<String>, Header, description = "Client identity")
+            ),
+            request_body = $request,
+            responses(
+                (status = 200, description = "Event accepted; response body is empty"),
+                (status = 400, description = "Invalid JSON", body = ErrorResponse),
+                (status = 415, description = "Content-Type is not application/json", body = ErrorResponse),
+                (status = 502, description = "Generator unavailable", body = ErrorResponse)
+            )
+        )]
         async fn $name(
             State(service): State<CollectorService>,
             headers: HeaderMap,
@@ -126,28 +212,59 @@ macro_rules! regular_handler {
 regular_handler!(
     user_prompt_submit,
     UserPromptSubmitRequest,
-    user_prompt_submit
+    user_prompt_submit,
+    "/v1/hooks/UserPromptSubmit"
 );
-regular_handler!(post_tool_use, PostToolUseRequest, post_tool_use);
+regular_handler!(
+    post_tool_use,
+    PostToolUseRequest,
+    post_tool_use,
+    "/v1/hooks/PostToolUse"
+);
 regular_handler!(
     post_tool_use_failure,
     PostToolUseFailureRequest,
-    post_tool_use_failure
+    post_tool_use_failure,
+    "/v1/hooks/PostToolUseFailure"
 );
 regular_handler!(
     instructions_loaded,
     InstructionsLoadedRequest,
-    instructions_loaded
+    instructions_loaded,
+    "/v1/hooks/InstructionsLoaded"
 );
-regular_handler!(config_change, ConfigChangeRequest, config_change);
-regular_handler!(file_changed, FileChangedRequest, file_changed);
-regular_handler!(post_tool_batch, PostToolBatchRequest, post_tool_batch);
+regular_handler!(
+    config_change,
+    ConfigChangeRequest,
+    config_change,
+    "/v1/hooks/ConfigChange"
+);
+regular_handler!(
+    file_changed,
+    FileChangedRequest,
+    file_changed,
+    "/v1/hooks/FileChanged"
+);
+regular_handler!(
+    post_tool_batch,
+    PostToolBatchRequest,
+    post_tool_batch,
+    "/v1/hooks/PostToolBatch"
+);
 regular_handler!(
     tool_descriptions,
     ToolDescriptionsRequest,
-    tool_descriptions
+    tool_descriptions,
+    "/v1/hooks/ToolDescriptions"
 );
 
+#[utoipa::path(
+    post,
+    path = "/v1/hooks/SubagentStart",
+    tag = "Collector",
+    request_body = SubagentLifecycleRequest,
+    responses((status = 200, description = "Event accepted"), (status = 400, body = ErrorResponse), (status = 415, body = ErrorResponse), (status = 502, body = ErrorResponse))
+)]
 async fn subagent_start(
     State(service): State<CollectorService>,
     headers: HeaderMap,
@@ -159,6 +276,13 @@ async fn subagent_start(
     send_regular(&service, event).await
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/hooks/SubagentStop",
+    tag = "Collector",
+    request_body = SubagentLifecycleRequest,
+    responses((status = 200, description = "Event accepted"), (status = 400, body = ErrorResponse), (status = 415, body = ErrorResponse), (status = 502, body = ErrorResponse))
+)]
 async fn subagent_stop(
     State(service): State<CollectorService>,
     headers: HeaderMap,
@@ -170,6 +294,13 @@ async fn subagent_stop(
     send_regular(&service, event).await
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/hooks/MessageDisplay",
+    tag = "Collector",
+    request_body = MessageDisplayRequest,
+    responses((status = 200, description = "Fragment accepted"), (status = 400, body = ErrorResponse), (status = 415, body = ErrorResponse), (status = 500, body = ErrorResponse), (status = 502, body = ErrorResponse))
+)]
 async fn message_display(
     State(service): State<CollectorService>,
     headers: HeaderMap,
@@ -191,6 +322,17 @@ async fn message_display(
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/hooks/PreToolUse",
+    tag = "Collector",
+    request_body = PreToolUseRequest,
+    responses(
+        (status = 200, description = "Empty for ALLOW, Hook output for DENY or REVIEW", body = HookSpecificResponse<PreToolUseOutput>),
+        (status = 400, body = ErrorResponse),
+        (status = 415, body = ErrorResponse)
+    )
+)]
 async fn pre_tool_use(
     State(service): State<CollectorService>,
     headers: HeaderMap,
@@ -381,13 +523,13 @@ impl IntoResponse for StrictJsonRejection {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct HealthResponse {
     status: &'static str,
     service: &'static str,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct ErrorResponse {
     error: &'static str,
 }
