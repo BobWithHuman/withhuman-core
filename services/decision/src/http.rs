@@ -172,6 +172,11 @@ async fn decide(
             );
         }
     };
+    response.values = request
+        .causal_context
+        .as_ref()
+        .map(|context| context.value_findings.clone())
+        .unwrap_or_default();
     if response.validate().is_err() {
         return error(
             StatusCode::INTERNAL_SERVER_ERROR,

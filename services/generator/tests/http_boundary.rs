@@ -444,6 +444,7 @@ impl DecisionClient for RecordingDecisionClient {
             }),
             causal: None,
             path: None,
+            values: Vec::new(),
         })
     }
 }

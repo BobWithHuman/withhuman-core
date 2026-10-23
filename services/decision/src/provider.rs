@@ -85,6 +85,7 @@ impl DecisionProvider for MockDecisionProvider {
             jev: None,
             causal: None,
             path: None,
+            values: Vec::new(),
         })
     }
 }
@@ -264,6 +265,7 @@ fn causal_response(causal: Option<CausalResolution>, jev: JevActivity) -> Decisi
         jev: Some(jev),
         causal,
         path: None,
+        values: Vec::new(),
     }
 }
 

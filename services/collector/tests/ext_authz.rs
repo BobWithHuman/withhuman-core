@@ -149,6 +149,7 @@ fn service(mode: EnforcementMode, decision: Decision, reason: &str) -> ExtAuthzS
                 jev: None,
                 causal: None,
                 path: None,
+                values: Vec::new(),
             },
             tool_name: "mcp__filesystem__write_file".to_owned(),
             arguments: json!({"path":"a"}),
