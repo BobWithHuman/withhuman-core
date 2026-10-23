@@ -443,13 +443,20 @@ fn insert_token(
     });
 }
 
+/// Text of a tool response: a string, `{"content": "…"}`, or MCP text blocks
+/// (`[{"type": "text", "text": "…"}]`, also under `content`).
 fn text_content(value: &Value) -> Option<String> {
-    value.as_str().map(str::to_owned).or_else(|| {
-        value
-            .get("content")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-    })
+    if let Some(text) = value.as_str() {
+        return Some(text.to_owned());
+    }
+    if let Some(blocks) = value.as_array() {
+        let texts = blocks
+            .iter()
+            .filter_map(|block| block.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        return (!texts.is_empty()).then(|| texts.join("\n\n"));
+    }
+    value.get("content").and_then(text_content)
 }
 
 fn chunk_text(text: &str, source: &str) -> Vec<PieceMutation> {
