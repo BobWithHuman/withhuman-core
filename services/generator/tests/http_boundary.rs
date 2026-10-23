@@ -443,6 +443,7 @@ impl DecisionClient for RecordingDecisionClient {
                 error: None,
             }),
             causal: None,
+            path: None,
         })
     }
 }

@@ -145,6 +145,12 @@ async fn decide(
         };
     }
     request.deadline_ms = remaining_ms(request.deadline_ms, started);
+    request.causal_path = service
+        .repository
+        .causal_path(&request)
+        .await
+        .ok()
+        .flatten();
 
     let provider = service.provider.decide(&request);
     let provider_result = match request.deadline_ms {
@@ -175,6 +181,12 @@ async fn decide(
     match service.repository.persist(&request, &response).await {
         Ok(()) => {
             response.written = true;
+            response.path = service
+                .repository
+                .causal_path(&request)
+                .await
+                .ok()
+                .flatten();
         }
         Err(_) => response.written = false,
     }

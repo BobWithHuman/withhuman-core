@@ -4,10 +4,13 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use withhuman_contracts::decisions::{
-    CausalCandidate, CausalContext, DecisionRequest, DecisionResponse, ValueMatch,
+    CausalCandidate, CausalContext, CausalPath, DecisionRequest, DecisionResponse, ValueMatch,
 };
 
-use crate::DecisionConfig;
+use crate::{
+    DecisionConfig,
+    path::{ChainNode, build_path},
+};
 
 const VERIFY_GRAPH: &str = "\
 MATCH (session:Session {session_id: $session_id}) \
@@ -82,6 +85,27 @@ WITH value, head(collect(owner)) AS first \
 WHERE first.depth = 3 AND first.sequence < $sequence \
 RETURN first.seq, value ORDER BY first.sequence, first.index LIMIT 1";
 
+/// `{max_hops}` is replaced with `WITHHUMAN_PARENT_MAX_HOPS + 2` so a loop is still visible.
+const LOAD_CHAIN: &str = "\
+MATCH (call:ExecutionNode {session_id:$session_id,seq:$call_seq,type:'Call'})-[:LINK {kind:'member'}]->(start:ExecutionNode {type:'Sequence',depth:1}) \
+OPTIONAL MATCH (call)-[direct:LINK {kind:'from_text'}]->(piece:ExecutionNode {depth:3}) \
+OPTIONAL MATCH chain=(start)-[:CAUSE*1..{max_hops}]->(:ExecutionNode {depth:1}) \
+WHERE all(edge IN relationships(chain) WHERE edge.kind = 'parent' AND edge.superseded_at IS NULL) \
+WITH start, piece, direct, chain ORDER BY CASE WHEN chain IS NULL THEN 0 ELSE length(chain) END DESC LIMIT 1 \
+WITH piece, direct, \
+     CASE WHEN chain IS NULL THEN [start] ELSE nodes(chain) END AS chain_nodes, \
+     CASE WHEN chain IS NULL THEN [] ELSE relationships(chain) END AS chain_edges \
+RETURN piece.seq, direct.accepted, \
+       [node IN chain_nodes | [node.seq, node.type, node.parent_state]], \
+       [edge IN chain_edges | edge.accepted]";
+
+const LOAD_CHAIN_FROM_TEXT: &str = "\
+UNWIND $node_seqs AS node_seq \
+MATCH (sequence:ExecutionNode {session_id:$session_id,seq:node_seq,type:'Sequence'}) \
+MATCH (call:ExecutionNode {type:'Call'})-[:LINK {kind:'member'}]->(sequence) \
+MATCH (call)-[edge:LINK {kind:'from_text'}]->(piece:ExecutionNode {depth:3}) \
+RETURN node_seq, call.seq, piece.seq, edge.accepted ORDER BY node_seq, call.seq";
+
 /// Verdict, parent and from_text are written in one statement, so in one transaction. A
 /// sequence whose parent is already `decided` or `none` keeps it unless parents are re-asked per
 /// Call, in which case the earlier parent edge gets `superseded_at`.
@@ -95,7 +119,8 @@ MERGE (verdict:Verdict {session_id: $session_id, call_seq: $call_seq}) \
 SET verdict.decision = $decision, verdict.reason = $reason, verdict.rule = $rule, \
     verdict.start = $start, verdict.graph_version = $graph_version, \
     verdict.mode = $mode, verdict.jev_json = $jev_json, verdict.updated_at = timestamp(), \
-    verdict.seq_window = $seq_window, verdict.prompt_window = $prompt_window \
+    verdict.seq_window = $seq_window, verdict.prompt_window = $prompt_window, \
+    verdict.path_json = $path_json \
 SET call.decision = $decision, call.decision_reason = $reason, call.decision_rule = $rule, \
     call.decision_start = $start, call.decision_version = $graph_version \
 MERGE (call)-[cause:CAUSE {kind: 'mock'}]->(verdict) \
@@ -149,6 +174,12 @@ pub trait DecisionRepository: Send + Sync + 'static {
         request: &DecisionRequest,
         response: &DecisionResponse,
     ) -> Result<(), RepositoryError>;
+    async fn causal_path(
+        &self,
+        _request: &DecisionRequest,
+    ) -> Result<Option<CausalPath>, RepositoryError> {
+        Ok(None)
+    }
 }
 
 #[derive(Clone)]
@@ -391,6 +422,8 @@ impl DecisionRepository for Neo4jDecisionRepository {
                     "start":response.start,
                     "jev_json":serde_json::to_string(&response.jev)
                         .map_err(|error| RepositoryError::InvalidResponse(error.to_string()))?,
+                    "path_json":serde_json::to_string(&request.causal_path)
+                        .map_err(|error| RepositoryError::InvalidResponse(error.to_string()))?,
                     "per_call":self.per_call,
                     "parent_target":parent_target,
                     "parent_state":parent_state,
@@ -414,6 +447,86 @@ impl DecisionRepository for Neo4jDecisionRepository {
             return Err(RepositoryError::NotFound);
         }
         Ok(())
+    }
+
+    async fn causal_path(
+        &self,
+        request: &DecisionRequest,
+    ) -> Result<Option<CausalPath>, RepositoryError> {
+        let parameters = json!({"session_id":request.session_id,"call_seq":request.call_seq});
+        let data = self
+            .execute(
+                &LOAD_CHAIN.replace("{max_hops}", &(self.max_hops + 2).to_string()),
+                parameters,
+            )
+            .await?;
+        let Some(row) = data.values.first() else {
+            return Ok(None);
+        };
+        let direct = match row.first() {
+            Some(Value::Null) | None => None,
+            Some(value) => Some((
+                integer(value, "direct_piece")?,
+                row.get(1).and_then(Value::as_bool),
+            )),
+        };
+        let accepted = value_at(row, 3, "chain_edges")?
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let mut chain = value_at(row, 2, "chain_nodes")?
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .enumerate()
+            .map(|(index, node)| {
+                Ok(ChainNode {
+                    seq: integer(
+                        value_at(
+                            node.as_array().map_or(&[][..], Vec::as_slice),
+                            0,
+                            "chain_seq",
+                        )?,
+                        "chain_seq",
+                    )?,
+                    node_type: node
+                        .get(1)
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    parent_state: node.get(2).and_then(Value::as_str).map(str::to_owned),
+                    parent_accepted: accepted.get(index).and_then(Value::as_bool),
+                    from_text: Vec::new(),
+                })
+            })
+            .collect::<Result<Vec<_>, RepositoryError>>()?;
+        let node_seqs = chain.iter().map(|node| node.seq).collect::<Vec<_>>();
+        let from_text = self
+            .execute(
+                LOAD_CHAIN_FROM_TEXT,
+                json!({"session_id":request.session_id,"node_seqs":node_seqs}),
+            )
+            .await?;
+        for row in from_text.values {
+            let node_seq = integer(value_at(&row, 0, "node_seq")?, "node_seq")?;
+            let link = (
+                integer(value_at(&row, 1, "call_seq")?, "call_seq")?,
+                integer(value_at(&row, 2, "piece_seq")?, "piece_seq")?,
+                row.get(3).and_then(Value::as_bool),
+            );
+            for node in chain.iter_mut().filter(|node| node.seq == node_seq) {
+                node.from_text.push(link);
+            }
+        }
+        Ok(Some(build_path(
+            i64::try_from(request.call_seq).unwrap_or(i64::MAX),
+            direct,
+            &chain,
+            self.max_hops,
+            self.seq_window,
+            self.prompt_window,
+        )))
     }
 }
 

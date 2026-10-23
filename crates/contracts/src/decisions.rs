@@ -23,6 +23,9 @@ pub struct DecisionRequest {
     pub deadline_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub causal_context: Option<CausalContext>,
+    /// The path as already stored before this decision; filled in by Decision itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub causal_path: Option<CausalPath>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -79,6 +82,38 @@ pub struct CausalResolution {
     pub from_text: Option<CausalChoice>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+/// One edge followed from the judged Call towards its cause. `kind` is `member`, `from_text`,
+/// `parent` or `inherited_from_text`; `accepted = false` marks a guessed edge.
+pub struct CausalPathEdge {
+    pub from_seq: i64,
+    pub to_seq: i64,
+    pub kind: String,
+    pub accepted: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PathStop {
+    ReachedRoot,
+    None,
+    Unresolved,
+    LoopGuard,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct CausalPath {
+    pub edges: Vec<CausalPathEdge>,
+    /// The piece that told the Call (or the inherited plan) what to do, when there is one.
+    pub cause_seq: Option<i64>,
+    pub stop: PathStop,
+    /// The last depth 1 node reached.
+    pub root_seq: Option<i64>,
+    pub root_type: Option<String>,
+    pub seq_window: u64,
+    pub prompt_window: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum Decision {
@@ -121,6 +156,8 @@ pub struct DecisionResponse {
     pub jev: Option<JevActivity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub causal: Option<CausalResolution>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<CausalPath>,
 }
 
 impl DecisionResponse {

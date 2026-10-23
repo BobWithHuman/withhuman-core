@@ -253,6 +253,7 @@ async fn spawn_decision_server(
             written: true,
             jev: None,
             causal: None,
+            path: None,
         })
     }
 
