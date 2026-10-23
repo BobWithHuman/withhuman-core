@@ -10,8 +10,8 @@ use tower::ServiceExt as _;
 use withhuman_contracts::{
     decisions::{CausalStart, Decision, DecisionRequest, DecisionResponse, JevActivity},
     events::{
-        CreatedNode, EventResponse, ParagraphClassificationRequest,
-        ParagraphClassificationResponse, RequestContinuationRequest, RequestContinuationResponse,
+        CreatedNode, EventResponse, PieceClassificationRequest, PieceClassificationResponse,
+        RequestContinuationRequest, RequestContinuationResponse,
     },
 };
 use withhuman_generator::{
@@ -104,7 +104,7 @@ async fn serves_generator_openapi_and_swagger_ui() {
 
     assert_eq!(document["openapi"], "3.1.0");
     assert!(document["paths"]["/v1/events/PreToolUse"]["post"].is_object());
-    assert!(document["paths"]["/v1/sessions/{session_id}/paragraphs/{hash}"]["patch"].is_object());
+    assert!(document["paths"]["/v1/sessions/{session_id}/pieces/{hash}"]["patch"].is_object());
     assert_eq!(swagger.status(), StatusCode::OK);
 }
 
@@ -203,10 +203,10 @@ async fn decision_failure_returns_a_committed_graph_with_no_decision() {
 #[tokio::test]
 async fn exposes_enrichment_patch_routes() {
     let app = app(GeneratorService::new(EnrichmentRepository));
-    let paragraph = app
+    let piece = app
         .clone()
         .oneshot(patch_request(
-            "/v1/sessions/session-1/paragraphs/hash-1",
+            "/v1/sessions/session-1/pieces/hash-1",
             json!({
                 "sentences":[{"index":0,"text":"Run it","p":0.92}],
                 "jev_ms":180,
@@ -228,7 +228,7 @@ async fn exposes_enrichment_patch_routes() {
         .await
         .unwrap();
 
-    assert_eq!(paragraph.status(), StatusCode::OK);
+    assert_eq!(piece.status(), StatusCode::OK);
     assert_eq!(continuation.status(), StatusCode::OK);
 }
 
@@ -334,7 +334,7 @@ impl GraphRepository for RecordingRepository {
         self.events.lock().unwrap().push(event);
         Ok(EventResponse {
             nodes: Vec::new(),
-            paragraphs: None,
+            pieces: None,
             version: 1,
             decision_response: None,
         })
@@ -368,7 +368,7 @@ impl GraphRepository for CallRepository {
                 seq: 23,
                 node_type: "Call".to_owned(),
             }],
-            paragraphs: None,
+            pieces: None,
             version: 57,
             decision_response: None,
         })
@@ -392,16 +392,16 @@ impl GraphRepository for EnrichmentRepository {
         unreachable!()
     }
 
-    async fn classify_paragraph(
+    async fn classify_piece(
         &self,
         session_id: &str,
         hash: &str,
-        request: ParagraphClassificationRequest,
-    ) -> Result<ParagraphClassificationResponse, RepositoryError> {
+        request: PieceClassificationRequest,
+    ) -> Result<PieceClassificationResponse, RepositoryError> {
         assert_eq!(session_id, "session-1");
         assert_eq!(hash, "hash-1");
         assert_eq!(request.sentences[0].p, 0.92);
-        Ok(ParagraphClassificationResponse {
+        Ok(PieceClassificationResponse {
             applied: true,
             instructs: Some(0.92),
         })

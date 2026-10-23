@@ -221,7 +221,7 @@ async fn response_json(response: axum::response::Response) -> (StatusCode, Value
 fn event_response(decision_response: Option<DecisionResponse>) -> EventResponse {
     EventResponse {
         nodes: Vec::new(),
-        paragraphs: None,
+        pieces: None,
         version: 1,
         decision_response,
     }

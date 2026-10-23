@@ -103,29 +103,43 @@ impl GeneratorEvent {
                 )
             }
             Self::PreToolUse(event) => {
-                mutation("PreToolUse", Some("Call"), None, None, event, |event| {
-                    &event.event
-                })
+                let action = call_summary(
+                    &event.event.payload.tool_name,
+                    &event.event.payload.tool_input,
+                );
+                let file_path = input_file_path(Some(&event.event.payload.tool_input));
+                mutation(
+                    "PreToolUse",
+                    Some("Call"),
+                    Some(action),
+                    file_path,
+                    event,
+                    |event| &event.event,
+                )
             }
             Self::PostToolUse(event) => {
                 let text = text_content(&event.payload.tool_response);
+                let file_path = input_file_path(event.payload.tool_input.as_ref());
                 mutation(
                     "PostToolUse",
-                    Some("Sequence"),
+                    Some("Segment"),
                     text,
-                    None,
+                    file_path,
                     event,
                     |event| event,
                 )
             }
-            Self::PostToolUseFailure(event) => mutation(
-                "PostToolUseFailure",
-                Some("Error"),
-                None,
-                None,
-                event,
-                |event| event,
-            ),
+            Self::PostToolUseFailure(event) => {
+                let file_path = input_file_path(event.payload.tool_input.as_ref());
+                mutation(
+                    "PostToolUseFailure",
+                    Some("Error"),
+                    Some(event.payload.error.clone()),
+                    file_path,
+                    event,
+                    |event| event,
+                )
+            }
             Self::SubagentStart(event) => mutation(
                 "SubagentStart",
                 Some("SubagentStart"),
@@ -144,10 +158,21 @@ impl GeneratorEvent {
             ),
             Self::InstructionsLoaded(event) => {
                 let file_path = Some(event.payload.file_path.clone());
+                // TODO(parent-design): the Hook contract carries no instruction text yet; a
+                // `content` field is used when a client sends one.
+                let body = match event
+                    .payload
+                    .additional_fields
+                    .get("content")
+                    .and_then(Value::as_str)
+                {
+                    Some(content) => format!("{}\n{content}", event.payload.file_path),
+                    None => event.payload.file_path.clone(),
+                };
                 mutation(
                     "InstructionsLoaded",
-                    Some("Instructions"),
-                    None,
+                    Some("Instruction"),
+                    Some(body),
                     file_path,
                     event,
                     |event| event,
@@ -224,18 +249,21 @@ pub(crate) struct GraphMutation {
     pub(crate) event_json: String,
     pub(crate) payload_json: String,
     pub(crate) file_path: Option<String>,
-    pub(crate) paragraphs: Vec<ParagraphMutation>,
+    pub(crate) tool_name: Option<String>,
+    pub(crate) body: Option<String>,
+    pub(crate) pieces: Vec<PieceMutation>,
     pub(crate) tokens: Vec<TokenMutation>,
 }
 
 #[derive(Serialize)]
-pub(crate) struct ParagraphMutation {
+pub(crate) struct PieceMutation {
     pub(crate) index: i64,
     pub(crate) text: String,
     pub(crate) hash: String,
     pub(crate) source: String,
     pub(crate) hidden: bool,
     pub(crate) from_user_doc: Option<bool>,
+    pub(crate) flagged: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -244,6 +272,8 @@ pub(crate) struct TokenMutation {
     pub(crate) key: String,
     pub(crate) slot: String,
     pub(crate) decoded: String,
+    /// Set when the value was read from a depth 3 piece, so the Token Index points at it.
+    pub(crate) piece_hash: Option<String>,
 }
 
 fn mutation<T, E>(
@@ -263,20 +293,29 @@ where
     let envelope = envelope(&event);
     let payload_json = serde_json::to_string(&envelope.payload)
         .map_err(|error| RepositoryError::InvalidEvent(error.to_string()))?;
-    let paragraphs = match &envelope.chunks {
+    let tool_name = tool_name(event_name, &payload_json);
+    let body = text.clone();
+    let pieces = match &envelope.chunks {
         Some(chunks) => chunks
             .iter()
             .map(|chunk| {
-                Ok(ParagraphMutation {
+                Ok(PieceMutation {
                     index: signed(chunk.index, "chunk.index")?,
                     text: chunk.text.clone(),
                     hash: chunk.hash.clone(),
                     source: chunk.source.clone(),
                     hidden: chunk.hidden,
                     from_user_doc: chunk.from_user_doc,
+                    flagged: envelope
+                        .flags
+                        .as_ref()
+                        .is_some_and(|flags| flags.iter().any(|flag| flag == &chunk.hash)),
                 })
             })
             .collect::<Result<Vec<_>, RepositoryError>>()?,
+        // A Call summary and an Instruction body describe the node; they are not text read
+        // by the agent, so they are not split into pieces.
+        None if matches!(event_name, "PreToolUse" | "InstructionsLoaded") => Vec::new(),
         None => text
             .as_deref()
             .map(|text| chunk_text(text, event_name))
@@ -290,13 +329,13 @@ where
         _ => "external",
     };
     extract_tokens(&payload_json, payload_slot, &mut tokens);
-    for paragraph in &paragraphs {
-        let slot = match paragraph.source.as_str() {
+    for piece in &pieces {
+        let slot = match piece.source.as_str() {
             "user" | "UserPromptSubmit" => "user",
             "MessageDisplay" => "agent",
             _ => "external",
         };
-        extract_tokens(&paragraph.text, slot, &mut tokens);
+        extract_piece_tokens(&piece.text, slot, &piece.hash, &mut tokens);
     }
 
     Ok(GraphMutation {
@@ -320,12 +359,33 @@ where
         event_json,
         payload_json,
         file_path,
-        paragraphs,
+        tool_name,
+        body,
+        pieces,
         tokens: tokens.into_iter().collect(),
     })
 }
 
 fn extract_tokens(value: &str, slot: &str, tokens: &mut BTreeSet<TokenMutation>) {
+    for (kind, key) in token_values(value) {
+        insert_token(tokens, kind, &key, slot, None);
+    }
+}
+
+fn extract_piece_tokens(
+    value: &str,
+    slot: &str,
+    piece_hash: &str,
+    tokens: &mut BTreeSet<TokenMutation>,
+) {
+    for (kind, key) in token_values(value) {
+        insert_token(tokens, kind, &key, slot, Some(piece_hash));
+    }
+}
+
+/// URLs, emails, IPs, paths and executed script names that the value lookup in Decision
+/// matches against earlier pieces.
+fn token_values(value: &str) -> Vec<(&'static str, String)> {
     static URL: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r#"https?://[^\s\"'<>\\]+"#).unwrap());
     static EMAIL: LazyLock<Regex> =
@@ -336,31 +396,50 @@ fn extract_tokens(value: &str, slot: &str, tokens: &mut BTreeSet<TokenMutation>)
         Regex::new(r#"(?:^|[\s\"'=])((?:/|\./|\.\./)[A-Za-z0-9._~/-]+)"#).unwrap()
     });
 
+    static SCRIPT: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(?:^|[\s"'=/])([A-Za-z0-9_.-]+\.(?:sh|bash|zsh|py|js|mjs|ts|rb|pl|ps1))\b"#)
+            .unwrap()
+    });
+
+    let mut values = Vec::new();
     for found in URL.find_iter(value) {
-        insert_token(tokens, "url", found.as_str(), slot);
+        values.push(("url", found.as_str().to_owned()));
     }
     for found in EMAIL.find_iter(value) {
-        insert_token(tokens, "email", found.as_str(), slot);
+        values.push(("email", found.as_str().to_owned()));
     }
     for found in IP.find_iter(value) {
         if found.as_str().parse::<IpAddr>().is_ok() {
-            insert_token(tokens, "ip", found.as_str(), slot);
+            values.push(("ip", found.as_str().to_owned()));
         }
     }
     for captures in PATH.captures_iter(value) {
         if let Some(found) = captures.get(1) {
-            insert_token(tokens, "path", found.as_str(), slot);
+            values.push(("path", found.as_str().to_owned()));
         }
     }
+    for captures in SCRIPT.captures_iter(value) {
+        if let Some(found) = captures.get(1) {
+            values.push(("script", found.as_str().to_owned()));
+        }
+    }
+    values
 }
 
-fn insert_token(tokens: &mut BTreeSet<TokenMutation>, kind: &str, value: &str, slot: &str) {
+fn insert_token(
+    tokens: &mut BTreeSet<TokenMutation>,
+    kind: &str,
+    value: &str,
+    slot: &str,
+    piece_hash: Option<&str>,
+) {
     let decoded = value.trim_end_matches([',', '.', ')', ']', '}']);
     tokens.insert(TokenMutation {
         key_kind: kind.to_owned(),
         key: decoded.to_owned(),
         slot: slot.to_owned(),
         decoded: decoded.to_owned(),
+        piece_hash: piece_hash.map(str::to_owned),
     });
 }
 
@@ -373,20 +452,54 @@ fn text_content(value: &Value) -> Option<String> {
     })
 }
 
-fn chunk_text(text: &str, source: &str) -> Vec<ParagraphMutation> {
+fn chunk_text(text: &str, source: &str) -> Vec<PieceMutation> {
     text.split("\n\n")
         .map(str::trim)
-        .filter(|paragraph| !paragraph.is_empty())
+        .filter(|piece| !piece.is_empty())
         .enumerate()
-        .map(|(index, text)| ParagraphMutation {
+        .map(|(index, text)| PieceMutation {
             index: i64::try_from(index).unwrap_or(i64::MAX),
             text: text.to_owned(),
             hash: sha256(text),
             source: source.to_owned(),
             hidden: false,
             from_user_doc: Some(false),
+            flagged: false,
         })
         .collect()
+}
+
+fn tool_name(event_name: &str, payload_json: &str) -> Option<String> {
+    matches!(
+        event_name,
+        "PreToolUse" | "PostToolUse" | "PostToolUseFailure"
+    )
+    .then(|| serde_json::from_str::<Value>(payload_json).ok())
+    .flatten()
+    .and_then(|payload| {
+        payload
+            .get("tool_name")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    })
+}
+
+fn input_file_path(input: Option<&Value>) -> Option<String> {
+    input
+        .and_then(|input| input.get("file_path").or_else(|| input.get("path")))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
+fn call_summary(tool_name: &str, input: &Value) -> String {
+    let main = input
+        .get("command")
+        .or_else(|| input.get("file_path"))
+        .or_else(|| input.get("path"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| input.to_string());
+    format!("{tool_name}: {main}")
 }
 
 fn sha256(value: &str) -> String {

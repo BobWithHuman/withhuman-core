@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use withhuman_contracts::events::{
-    CreatedNode, EventResponse, ParagraphClassificationRequest, ParagraphClassificationResponse,
-    ParagraphReference, RequestContinuationRequest, RequestContinuationResponse,
+    CreatedNode, EventResponse, PieceClassificationRequest, PieceClassificationResponse,
+    PieceReference, RequestContinuationRequest, RequestContinuationResponse,
 };
 
 use crate::{GeneratorConfig, GeneratorEvent, event::GraphMutation};
@@ -30,76 +30,93 @@ CALL (session, commit, is_new) { \
 FOREACH (_ IN CASE WHEN created AND $has_node THEN [1] ELSE [] END | \
   CREATE (node:ExecutionNode { \
     session_id: $session_id, seq: commit.version, type: $node_type, \
+    depth: $node_depth, \
     event_name: $event_name, order: $order, observed_at: $observed_at, \
     client_id: $client_id, sequence: $sequence, prompt_id: $prompt_id, \
     agent_id: $agent_id, agent_type: $agent_type, cwd: $cwd, \
-    tool_use_id: $tool_use_id, turn_id: $turn_id, repository: $repository, \
-    payload_json: $payload_json \
+    tool_use_id: $tool_use_id, tool_name: $tool_name, turn_id: $turn_id, \
+    repository: $repository, file_path: $file_path, body: $body, payload_json: $payload_json \
   }) \
   CREATE (commit)-[:CREATED]->(node) \
   CREATE (session)-[:CONTAINS]->(node) \
 ) \
-WITH session, commit \
+WITH session, commit, created \
 OPTIONAL MATCH (node:ExecutionNode {session_id: $session_id, seq: commit.version}) \
-OPTIONAL MATCH (previous:ExecutionNode {session_id: $session_id, seq: commit.version - 1}) \
-FOREACH (_ IN CASE WHEN node IS NULL OR previous IS NULL THEN [] ELSE [1] END | \
-  MERGE (previous)-[edge:NEXT]->(node) \
-  ON CREATE SET edge.edge_id = $session_id + ':' + toString(previous.seq) + ':' + toString(node.seq), \
-                edge.probability = 1.0 \
+FOREACH (_ IN CASE WHEN created AND $sequence IS NOT NULL AND $node_depth = 2 THEN [1] ELSE [] END | \
+  MERGE (sequence_node:ExecutionNode {session_id: $session_id, type: 'Sequence', depth: 1, sequence: $sequence}) \
+  ON CREATE SET sequence_node.seq = -($sequence + 1), sequence_node.body = '', \
+                sequence_node.agent_id = $agent_id, sequence_node.prompt_id = $prompt_id, \
+                sequence_node.parent_state = 'pending' \
+  MERGE (node)-[:LINK {kind: 'member'}]->(sequence_node) \
 ) \
 WITH commit, node \
-OPTIONAL MATCH (agent_previous:ExecutionNode { \
-  session_id: $session_id, agent_id: $agent_id, sequence: $previous_sequence \
-}) \
-FOREACH (_ IN CASE WHEN node IS NULL OR agent_previous IS NULL THEN [] ELSE [1] END | \
-  MERGE (agent_previous)-[:AGENT_SEQUENCE]->(node) \
+OPTIONAL MATCH (sequence_node:ExecutionNode {session_id: $session_id, type: 'Sequence', depth: 1, sequence: $sequence}) \
+FOREACH (_ IN CASE WHEN node IS NULL OR sequence_node IS NULL OR $event_name <> 'MessageDisplay' THEN [] ELSE [1] END | \
+  SET sequence_node.body = coalesce($body, ''), sequence_node.has_message = true \
+) \
+FOREACH (_ IN CASE WHEN node IS NULL OR sequence_node IS NULL OR $event_name <> 'PreToolUse' OR coalesce(sequence_node.has_message, false) THEN [] ELSE [1] END | \
+  SET sequence_node.body = CASE WHEN coalesce(sequence_node.body, '') = '' THEN $body ELSE sequence_node.body + '\\n' + $body END \
 ) \
 WITH commit, node \
 OPTIONAL MATCH (call:ExecutionNode { \
   session_id: $session_id, type: 'Call', tool_use_id: $tool_use_id \
 }) \
 FOREACH (_ IN CASE WHEN node IS NULL OR call IS NULL OR NOT $is_tool_result THEN [] ELSE [1] END | \
-  MERGE (call)-[:RESULTED_IN]->(node) \
+  MERGE (call)-[:LINK {kind: 'result'}]->(node) \
 ) \
 WITH commit, node \
-FOREACH (_ IN CASE WHEN node IS NULL OR $file_path IS NULL THEN [] ELSE [1] END | \
+OPTIONAL MATCH (message:ExecutionNode {session_id: $session_id, type: 'Message', sequence: $sequence}) \
+FOREACH (_ IN CASE WHEN node IS NULL OR message IS NULL OR $event_name <> 'PreToolUse' THEN [] ELSE [1] END | \
+  MERGE (node)-[:LINK {kind: 'follows'}]->(message) \
+) \
+WITH commit, node \
+FOREACH (_ IN CASE WHEN node IS NULL OR $file_path IS NULL OR $is_tool_result THEN [] ELSE [1] END | \
   MERGE (file:File {repository: coalesce($repository, ''), path: $file_path}) \
-  MERGE (node)-[:REFERENCES_FILE]->(file) \
+  MERGE (node)-[:LINK {kind: 'executes'}]->(file) \
 ) \
 WITH commit, node \
-CALL (node) { \
-  WITH node WHERE node IS NOT NULL AND size($paragraphs) > 0 \
-  UNWIND $paragraphs AS paragraph \
-  MERGE (stored:Paragraph {hash: paragraph.hash}) \
-  ON CREATE SET stored.text = paragraph.text, stored.source = paragraph.source, \
-                stored.hidden = paragraph.hidden, stored.from_user_doc = paragraph.from_user_doc, \
+CALL (node, commit) { \
+  WITH node, commit WHERE node IS NOT NULL AND size($pieces) > 0 \
+  MATCH (session:Session {session_id: $session_id}) \
+  UNWIND $pieces AS piece \
+  MERGE (stored:ExecutionNode {session_id: $session_id, content_hash: piece.hash, depth: 3}) \
+  ON CREATE SET stored.seq = commit.version * 1000000 + piece.index + 1, \
+                stored.type = node.type, stored.text = piece.text, stored.source = piece.source, \
+                stored.hidden = piece.hidden, stored.flagged = piece.flagged, \
+                stored.from_user_doc = piece.from_user_doc, stored.index = piece.index, \
+                stored.sequence = node.sequence, stored.tool_name = node.tool_name, \
+                stored.tool_use_id = node.tool_use_id, stored.file_path = node.file_path, \
                 stored.created_in_seq = node.seq \
-  MERGE (node)-[:CONTAINS_PARAGRAPH {index: paragraph.index}]->(stored) \
-  WITH node, stored, paragraph \
-  OPTIONAL MATCH (pending:PendingParagraphEnrichment {session_id: $session_id, hash: paragraph.hash}) \
+  MERGE (session)-[:CONTAINS]->(stored) \
+  MERGE (stored)-[:LINK {kind: 'part_of'}]->(node) \
+  WITH node, stored, piece \
+  OPTIONAL MATCH (pending:PendingPieceEnrichment {session_id: $session_id, hash: piece.hash}) \
   SET stored.instructs = coalesce(pending.instructs, stored.instructs), \
       stored.jev_ms = coalesce(pending.jev_ms, stored.jev_ms), \
       stored.jev_error = coalesce(pending.error, stored.jev_error) \
   FOREACH (_ IN CASE WHEN pending IS NULL THEN [] ELSE [1] END | DELETE pending) \
-  RETURN collect({hash: stored.hash, seq: node.seq, new: stored.created_in_seq = node.seq}) AS paragraph_refs \
+  RETURN collect({hash: stored.content_hash, seq: stored.seq, new: stored.created_in_seq = node.seq}) AS piece_refs \
   UNION \
-  WITH node WHERE node IS NULL OR size($paragraphs) = 0 \
-  RETURN [] AS paragraph_refs \
+  WITH node, commit WHERE node IS NULL OR size($pieces) = 0 \
+  RETURN [] AS piece_refs \
 } \
-WITH commit, node, paragraph_refs \
+WITH commit, node, piece_refs \
 CALL (node, commit) { \
   WITH node, commit WHERE node IS NOT NULL AND size($tokens) > 0 \
   UNWIND $tokens AS token \
+  OPTIONAL MATCH (piece:ExecutionNode {session_id: $session_id, content_hash: token.piece_hash, depth: 3}) \
+  WITH node, commit, token, CASE WHEN token.piece_hash IS NULL THEN node ELSE piece END AS owner \
+  WHERE owner IS NOT NULL \
   MERGE (stored_token:Token {session_id: $session_id, key_kind: token.key_kind, key: token.key, slot: token.slot}) \
-  ON CREATE SET stored_token.node_seq = node.seq, stored_token.decoded = token.decoded, \
+  ON CREATE SET stored_token.node_seq = owner.seq, stored_token.decoded = token.decoded, \
                 stored_token.version = commit.version \
-  MERGE (node)-[:MENTIONS_TOKEN {slot: token.slot}]->(stored_token) \
+  MERGE (owner)-[:LINK {kind: 'mentions_token', slot: token.slot}]->(stored_token) \
   RETURN count(stored_token) AS token_count \
   UNION \
   WITH node, commit WHERE node IS NULL OR size($tokens) = 0 \
   RETURN 0 AS token_count \
 } \
-WITH commit, node, paragraph_refs \
+WITH commit, node, piece_refs \
 OPTIONAL MATCH (pending_request:PendingRequestContinuation {session_id: $session_id, order: $order}) \
 OPTIONAL MATCH (target_commit:EventCommit {session_id: $session_id, order: pending_request.choice_order})-[:CREATED]->(target_request:ExecutionNode {type: 'Request'}) \
 FOREACH (_ IN CASE WHEN node.type = 'Request' AND pending_request IS NOT NULL THEN [1] ELSE [] END | \
@@ -110,24 +127,24 @@ FOREACH (_ IN CASE WHEN node.type = 'Request' AND pending_request IS NOT NULL TH
       node.continuation_error = pending_request.error \
   DELETE pending_request \
 ) \
-RETURN commit.version AS version, node.seq AS node_seq, node.type AS node_type, paragraph_refs, \
+RETURN commit.version AS version, node.seq AS node_seq, node.type AS node_type, piece_refs, \
        commit.event_json = $event_json AS same_event";
 
-const APPLY_PARAGRAPH_CLASSIFICATION: &str = "\
+const APPLY_PIECE_CLASSIFICATION: &str = "\
 MATCH (session:Session {session_id: $session_id}) \
-OPTIONAL MATCH (session)-[:CONTAINS]->(:ExecutionNode)-[:CONTAINS_PARAGRAPH]->(paragraph:Paragraph {hash: $hash}) \
-WITH session, collect(DISTINCT paragraph) AS paragraphs \
-CALL (session, paragraphs) { \
-  WITH session, paragraphs WHERE size(paragraphs) > 0 \
-  UNWIND paragraphs AS paragraph \
-  SET paragraph.instructs = $instructs, paragraph.jev_ms = $jev_ms, paragraph.jev_error = $error \
-  WITH session, count(paragraph) AS updated \
-  OPTIONAL MATCH (pending:PendingParagraphEnrichment {session_id: $session_id, hash: $hash}) \
+OPTIONAL MATCH (session)-[:CONTAINS]->(piece:ExecutionNode {depth: 3, content_hash: $hash}) \
+WITH session, collect(DISTINCT piece) AS pieces \
+CALL (session, pieces) { \
+  WITH session, pieces WHERE size(pieces) > 0 \
+  UNWIND pieces AS piece \
+  SET piece.instructs = $instructs, piece.jev_ms = $jev_ms, piece.jev_error = $error \
+  WITH session, count(piece) AS updated \
+  OPTIONAL MATCH (pending:PendingPieceEnrichment {session_id: $session_id, hash: $hash}) \
   DELETE pending \
   RETURN true AS applied \
   UNION \
-  WITH session, paragraphs WHERE size(paragraphs) = 0 \
-  MERGE (pending:PendingParagraphEnrichment {session_id: $session_id, hash: $hash}) \
+  WITH session, pieces WHERE size(pieces) = 0 \
+  MERGE (pending:PendingPieceEnrichment {session_id: $session_id, hash: $hash}) \
   SET pending.instructs = $instructs, pending.jev_ms = $jev_ms, pending.error = $error \
   RETURN false AS applied \
 } \
@@ -160,12 +177,12 @@ RETURN applied, request_seq";
 pub trait GraphRepository: Send + Sync + 'static {
     async fn health(&self) -> Result<(), RepositoryError>;
     async fn commit(&self, event: GeneratorEvent) -> Result<EventResponse, RepositoryError>;
-    async fn classify_paragraph(
+    async fn classify_piece(
         &self,
         _session_id: &str,
         _hash: &str,
-        _request: ParagraphClassificationRequest,
-    ) -> Result<ParagraphClassificationResponse, RepositoryError> {
+        _request: PieceClassificationRequest,
+    ) -> Result<PieceClassificationResponse, RepositoryError> {
         Err(RepositoryError::NotFound)
     }
     async fn continue_request(
@@ -244,18 +261,22 @@ impl Neo4jRepository {
         mutation: GraphMutation,
     ) -> Result<EventResponse, RepositoryError> {
         let has_node = mutation.node_type.is_some();
-        let is_tool_result = matches!(mutation.node_type, Some("Sequence" | "Error"));
-        let previous_sequence = mutation.sequence.map(|sequence| sequence - 1);
+        let is_tool_result = matches!(mutation.node_type, Some("Segment" | "Error"));
+        let node_depth = match mutation.node_type {
+            Some("Request" | "Instruction") => 1,
+            Some(_) => 2,
+            None => 0,
+        };
         let parameters = json!({
             "session_id": mutation.session_id,
             "order": mutation.order,
             "observed_at": mutation.observed_at,
             "event_name": mutation.event_name,
             "node_type": mutation.node_type,
+            "node_depth": node_depth,
             "has_node": has_node,
             "client_id": mutation.client_id,
             "sequence": mutation.sequence,
-            "previous_sequence": previous_sequence,
             "prompt_id": mutation.prompt_id,
             "agent_id": mutation.agent_id,
             "agent_type": mutation.agent_type,
@@ -266,7 +287,9 @@ impl Neo4jRepository {
             "event_json": mutation.event_json,
             "payload_json": mutation.payload_json,
             "file_path": mutation.file_path,
-            "paragraphs": mutation.paragraphs,
+            "tool_name": mutation.tool_name,
+            "body": mutation.body,
+            "pieces": mutation.pieces,
             "tokens": mutation.tokens,
             "is_tool_result": is_tool_result,
         });
@@ -296,35 +319,35 @@ impl Neo4jRepository {
                     .to_owned(),
             }],
         };
-        let paragraphs = value_at(row, 3, "paragraph_refs")?
+        let pieces = value_at(row, 3, "piece_refs")?
             .as_array()
             .ok_or_else(|| {
-                RepositoryError::InvalidResponse("paragraph_refs is not an array".to_owned())
+                RepositoryError::InvalidResponse("piece_refs is not an array".to_owned())
             })?
             .iter()
             .map(|reference| {
-                Ok(ParagraphReference {
+                Ok(PieceReference {
                     hash: reference
                         .get("hash")
                         .and_then(Value::as_str)
                         .ok_or_else(|| {
                             RepositoryError::InvalidResponse(
-                                "paragraph hash is not a string".to_owned(),
+                                "piece hash is not a string".to_owned(),
                             )
                         })?
                         .to_owned(),
                     seq: unsigned(
                         reference.get("seq").ok_or_else(|| {
-                            RepositoryError::InvalidResponse("missing paragraph seq".to_owned())
+                            RepositoryError::InvalidResponse("missing piece seq".to_owned())
                         })?,
-                        "paragraph seq",
+                        "piece seq",
                     )?,
                     new: reference
                         .get("new")
                         .and_then(Value::as_bool)
                         .ok_or_else(|| {
                             RepositoryError::InvalidResponse(
-                                "paragraph new is not a boolean".to_owned(),
+                                "piece new is not a boolean".to_owned(),
                             )
                         })?,
                 })
@@ -333,7 +356,7 @@ impl Neo4jRepository {
 
         Ok(EventResponse {
             nodes,
-            paragraphs: (!paragraphs.is_empty()).then_some(paragraphs),
+            pieces: (!pieces.is_empty()).then_some(pieces),
             version,
             decision_response: None,
         })
@@ -351,12 +374,12 @@ impl GraphRepository for Neo4jRepository {
         self.commit_mutation(event.into_mutation()?).await
     }
 
-    async fn classify_paragraph(
+    async fn classify_piece(
         &self,
         session_id: &str,
         hash: &str,
-        request: ParagraphClassificationRequest,
-    ) -> Result<ParagraphClassificationResponse, RepositoryError> {
+        request: PieceClassificationRequest,
+    ) -> Result<PieceClassificationResponse, RepositoryError> {
         let instructs = request
             .error
             .is_none()
@@ -370,7 +393,7 @@ impl GraphRepository for Neo4jRepository {
             .flatten();
         let data = self
             .execute(
-                APPLY_PARAGRAPH_CLASSIFICATION,
+                APPLY_PIECE_CLASSIFICATION,
                 json!({
                     "session_id": session_id,
                     "hash": hash,
@@ -381,7 +404,7 @@ impl GraphRepository for Neo4jRepository {
             )
             .await?;
         let row = data.values.first().ok_or(RepositoryError::NotFound)?;
-        Ok(ParagraphClassificationResponse {
+        Ok(PieceClassificationResponse {
             applied: value_at(row, 0, "applied")?.as_bool().ok_or_else(|| {
                 RepositoryError::InvalidResponse("applied is not a boolean".into())
             })?,

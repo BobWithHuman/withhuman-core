@@ -32,7 +32,7 @@ async fn persists_and_replays_execution_graph_through_real_http() {
             .unwrap()
             .as_nanos()
     );
-    let paragraph_hash = format!("hash-{session_id}");
+    let piece_hash = format!("hash-{session_id}");
     let decision_observation = Arc::new(Mutex::new(None));
     let decision_url = spawn_decision_server(
         query.clone(),
@@ -64,9 +64,9 @@ async fn persists_and_replays_execution_graph_through_real_http() {
         }),
     )
     .await;
-    let paragraph = client
+    let piece = client
         .patch(format!(
-            "{generator_url}/v1/sessions/{session_id}/paragraphs/{paragraph_hash}"
+            "{generator_url}/v1/sessions/{session_id}/pieces/{piece_hash}"
         ))
         .json(&json!({
             "sentences":[{"index":0,"text":"Run it","p":0.92}],"jev_ms":180,"error":null
@@ -74,9 +74,9 @@ async fn persists_and_replays_execution_graph_through_real_http() {
         .send()
         .await
         .unwrap();
-    assert!(paragraph.status().is_success());
+    assert!(piece.status().is_success());
     assert!(
-        !paragraph.json::<Value>().await.unwrap()["applied"]
+        !piece.json::<Value>().await.unwrap()["applied"]
             .as_bool()
             .unwrap()
     );
@@ -99,7 +99,7 @@ async fn persists_and_replays_execution_graph_through_real_http() {
         json!({
             "session_id":session_id,"order":2,"observed_at":2,"sequence":1,"meta":{},
             "payload":{"prompt":"Run it","kind":"user","user_docs":[]},
-            "chunks":[{"index":0,"text":"Run it","hash":paragraph_hash,"source":"user","hidden":false}]
+            "chunks":[{"index":0,"text":"Run it","hash":piece_hash,"source":"user","hidden":false}]
         }),
     )
     .await;
@@ -141,25 +141,29 @@ async fn persists_and_replays_execution_graph_through_real_http() {
             json!({"session_id":session_id}),
         )
         .await;
-    assert_eq!(row, vec![json!(4), json!(4), json!(3)]);
+    // Request, Call and Segment plus one depth 3 piece each for the prompt and the result.
+    assert_eq!(row, vec![json!(4), json!(4), json!(5)]);
     let edges = query
         .one(
-            "MATCH (s:Session {session_id:$session_id})-[:CONTAINS]->(n:ExecutionNode) \
-             OPTIONAL MATCH (n)-[next:NEXT]->(:ExecutionNode) \
-             OPTIONAL MATCH (n)-[result:RESULTED_IN]->(:ExecutionNode) \
-             RETURN count(DISTINCT next), count(DISTINCT result)",
+            "MATCH (call:ExecutionNode {session_id:$session_id,type:'Call'}) \
+             OPTIONAL MATCH (call)-[result:LINK {kind:'result'}]->(:ExecutionNode {type:'Segment'}) \
+             OPTIONAL MATCH (call)-[member:LINK {kind:'member'}]->(:ExecutionNode {type:'Sequence',depth:1}) \
+             RETURN count(DISTINCT result), count(DISTINCT member)",
             json!({"session_id":session_id}),
         )
         .await;
-    assert_eq!(edges, vec![json!(2), json!(1)]);
+    assert_eq!(edges, vec![json!(1), json!(1)]);
     let enrichment = query
         .one(
-            "MATCH (request:ExecutionNode {session_id:$session_id,type:'Request'})-[:CONTAINS_PARAGRAPH]->(paragraph) \
-             RETURN request.continuation_choice, paragraph.instructs, paragraph.jev_ms",
+            "MATCH (request:ExecutionNode {session_id:$session_id,type:'Request'})<-[:LINK {kind:'part_of'}]-(piece {depth:3}) \
+             RETURN request.continuation_choice, piece.instructs, piece.jev_ms, piece.type",
             json!({"session_id":session_id}),
         )
         .await;
-    assert_eq!(enrichment, vec![json!("none"), json!(0.92), json!(180)]);
+    assert_eq!(
+        enrichment,
+        vec![json!("none"), json!(0.92), json!(180), json!("Request")]
+    );
     let tokens = query
         .one(
             "MATCH (token:Token {session_id:$session_id,slot:'agent'}) \
@@ -180,11 +184,11 @@ async fn persists_and_replays_execution_graph_through_real_http() {
             "MATCH (s:Session {session_id:$session_id}) \
              OPTIONAL MATCH (s)-[:CONTAINS]->(n) \
              OPTIONAL MATCH (c:EventCommit {session_id:$session_id}) \
-             OPTIONAL MATCH (p:Paragraph {hash:$paragraph_hash}) \
+             OPTIONAL MATCH (q:ExecutionNode {session_id:$session_id}) \
              OPTIONAL MATCH (t:Token {session_id:$session_id}) \
-             DETACH DELETE n, c, p, t, s \
+             DETACH DELETE n, c, q, t, s \
              RETURN true",
-            json!({"session_id":session_id,"paragraph_hash":paragraph_hash}),
+            json!({"session_id":session_id,"piece_hash":piece_hash}),
         )
         .await;
 }

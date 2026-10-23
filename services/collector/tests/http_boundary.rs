@@ -150,7 +150,7 @@ impl GeneratorTransport for AcceptingGenerator {
     async fn send(&self, _event: NormalizedEvent) -> Result<EventResponse, GeneratorError> {
         Ok(EventResponse {
             nodes: Vec::new(),
-            paragraphs: None,
+            pieces: None,
             version: 1,
             decision_response: None,
         })

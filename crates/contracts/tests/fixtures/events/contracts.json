@@ -5,7 +5,7 @@
     "observed_at": 1760925599000,
     "client_id": "team-a/laptop-3",
     "meta": { "cwd": "/app", "prompt_id": "p_04" },
-    "side_pending": { "paragraphs": [], "requests": [40] },
+    "side_pending": { "pieces": [], "requests": [40] },
     "payload": {
       "prompt": "응, 계속해",
       "kind": "user",
@@ -19,7 +19,7 @@
     "observed_at": 1760925600300,
     "sequence": 5,
     "meta": { "cwd": "/app", "tool_use_id": "toolu_01" },
-    "side_pending": { "paragraphs": ["a71b"], "requests": [] },
+    "side_pending": { "pieces": ["a71b"], "requests": [] },
     "payload": {
       "tool_name": "Bash",
       "tool_input": { "command": "npm install" }
@@ -27,9 +27,9 @@
     "mode": "enforce",
     "deadline_ms": 3700
   },
-  "response_without_paragraphs": {
+  "response_without_pieces": {
     "nodes": [{ "seq": 23, "type": "Call" }],
-    "paragraphs": null,
+    "pieces": null,
     "version": 57,
     "decision_response": {
       "decision": "ALLOW",
@@ -40,9 +40,9 @@
       "jev": null
     }
   },
-  "response_with_empty_paragraphs": {
+  "response_with_empty_pieces": {
     "nodes": [],
-    "paragraphs": [],
+    "pieces": [],
     "version": 58,
     "decision_response": null
   }
