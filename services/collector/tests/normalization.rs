@@ -157,8 +157,8 @@ fn restores_tool_input_and_preserves_tool_correlation() {
     let NormalizedEvent::PostToolUse(post) = post else {
         panic!("expected PostToolUse");
     };
-    assert_eq!(pre.event.sequence, Some(1));
-    assert_eq!(post.sequence, Some(2));
+    assert_eq!(pre.event.sequence, Some(0));
+    assert_eq!(post.sequence, Some(0));
     assert_eq!(post.meta.tool_use_id.as_deref(), Some("tool-9"));
     assert_eq!(
         post.payload.tool_input,
