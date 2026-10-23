@@ -1714,6 +1714,9 @@ dependencies = [
 [[package]]
 name = "withhuman-common"
 version = "0.1.0"
+dependencies = [
+ "regex",
+]
 
 [[package]]
 name = "withhuman-contracts"
@@ -1748,7 +1751,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
- "regex",
  "reqwest",
  "serde",
  "serde_json",
@@ -1756,6 +1758,7 @@ dependencies = [
  "tokio",
  "tower",
  "utoipa",
+ "withhuman-common",
  "withhuman-contracts",
 ]
 
