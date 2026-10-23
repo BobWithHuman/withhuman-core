@@ -126,13 +126,12 @@ impl Normalizer {
         let state = sessions.entry(request.session_id.clone()).or_default();
         update_context(state, request.cwd, request.prompt_id);
         let meta = metadata(state, context, None, None, None, None);
-        let sequence = state.request_sequence();
         NormalizedEvent::UserPromptSubmit(envelope(
             state,
             context,
             request.session_id,
             observed_at,
-            Some(sequence),
+            None,
             meta,
             UserPromptSubmitPayload {
                 prompt: request.prompt,
@@ -154,13 +153,10 @@ impl Normalizer {
         let mut sessions = self.sessions.lock();
         let state = sessions.entry(request.session_id.clone()).or_default();
         update_context(state, request.cwd, request.prompt_id);
-        let sequence = state.active_or_new_sequence();
         state
             .tool_inputs
             .insert(request.tool_use_id.clone(), request.tool_input.clone());
-        state
-            .tool_sequences
-            .insert(request.tool_use_id.clone(), sequence);
+        let sequence = state.next_agent_sequence(request.agent_id.as_deref());
         let meta = metadata(
             state,
             context,
@@ -175,7 +171,7 @@ impl Normalizer {
                 context,
                 request.session_id,
                 observed_at,
-                Some(sequence),
+                sequence,
                 meta,
                 PreToolUsePayload {
                     tool_name: request.tool_name,
@@ -199,10 +195,7 @@ impl Normalizer {
         update_context(state, request.cwd, request.prompt_id);
         let cached_tool_input = state.tool_inputs.remove(&request.tool_use_id);
         let tool_input = request.tool_input.or(cached_tool_input);
-        let sequence = state
-            .tool_sequences
-            .remove(&request.tool_use_id)
-            .unwrap_or_else(|| state.active_or_new_sequence());
+        let sequence = state.next_agent_sequence(request.agent_id.as_deref());
         let meta = metadata(
             state,
             context,
@@ -216,7 +209,7 @@ impl Normalizer {
             context,
             request.session_id,
             observed_at,
-            Some(sequence),
+            sequence,
             meta,
             PostToolUsePayload {
                 tool_name: request.tool_name,
@@ -238,10 +231,7 @@ impl Normalizer {
         update_context(state, request.cwd, request.prompt_id);
         let cached_tool_input = state.tool_inputs.remove(&request.tool_use_id);
         let tool_input = request.tool_input.or(cached_tool_input);
-        let sequence = state
-            .tool_sequences
-            .remove(&request.tool_use_id)
-            .unwrap_or_else(|| state.active_or_new_sequence());
+        let sequence = state.next_agent_sequence(request.agent_id.as_deref());
         let meta = metadata(
             state,
             context,
@@ -255,7 +245,7 @@ impl Normalizer {
             context,
             request.session_id,
             observed_at,
-            Some(sequence),
+            sequence,
             meta,
             PostToolUseFailurePayload {
                 tool_name: request.tool_name,
@@ -274,9 +264,7 @@ impl Normalizer {
     ) -> NormalizedEvent {
         let mut sessions = self.sessions.lock();
         let state = sessions.entry(request.session_id.clone()).or_default();
-        // TODO(parent-design): the launching Agent Call sequence is not present in the Hook
-        // contract yet, so a subagent starts in the currently open global sequence.
-        let sequence = state.active_or_new_sequence();
+        let sequence = state.next_agent_sequence(Some(&request.agent_id));
         let meta = metadata(
             state,
             context,
@@ -290,7 +278,7 @@ impl Normalizer {
             context,
             request.session_id,
             observed_at,
-            Some(sequence),
+            sequence,
             meta,
             SubagentStartPayload {
                 agent_id: request.agent_id,
@@ -308,7 +296,7 @@ impl Normalizer {
     ) -> NormalizedEvent {
         let mut sessions = self.sessions.lock();
         let state = sessions.entry(request.session_id.clone()).or_default();
-        let sequence = state.active_or_new_sequence();
+        let sequence = state.next_agent_sequence(Some(&request.agent_id));
         let meta = metadata(
             state,
             context,
@@ -322,7 +310,7 @@ impl Normalizer {
             context,
             request.session_id,
             observed_at,
-            Some(sequence),
+            sequence,
             meta,
             SubagentStopPayload {
                 agent_id: request.agent_id,
@@ -339,14 +327,13 @@ impl Normalizer {
     ) -> NormalizedEvent {
         let mut sessions = self.sessions.lock();
         let state = sessions.entry(request.session_id.clone()).or_default();
-        let sequence = state.instruction_sequence();
         let meta = metadata(state, context, None, None, None, None);
         NormalizedEvent::InstructionsLoaded(envelope(
             state,
             context,
             request.session_id,
             observed_at,
-            Some(sequence),
+            None,
             meta,
             InstructionsLoadedPayload {
                 file_path: request.file_path,
@@ -430,14 +417,13 @@ impl Normalizer {
             .message_fragments
             .remove(&request.message_id)
             .ok_or(NormalizeError::MissingMessageBuffer)?;
-        let sequence = state.open_message_sequence();
         let meta = metadata(state, context, None, None, None, request.turn_id);
         Ok(Some(NormalizedEvent::MessageDisplay(envelope(
             state,
             context,
             request.session_id,
             observed_at,
-            Some(sequence),
+            None,
             meta,
             MessageDisplayPayload {
                 message_id: request.message_id,
@@ -455,19 +441,16 @@ impl Normalizer {
     ) -> NormalizedEvent {
         let mut sessions = self.sessions.lock();
         let state = sessions.entry(request.session_id.clone()).or_default();
-        let sequence = state.current_sequence();
         let meta = metadata(state, context, None, None, None, None);
-        let event = NormalizedEvent::PostToolBatch(envelope(
+        NormalizedEvent::PostToolBatch(envelope(
             state,
             context,
             request.session_id,
             observed_at,
-            sequence,
+            None,
             meta,
             PostToolBatchPayload::default(),
-        ));
-        state.close_sequence();
-        event
+        ))
     }
 
     pub fn tool_descriptions(
