@@ -109,7 +109,7 @@ CALL (node, commit) { \
   WHERE owner IS NOT NULL \
   MERGE (stored_token:Token {session_id: $session_id, key_kind: token.key_kind, key: token.key, slot: token.slot}) \
   ON CREATE SET stored_token.node_seq = owner.seq, stored_token.decoded = token.decoded, \
-                stored_token.version = commit.version \
+                stored_token.encoding = token.encoding, stored_token.version = commit.version \
   MERGE (owner)-[:LINK {kind: 'mentions_token', slot: token.slot}]->(stored_token) \
   RETURN count(stored_token) AS token_count \
   UNION \

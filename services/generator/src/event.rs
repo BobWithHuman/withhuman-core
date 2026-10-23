@@ -1,9 +1,9 @@
-use std::{collections::BTreeSet, fmt::Write as _, net::IpAddr, sync::LazyLock};
+use std::{collections::BTreeSet, fmt::Write as _};
 
-use regex::Regex;
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use withhuman_common::tokens;
 use withhuman_contracts::events::{
     ConfigChangeEventRequest, FileChangedEventRequest, InstructionsLoadedEventRequest,
     MessageDisplayEventRequest, PostToolBatchEventRequest, PostToolUseEventRequest,
@@ -272,6 +272,8 @@ pub(crate) struct TokenMutation {
     pub(crate) key: String,
     pub(crate) slot: String,
     pub(crate) decoded: String,
+    /// `percent` or `base64` when the value was only visible after decoding.
+    pub(crate) encoding: Option<String>,
     /// Set when the value was read from a depth 3 piece, so the Token Index points at it.
     pub(crate) piece_hash: Option<String>,
 }
@@ -322,20 +324,44 @@ where
             .unwrap_or_default(),
     };
 
+    // Token Index slots: who put the value into the session.
     let mut tokens = BTreeSet::new();
-    let payload_slot = match event_name {
-        "PreToolUse" | "MessageDisplay" => "agent",
-        "UserPromptSubmit" => "user",
-        _ => "external",
-    };
-    extract_tokens(&payload_json, payload_slot, &mut tokens);
+    let observed = is_listing(event_name, &payload_json);
+    match event_name {
+        // The prompt and the agent's message are indexed through their pieces.
+        "UserPromptSubmit" | "MessageDisplay" => {}
+        "PreToolUse" => {
+            if let Some(input) = payload_field(&payload_json, "tool_input") {
+                index_tokens(&input, "agent", None, &mut tokens);
+            }
+        }
+        // Results are indexed through their pieces; the arguments repeated in the payload
+        // were indexed on the Call.
+        "PostToolUse" | "PostToolUseFailure" => {
+            if pieces.is_empty() {
+                let field = if event_name == "PostToolUse" {
+                    "tool_response"
+                } else {
+                    "error"
+                };
+                if let Some(response) = payload_field(&payload_json, field) {
+                    index_tokens(&response, result_slot(observed), None, &mut tokens);
+                }
+            }
+        }
+        _ => index_tokens(&payload_json, "external", None, &mut tokens),
+    }
     for piece in &pieces {
-        let slot = match piece.source.as_str() {
-            "user" | "UserPromptSubmit" => "user",
-            "MessageDisplay" => "agent",
-            _ => "external",
+        let slot = if piece.from_user_doc == Some(true) {
+            "user"
+        } else {
+            match piece.source.as_str() {
+                "user" | "UserPromptSubmit" => "user",
+                "MessageDisplay" => "agent",
+                _ => result_slot(observed),
+            }
         };
-        extract_piece_tokens(&piece.text, slot, &piece.hash, &mut tokens);
+        index_tokens(&piece.text, slot, Some(&piece.hash), &mut tokens);
     }
 
     Ok(GraphMutation {
@@ -366,81 +392,59 @@ where
     })
 }
 
-fn extract_tokens(value: &str, slot: &str, tokens: &mut BTreeSet<TokenMutation>) {
-    for (kind, key) in token_values(value) {
-        insert_token(tokens, kind, &key, slot, None);
-    }
-}
-
-fn extract_piece_tokens(
-    value: &str,
-    slot: &str,
-    piece_hash: &str,
-    tokens: &mut BTreeSet<TokenMutation>,
-) {
-    for (kind, key) in token_values(value) {
-        insert_token(tokens, kind, &key, slot, Some(piece_hash));
-    }
-}
-
-/// URLs, emails, IPs, paths and executed script names that the value lookup in Decision
-/// matches against earlier pieces.
-fn token_values(value: &str) -> Vec<(&'static str, String)> {
-    static URL: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r#"https?://[^\s\"'<>\\]+"#).unwrap());
-    static EMAIL: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}").unwrap());
-    static IP: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b").unwrap());
-    static PATH: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#"(?:^|[\s\"'=])((?:/|\./|\.\./)[A-Za-z0-9._~/-]+)"#).unwrap()
-    });
-
-    static SCRIPT: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#"(?:^|[\s"'=/])([A-Za-z0-9_.-]+\.(?:sh|bash|zsh|py|js|mjs|ts|rb|pl|ps1))\b"#)
-            .unwrap()
-    });
-
-    let mut values = Vec::new();
-    for found in URL.find_iter(value) {
-        values.push(("url", found.as_str().to_owned()));
-    }
-    for found in EMAIL.find_iter(value) {
-        values.push(("email", found.as_str().to_owned()));
-    }
-    for found in IP.find_iter(value) {
-        if found.as_str().parse::<IpAddr>().is_ok() {
-            values.push(("ip", found.as_str().to_owned()));
-        }
-    }
-    for captures in PATH.captures_iter(value) {
-        if let Some(found) = captures.get(1) {
-            values.push(("path", found.as_str().to_owned()));
-        }
-    }
-    for captures in SCRIPT.captures_iter(value) {
-        if let Some(found) = captures.get(1) {
-            values.push(("script", found.as_str().to_owned()));
-        }
-    }
-    values
-}
-
-fn insert_token(
-    tokens: &mut BTreeSet<TokenMutation>,
-    kind: &str,
-    value: &str,
+fn index_tokens(
+    text: &str,
     slot: &str,
     piece_hash: Option<&str>,
+    tokens: &mut BTreeSet<TokenMutation>,
 ) {
-    let decoded = value.trim_end_matches([',', '.', ')', ']', '}']);
-    tokens.insert(TokenMutation {
-        key_kind: kind.to_owned(),
-        key: decoded.to_owned(),
-        slot: slot.to_owned(),
-        decoded: decoded.to_owned(),
-        piece_hash: piece_hash.map(str::to_owned),
-    });
+    for value in tokens::extract(text) {
+        tokens.insert(TokenMutation {
+            key_kind: value.kind.to_owned(),
+            decoded: value.key.clone(),
+            key: value.key,
+            slot: slot.to_owned(),
+            encoding: value.encoding.map(str::to_owned),
+            piece_hash: piece_hash.map(str::to_owned),
+        });
+    }
+}
+
+/// A listing (`ls`, `find`, Glob …) shows names that exist; it does not tell the agent to use
+/// them, so its values go to the `observed` slot instead of `external`.
+fn result_slot(observed: bool) -> &'static str {
+    if observed { "observed" } else { "external" }
+}
+
+fn is_listing(event_name: &str, payload_json: &str) -> bool {
+    if !matches!(event_name, "PostToolUse" | "PostToolUseFailure") {
+        return false;
+    }
+    let Ok(payload) = serde_json::from_str::<Value>(payload_json) else {
+        return false;
+    };
+    let tool = payload
+        .get("tool_name")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if tokens::LISTING_TOOLS.contains(&tool) {
+        return true;
+    }
+    tool == "Bash"
+        && payload
+            .pointer("/tool_input/command")
+            .and_then(Value::as_str)
+            .is_some_and(tokens::is_listing_command)
+}
+
+/// A payload field as text: strings as they are, anything else as JSON.
+fn payload_field(payload_json: &str, field: &str) -> Option<String> {
+    let payload = serde_json::from_str::<Value>(payload_json).ok()?;
+    match payload.get(field)? {
+        Value::String(text) => Some(text.clone()),
+        Value::Null => None,
+        value => Some(value.to_string()),
+    }
 }
 
 /// Text of a tool response: a string, `{"content": "…"}`, or MCP text blocks

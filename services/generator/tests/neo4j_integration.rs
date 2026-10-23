@@ -171,12 +171,19 @@ async fn persists_and_replays_execution_graph_through_real_http() {
             json!({"session_id":session_id}),
         )
         .await;
-    assert_eq!(tokens[0], json!(4));
+    // The Call's URL is indexed with its host as well.
+    assert_eq!(tokens[0], json!(5));
     let mut token_kinds = tokens[1].as_array().unwrap().clone();
     token_kinds.sort_by_key(Value::to_string);
     assert_eq!(
         token_kinds,
-        vec![json!("email"), json!("ip"), json!("path"), json!("url")]
+        vec![
+            json!("email"),
+            json!("host"),
+            json!("ip"),
+            json!("path"),
+            json!("url")
+        ]
     );
 
     query
