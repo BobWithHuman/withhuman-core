@@ -256,6 +256,7 @@ impl DecisionProvider for DelayedProvider {
             start: CausalStart::Unresolved,
             written: false,
             jev: None,
+            causal: None,
         })
     }
 }

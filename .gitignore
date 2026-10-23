@@ -1,2 +1,5 @@
 /target
 deploy/docker/.env
+.env
+.env.*
+!.env.example

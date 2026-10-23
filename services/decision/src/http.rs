@@ -1,4 +1,7 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use axum::{
     Json, Router,
@@ -9,7 +12,7 @@ use axum::{
 };
 use serde::{Serialize, de::DeserializeOwned};
 use utoipa::{OpenApi, ToSchema};
-use withhuman_contracts::decisions::{DecisionRequest, DecisionResponse};
+use withhuman_contracts::decisions::{CausalContext, DecisionRequest, DecisionResponse};
 
 use crate::{DecisionProvider, DecisionRepository, RepositoryError};
 
@@ -112,7 +115,7 @@ async fn health(State(service): State<DecisionService>) -> Response {
 )]
 async fn decide(
     State(service): State<DecisionService>,
-    StrictJson(request): StrictJson<DecisionRequest>,
+    StrictJson(mut request): StrictJson<DecisionRequest>,
 ) -> Response {
     match service.repository.verify_graph(&request).await {
         Ok(()) => {}
@@ -121,6 +124,27 @@ async fn decide(
         }
         Err(_) => return error(StatusCode::SERVICE_UNAVAILABLE, "neo4j_unavailable"),
     }
+
+    let started = Instant::now();
+    request.causal_context = match service.repository.prepare_causal(&request).await {
+        Ok(context) => context,
+        Err(_) => return error(StatusCode::SERVICE_UNAVAILABLE, "causal_graph_unavailable"),
+    };
+    // A flagged piece whose sentence classification is still in flight is waited for until
+    // only the Jev budget is left; after that it counts as an instructing piece.
+    while request
+        .causal_context
+        .as_ref()
+        .is_some_and(has_pending_piece)
+        && remaining_ms(request.deadline_ms, started).is_some_and(|ms| ms > JEV_BUDGET_MS)
+    {
+        tokio::time::sleep(PENDING_POLL).await;
+        request.causal_context = match service.repository.prepare_causal(&request).await {
+            Ok(context) => context,
+            Err(_) => return error(StatusCode::SERVICE_UNAVAILABLE, "causal_graph_unavailable"),
+        };
+    }
+    request.deadline_ms = remaining_ms(request.deadline_ms, started);
 
     let provider = service.provider.decide(&request);
     let provider_result = match request.deadline_ms {
@@ -148,12 +172,30 @@ async fn decide(
             "invalid_provider_response",
         );
     }
-    response.written = service
-        .repository
-        .persist(&request, &response)
-        .await
-        .is_ok();
+    match service.repository.persist(&request, &response).await {
+        Ok(()) => {
+            response.written = true;
+        }
+        Err(_) => response.written = false,
+    }
     Json(response).into_response()
+}
+
+const JEV_BUDGET_MS: u64 = 3_000;
+const PENDING_POLL: Duration = Duration::from_millis(50);
+
+fn has_pending_piece(context: &CausalContext) -> bool {
+    context
+        .texts
+        .iter()
+        .chain(&context.plans)
+        .any(|candidate| candidate.pending)
+}
+
+fn remaining_ms(deadline_ms: Option<u64>, started: Instant) -> Option<u64> {
+    deadline_ms.map(|deadline| {
+        deadline.saturating_sub(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX))
+    })
 }
 
 fn error(status: StatusCode, message: &'static str) -> Response {

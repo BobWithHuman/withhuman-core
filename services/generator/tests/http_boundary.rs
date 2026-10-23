@@ -442,6 +442,7 @@ impl DecisionClient for RecordingDecisionClient {
                 reused_from: None,
                 error: None,
             }),
+            causal: None,
         })
     }
 }

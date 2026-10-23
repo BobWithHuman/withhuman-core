@@ -147,6 +147,7 @@ fn service(mode: EnforcementMode, decision: Decision, reason: &str) -> ExtAuthzS
                 start: CausalStart::User,
                 written: true,
                 jev: None,
+                causal: None,
             },
             tool_name: "mcp__filesystem__write_file".to_owned(),
             arguments: json!({"path":"a"}),

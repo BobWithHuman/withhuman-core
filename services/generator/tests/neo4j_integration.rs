@@ -252,6 +252,7 @@ async fn spawn_decision_server(
             start: CausalStart::User,
             written: true,
             jev: None,
+            causal: None,
         })
     }
 

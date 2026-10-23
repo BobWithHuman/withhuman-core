@@ -49,6 +49,18 @@ async fn verifies_graph_version_and_persists_mock_verdict_over_real_http() {
         neo4j_user,
         neo4j_password,
         neo4j_database: "neo4j".into(),
+        jev_url: "http://127.0.0.1:1".into(),
+        jev_api_key: None,
+        jev_model: "jev-latest".into(),
+        jev_timeout: Duration::from_secs(3),
+        parent_seq_window: 3,
+        parent_prompt_window: 3,
+        parent_accept: 0.6,
+        parent_max_hops: 50,
+        parent_per_call: false,
+        parent_body_chars: 1_500,
+        sentence_from: 0.5,
+        data_dir: std::env::temp_dir(),
     };
     let repository = Neo4jDecisionRepository::connect(&config).await.unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
