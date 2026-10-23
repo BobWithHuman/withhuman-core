@@ -33,7 +33,12 @@ pub(crate) struct SessionState {
     pub(crate) prompt_id: Option<String>,
     pub(crate) message_fragments: HashMap<String, String>,
     pub(crate) tool_inputs: HashMap<String, Value>,
-    agent_sequences: HashMap<String, u64>,
+    pub(crate) tool_sequences: HashMap<String, u64>,
+    next_sequence: u64,
+    current_sequence: Option<u64>,
+    first_request_seen: bool,
+    first_message_seen: bool,
+    initial_sequence_open: bool,
     pub(crate) side_pending: SidePending,
 }
 
@@ -43,11 +48,71 @@ impl SessionState {
         self.next_order
     }
 
-    pub(crate) fn next_agent_sequence(&mut self, agent_id: Option<&str>) -> Option<u64> {
-        agent_id.map(|agent_id| {
-            let sequence = self.agent_sequences.entry(agent_id.to_owned()).or_default();
-            *sequence += 1;
-            *sequence
-        })
+    /// A Request gets a sequence of its own. The first Request shares sequence 0 with the
+    /// Instructions loaded before the first Message.
+    pub(crate) fn request_sequence(&mut self) -> u64 {
+        let sequence = if !self.first_request_seen && !self.first_message_seen {
+            self.initial_sequence()
+        } else {
+            self.new_sequence()
+        };
+        self.first_request_seen = true;
+        self.current_sequence = None;
+        sequence
+    }
+
+    pub(crate) fn instruction_sequence(&mut self) -> u64 {
+        if !self.first_message_seen {
+            self.initial_sequence()
+        } else if let Some(sequence) = self.current_sequence {
+            sequence
+        } else {
+            // TODO(parent-design): an Instruction loaded while no work sequence is open (for
+            // example right after a later Request) gets a sequence number of its own.
+            self.new_sequence()
+        }
+    }
+
+    pub(crate) fn open_message_sequence(&mut self) -> u64 {
+        self.first_message_seen = true;
+        let sequence = self.new_sequence();
+        self.current_sequence = Some(sequence);
+        sequence
+    }
+
+    pub(crate) fn active_or_new_sequence(&mut self) -> u64 {
+        if let Some(sequence) = self.current_sequence {
+            sequence
+        } else {
+            let sequence = self.new_sequence();
+            self.current_sequence = Some(sequence);
+            sequence
+        }
+    }
+
+    pub(crate) fn current_sequence(&self) -> Option<u64> {
+        self.current_sequence
+    }
+
+    pub(crate) fn close_sequence(&mut self) -> Option<u64> {
+        self.current_sequence.take()
+    }
+
+    fn initial_sequence(&mut self) -> u64 {
+        if self.next_sequence == 0 {
+            self.next_sequence = 1;
+            self.initial_sequence_open = true;
+        }
+        if self.initial_sequence_open {
+            0
+        } else {
+            self.new_sequence()
+        }
+    }
+
+    fn new_sequence(&mut self) -> u64 {
+        let sequence = self.next_sequence;
+        self.next_sequence += 1;
+        sequence
     }
 }
