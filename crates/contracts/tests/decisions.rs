@@ -108,6 +108,7 @@ fn validates_decision_reason_semantics() {
         written: true,
         jev: None,
         causal: None,
+        path: None,
     };
     let deny = DecisionResponse {
         decision: Decision::Deny,
@@ -117,6 +118,7 @@ fn validates_decision_reason_semantics() {
         written: true,
         jev: None,
         causal: None,
+        path: None,
     };
 
     assert_eq!(

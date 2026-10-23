@@ -257,6 +257,7 @@ impl DecisionProvider for DelayedProvider {
             written: false,
             jev: None,
             causal: None,
+            path: None,
         })
     }
 }

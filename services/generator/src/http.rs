@@ -285,6 +285,7 @@ async fn pre_tool_use(
             remaining_ms
         },
         causal_context: None,
+        causal_path: None,
     };
 
     if mode == EnforcementMode::Record {

@@ -84,6 +84,7 @@ impl DecisionProvider for MockDecisionProvider {
             written: false,
             jev: None,
             causal: None,
+            path: None,
         })
     }
 }
@@ -262,6 +263,7 @@ fn causal_response(causal: Option<CausalResolution>, jev: JevActivity) -> Decisi
         written: false,
         jev: Some(jev),
         causal,
+        path: None,
     }
 }
 

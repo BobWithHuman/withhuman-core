@@ -236,6 +236,7 @@ fn decision(verdict: Decision, reason: &str) -> DecisionResponse {
         written: true,
         jev: None,
         causal: None,
+        path: None,
     }
 }
 
