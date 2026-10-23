@@ -11,6 +11,7 @@ neo4j_url=${NEO4J_URL:-http://localhost:7474}
 generator_url=${GENERATOR_URL:-http://localhost:8081}
 export NEO4J_PASSWORD=${NEO4J_PASSWORD:-withhuman-e2e}
 export WITHHUMAN_DECISION_TIMEOUT_MS=${WITHHUMAN_DECISION_TIMEOUT_MS:-4200}
+export DECISION_PROVIDER=mock
 
 for command in docker curl jq; do
   command -v "$command" >/dev/null || {

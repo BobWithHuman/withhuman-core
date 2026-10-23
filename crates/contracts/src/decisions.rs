@@ -13,7 +13,7 @@ pub enum EnforcementMode {
     Enforce,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct DecisionRequest {
     pub session_id: String,
     pub call_seq: u64,
@@ -21,6 +21,62 @@ pub struct DecisionRequest {
     pub mode: EnforcementMode,
     #[serde(default)]
     pub deadline_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub causal_context: Option<CausalContext>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct CausalCandidate {
+    pub key: String,
+    pub node_seq: i64,
+    pub body: String,
+    /// The piece is flagged but its sentence classification has not arrived yet.
+    #[serde(default)]
+    pub pending: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct CausalContext {
+    pub sequence: u64,
+    pub call_seq: u64,
+    pub tool_use_id: Option<String>,
+    pub current: String,
+    pub action: String,
+    pub parent_state: String,
+    pub plans: Vec<CausalCandidate>,
+    pub texts: Vec<CausalCandidate>,
+    pub value_match: Option<ValueMatch>,
+    pub seq_window: u64,
+    pub prompt_window: u64,
+    #[serde(default)]
+    pub risk: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct ValueMatch {
+    pub piece_seq: i64,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct CausalChoice {
+    pub choice: Option<String>,
+    pub probability: Option<f64>,
+    pub accepted: Option<bool>,
+    pub candidates: Vec<String>,
+    pub state: String,
+    pub fact: bool,
+    pub basis: Option<String>,
+    pub value: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct CausalResolution {
+    pub sequence: u64,
+    pub seq_window: u64,
+    pub prompt_window: u64,
+    pub parent: Option<CausalChoice>,
+    pub from_text: Option<CausalChoice>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
@@ -54,7 +110,7 @@ pub struct JevActivity {
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct DecisionResponse {
     pub decision: Decision,
     pub reason: String,
@@ -63,6 +119,8 @@ pub struct DecisionResponse {
     pub written: bool,
     #[serde(default)]
     pub jev: Option<JevActivity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub causal: Option<CausalResolution>,
 }
 
 impl DecisionResponse {

@@ -1,4 +1,4 @@
-use std::{env, io, net::SocketAddr, time::Duration};
+use std::{env, fs, io, net::SocketAddr, path::PathBuf, time::Duration};
 
 use withhuman_contracts::decisions::Decision;
 
@@ -24,6 +24,18 @@ pub struct DecisionConfig {
     pub neo4j_user: String,
     pub neo4j_password: String,
     pub neo4j_database: String,
+    pub jev_url: String,
+    pub jev_api_key: Option<String>,
+    pub jev_model: String,
+    pub jev_timeout: Duration,
+    pub parent_seq_window: u64,
+    pub parent_prompt_window: u64,
+    pub parent_accept: f64,
+    pub parent_max_hops: u64,
+    pub parent_per_call: bool,
+    pub parent_body_chars: usize,
+    pub sentence_from: f64,
+    pub data_dir: PathBuf,
 }
 
 impl DecisionConfig {
@@ -38,13 +50,13 @@ impl DecisionConfig {
             "production" => RuntimeEnvironment::Production,
             value => return Err(invalid(format!("unsupported WITHHUMAN_ENV `{value}`"))),
         };
-        let provider = env::var("DECISION_PROVIDER").unwrap_or_else(|_| "mock".into());
+        let provider = env::var("DECISION_PROVIDER").unwrap_or_else(|_| "jev".into());
         if environment == RuntimeEnvironment::Production && provider.eq_ignore_ascii_case("mock") {
             return Err(invalid(
                 "the mock decision provider is forbidden in production",
             ));
         }
-        if !provider.eq_ignore_ascii_case("mock") {
+        if !provider.eq_ignore_ascii_case("mock") && !provider.eq_ignore_ascii_case("jev") {
             return Err(invalid(format!(
                 "unsupported DECISION_PROVIDER `{provider}`"
             )));
@@ -84,8 +96,47 @@ impl DecisionConfig {
             neo4j_user: env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".into()),
             neo4j_password,
             neo4j_database: env::var("NEO4J_DATABASE").unwrap_or_else(|_| "neo4j".into()),
+            jev_url: env::var("JEV_URL").unwrap_or_else(|_| "https://api.typesafe.ai".into()),
+            jev_api_key: env::var("JEV_API_KEY")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .or_else(read_local_jev_key),
+            jev_model: env::var("JEV_MODEL").unwrap_or_else(|_| "jev-latest".into()),
+            jev_timeout: Duration::from_millis(parse("WITHHUMAN_JEV_TIMEOUT_MS", 3_000)?),
+            parent_seq_window: parse("WITHHUMAN_PARENT_SEQ_WINDOW", 3)?,
+            parent_prompt_window: parse("WITHHUMAN_PARENT_PROMPT_WINDOW", 3)?,
+            parent_accept: parse("WITHHUMAN_PARENT_ACCEPT", 0.6)?,
+            parent_max_hops: parse("WITHHUMAN_PARENT_MAX_HOPS", 50)?,
+            parent_per_call: env::var("WITHHUMAN_PARENT_PER_CALL").is_ok_and(|v| v == "true"),
+            parent_body_chars: parse("WITHHUMAN_PARENT_BODY_CHARS", 1_500)?,
+            sentence_from: parse("WITHHUMAN_SENTENCE_FROM", 0.5)?,
+            data_dir: env::var("WITHHUMAN_DATA_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("data")),
         })
     }
+}
+
+fn parse<T>(name: &str, default: T) -> io::Result<T>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    env::var(name).map_or(Ok(default), |value| {
+        value
+            .parse()
+            .map_err(|error| invalid(format!("invalid {name}: {error}")))
+    })
+}
+
+fn read_local_jev_key() -> Option<String> {
+    let contents = fs::read_to_string(".env").ok()?;
+    contents.lines().find_map(|line| {
+        let (name, value) = line.split_once('=')?;
+        (name.trim() == "JEV_API_KEY")
+            .then(|| value.trim().trim_matches(['\'', '"']).to_owned())
+            .filter(|value| !value.is_empty())
+    })
 }
 
 fn invalid(message: impl Into<String>) -> io::Error {

@@ -235,6 +235,7 @@ fn decision(verdict: Decision, reason: &str) -> DecisionResponse {
         start: CausalStart::User,
         written: true,
         jev: None,
+        causal: None,
     }
 }
 

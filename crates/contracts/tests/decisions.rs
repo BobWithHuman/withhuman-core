@@ -107,6 +107,7 @@ fn validates_decision_reason_semantics() {
         start: CausalStart::User,
         written: true,
         jev: None,
+        causal: None,
     };
     let deny = DecisionResponse {
         decision: Decision::Deny,
@@ -115,6 +116,7 @@ fn validates_decision_reason_semantics() {
         start: CausalStart::OtherDoc,
         written: true,
         jev: None,
+        causal: None,
     };
 
     assert_eq!(
