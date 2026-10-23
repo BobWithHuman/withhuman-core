@@ -1739,6 +1739,7 @@ dependencies = [
  "tower",
  "utoipa",
  "withhuman-contracts",
+ "withhuman-generator",
 ]
 
 [[package]]

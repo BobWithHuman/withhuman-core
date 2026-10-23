@@ -19,4 +19,6 @@ utoipa = "5.4"
 withhuman-contracts = { version = "0.1.0", path = "../../crates/contracts" }
 
 [dev-dependencies]
+tokio = { version = "1.0", features = ["sync"] }
 tower = { version = "0.5", features = ["util"] }
+withhuman-generator = { version = "0.1.0", path = "../generator" }
