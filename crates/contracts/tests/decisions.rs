@@ -109,6 +109,7 @@ fn validates_decision_reason_semantics() {
         jev: None,
         causal: None,
         path: None,
+        values: Vec::new(),
     };
     let deny = DecisionResponse {
         decision: Decision::Deny,
@@ -119,6 +120,7 @@ fn validates_decision_reason_semantics() {
         jev: None,
         causal: None,
         path: None,
+        values: Vec::new(),
     };
 
     assert_eq!(

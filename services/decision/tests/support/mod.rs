@@ -168,6 +168,8 @@ pub struct Piece {
     pub hidden: bool,
     /// Sentence classification sent right after the result; `None` leaves it pending.
     pub instructs: Option<f64>,
+    /// The piece comes from a document the user pointed at.
+    pub from_user_doc: bool,
 }
 
 impl Piece {
@@ -192,6 +194,14 @@ impl Piece {
             text: text.into(),
             flagged: true,
             instructs,
+            ..Self::default()
+        }
+    }
+
+    pub fn user_doc(text: &str) -> Self {
+        Self {
+            text: text.into(),
+            from_user_doc: true,
             ..Self::default()
         }
     }
@@ -555,7 +565,8 @@ impl Harness {
                 }
                 json!({
                     "index":index,"text":piece.text,"hash":hash,
-                    "source":"PostToolUse","hidden":piece.hidden
+                    "source":"PostToolUse","hidden":piece.hidden,
+                    "from_user_doc":piece.from_user_doc
                 })
             })
             .collect();

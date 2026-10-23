@@ -4,12 +4,16 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use withhuman_contracts::decisions::{
-    CausalCandidate, CausalContext, CausalPath, DecisionRequest, DecisionResponse, ValueMatch,
+    CausalCandidate, CausalContext, CausalPath, DecisionRequest, DecisionResponse, ValueFinding,
+    ValueMatch,
 };
+
+use withhuman_common::tokens::{self, TokenValue};
 
 use crate::{
     DecisionConfig,
     path::{ChainNode, build_path},
+    values::{RiskyValue, risky_values},
 };
 
 const VERIFY_GRAPH: &str = "\
@@ -20,7 +24,18 @@ RETURN session.version, call.seq";
 
 const LOAD_CURRENT: &str = "\
 MATCH (call:ExecutionNode {session_id:$session_id,seq:$call_seq,type:'Call'})-[:LINK {kind:'member'}]->(sequence:ExecutionNode {type:'Sequence',depth:1}) \
-RETURN sequence.sequence, sequence.body, sequence.parent_state, call.body, call.tool_use_id, call.risk";
+RETURN sequence.sequence, sequence.body, sequence.parent_state, call.body, call.tool_use_id, call.risk, \
+       call.tool_name, call.payload_json";
+
+/// For every looked-up value, its first occurrence before the Call. Each Token keeps the first
+/// node of its slot (`node_seq`), so the earliest of those across slots is the value's origin.
+const LOOKUP_VALUES: &str = "\
+UNWIND $values AS value \
+OPTIONAL MATCH (owner:ExecutionNode {session_id:$session_id})-[:LINK {kind:'mentions_token'}]->(token:Token {session_id:$session_id,key_kind:value.kind,key:value.key}) \
+WHERE owner.seq = token.node_seq AND coalesce(owner.created_in_seq, owner.seq) < $call_seq \
+WITH value, token, owner ORDER BY coalesce(owner.created_in_seq, owner.seq), owner.depth DESC \
+WITH value, collect(CASE WHEN token IS NULL THEN NULL ELSE [token.slot, owner.seq, owner.sequence, owner.type, owner.depth, owner.index] END) AS seen \
+RETURN value.index, head(seen)";
 
 /// `instructing_pieces(S)` for every listed sequence S: the instructing pieces of the results of
 /// S's Calls, reached only through `:LINK` (Message <-follows- Call -result-> result <-part_of-
@@ -74,17 +89,6 @@ UNWIND numbers AS number \
 WITH DISTINCT current, number WHERE number IS NOT NULL AND number < current.sequence \
 RETURN number ORDER BY number DESC";
 
-/// The first node (in commit order) that mentioned a value of the Call's arguments. It is a
-/// match only when that node is a piece of an earlier sequence.
-const LOAD_VALUE_MATCH: &str = "\
-MATCH (call:ExecutionNode {session_id:$session_id,seq:$call_seq})-[:LINK {kind:'mentions_token'}]->(token:Token) \
-MATCH (owner:ExecutionNode {session_id:$session_id})-[:LINK {kind:'mentions_token'}]->(:Token {session_id:$session_id,key_kind:token.key_kind,key:token.key}) \
-WITH DISTINCT token.key AS value, owner \
-ORDER BY coalesce(owner.created_in_seq, owner.seq), owner.depth DESC \
-WITH value, head(collect(owner)) AS first \
-WHERE first.depth = 3 AND first.sequence < $sequence \
-RETURN first.seq, value ORDER BY first.sequence, first.index LIMIT 1";
-
 /// `{max_hops}` is replaced with `WITHHUMAN_PARENT_MAX_HOPS + 2` so a loop is still visible.
 const LOAD_CHAIN: &str = "\
 MATCH (call:ExecutionNode {session_id:$session_id,seq:$call_seq,type:'Call'})-[:LINK {kind:'member'}]->(start:ExecutionNode {type:'Sequence',depth:1}) \
@@ -122,7 +126,8 @@ SET verdict.decision = $decision, verdict.reason = $reason, verdict.rule = $rule
     verdict.seq_window = $seq_window, verdict.prompt_window = $prompt_window, \
     verdict.path_json = $path_json \
 SET call.decision = $decision, call.decision_reason = $reason, call.decision_rule = $rule, \
-    call.decision_start = $start, call.decision_version = $graph_version \
+    call.decision_start = $start, call.decision_version = $graph_version, \
+    call.value_status = $value_status, call.value_findings_json = $value_findings_json \
 MERGE (call)-[cause:CAUSE {kind: 'mock'}]->(verdict) \
 SET cause.graph_version = $graph_version \
 MERGE (call)-[:HAS_VERDICT]->(verdict) \
@@ -303,6 +308,20 @@ impl DecisionRepository for Neo4jDecisionRepository {
         let action = string_at(row, 3);
         let tool_use_id = row.get(4).and_then(Value::as_str).map(str::to_owned);
         let risk = row.get(5).and_then(Value::as_f64);
+        let tool_name = row
+            .get(6)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let tool_input = row
+            .get(7)
+            .and_then(Value::as_str)
+            .and_then(|payload| serde_json::from_str::<Value>(payload).ok())
+            .and_then(|payload| payload.get("tool_input").cloned())
+            .unwrap_or(Value::Null);
+        let value_findings = self
+            .find_values(request, &risky_values(&tool_name, &tool_input))
+            .await?;
         let parameters = json!({
             "session_id":request.session_id,"sequence":sequence,
             "seq_window":self.seq_window,"prompt_window":self.prompt_window,
@@ -345,24 +364,29 @@ impl DecisionRepository for Neo4jDecisionRepository {
             }
         }
 
-        let value_data = self
-            .execute(
-                LOAD_VALUE_MATCH,
-                json!({
-                    "session_id":request.session_id,"call_seq":request.call_seq,"sequence":sequence,
-                }),
-            )
-            .await?;
-        let value_match = value_data
-            .values
-            .first()
-            .map(|row| {
-                Ok(ValueMatch {
-                    piece_seq: integer(value_at(row, 0, "piece_seq")?, "piece_seq")?,
-                    value: string_at(row, 1),
-                })
+        // Rule 6, step 1: a value of the arguments whose first occurrence is a piece of an
+        // earlier sequence that the user gave or the agent read. Listings and the agent's own
+        // words do not tell it what to do, and a shared host alone is not a fact.
+        let argument_values = tokens::extract(&tool_input.to_string())
+            .into_iter()
+            .filter(|value| value.kind != "host")
+            .collect::<Vec<_>>();
+        let origins = self.lookup(request, &argument_values).await?;
+        let value_match = argument_values
+            .iter()
+            .zip(&origins)
+            .filter_map(|(value, origin)| {
+                let origin = origin.as_ref()?;
+                let source = (origin.depth == Some(3)
+                    && matches!(origin.slot.as_str(), "user" | "external")
+                    && origin
+                        .sequence
+                        .is_some_and(|number| number < sequence as i64))
+                .then_some(origin)?;
+                Some((source.sequence, source.index, source.seq, value.key.clone()))
             })
-            .transpose()?;
+            .min()
+            .map(|(_, _, piece_seq, value)| ValueMatch { piece_seq, value });
         Ok(Some(CausalContext {
             sequence,
             call_seq: request.call_seq,
@@ -376,6 +400,7 @@ impl DecisionRepository for Neo4jDecisionRepository {
             seq_window: self.seq_window,
             prompt_window: self.prompt_window,
             risk,
+            value_findings,
         }))
     }
 
@@ -425,6 +450,11 @@ impl DecisionRepository for Neo4jDecisionRepository {
                     "path_json":serde_json::to_string(&request.causal_path)
                         .map_err(|error| RepositoryError::InvalidResponse(error.to_string()))?,
                     "per_call":self.per_call,
+                    "value_status":context.and_then(|context| worst_status(&context.value_findings)),
+                    "value_findings_json":context
+                        .map(|context| serde_json::to_string(&context.value_findings))
+                        .transpose()
+                        .map_err(|error| RepositoryError::InvalidResponse(error.to_string()))?,
                     "parent_target":parent_target,
                     "parent_state":parent_state,
                     "parent_probability":parent.and_then(|choice| choice.probability),
@@ -530,12 +560,123 @@ impl DecisionRepository for Neo4jDecisionRepository {
     }
 }
 
+/// First node that mentioned a value, in the slot it was indexed under.
+#[derive(Debug, Clone)]
+struct Origin {
+    slot: String,
+    seq: i64,
+    sequence: Option<i64>,
+    node_type: Option<String>,
+    depth: Option<i64>,
+    index: Option<i64>,
+}
+
 struct SequencePiece {
     sequence: u64,
     candidate: CausalCandidate,
 }
 
 impl Neo4jDecisionRepository {
+    /// The first occurrence before the Call of each value, from the Token Index.
+    async fn lookup(
+        &self,
+        request: &DecisionRequest,
+        values: &[TokenValue],
+    ) -> Result<Vec<Option<Origin>>, RepositoryError> {
+        let mut origins = vec![None; values.len()];
+        if values.is_empty() {
+            return Ok(origins);
+        }
+        let parameters = values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| json!({"index":index,"kind":value.kind,"key":value.key}))
+            .collect::<Vec<_>>();
+        let rows = self
+            .execute(
+                LOOKUP_VALUES,
+                json!({"session_id":request.session_id,"call_seq":request.call_seq,"values":parameters}),
+            )
+            .await?
+            .values;
+        for row in rows {
+            let index =
+                usize::try_from(unsigned(value_at(&row, 0, "value_index")?, "value_index")?)
+                    .unwrap_or(usize::MAX);
+            let Some(seen) = row.get(1).and_then(Value::as_array) else {
+                continue;
+            };
+            if let (Some(slot), Some(seq), Some(origin)) = (
+                seen.first().and_then(Value::as_str),
+                seen.get(1).and_then(Value::as_i64),
+                origins.get_mut(index),
+            ) {
+                *origin = Some(Origin {
+                    slot: slot.to_owned(),
+                    seq,
+                    sequence: seen.get(2).and_then(Value::as_i64),
+                    node_type: seen.get(3).and_then(Value::as_str).map(str::to_owned),
+                    depth: seen.get(4).and_then(Value::as_i64),
+                    index: seen.get(5).and_then(Value::as_i64),
+                });
+            }
+        }
+        Ok(origins)
+    }
+
+    /// Status of every value in a risky position, from where it first appeared.
+    async fn find_values(
+        &self,
+        request: &DecisionRequest,
+        risky: &[RiskyValue],
+    ) -> Result<Vec<ValueFinding>, RepositoryError> {
+        let values = risky
+            .iter()
+            .map(|found| found.value.clone())
+            .collect::<Vec<_>>();
+        let origins = self.lookup(request, &values).await?;
+        Ok(risky
+            .iter()
+            .zip(&origins)
+            .filter(|(found, _)| found.value.kind != "host")
+            .map(|(found, origin)| {
+                let mut origin = origin.clone();
+                let mut status = origin.as_ref().map(|origin| match origin.slot.as_str() {
+                    "user" => "ok",
+                    "external" => "injected",
+                    "observed" => "observed",
+                    _ => "ambiguous",
+                });
+                // A URL that was never seen, on a host that was: built from what was read.
+                if status.is_none() && found.value.kind == "url" {
+                    let host = tokens::host_of(&found.value.key);
+                    let host_origin = risky
+                        .iter()
+                        .zip(&origins)
+                        .find(|(other, _)| {
+                            other.value.kind == "host" && Some(&other.value.key) == host.as_ref()
+                        })
+                        .and_then(|(_, origin)| origin.clone());
+                    if host_origin.is_some() {
+                        origin = host_origin;
+                        status = Some("derived");
+                    }
+                }
+                ValueFinding {
+                    position: found.position.to_owned(),
+                    kind: found.value.kind.to_owned(),
+                    value: found.value.key.clone(),
+                    encoding: found.value.encoding.map(str::to_owned),
+                    status: status.unwrap_or("agent_new").to_owned(),
+                    slot: origin.as_ref().map(|origin| origin.slot.clone()),
+                    source_seq: origin.as_ref().map(|origin| origin.seq),
+                    source_sequence: origin.as_ref().and_then(|origin| origin.sequence),
+                    source_type: origin.and_then(|origin| origin.node_type),
+                }
+            })
+            .collect())
+    }
+
     async fn instructing_pieces(
         &self,
         session_id: &str,
@@ -612,6 +753,21 @@ impl Neo4jDecisionRepository {
             pending,
         })
     }
+}
+
+/// The most suspicious status among a Call's findings.
+fn worst_status(findings: &[ValueFinding]) -> Option<&'static str> {
+    const ORDER: [&str; 6] = [
+        "injected",
+        "derived",
+        "ambiguous",
+        "agent_new",
+        "observed",
+        "ok",
+    ];
+    ORDER
+        .into_iter()
+        .find(|status| findings.iter().any(|finding| finding.status == *status))
 }
 
 fn string_at(row: &[Value], index: usize) -> String {

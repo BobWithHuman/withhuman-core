@@ -261,6 +261,7 @@ async fn spawn_decision_server(
             jev: None,
             causal: None,
             path: None,
+            values: Vec::new(),
         })
     }
 

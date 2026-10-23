@@ -53,6 +53,35 @@ pub struct CausalContext {
     pub prompt_window: u64,
     #[serde(default)]
     pub risk: Option<f64>,
+    /// Values in risky argument positions of the Call and where each first appeared.
+    #[serde(default)]
+    pub value_findings: Vec<ValueFinding>,
+}
+
+/// A value taken from a risky position of a Call's arguments and looked up in the Token Index.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct ValueFinding {
+    /// `send_target`, `exec_target` or `credential`.
+    pub position: String,
+    /// `url`, `email`, `ip`, `path` or `script`.
+    pub kind: String,
+    pub value: String,
+    /// `percent` or `base64` when the argument carried the value encoded.
+    #[serde(default)]
+    pub encoding: Option<String>,
+    /// `ok` (first seen from the user), `injected` (first seen in text the agent read),
+    /// `observed` (first seen in a listing), `ambiguous` (first said by the agent itself),
+    /// `derived` (only the URL's host was seen before) or `agent_new` (never seen before).
+    pub status: String,
+    /// Slot of the first occurrence: `user`, `agent`, `external` or `observed`.
+    #[serde(default)]
+    pub slot: Option<String>,
+    #[serde(default)]
+    pub source_seq: Option<i64>,
+    #[serde(default)]
+    pub source_sequence: Option<i64>,
+    #[serde(default)]
+    pub source_type: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -158,6 +187,8 @@ pub struct DecisionResponse {
     pub causal: Option<CausalResolution>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<CausalPath>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<ValueFinding>,
 }
 
 impl DecisionResponse {

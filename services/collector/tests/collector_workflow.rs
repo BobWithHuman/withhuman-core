@@ -237,6 +237,7 @@ fn decision(verdict: Decision, reason: &str) -> DecisionResponse {
         jev: None,
         causal: None,
         path: None,
+        values: Vec::new(),
     }
 }
 

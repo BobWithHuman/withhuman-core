@@ -258,6 +258,7 @@ impl DecisionProvider for DelayedProvider {
             jev: None,
             causal: None,
             path: None,
+            values: Vec::new(),
         })
     }
 }
