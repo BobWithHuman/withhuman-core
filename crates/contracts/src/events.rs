@@ -53,13 +53,13 @@ pub struct EventMetadata {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 pub struct SidePending {
     #[serde(default)]
-    pub paragraphs: Vec<String>,
+    pub pieces: Vec<String>,
     #[serde(default)]
     pub requests: Vec<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
-pub struct ParagraphChunk {
+pub struct PieceChunk {
     pub index: u64,
     pub text: String,
     pub hash: String,
@@ -86,7 +86,7 @@ pub struct EventRequest<T> {
     pub side_pending: Option<SidePending>,
     pub payload: T,
     #[serde(default)]
-    pub chunks: Option<Vec<ParagraphChunk>>,
+    pub chunks: Option<Vec<PieceChunk>>,
     #[serde(default)]
     pub flags: Option<Vec<String>>,
     #[serde(flatten)]
@@ -273,7 +273,7 @@ pub struct CreatedNode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
-pub struct ParagraphReference {
+pub struct PieceReference {
     pub hash: String,
     pub seq: u64,
     pub new: bool,
@@ -282,7 +282,7 @@ pub struct ParagraphReference {
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct EventResponse<D = DecisionResponse> {
     pub nodes: Vec<CreatedNode>,
-    pub paragraphs: Option<Vec<ParagraphReference>>,
+    pub pieces: Option<Vec<PieceReference>>,
     pub version: u64,
     pub decision_response: Option<D>,
 }
@@ -295,7 +295,7 @@ pub struct SentenceProbability {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
-pub struct ParagraphClassificationRequest {
+pub struct PieceClassificationRequest {
     pub sentences: Vec<SentenceProbability>,
     #[serde(default)]
     pub jev_ms: Option<u64>,
@@ -304,7 +304,7 @@ pub struct ParagraphClassificationRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
-pub struct ParagraphClassificationResponse {
+pub struct PieceClassificationResponse {
     pub applied: bool,
     #[serde(default)]
     pub instructs: Option<f64>,

@@ -172,7 +172,7 @@ fn snapshots_pending_side_analysis_references() {
     sessions.set_side_pending(
         "session-1",
         SidePending {
-            paragraphs: vec!["paragraph-hash".to_owned()],
+            pieces: vec!["piece-hash".to_owned()],
             requests: vec![7],
         },
     );
@@ -196,7 +196,7 @@ fn snapshots_pending_side_analysis_references() {
     assert_eq!(
         event.side_pending,
         Some(SidePending {
-            paragraphs: vec!["paragraph-hash".to_owned()],
+            pieces: vec!["piece-hash".to_owned()],
             requests: vec![7],
         })
     );

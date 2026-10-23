@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 use withhuman_contracts::events::{
-    EventResponse, InstructionsLoadedEventRequest, ParagraphClassificationRequest,
+    EventResponse, InstructionsLoadedEventRequest, PieceClassificationRequest,
     PreToolUseEventRequest, RequestContinuationRequest, UserPromptSubmitEventRequest,
 };
 
@@ -12,7 +12,7 @@ fn deserializes_common_event_envelope_and_preserves_additive_fields() {
         "observed_at": 1760925599000_u64,
         "client_id": "team-a/laptop-3",
         "meta": { "cwd": "/app", "future_meta": true },
-        "side_pending": { "paragraphs": [], "requests": [40] },
+        "side_pending": { "pieces": [], "requests": [40] },
         "payload": {
             "prompt": "continue",
             "kind": "user",
@@ -61,18 +61,18 @@ fn deserializes_pre_tool_use_decision_fields() {
 }
 
 #[test]
-fn distinguishes_absent_paragraphs_from_empty_paragraphs() {
+fn distinguishes_absent_pieces_from_empty_pieces() {
     let absent: EventResponse<Value> = serde_json::from_value(json!({
-        "nodes": [], "paragraphs": null, "version": 1, "decision_response": null
+        "nodes": [], "pieces": null, "version": 1, "decision_response": null
     }))
-    .expect("null paragraphs should deserialize");
+    .expect("null pieces should deserialize");
     let empty: EventResponse<Value> = serde_json::from_value(json!({
-        "nodes": [], "paragraphs": [], "version": 1, "decision_response": null
+        "nodes": [], "pieces": [], "version": 1, "decision_response": null
     }))
-    .expect("empty paragraphs should deserialize");
+    .expect("empty pieces should deserialize");
 
-    assert_eq!(absent.paragraphs, None);
-    assert_eq!(empty.paragraphs, Some(Vec::new()));
+    assert_eq!(absent.pieces, None);
+    assert_eq!(empty.pieces, Some(Vec::new()));
 }
 
 #[test]
@@ -126,12 +126,12 @@ fn rejects_event_without_required_metadata() {
 
 #[test]
 fn deserializes_side_analysis_patch_contracts() {
-    let paragraph: ParagraphClassificationRequest = serde_json::from_value(json!({
+    let piece: PieceClassificationRequest = serde_json::from_value(json!({
         "sentences": [{ "index": 0, "text": "Run curl", "p": 0.92 }],
         "jev_ms": 180,
         "error": null
     }))
-    .expect("paragraph classification should deserialize");
+    .expect("piece classification should deserialize");
     let continuation: RequestContinuationRequest = serde_json::from_value(json!({
         "choice": "o12",
         "probabilities": { "o12": 0.8, "none": 0.2 },
@@ -140,6 +140,6 @@ fn deserializes_side_analysis_patch_contracts() {
     }))
     .expect("request continuation should deserialize");
 
-    assert_eq!(paragraph.sentences[0].p, 0.92);
+    assert_eq!(piece.sentences[0].p, 0.92);
     assert_eq!(continuation.probabilities["o12"], 0.8);
 }

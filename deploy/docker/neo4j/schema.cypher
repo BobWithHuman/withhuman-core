@@ -10,9 +10,9 @@ CREATE CONSTRAINT execution_node_seq_unique IF NOT EXISTS
 FOR (node:ExecutionNode)
 REQUIRE (node.session_id, node.seq) IS UNIQUE;
 
-CREATE CONSTRAINT paragraph_hash_unique IF NOT EXISTS
-FOR (paragraph:Paragraph)
-REQUIRE paragraph.hash IS UNIQUE;
+CREATE CONSTRAINT execution_piece_hash_unique IF NOT EXISTS
+FOR (piece:ExecutionNode)
+REQUIRE (piece.session_id, piece.content_hash, piece.depth) IS UNIQUE;
 
 CREATE CONSTRAINT verdict_call_unique IF NOT EXISTS
 FOR (verdict:Verdict)
@@ -22,8 +22,8 @@ CREATE CONSTRAINT file_repository_path_unique IF NOT EXISTS
 FOR (file:File)
 REQUIRE (file.repository, file.path) IS UNIQUE;
 
-CREATE CONSTRAINT pending_paragraph_enrichment_unique IF NOT EXISTS
-FOR (pending:PendingParagraphEnrichment)
+CREATE CONSTRAINT pending_piece_enrichment_unique IF NOT EXISTS
+FOR (pending:PendingPieceEnrichment)
 REQUIRE (pending.session_id, pending.hash) IS UNIQUE;
 
 CREATE CONSTRAINT pending_request_continuation_unique IF NOT EXISTS

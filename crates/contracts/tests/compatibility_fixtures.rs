@@ -64,15 +64,15 @@ fn normalized_event_fixtures_match_contracts() {
 
     let prompt: UserPromptSubmitEventRequest = contract(&fixtures, "user_prompt_submit");
     let _: PreToolUseEventRequest = contract(&fixtures, "pre_tool_use");
-    let absent: EventResponse = contract(&fixtures, "response_without_paragraphs");
-    let empty: EventResponse = contract(&fixtures, "response_with_empty_paragraphs");
+    let absent: EventResponse = contract(&fixtures, "response_without_pieces");
+    let empty: EventResponse = contract(&fixtures, "response_with_empty_pieces");
 
     assert_eq!(
         prompt.payload.additional_fields["future_payload_field"],
         "preserved"
     );
-    assert!(absent.paragraphs.is_none());
-    assert_eq!(empty.paragraphs, Some(Vec::new()));
+    assert!(absent.pieces.is_none());
+    assert_eq!(empty.pieces, Some(Vec::new()));
 }
 
 #[test]

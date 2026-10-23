@@ -186,7 +186,7 @@ test "$(jq -r '.hookSpecificOutput.permissionDecision' <<<"$unavailable_response
 set_decision ALLOW '' 0
 
 printf 'Verifying duplicate Generator event replay...\n'
-duplicate_event='{"session_id":"e2e-duplicate","order":1,"observed_at":1,"meta":{"cwd":"/workspace"},"side_pending":{"paragraphs":[],"requests":[]},"payload":{"source":"e2e"}}'
+duplicate_event='{"session_id":"e2e-duplicate","order":1,"observed_at":1,"meta":{"cwd":"/workspace"},"side_pending":{"pieces":[],"requests":[]},"payload":{"source":"e2e"}}'
 first=$(curl --fail --silent "$generator_url/v1/events/SessionStart" \
   --header 'content-type: application/json' --data "$duplicate_event")
 second=$(curl --fail --silent "$generator_url/v1/events/SessionStart" \

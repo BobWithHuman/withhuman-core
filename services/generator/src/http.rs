@@ -11,7 +11,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use utoipa::{OpenApi, ToSchema};
 use withhuman_contracts::events::{
     ConfigChangeEventRequest, FileChangedEventRequest, InstructionsLoadedEventRequest,
-    MessageDisplayEventRequest, ParagraphClassificationRequest, PostToolBatchEventRequest,
+    MessageDisplayEventRequest, PieceClassificationRequest, PostToolBatchEventRequest,
     PostToolUseEventRequest, PostToolUseFailureEventRequest, PreToolUseEventRequest,
     RequestContinuationRequest, SessionStartEventRequest, SubagentStartEventRequest,
     SubagentStopEventRequest, ToolDescriptionsEventRequest, UserPromptSubmitEventRequest,
@@ -94,8 +94,8 @@ pub fn app(service: GeneratorService) -> Router {
         .route("/v1/events/PostToolBatch", post(post_tool_batch))
         .route("/v1/events/ToolDescriptions", post(tool_descriptions))
         .route(
-            "/v1/sessions/{session_id}/paragraphs/{hash}",
-            patch(classify_paragraph),
+            "/v1/sessions/{session_id}/pieces/{hash}",
+            patch(classify_piece),
         )
         .route(
             "/v1/sessions/{session_id}/requests/{order}",
@@ -124,7 +124,7 @@ pub fn app(service: GeneratorService) -> Router {
         message_display,
         post_tool_batch,
         tool_descriptions,
-        classify_paragraph,
+        classify_piece,
         continue_request
     ),
     tags((name = "Generator", description = "Normalized event persistence and graph enrichment API"))
@@ -299,26 +299,26 @@ async fn pre_tool_use(
 
 #[utoipa::path(
     patch,
-    path = "/v1/sessions/{session_id}/paragraphs/{hash}",
+    path = "/v1/sessions/{session_id}/pieces/{hash}",
     tag = "Generator",
     params(("session_id" = String, Path), ("hash" = String, Path)),
-    request_body = ParagraphClassificationRequest,
+    request_body = PieceClassificationRequest,
     responses(
-        (status = 200, body = withhuman_contracts::events::ParagraphClassificationResponse),
+        (status = 200, body = withhuman_contracts::events::PieceClassificationResponse),
         (status = 400, body = ErrorResponse),
         (status = 404, body = ErrorResponse),
         (status = 415, body = ErrorResponse),
         (status = 500, body = ErrorResponse)
     )
 )]
-async fn classify_paragraph(
+async fn classify_piece(
     State(service): State<GeneratorService>,
     Path((session_id, hash)): Path<(String, String)>,
-    StrictJson(request): StrictJson<ParagraphClassificationRequest>,
+    StrictJson(request): StrictJson<PieceClassificationRequest>,
 ) -> Response {
     match service
         .repository
-        .classify_paragraph(&session_id, &hash, request)
+        .classify_piece(&session_id, &hash, request)
         .await
     {
         Ok(response) => Json(response).into_response(),
@@ -356,6 +356,7 @@ async fn continue_request(
 }
 
 fn repository_error_response(error: RepositoryError) -> Response {
+    eprintln!("generator repository error: {error}");
     let (status, message) = match error {
         RepositoryError::InvalidEvent(_) => (StatusCode::BAD_REQUEST, "invalid_enrichment"),
         RepositoryError::NotFound => (StatusCode::NOT_FOUND, "graph_resource_not_found"),

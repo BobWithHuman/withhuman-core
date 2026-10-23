@@ -3,10 +3,10 @@ WHERE name IN [
   'session_id_unique',
   'event_commit_order_unique',
   'execution_node_seq_unique',
-  'paragraph_hash_unique',
+  'execution_piece_hash_unique',
   'verdict_call_unique',
   'file_repository_path_unique',
-  'pending_paragraph_enrichment_unique',
+  'pending_piece_enrichment_unique',
   'pending_request_continuation_unique',
   'token_key_unique'
 ]
