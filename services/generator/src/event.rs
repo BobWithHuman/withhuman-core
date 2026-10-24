@@ -158,14 +158,9 @@ impl GeneratorEvent {
                     };
                     Text { body, origin }
                 });
-                mutation(
-                    "PostToolUse",
-                    Some("Sequence"),
-                    text,
-                    None,
-                    event,
-                    |event| event,
-                )
+                mutation("PostToolUse", Some("Segment"), text, None, event, |event| {
+                    event
+                })
             }
             Self::PostToolUseFailure(event) => mutation(
                 "PostToolUseFailure",
@@ -281,6 +276,8 @@ pub(crate) struct GraphMutation {
     pub(crate) tokens: Vec<TokenMutation>,
     /// The user intent a message states on its first line.
     pub(crate) intent: Option<String>,
+    /// The session-wide sequence the event belongs to.
+    pub(crate) session_sequence: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -368,7 +365,20 @@ where
         "UserPromptSubmit" => "user",
         _ => "external",
     };
-    extract_tokens(&original_payload_json, payload_slot, &mut tokens);
+    // A result repeats its Call's input; those values belong to the Call, so the result only
+    // indexes what the tool returned.
+    let token_source = match event_name {
+        "PostToolUse" | "PostToolUseFailure" => {
+            let mut payload = serde_json::to_value(&envelope.payload)
+                .map_err(|error| RepositoryError::InvalidEvent(error.to_string()))?;
+            if let Some(fields) = payload.as_object_mut() {
+                fields.remove("tool_input");
+            }
+            payload.to_string()
+        }
+        _ => original_payload_json,
+    };
+    extract_tokens(&token_source, payload_slot, &mut tokens);
     match &envelope.chunks {
         Some(chunks) => {
             for chunk in chunks {
@@ -406,6 +416,10 @@ where
         paragraphs,
         tokens: tokens.into_iter().collect(),
         intent: None,
+        session_sequence: envelope
+            .session_sequence
+            .map(|value| signed(value, "session_sequence"))
+            .transpose()?,
     })
 }
 

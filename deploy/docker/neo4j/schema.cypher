@@ -53,3 +53,11 @@ ON (commit.observed_at);
 CREATE INDEX execution_node_session_order IF NOT EXISTS
 FOR (node:ExecutionNode)
 ON (node.session_id, node.order);
+
+CREATE CONSTRAINT sequence_number_unique IF NOT EXISTS
+FOR (sequence:Sequence)
+REQUIRE (sequence.session_id, sequence.number) IS UNIQUE;
+
+// Tool results were typed `Sequence` before session-wide sequences existed.
+MATCH (node:ExecutionNode {type: 'Sequence'})
+SET node.type = 'Segment';

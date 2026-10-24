@@ -46,10 +46,17 @@ FOREACH (_ IN CASE WHEN created AND $has_node THEN [1] ELSE [] END | \
     client_id: $client_id, sequence: $sequence, prompt_id: $prompt_id, \
     agent_id: $agent_id, agent_type: $agent_type, cwd: $cwd, \
     tool_use_id: $tool_use_id, turn_id: $turn_id, repository: $repository, \
-    intent: $intent, payload_json: $payload_json \
+    intent: $intent, session_sequence: $session_sequence, payload_json: $payload_json \
   }) \
   CREATE (commit)-[:CREATED]->(node) \
   CREATE (session)-[:CONTAINS]->(node) \
+) \
+WITH session, commit, created \
+OPTIONAL MATCH (member:ExecutionNode {session_id: $session_id, seq: commit.version}) \
+FOREACH (_ IN CASE WHEN created AND member IS NOT NULL AND $session_sequence IS NOT NULL \
+                   THEN [1] ELSE [] END | \
+  MERGE (group:Sequence {session_id: $session_id, number: $session_sequence}) \
+  MERGE (group)-[:MEMBER]->(member) \
 ) \
 WITH session, commit, created \
 OPTIONAL MATCH (node:ExecutionNode {session_id: $session_id, seq: commit.version}) \
@@ -59,7 +66,7 @@ CALL (node, created) { \
   WITH node, before ORDER BY before.order DESC LIMIT 1 \
   OPTIONAL MATCH (after:ExecutionNode {session_id: $session_id}) WHERE after.order > node.order \
   WITH node, before, after ORDER BY after.order LIMIT 1 \
-  OPTIONAL MATCH (before)-[stale:NEXT]->(after) \
+  OPTIONAL MATCH (before)-[stale:NEXT]->(after) WHERE stale.kind IS NULL \
   DELETE stale \
   FOREACH (_ IN CASE WHEN before IS NULL THEN [] ELSE [1] END | \
     MERGE (before)-[edge:NEXT]->(node) \
@@ -221,7 +228,12 @@ RETURN last_order, agents, \
     COLLECT { MATCH (c:EventCommit {session_id: $session_id}) WHERE c.prompt_id IS NOT NULL \
               RETURN c.prompt_id ORDER BY c.order DESC LIMIT 1 }[0], \
     COLLECT { MATCH (n:ExecutionNode {session_id: $session_id}) WHERE n.prompt_id IS NOT NULL \
-              RETURN n.prompt_id ORDER BY n.order DESC LIMIT 1 }[0]) AS prompt_id";
+              RETURN n.prompt_id ORDER BY n.order DESC LIMIT 1 }[0]) AS prompt_id, \
+  COLLECT { MATCH (n:ExecutionNode {session_id: $session_id}) WHERE n.session_sequence IS NOT NULL \
+            RETURN max(n.session_sequence) }[0] AS last_sequence, \
+  COLLECT { MATCH (n:ExecutionNode {session_id: $session_id, type: 'Message'}) \
+            WHERE n.intent IS NOT NULL \
+            RETURN n.intent ORDER BY n.order DESC LIMIT 1 }[0] AS intent";
 
 const TOOL_CALL: &str = "\
 MATCH (call:ExecutionNode {session_id: $session_id, type: 'Call', tool_use_id: $tool_use_id}) \
@@ -448,7 +460,7 @@ impl Neo4jRepository {
         mutation: GraphMutation,
     ) -> Result<EventResponse, RepositoryError> {
         let has_node = mutation.node_type.is_some();
-        let is_tool_result = matches!(mutation.node_type, Some("Sequence" | "Error"));
+        let is_tool_result = matches!(mutation.node_type, Some("Segment" | "Error"));
         let previous_sequence = mutation.sequence.map(|sequence| sequence - 1);
         let next_sequence = mutation.sequence.map(|sequence| sequence + 1);
         let parameters = json!({
@@ -475,6 +487,7 @@ impl Neo4jRepository {
             "paragraphs": mutation.paragraphs,
             "tokens": mutation.tokens,
             "intent": mutation.intent,
+            "session_sequence": mutation.session_sequence,
             "is_tool_result": is_tool_result,
         });
         let data = self.execute(COMMIT_EVENT, parameters).await?;
@@ -648,6 +661,8 @@ impl GraphRepository for Neo4jRepository {
                 .collect::<Result<_, _>>()?,
             cwd: row.get(2).and_then(Value::as_str).map(str::to_owned),
             prompt_id: row.get(3).and_then(Value::as_str).map(str::to_owned),
+            last_sequence: row.get(4).and_then(Value::as_u64),
+            intent: row.get(5).and_then(Value::as_str).map(str::to_owned),
         })
     }
 
