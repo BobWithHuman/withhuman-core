@@ -5,9 +5,10 @@ use withhuman_contracts::{
     events::{EventResponse, PreToolUseEventRequest, UserPromptSubmitEventRequest},
     hooks::{
         ConfigChangeRequest, FileChangedRequest, HookSpecificResponse, InstructionsLoadedRequest,
-        MessageDisplayRequest, PostToolBatchRequest, PostToolUseFailureRequest, PostToolUseRequest,
-        PreToolUseOutput, PreToolUseRequest, SessionStartOutput, SessionStartRequest,
-        SubagentLifecycleRequest, ToolDescriptionsRequest, UserPromptSubmitRequest,
+        MessageDisplayOutput, MessageDisplayRequest, PostToolBatchRequest,
+        PostToolUseFailureRequest, PostToolUseRequest, PreToolUseOutput, PreToolUseRequest,
+        SessionStartOutput, SessionStartRequest, SubagentLifecycleRequest, ToolDescriptionsRequest,
+        UserPromptSubmitOutput, UserPromptSubmitRequest,
     },
 };
 
@@ -44,14 +45,11 @@ fn hook_response_fixtures_round_trip_without_wire_name_changes() {
     let fixtures = fixture(include_str!("fixtures/hooks/responses.json"));
 
     for (name, value) in fixtures.as_object().expect("fixture must be an object") {
-        let serialized = if name == "session_start" {
-            let response: HookSpecificResponse<SessionStartOutput> =
-                serde_json::from_value(value.clone()).expect("session response must deserialize");
-            serde_json::to_value(response).expect("session response must serialize")
-        } else {
-            let response: HookSpecificResponse<PreToolUseOutput> =
-                serde_json::from_value(value.clone()).expect("tool response must deserialize");
-            serde_json::to_value(response).expect("tool response must serialize")
+        let serialized = match name.as_str() {
+            "session_start" => round_trip::<SessionStartOutput>(value),
+            "user_prompt_submit" => round_trip::<UserPromptSubmitOutput>(value),
+            "message_display" => round_trip::<MessageDisplayOutput>(value),
+            _ => round_trip::<PreToolUseOutput>(value),
         };
 
         assert_eq!(&serialized, value, "wire contract changed for {name}");
@@ -112,4 +110,12 @@ fn required_field_regressions_are_rejected() {
     let error = serde_json::from_value::<PreToolUseRequest>(request)
         .expect_err("missing required fields must fail");
     assert!(error.to_string().contains("tool_use_id"));
+}
+
+fn round_trip<T: serde::Serialize + serde::de::DeserializeOwned>(
+    value: &serde_json::Value,
+) -> serde_json::Value {
+    let response: HookSpecificResponse<T> =
+        serde_json::from_value(value.clone()).expect("response must deserialize");
+    serde_json::to_value(response).expect("response must serialize")
 }
