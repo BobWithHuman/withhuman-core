@@ -272,6 +272,8 @@ pub(crate) struct ParagraphMutation {
     pub(crate) hash: String,
     pub(crate) source: String,
     pub(crate) hidden: bool,
+    /// Why the paragraph is hidden (`withhuman_common::hidden` rules).
+    pub(crate) hidden_rules: Vec<&'static str>,
     pub(crate) from_user_doc: Option<bool>,
     pub(crate) long_paragraph: bool,
 }
@@ -315,6 +317,7 @@ where
                     hash: chunk.hash.clone(),
                     source: chunk.source.clone(),
                     hidden: chunk.hidden,
+                    hidden_rules: Vec::new(),
                     from_user_doc: chunk.from_user_doc,
                     long_paragraph: false,
                 })
@@ -426,7 +429,8 @@ fn chunk_text(text: &str, source: &str) -> Vec<ParagraphMutation> {
             text: chunk.text,
             hash: chunk.hash,
             source: source.to_owned(),
-            hidden: false,
+            hidden: chunk.hidden,
+            hidden_rules: chunk.hidden_rules,
             from_user_doc: Some(false),
             long_paragraph: chunk.long_paragraph,
         })
