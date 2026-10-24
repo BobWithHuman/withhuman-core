@@ -15,7 +15,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use utoipa::{OpenApi, ToSchema};
 use withhuman_common::intent::split_intent;
 use withhuman_contracts::{
-    decisions::{Decision, DecisionResponse},
+    decisions::{Decision, DecisionResponse, EnforcementMode},
     events::EventResponse,
     hooks::{
         ConfigChangeRequest, FileChangedRequest, HookEventName, HookSpecificResponse,
@@ -473,6 +473,7 @@ async fn pre_tool_use(
         );
     }
     let enforced_at_hook = !is_mcp || service.config.enforce_mcp_at_hook;
+    let observing = service.config.enforcement_mode != EnforcementMode::Enforce;
     let stored = service
         .verdicts
         .insert(
@@ -480,6 +481,10 @@ async fn pre_tool_use(
             StoredVerdict::new(decision.clone(), tool_name, &arguments),
         )
         .await;
+    if observing {
+        // Record and shadow modes keep the verdict for analysis but never block.
+        return StatusCode::OK.into_response();
+    }
     if !enforced_at_hook {
         // AgentGateway enforces this call and needs the stored verdict; without it the
         // extAuthz check denies, so the Hook answer follows the failure policy.
@@ -519,6 +524,11 @@ fn blocking_response(permission_decision: PermissionDecision, reason: String) ->
 }
 
 fn pre_tool_failure(service: &CollectorService, error: impl fmt::Display) -> Response {
+    // Record and shadow modes observe only: a failure must not block either. (Record mode never
+    // waits for a decision, so a missing one is expected there.)
+    if service.config.enforcement_mode != EnforcementMode::Enforce {
+        return StatusCode::OK.into_response();
+    }
     match service.config.failure_policy {
         FailurePolicy::Open => StatusCode::OK.into_response(),
         FailurePolicy::Closed => blocking_response(PermissionDecision::Deny, error.to_string()),
