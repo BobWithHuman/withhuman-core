@@ -341,6 +341,113 @@ async fn applies_failure_policies_when_the_generator_cursor_is_unreadable() {
     assert_eq!(body["error"], "generator_unavailable");
 }
 
+#[tokio::test]
+async fn adds_the_intent_instruction_to_prompts() {
+    let prompt = || {
+        json_request(
+            "/v1/hooks/UserPromptSubmit",
+            json!({"session_id":"s1","prompt":"fix login"}),
+        )
+    };
+    let (status, body) = response_json(
+        test_app(
+            CollectorConfig::default(),
+            Arc::new(RecordingGenerator::allow()),
+        )
+        .oneshot(prompt())
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body,
+        json!({"hookSpecificOutput":{
+            "hookEventName":"UserPromptSubmit",
+            "additionalContext":withhuman_collector::INTENT_INSTRUCTION
+        }})
+    );
+
+    let off = CollectorConfig {
+        intent_echo: false,
+        ..Default::default()
+    };
+    let (status, body) = response_json(
+        test_app(off, Arc::new(RecordingGenerator::allow()))
+            .oneshot(prompt())
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_null());
+}
+
+#[tokio::test]
+async fn highlights_the_intent_line_of_the_first_flush_only() {
+    let generator = Arc::new(RecordingGenerator::allow());
+    let app = test_app(CollectorConfig::default(), generator.clone());
+    let flush = |index: u64, delta: &str, final_: bool| {
+        json_request(
+            "/v1/hooks/MessageDisplay",
+            json!({"session_id":"s1","message_id":"m1","index":index,"delta":delta,"final":final_}),
+        )
+    };
+
+    let (_, first) = response_json(
+        app.clone()
+            .oneshot(flush(0, "[의도] 로그인 버그 수정 (확신도: 높음)\n", false))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        first["hookSpecificOutput"]["displayContent"],
+        "**[파악한 의도] → 로그인 버그 수정 (확신도: 높음)**\n"
+    );
+    let (_, later) = response_json(
+        app.clone()
+            .oneshot(flush(1, "[의도] 이건 본문\n", true))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(later.is_null());
+
+    // A message delivered whole arrives as one final flush with index 0.
+    let (_, whole) = response_json(
+        app.oneshot(json_request(
+            "/v1/hooks/MessageDisplay",
+            json!({"session_id":"s1","message_id":"m2","index":0,
+                   "delta":"[의도] 테스트 추가\n추가했습니다.","final":true}),
+        ))
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        whole["hookSpecificOutput"]["displayContent"],
+        "**[파악한 의도] → 테스트 추가**\n추가했습니다."
+    );
+
+    // Display only: the recorded message keeps what the model wrote.
+    let events = generator.events.lock().unwrap();
+    let texts: Vec<&str> = events
+        .iter()
+        .filter_map(|event| match event {
+            NormalizedEvent::MessageDisplay(event) => Some(event.payload.text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            "[의도] 로그인 버그 수정 (확신도: 높음)\n[의도] 이건 본문\n",
+            "[의도] 테스트 추가\n추가했습니다."
+        ]
+    );
+}
+
 async fn pre_tool_response(
     config: CollectorConfig,
     verdict: Decision,

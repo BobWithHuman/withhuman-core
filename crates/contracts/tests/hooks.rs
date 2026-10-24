@@ -1,7 +1,8 @@
 use serde_json::json;
 use withhuman_contracts::hooks::{
-    HookEventName, HookSpecificResponse, InstructionsLoadedRequest, PermissionDecision,
-    PostToolUseRequest, PreToolUseOutput, PreToolUseRequest, SessionStartOutput,
+    HookEventName, HookSpecificResponse, InstructionsLoadedRequest, MessageDisplayOutput,
+    PermissionDecision, PostToolUseRequest, PreToolUseOutput, PreToolUseRequest,
+    SessionStartOutput, UserPromptSubmitOutput,
 };
 
 #[test]
@@ -105,5 +106,30 @@ fn serializes_session_start_watch_paths() {
                 "watchPaths": ["/app/CLAUDE.md"]
             }
         })
+    );
+}
+
+#[test]
+fn serializes_prompt_context_and_display_content_with_claude_wire_names() {
+    let context = HookSpecificResponse {
+        hook_specific_output: UserPromptSubmitOutput {
+            hook_event_name: HookEventName::UserPromptSubmit,
+            additional_context: "context".into(),
+        },
+    };
+    let display = HookSpecificResponse {
+        hook_specific_output: MessageDisplayOutput {
+            hook_event_name: HookEventName::MessageDisplay,
+            display_content: "shown".into(),
+        },
+    };
+
+    assert_eq!(
+        serde_json::to_value(context).expect("response should serialize"),
+        json!({"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"context"}})
+    );
+    assert_eq!(
+        serde_json::to_value(display).expect("response should serialize"),
+        json!({"hookSpecificOutput":{"hookEventName":"MessageDisplay","displayContent":"shown"}})
     );
 }
