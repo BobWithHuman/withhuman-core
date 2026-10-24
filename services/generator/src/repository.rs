@@ -105,7 +105,8 @@ CALL (node) { \
   UNWIND $paragraphs AS paragraph \
   MERGE (stored:Paragraph {hash: paragraph.hash}) \
   ON CREATE SET stored.text = paragraph.text, stored.source = paragraph.source, \
-                stored.hidden = paragraph.hidden, stored.from_user_doc = paragraph.from_user_doc, \
+                stored.hidden = paragraph.hidden, stored.hidden_rules = paragraph.hidden_rules, \
+                stored.from_user_doc = paragraph.from_user_doc, \
                 stored.long_paragraph = paragraph.long_paragraph, stored.created_in_seq = node.seq \
   MERGE (node)-[:CONTAINS_PARAGRAPH {index: paragraph.index}]->(stored) \
   WITH node, stored, paragraph \
@@ -240,7 +241,8 @@ CALL (node, row) { \
   UNWIND row.paragraphs AS paragraph \
   MERGE (stored:Paragraph {hash: paragraph.hash}) \
   ON CREATE SET stored.text = paragraph.text, stored.source = paragraph.source, \
-                stored.hidden = paragraph.hidden, stored.from_user_doc = paragraph.from_user_doc, \
+                stored.hidden = paragraph.hidden, stored.hidden_rules = paragraph.hidden_rules, \
+                stored.from_user_doc = paragraph.from_user_doc, \
                 stored.long_paragraph = paragraph.long_paragraph, stored.created_in_seq = node.seq \
   MERGE (node)-[:CONTAINS_PARAGRAPH {index: paragraph.index}]->(stored) \
 } \
