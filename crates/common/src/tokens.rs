@@ -16,6 +16,7 @@ use std::{borrow::Cow, collections::BTreeSet, net::IpAddr, ops::Range, sync::Laz
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use regex::Regex;
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::chunking::sha256;
@@ -108,6 +109,33 @@ pub fn redact_field(name: &str, value: &str) -> Option<String> {
         r"(?i)(?:^|[_.-])(?:api[_-]?key|apikey|access[_-]?key(?:[_-]?id)?|secret(?:[_-]?(?:access[_-]?)?key)?|client[_-]?secret|auth[_-]?token|access[_-]?token|refresh[_-]?token|token|password|passwd|pwd|authorization|private[_-]?key)$"
     );
     (secret_name.is_match(name) && !is_placeholder(value)).then(|| mask_ends(value))
+}
+
+/// Masks sensitive values in every string of a JSON value and every string field named as a
+/// secret; reports whether anything changed. Object keys are left as they are.
+pub fn redact_json(value: &mut Value) -> bool {
+    match value {
+        Value::String(text) => match redact(text) {
+            Cow::Owned(redacted) => {
+                *text = redacted;
+                true
+            }
+            Cow::Borrowed(_) => false,
+        },
+        Value::Array(items) => items
+            .iter_mut()
+            .fold(false, |changed, item| redact_json(item) | changed),
+        Value::Object(fields) => fields.iter_mut().fold(false, |changed, (name, item)| {
+            if let Value::String(text) = item {
+                if let Some(masked) = redact_field(name, text) {
+                    *text = masked;
+                    return true;
+                }
+            }
+            redact_json(item) | changed
+        }),
+        _ => false,
+    }
 }
 
 /// Values that are references or masks rather than secrets.

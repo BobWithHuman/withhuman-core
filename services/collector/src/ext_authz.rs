@@ -68,7 +68,7 @@ impl ExtAuthzService {
             Err(_) => return deny_response(VERDICT_STORE_UNAVAILABLE),
         };
         let arguments = call.arguments.unwrap_or_else(empty_object);
-        if mcp_tool_name(&verdict.tool_name) != call.name || verdict.arguments != arguments {
+        if mcp_tool_name(&verdict.tool_name) != call.name || !verdict.authorizes(&arguments) {
             return deny_response(REQUEST_MISMATCH);
         }
 

@@ -412,11 +412,11 @@ fn decision(verdict: Decision, reason: &str) -> DecisionResponse {
 }
 
 fn stored(verdict: Decision, reason: &str) -> StoredVerdict {
-    StoredVerdict {
-        decision: decision(verdict, reason),
-        tool_name: "mcp__server__tool".to_owned(),
-        arguments: json!({}),
-    }
+    StoredVerdict::new(
+        decision(verdict, reason),
+        "mcp__server__tool".to_owned(),
+        &json!({}),
+    )
 }
 
 struct RecordingGenerator {
