@@ -16,7 +16,7 @@ use std::{fmt::Write as _, ops::Range, sync::LazyLock};
 use regex::Regex;
 use sha2::{Digest, Sha256};
 
-use crate::hidden::{Origin, hidden_spans};
+use crate::{hidden::hidden_spans, origin::Origin};
 
 /// Longest paragraph, in chars, before it is cut and labelled `long_paragraph`.
 pub const MAX_CHARS: usize = 600;

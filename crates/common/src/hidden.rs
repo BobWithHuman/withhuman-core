@@ -20,7 +20,8 @@ use base64::{
     engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig},
 };
 use regex::Regex;
-use serde_json::Value;
+
+use crate::origin::Origin;
 
 macro_rules! regex {
     ($pattern:expr) => {{
@@ -58,16 +59,6 @@ impl Scope {
     }
 }
 
-/// Where scanned content came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Origin {
-    /// Workspace files, local command output, prompts and agent messages: read as source.
-    Local,
-    /// Web pages, MCP tool results, network command output and files outside the workspace:
-    /// viewed rendered.
-    External,
-}
-
 /// Rules for source-level constructs that a person reading the source sees.
 const RENDERED_ONLY_PREFIXES: &[&str] = &["html_", "css_", "svg_", "vba_"];
 
@@ -80,41 +71,6 @@ fn scope(rule: &str) -> Scope {
     } else {
         Scope::Always
     }
-}
-
-/// The origin of a tool result, from the tool, its input and the session working directory.
-pub fn tool_origin(tool_name: &str, tool_input: Option<&Value>, cwd: Option<&str>) -> Origin {
-    let network_command = regex!(
-        r"(?i)(?:^|[\s;&|(`$])(?:curl|wget|https?|xh|lynx|links|w3m|aria2c|invoke-webrequest|invoke-restmethod|iwr|irm|gh\s+(?:api|issue|pr|release|gist|repo\s+view))(?:\s|$)"
-    );
-    let field = |name: &str| {
-        tool_input
-            .and_then(|input| input.get(name))
-            .and_then(Value::as_str)
-    };
-    match tool_name {
-        "WebFetch" | "WebSearch" => Origin::External,
-        name if name.starts_with("mcp__") => Origin::External,
-        "Bash" | "PowerShell" => match field("command") {
-            Some(command) if network_command.is_match(command) => Origin::External,
-            _ => Origin::Local,
-        },
-        _ => {
-            let path = ["file_path", "notebook_path", "path"]
-                .into_iter()
-                .find_map(field);
-            match (path, cwd) {
-                (Some(path), Some(cwd)) if outside(path, cwd) => Origin::External,
-                _ => Origin::Local,
-            }
-        }
-    }
-}
-
-/// Whether an absolute `path` lies outside the directory `cwd`.
-fn outside(path: &str, cwd: &str) -> bool {
-    let path = std::path::Path::new(path);
-    path.is_absolute() && !path.starts_with(std::path::Path::new(cwd))
 }
 
 /// Every hidden region of `text`, ordered by position.

@@ -1,11 +1,14 @@
 use std::{error::Error, fmt, sync::Arc};
 
 use serde_json::Value;
-use withhuman_common::tokens;
+use withhuman_common::{
+    origin::{self, Origin, OriginContext},
+    tokens,
+};
 
 use withhuman_contracts::{
     events::{
-        ConfigChangeEventRequest, ConfigChangePayload, EventMetadata, EventRequest,
+        ConfigChangeEventRequest, ConfigChangePayload, ContentOrigin, EventMetadata, EventRequest,
         FileChangedEventRequest, FileChangedPayload, InstructionsLoadedEventRequest,
         InstructionsLoadedPayload, MessageDisplayEventRequest, MessageDisplayPayload,
         PostToolBatchEventRequest, PostToolBatchPayload, PostToolUseEventRequest,
@@ -96,6 +99,8 @@ impl NormalizedEvent {
 pub struct Normalizer {
     sessions: Arc<dyn SessionStore>,
     history: Option<Arc<dyn GeneratorTransport>>,
+    /// Commands, besides the built-in list, whose output comes from the network.
+    network_commands: Arc<[String]>,
 }
 
 impl Default for Normalizer {
@@ -115,7 +120,14 @@ impl Normalizer {
         Self {
             sessions: Arc::new(sessions),
             history: None,
+            network_commands: Arc::from([]),
         }
+    }
+
+    /// Treats the output of these commands as fetched from the network.
+    pub fn with_network_commands(mut self, commands: Vec<String>) -> Self {
+        self.network_commands = commands.into();
+        self
     }
 
     /// Resumes sessions the store does not know from the Generator's committed cursor. Without
@@ -258,6 +270,16 @@ impl Normalizer {
         mode: withhuman_contracts::events::EnforcementMode,
         deadline_ms: Option<u64>,
     ) -> Result<NormalizedEvent, NormalizeError> {
+        // Where a command saves downloads, so later reads of those files count as external.
+        let record_downloads = match request.tool_name.as_str() {
+            "Bash" | "PowerShell" => request
+                .tool_input
+                .get("command")
+                .and_then(Value::as_str)
+                .map(|command| origin::downloaded_paths(command, request.cwd.as_deref()))
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
         let state = self
             .apply(
                 &request.session_id,
@@ -269,6 +291,7 @@ impl Normalizer {
                         redacted(&request.tool_input),
                     )),
                     agent_id: request.agent_id.clone(),
+                    record_downloads,
                     ..Default::default()
                 },
             )
@@ -326,7 +349,7 @@ impl Normalizer {
                 state.tool_input.clone(),
             )
             .await?;
-        let meta = metadata(
+        let mut meta = metadata(
             &state,
             context,
             Some(request.tool_use_id),
@@ -334,6 +357,19 @@ impl Normalizer {
             request.agent_type,
             None,
         );
+        let content_origin = origin::tool_origin(
+            &request.tool_name,
+            tool_input.as_ref(),
+            origin::tool_output(&request.tool_response).as_deref(),
+            &OriginContext {
+                cwd: state.cwd.as_deref(),
+                network_commands: &self.network_commands,
+                downloaded_paths: &state.downloads,
+            },
+        );
+        if content_origin == Origin::External {
+            meta.content_origin = Some(ContentOrigin::External);
+        }
         Ok(NormalizedEvent::PostToolUse(envelope(
             &state,
             context,
@@ -708,6 +744,7 @@ fn metadata(
         tool_use_id,
         turn_id,
         repo: context.repository.clone(),
+        content_origin: None,
         additional_fields: Default::default(),
     }
 }
