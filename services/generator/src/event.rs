@@ -4,6 +4,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use withhuman_common::{
     chunking::{self, Profile},
+    hidden::{self, Origin},
     intent, tokens,
 };
 use withhuman_contracts::events::{
@@ -123,7 +124,7 @@ impl GeneratorEvent {
                 mutation("SessionStart", None, None, None, event, |event| event)
             }
             Self::UserPromptSubmit(event) => {
-                let text = Some(event.payload.prompt.clone());
+                let text = Some(Text::local(event.payload.prompt.clone()));
                 mutation(
                     "UserPromptSubmit",
                     Some("Request"),
@@ -139,7 +140,13 @@ impl GeneratorEvent {
                 })
             }
             Self::PostToolUse(event) => {
-                let text = text_content(&event.payload.tool_response);
+                let origin = hidden::tool_origin(
+                    &event.payload.tool_name,
+                    event.payload.tool_input.as_ref(),
+                    event.meta.cwd.as_deref(),
+                );
+                let text =
+                    text_content(&event.payload.tool_response).map(|body| Text { body, origin });
                 mutation(
                     "PostToolUse",
                     Some("Sequence"),
@@ -213,7 +220,7 @@ impl GeneratorEvent {
                 let mut mutation = mutation(
                     "MessageDisplay",
                     Some("Message"),
-                    Some(text),
+                    Some(Text::local(text)),
                     None,
                     event,
                     |event| event,
@@ -288,10 +295,25 @@ pub(crate) struct TokenMutation {
     pub(crate) category: String,
 }
 
+/// Text an event adds to the graph and where it came from.
+struct Text {
+    body: String,
+    origin: Origin,
+}
+
+impl Text {
+    fn local(body: String) -> Self {
+        Self {
+            body,
+            origin: Origin::Local,
+        }
+    }
+}
+
 fn mutation<T, E>(
     event_name: &'static str,
     node_type: Option<&'static str>,
-    text: Option<String>,
+    text: Option<Text>,
     file_path: Option<String>,
     event: T,
     envelope: impl FnOnce(&T) -> &withhuman_contracts::events::EventRequest<E>,
@@ -324,8 +346,8 @@ where
             })
             .collect::<Result<Vec<_>, RepositoryError>>()?,
         None => text
-            .as_deref()
-            .map(|text| chunk_text(&tokens::redact(text), event_name))
+            .as_ref()
+            .map(|text| chunk_text(&tokens::redact(&text.body), event_name, text.origin))
             .unwrap_or_default(),
     };
 
@@ -344,7 +366,7 @@ where
         }
         None => {
             if let Some(text) = &text {
-                extract_tokens(text, paragraph_slot(event_name), &mut tokens);
+                extract_tokens(&text.body, paragraph_slot(event_name), &mut tokens);
             }
         }
     }
@@ -417,12 +439,12 @@ fn text_content(value: &Value) -> Option<String> {
     })
 }
 
-fn chunk_text(text: &str, source: &str) -> Vec<ParagraphMutation> {
+fn chunk_text(text: &str, source: &str, origin: Origin) -> Vec<ParagraphMutation> {
     let profile = match source {
         "PostToolUse" => Profile::ToolOutput,
         _ => Profile::Prose,
     };
-    chunking::chunk_text(text, profile)
+    chunking::chunk_text_from(text, profile, origin)
         .into_iter()
         .map(|chunk| ParagraphMutation {
             index: i64::try_from(chunk.index).unwrap_or(i64::MAX),

@@ -16,7 +16,7 @@ use std::{fmt::Write as _, ops::Range, sync::LazyLock};
 use regex::Regex;
 use sha2::{Digest, Sha256};
 
-use crate::hidden::hidden_spans;
+use crate::hidden::{Origin, hidden_spans};
 
 /// Longest paragraph, in chars, before it is cut and labelled `long_paragraph`.
 pub const MAX_CHARS: usize = 600;
@@ -45,7 +45,14 @@ pub struct Chunk {
     pub hidden_rules: Vec<&'static str>,
 }
 
+/// Splits external content, applying every hidden-content rule.
 pub fn chunk_text(text: &str, profile: Profile) -> Vec<Chunk> {
+    chunk_text_from(text, profile, Origin::External)
+}
+
+/// Splits content from `origin`; hidden-content rules for rendered content apply only to
+/// [`Origin::External`] text.
+pub fn chunk_text_from(text: &str, profile: Profile, origin: Origin) -> Vec<Chunk> {
     let text = text.replace("\r\n", "\n").replace('\r', "\n");
     // Each paragraph keeps the byte range it came from, so hidden content found anywhere in the
     // text (even spanning paragraphs) marks exactly the paragraphs it touches.
@@ -85,7 +92,10 @@ pub fn chunk_text(text: &str, profile: Profile) -> Vec<Chunk> {
         }
     }
 
-    let hidden = hidden_spans(&text);
+    let hidden: Vec<_> = hidden_spans(&text)
+        .into_iter()
+        .filter(|span| span.scope.applies_to(origin))
+        .collect();
     paragraphs
         .into_iter()
         .enumerate()

@@ -6,6 +6,12 @@
 //! Only what can be observed in text is detected: the engine receives Hook payloads, not files
 //! or disks. Binary formats are examined when they appear base64-encoded in the text (data URIs
 //! and long base64 runs).
+//!
+//! What counts as hidden depends on how a person normally views the content. Invisible
+//! characters, data inside binaries and document internals stay hidden wherever they are read
+//! ([`Scope::Always`]). Markup comments, CSS and similar source-level constructs are hidden only
+//! when the content is rendered for a reader, as fetched web pages and downloaded files are; in
+//! a workspace source file the user reads them in an editor ([`Scope::External`]).
 
 use std::{collections::HashMap, ops::Range, sync::LazyLock};
 
@@ -14,6 +20,7 @@ use base64::{
     engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig},
 };
 use regex::Regex;
+use serde_json::Value;
 
 macro_rules! regex {
     ($pattern:expr) => {{
@@ -33,6 +40,81 @@ pub struct HiddenSpan {
     pub range: Range<usize>,
     /// The rule that found it, such as `html_comment` or `css_display_none`.
     pub rule: &'static str,
+    pub scope: Scope,
+}
+
+/// Which content a rule applies to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Scope {
+    /// Hidden wherever the content is read.
+    Always,
+    /// Hidden only in [`Origin::External`] content, which a person views rendered.
+    External,
+}
+
+impl Scope {
+    pub fn applies_to(self, origin: Origin) -> bool {
+        self == Self::Always || origin == Origin::External
+    }
+}
+
+/// Where scanned content came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    /// Workspace files, local command output, prompts and agent messages: read as source.
+    Local,
+    /// Web pages, MCP tool results, network command output and files outside the workspace:
+    /// viewed rendered.
+    External,
+}
+
+/// Rules for source-level constructs that a person reading the source sees.
+const RENDERED_ONLY_PREFIXES: &[&str] = &["html_", "css_", "svg_", "vba_"];
+
+fn scope(rule: &str) -> Scope {
+    if RENDERED_ONLY_PREFIXES
+        .iter()
+        .any(|prefix| rule.starts_with(prefix))
+    {
+        Scope::External
+    } else {
+        Scope::Always
+    }
+}
+
+/// The origin of a tool result, from the tool, its input and the session working directory.
+pub fn tool_origin(tool_name: &str, tool_input: Option<&Value>, cwd: Option<&str>) -> Origin {
+    let network_command = regex!(
+        r"(?i)(?:^|[\s;&|(`$])(?:curl|wget|https?|xh|lynx|links|w3m|aria2c|invoke-webrequest|invoke-restmethod|iwr|irm|gh\s+(?:api|issue|pr|release|gist|repo\s+view))(?:\s|$)"
+    );
+    let field = |name: &str| {
+        tool_input
+            .and_then(|input| input.get(name))
+            .and_then(Value::as_str)
+    };
+    match tool_name {
+        "WebFetch" | "WebSearch" => Origin::External,
+        name if name.starts_with("mcp__") => Origin::External,
+        "Bash" | "PowerShell" => match field("command") {
+            Some(command) if network_command.is_match(command) => Origin::External,
+            _ => Origin::Local,
+        },
+        _ => {
+            let path = ["file_path", "notebook_path", "path"]
+                .into_iter()
+                .find_map(field);
+            match (path, cwd) {
+                (Some(path), Some(cwd)) if outside(path, cwd) => Origin::External,
+                _ => Origin::Local,
+            }
+        }
+    }
+}
+
+/// Whether an absolute `path` lies outside the directory `cwd`.
+fn outside(path: &str, cwd: &str) -> bool {
+    let path = std::path::Path::new(path);
+    path.is_absolute() && !path.starts_with(std::path::Path::new(cwd))
 }
 
 /// Every hidden region of `text`, ordered by position.
@@ -58,7 +140,11 @@ struct Spans(Vec<HiddenSpan>);
 impl Spans {
     fn add(&mut self, range: Range<usize>, rule: &'static str) {
         if !range.is_empty() {
-            self.0.push(HiddenSpan { range, rule });
+            self.0.push(HiddenSpan {
+                range,
+                rule,
+                scope: scope(rule),
+            });
         }
     }
 }
