@@ -1,6 +1,5 @@
-use std::{collections::BTreeSet, net::IpAddr, sync::LazyLock};
+use std::collections::BTreeSet;
 
-use regex::Regex;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use withhuman_common::chunking::{self, Profile};
@@ -274,6 +273,8 @@ pub(crate) struct TokenMutation {
     pub(crate) key: String,
     pub(crate) slot: String,
     pub(crate) decoded: String,
+    /// Detector category (`address`, `credential`, `pii`, `financial`, `device`).
+    pub(crate) category: String,
 }
 
 fn mutation<T, E>(
@@ -357,42 +358,15 @@ where
 }
 
 fn extract_tokens(value: &str, slot: &str, tokens: &mut BTreeSet<TokenMutation>) {
-    static URL: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r#"https?://[^\s\"'<>\\]+"#).unwrap());
-    static EMAIL: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}").unwrap());
-    static IP: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b").unwrap());
-    static PATH: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#"(?:^|[\s\"'=])((?:/|\./|\.\./)[A-Za-z0-9._~/-]+)"#).unwrap()
-    });
-
-    for found in URL.find_iter(value) {
-        insert_token(tokens, "url", found.as_str(), slot);
+    for token in withhuman_common::tokens::extract_tokens(value) {
+        tokens.insert(TokenMutation {
+            key_kind: token.kind.to_owned(),
+            key: token.key,
+            slot: slot.to_owned(),
+            decoded: token.decoded,
+            category: token.category.as_str().to_owned(),
+        });
     }
-    for found in EMAIL.find_iter(value) {
-        insert_token(tokens, "email", found.as_str(), slot);
-    }
-    for found in IP.find_iter(value) {
-        if found.as_str().parse::<IpAddr>().is_ok() {
-            insert_token(tokens, "ip", found.as_str(), slot);
-        }
-    }
-    for captures in PATH.captures_iter(value) {
-        if let Some(found) = captures.get(1) {
-            insert_token(tokens, "path", found.as_str(), slot);
-        }
-    }
-}
-
-fn insert_token(tokens: &mut BTreeSet<TokenMutation>, kind: &str, value: &str, slot: &str) {
-    let decoded = value.trim_end_matches([',', '.', ')', ']', '}']);
-    tokens.insert(TokenMutation {
-        key_kind: kind.to_owned(),
-        key: decoded.to_owned(),
-        slot: slot.to_owned(),
-        decoded: decoded.to_owned(),
-    });
 }
 
 fn text_content(value: &Value) -> Option<String> {

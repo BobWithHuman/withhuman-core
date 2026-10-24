@@ -167,12 +167,18 @@ async fn persists_and_replays_execution_graph_through_real_http() {
             json!({"session_id":session_id}),
         )
         .await;
-    assert_eq!(tokens[0], json!(4));
+    assert_eq!(tokens[0], json!(5));
     let mut token_kinds = tokens[1].as_array().unwrap().clone();
     token_kinds.sort_by_key(Value::to_string);
     assert_eq!(
         token_kinds,
-        vec![json!("email"), json!("ip"), json!("path"), json!("url")]
+        vec![
+            json!("email"),
+            json!("ip"),
+            json!("path"),
+            json!("socket_address"),
+            json!("url")
+        ]
     );
 
     query
@@ -374,6 +380,61 @@ async fn reports_the_session_cursor_for_resuming_collectors() {
         .await
         .unwrap();
     assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+
+    delete_session(&query, &session_id).await;
+}
+
+/// Sensitive values in a tool result become Token Indexing nodes keyed by their hash, so a later
+/// call can be matched against them without the index holding the secret.
+#[tokio::test]
+async fn indexes_sensitive_tool_output_without_storing_it() {
+    let Some((query, generator_url)) = start_without_decision().await else {
+        return;
+    };
+    let session_id = unique_session("generator-tokens-it");
+    let client = reqwest::Client::new();
+    post_event(
+        &client,
+        &generator_url,
+        "PostToolUse",
+        json!({
+            "session_id":session_id,"order":1,"observed_at":1,"meta":{"tool_use_id":"tool-1"},
+            "payload":{"tool_name":"Bash","tool_input":{"command":"cat .env"},
+                       "tool_response":"AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\nDATABASE_URL=postgres://app:s3cret@db:5432/app"}
+        }),
+    )
+    .await;
+
+    let rows = query
+        .one(
+            "MATCH (n:ExecutionNode {session_id:$session_id})-[:MENTIONS_TOKEN]->(t:Token)              WITH t ORDER BY t.key_kind              RETURN collect([t.key_kind, t.category, t.slot, t.key STARTS WITH 'sha256:', t.decoded])",
+            json!({"session_id":session_id}),
+        )
+        .await;
+    let rows = rows[0].as_array().unwrap();
+    assert!(rows.contains(&json!([
+        "api_key",
+        "credential",
+        "external",
+        true,
+        "AKIA…MPLE"
+    ])));
+    assert!(rows.contains(&json!([
+        "db_dsn",
+        "address",
+        "external",
+        false,
+        "postgres://app:***@db:5432/app"
+    ])));
+    let stored = query
+        .one(
+            "MATCH (t:Token {session_id:$session_id}) \
+             RETURN any(t IN collect(t) WHERE t.key CONTAINS 'AKIAIOSFODNN7EXAMPLE' \
+                    OR t.key CONTAINS 's3cret' OR t.decoded CONTAINS 's3cret')",
+            json!({"session_id":session_id}),
+        )
+        .await;
+    assert_eq!(stored, vec![json!(false)]);
 
     delete_session(&query, &session_id).await;
 }
