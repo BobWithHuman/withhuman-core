@@ -1526,7 +1526,9 @@ dependencies = [
  "tokio",
  "tower",
  "utoipa",
+ "withhuman-common",
  "withhuman-contracts",
+ "withhuman-generator",
 ]
 
 [[package]]
