@@ -118,7 +118,8 @@ CALL (node) { \
   ON MATCH SET stored.hidden = coalesce(stored.hidden, false) OR paragraph.hidden, \
                stored.hidden_rules = coalesce(stored.hidden_rules, []) + \
                  [rule IN paragraph.hidden_rules WHERE NOT rule IN coalesce(stored.hidden_rules, [])] \
-  MERGE (node)-[:CONTAINS_PARAGRAPH {index: paragraph.index}]->(stored) \
+  MERGE (node)-[contains:CONTAINS_PARAGRAPH {index: paragraph.index}]->(stored) \
+  SET contains.hidden = paragraph.hidden, contains.hidden_rules = paragraph.hidden_rules \
   WITH node, stored, paragraph \
   OPTIONAL MATCH (pending:PendingParagraphEnrichment {session_id: $session_id, hash: paragraph.hash}) \
   SET stored.instructs = coalesce(pending.instructs, stored.instructs), \
@@ -293,7 +294,8 @@ CALL (node, row) { \
   ON MATCH SET stored.hidden = coalesce(stored.hidden, false) OR paragraph.hidden, \
                stored.hidden_rules = coalesce(stored.hidden_rules, []) + \
                  [rule IN paragraph.hidden_rules WHERE NOT rule IN coalesce(stored.hidden_rules, [])] \
-  MERGE (node)-[:CONTAINS_PARAGRAPH {index: paragraph.index}]->(stored) \
+  MERGE (node)-[contains:CONTAINS_PARAGRAPH {index: paragraph.index}]->(stored) \
+  SET contains.hidden = paragraph.hidden, contains.hidden_rules = paragraph.hidden_rules \
 } \
 CALL (node, commit, row) { \
   UNWIND row.tokens AS token \

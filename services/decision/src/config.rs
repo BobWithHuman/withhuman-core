@@ -65,10 +65,18 @@ impl DecisionConfig {
                     "JEV_API_KEY must be configured for the jev provider",
                 ));
             }
+            let url = env::var("JEV_URL").unwrap_or_else(|_| "https://api.typesafe.ai".into());
+            if environment == RuntimeEnvironment::Production && !url.starts_with("https://") {
+                return Err(invalid("JEV_URL must use https in production"));
+            }
+            let timeout_ms: u64 = parse_env("JEV_TIMEOUT_MS", 3_000)?;
+            if !(1..=10_000).contains(&timeout_ms) {
+                return Err(invalid("JEV_TIMEOUT_MS must be between 1 and 10000"));
+            }
             Some(JevSettings {
-                url: env::var("JEV_URL").unwrap_or_else(|_| "https://api.typesafe.ai".into()),
+                url,
                 api_key,
-                timeout: Duration::from_millis(parse_env("JEV_TIMEOUT_MS", 3_000)?),
+                timeout: Duration::from_millis(timeout_ms),
             })
         } else if provider.eq_ignore_ascii_case("mock") {
             None
@@ -86,13 +94,26 @@ impl DecisionConfig {
         let defaults = TraceSettings::default();
         let trace = TraceSettings {
             model: env::var("JEV_MODEL").unwrap_or(defaults.model),
-            window: parse_env("WITHHUMAN_PARENT_SEQ_WINDOW", defaults.window)?,
-            max_extra_candidates: parse_env(
+            window: parse_range("WITHHUMAN_PARENT_SEQ_WINDOW", defaults.window, 1, 64)?,
+            max_extra_candidates: parse_range(
                 "WITHHUMAN_TRACE_MAX_CANDIDATES",
                 defaults.max_extra_candidates,
+                0,
+                100,
             )?,
-            text_chars: parse_env("WITHHUMAN_TRACE_TEXT_CHARS", defaults.text_chars)?,
-            max_hops: parse_env("WITHHUMAN_PARENT_MAX_HOPS", defaults.max_hops)?,
+            max_segments: parse_range(
+                "WITHHUMAN_TRACE_MAX_SEGMENTS",
+                defaults.max_segments,
+                1,
+                64,
+            )?,
+            text_chars: parse_range(
+                "WITHHUMAN_TRACE_TEXT_CHARS",
+                defaults.text_chars,
+                100,
+                20_000,
+            )?,
+            max_hops: parse_range("WITHHUMAN_PARENT_MAX_HOPS", defaults.max_hops, 1, 1_000)?,
         };
         let mock_decision = match env::var("MOCK_DECISION")
             .unwrap_or_else(|_| "ALLOW".into())
@@ -147,6 +168,18 @@ where
             .map_err(|error| invalid(format!("invalid {name} {value:?}: {error}"))),
         Err(_) => Ok(default),
     }
+}
+
+fn parse_range<T>(name: &str, default: T, min: T, max: T) -> io::Result<T>
+where
+    T: std::str::FromStr + PartialOrd + std::fmt::Display + Copy,
+    T::Err: std::fmt::Display,
+{
+    let value = parse_env(name, default)?;
+    if value < min || value > max {
+        return Err(invalid(format!("{name} must be between {min} and {max}")));
+    }
+    Ok(value)
 }
 
 fn invalid(message: impl Into<String>) -> io::Error {

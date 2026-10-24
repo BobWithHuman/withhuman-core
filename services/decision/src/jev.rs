@@ -83,9 +83,10 @@ pub struct HttpJevClient {
 }
 
 impl HttpJevClient {
+    /// `base_url` may carry a path prefix (`https://proxy/jev`); the endpoint goes below it.
     pub fn new(base_url: &str, api_key: impl Into<String>) -> Result<Self, JevError> {
-        let endpoint = reqwest::Url::parse(base_url)
-            .and_then(|url| url.join("/v1/systemone"))
+        let endpoint = reqwest::Url::parse(&format!("{}/", base_url.trim_end_matches('/')))
+            .and_then(|url| url.join("v1/systemone"))
             .map_err(|error| JevError::Unavailable(format!("invalid JEV_URL: {error}")))?;
         Ok(Self {
             client: reqwest::Client::new(),

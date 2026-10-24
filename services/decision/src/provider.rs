@@ -11,15 +11,14 @@ use withhuman_contracts::decisions::{
     CausalStart, Decision, DecisionRequest, DecisionResponse, JevActivity,
 };
 
+use withhuman_common::tokens;
+
 use crate::{
-    DecisionConfig, DecisionRepository,
+    DecisionConfig, DecisionRepository, RepositoryError,
     jev::JevClient,
     repository::TraceRecord,
     trace::{self, Stop, TraceSettings},
 };
-
-/// Kept from the decision deadline for storing the trace and the verdict after Jev answers.
-const PERSIST_RESERVE: Duration = Duration::from_millis(300);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderError(pub String);
@@ -92,6 +91,10 @@ impl DecisionProvider for MockDecisionProvider {
 
 /// Traces the Call's cause through Jev and denies it when the traced chain of events departs
 /// from the user's stated intent by more than the configured threshold.
+///
+/// When tracing fails, the Call gets the Collector's failure policy (an error), or REVIEW when
+/// a candidate holds hidden content or a sensitive value. Without a stated intent the turn's
+/// prompt stands in; with neither, the Call is allowed, or reviewed in that same risky case.
 #[derive(Clone)]
 pub struct JevDecisionProvider {
     repository: Arc<dyn DecisionRepository>,
@@ -118,26 +121,72 @@ impl JevDecisionProvider {
         }
     }
 
+    /// Records the failure, then gives the failure policy or, when `risky`, REVIEW.
     async fn unresolved(
         &self,
         request: &DecisionRequest,
         error: impl fmt::Display,
-    ) -> ProviderError {
+        risky: bool,
+    ) -> Result<DecisionResponse, ProviderError> {
         let error = error.to_string();
-        let _ = self.repository.mark_unresolved(request, &error).await;
-        ProviderError(error)
+        let repository = self.repository.clone();
+        let (stored_request, stored_error) = (request.clone(), error.clone());
+        // Only a mark for auditing; the decision does not wait on it.
+        let _ = settle(
+            tokio::spawn(async move {
+                repository
+                    .mark_unresolved(&stored_request, &stored_error)
+                    .await
+            }),
+            STORE_WAIT,
+        )
+        .await;
+        if !risky {
+            return Err(ProviderError(error));
+        }
+        Ok(DecisionResponse {
+            decision: Decision::Review,
+            reason: REVIEW_REASON.to_owned(),
+            rule: "trace::unresolved".to_owned(),
+            start: CausalStart::Unresolved,
+            written: false,
+            jev: Some(JevActivity {
+                asked: true,
+                ms: None,
+                reused_from: None,
+                error: Some(error),
+            }),
+        })
     }
 }
+
+/// Kept from the decision deadline for storing the trace and the verdict after Jev answers.
+const PERSIST_RESERVE: Duration = Duration::from_millis(300);
+/// How long a decision waits for a write it does not depend on; the write goes on after that.
+const STORE_WAIT: Duration = Duration::from_millis(200);
+
+const REVIEW_REASON: &str =
+    "WithHuman이 이 도구 호출의 원인을 확인하지 못했습니다. 사용자 확인이 필요합니다.";
 
 #[async_trait]
 impl DecisionProvider for JevDecisionProvider {
     async fn decide(&self, request: &DecisionRequest) -> Result<DecisionResponse, ProviderError> {
         let started = Instant::now();
-        let graph = self
-            .repository
-            .trace_graph(request)
-            .await
-            .map_err(|error| ProviderError(error.to_string()))?;
+        let graph = match self.repository.trace_graph(request).await {
+            Ok(graph) => graph,
+            // Committed before sequences were numbered: nothing to trace it through.
+            Err(RepositoryError::Unsequenced) => {
+                return Ok(DecisionResponse {
+                    decision: Decision::Allow,
+                    reason: String::new(),
+                    rule: "trace::unsequenced".to_owned(),
+                    start: CausalStart::Unresolved,
+                    written: false,
+                    jev: None,
+                });
+            }
+            Err(error) => return Err(ProviderError(error.to_string())),
+        };
 
         // Candidates and the sequences their paths pass through, whose content Jev sees.
         let (candidates, _) = trace::candidate_sequences(&graph, &self.settings);
@@ -152,34 +201,53 @@ impl DecisionProvider for JevDecisionProvider {
             .sequence_members(&request.session_id, &shown, graph.call.order)
             .await
             .map_err(|error| ProviderError(error.to_string()))?;
-        let intent = request
+        let stated = request
             .intent
             .as_deref()
             .map(str::trim)
             .filter(|intent| !intent.is_empty());
-        let plan = trace::plan(&graph, &members, intent, &self.settings);
-
-        let timeout = match request.deadline_ms {
-            Some(deadline) => Duration::from_millis(deadline)
-                .saturating_sub(started.elapsed())
-                .saturating_sub(PERSIST_RESERVE)
-                .min(self.jev_timeout),
-            None => self.jev_timeout,
+        // Without a stated intent, what the user asked for this turn stands in.
+        let prompt = graph
+            .request
+            .as_deref()
+            .map(str::trim)
+            .filter(|prompt| !prompt.is_empty())
+            .map(|prompt| truncate(&tokens::redact(prompt), 500));
+        let (intent, intent_source) = match (stated, prompt.as_deref()) {
+            (Some(intent), _) => (Some(intent), "stated"),
+            (None, Some(prompt)) => (Some(prompt), "prompt"),
+            (None, None) => (None, "none"),
         };
+        let plan = trace::plan(&graph, &members, intent, &self.settings);
+        let risky = plan.risky(&graph);
+
+        let remaining = |reserve: Duration| {
+            request.deadline_ms.map(|deadline| {
+                Duration::from_millis(deadline)
+                    .saturating_sub(started.elapsed())
+                    .saturating_sub(reserve)
+            })
+        };
+        let timeout =
+            remaining(PERSIST_RESERVE).map_or(self.jev_timeout, |left| left.min(self.jev_timeout));
         if timeout.is_zero() {
-            return Err(self.unresolved(request, "no time left to ask Jev").await);
+            return self
+                .unresolved(request, "no time left to ask Jev", risky)
+                .await;
         }
         let asked = Instant::now();
         let answers = match self.jev.ask(&plan.request, timeout).await {
             Ok(answers) => answers,
-            Err(error) => return Err(self.unresolved(request, error).await),
+            Err(error) => return self.unresolved(request, error, risky).await,
         };
         let jev_ms = u64::try_from(asked.elapsed().as_millis()).unwrap_or(u64::MAX);
         let outcome = match trace::interpret(&plan, &answers) {
             Ok(outcome) => outcome,
-            Err(error) => return Err(self.unresolved(request, error).await),
+            Err(error) => return self.unresolved(request, error, risky).await,
         };
 
+        let mut trace_json = trace::record(&plan, &outcome);
+        trace_json["intent_source"] = intent_source.into();
         let record = TraceRecord {
             sequence: graph.call.sequence,
             parent: outcome.chosen.key.clone(),
@@ -199,10 +267,18 @@ impl DecisionProvider for JevDecisionProvider {
                 .iter()
                 .map(|segment| (segment.seq, segment.probability, segment.rank))
                 .collect(),
-            intent_score: outcome.intent_score,
-            trace: trace::record(&plan, &outcome),
+            intent_score: outcome.judged_score,
+            trace: trace_json,
         };
-        let _ = self.repository.persist_trace(request, &record).await;
+        // The trace is stored in its own task, so a slow write neither delays the decision past
+        // its deadline nor is cut off with it.
+        let repository = self.repository.clone();
+        let stored_request = request.clone();
+        let stored = settle(
+            tokio::spawn(async move { repository.persist_trace(&stored_request, &record).await }),
+            remaining(Duration::from_millis(100)).unwrap_or(STORE_WAIT * 5),
+        )
+        .await;
 
         let start = match outcome.chosen.stop {
             _ if outcome.chosen.sequence.is_none() => CausalStart::Self_,
@@ -214,23 +290,28 @@ impl DecisionProvider for JevDecisionProvider {
             asked: true,
             ms: Some(jev_ms),
             reused_from: None,
-            error: None,
+            error: stored
+                .err()
+                .map(|error| format!("trace not stored: {error}")),
         });
-        let (decision, rule, reason) = match (intent, outcome.intent_score) {
-            (Some(intent), Some(score)) if 1.0 - score > self.threshold => (
+        // The agent sees the reason, so it names no score, intent or path it could learn to
+        // avoid; those stay with the Call's trace.
+        let (decision, rule, reason) = match outcome.judged_score {
+            Some(score) if 1.0 - score > self.threshold => (
                 Decision::Deny,
                 "intent::mismatch",
-                truncate(
-                    &format!(
-                        "사용자 의도와 다른 행동으로 판단해 차단했습니다 (일치 확률 {score:.2}, \
-                         임계값 {:.2}). 의도: {intent} / 원인 경로: {}",
-                        self.threshold, outcome.chosen.sentence
-                    ),
-                    800,
+                format!(
+                    "WithHuman이 사용자 의도와 다른 행동으로 판단해 차단했습니다. (세션 {}, 호출 {})",
+                    request.session_id, request.call_seq
                 ),
             ),
-            (Some(_), Some(_)) => (Decision::Allow, "intent::match", String::new()),
-            _ => (Decision::Allow, "intent::unknown", String::new()),
+            Some(_) => (Decision::Allow, "intent::match", String::new()),
+            None if risky => (
+                Decision::Review,
+                "intent::unknown",
+                REVIEW_REASON.to_owned(),
+            ),
+            None => (Decision::Allow, "intent::unknown", String::new()),
         };
         Ok(DecisionResponse {
             decision,
@@ -240,6 +321,18 @@ impl DecisionProvider for JevDecisionProvider {
             written: false,
             jev,
         })
+    }
+}
+
+/// Waits up to `wait` for a spawned write; past that it finishes on its own.
+async fn settle(
+    write: tokio::task::JoinHandle<Result<(), RepositoryError>>,
+    wait: Duration,
+) -> Result<(), String> {
+    match tokio::time::timeout(wait, write).await {
+        Ok(Ok(result)) => result.map_err(|error| error.to_string()),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(_) => Err("still writing".to_owned()),
     }
 }
 

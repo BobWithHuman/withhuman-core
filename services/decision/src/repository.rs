@@ -1,4 +1,9 @@
-use std::{error::Error, fmt};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    error::Error,
+    fmt,
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -30,44 +35,82 @@ SET cause.graph_version = $graph_version \
 MERGE (call)-[:HAS_VERDICT]->(verdict) \
 RETURN true AS written";
 
-// The Call, the sequences before it, which of them hold hidden content or the latest mention
-// of a token (an exfiltration target or sensitive value) before the Call, and the parent each
-// sequence was last traced to.
+// The Call; the sequences before it with the subagent whose calls they hold (none for the main
+// agent; a subagent is an agent_id a SubagentStart announced); which of them hold content that was hidden where it appeared; which hold the latest
+// mention before the Call (outside the Call's own sequence) of an exfiltration target or
+// sensitive value — one per value whatever slot mentioned it — and whether the Call mentions
+// that value too; every parent earlier Calls of a sequence chose; and the latest user prompt.
 const TRACE_GRAPH: &str = "\
 MATCH (call:ExecutionNode {session_id: $session_id, seq: $call_seq, type: 'Call'}) \
 RETURN call.order, call.session_sequence, call.payload_json, \
   COLLECT { MATCH (group:Sequence {session_id: $session_id}) \
-            WHERE group.number < call.session_sequence RETURN group.number } AS sequences, \
-  COLLECT { MATCH (node:ExecutionNode {session_id: $session_id})-[:CONTAINS_PARAGRAPH]->(:Paragraph {hidden: true}) \
-            WHERE node.session_sequence < call.session_sequence AND node.order < call.order \
+            WHERE group.number < call.session_sequence \
+            OPTIONAL MATCH (group)-[:MEMBER]->(member:ExecutionNode {type: 'Call'}) \
+            WHERE EXISTS { MATCH (:ExecutionNode {session_id: $session_id, type: 'SubagentStart', \
+                                                  agent_id: member.agent_id}) } \
+            WITH group, head(collect(member.agent_id)) AS agent \
+            RETURN [group.number, agent] } AS sequences, \
+  COLLECT { MATCH (node:ExecutionNode {session_id: $session_id})-[contains:CONTAINS_PARAGRAPH]->(:Paragraph) \
+            WHERE contains.hidden AND node.session_sequence < call.session_sequence \
+              AND node.order < call.order \
             RETURN DISTINCT node.session_sequence } AS hidden, \
   COLLECT { MATCH (node:ExecutionNode {session_id: $session_id})-[:MENTIONS_TOKEN]->(token:Token) \
             WHERE token.key_kind IN $token_kinds AND node.order < call.order \
-              AND node.session_sequence IS NOT NULL \
-            WITH token, node ORDER BY node.order DESC \
-            WITH token, collect(node)[0] AS latest \
-            WHERE latest.session_sequence < call.session_sequence \
-            RETURN DISTINCT latest.session_sequence } AS tokens, \
-  COLLECT { MATCH (group:Sequence {session_id: $session_id}) \
-            WHERE group.parent IS NOT NULL AND group.number <= call.session_sequence \
-            RETURN [group.number, group.parent] } AS parents";
+              AND node.session_sequence < call.session_sequence \
+            WITH token.key_kind AS kind, token.key AS key, node ORDER BY node.order DESC \
+            WITH kind, key, collect(node)[0] AS latest \
+            RETURN [latest.session_sequence, \
+                    EXISTS { MATCH (call)-[:MENTIONS_TOKEN]->(:Token {key_kind: kind, key: key}) }] } \
+    AS tokens, \
+  COLLECT { MATCH (earlier:ExecutionNode {session_id: $session_id, type: 'Call'}) \
+            WHERE earlier.session_sequence < call.session_sequence \
+              AND earlier.parent IS NOT NULL AND earlier.parent <> 'unresolved' \
+            RETURN DISTINCT [earlier.session_sequence, earlier.parent] } AS parents, \
+  CASE WHEN EXISTS { MATCH (:ExecutionNode {session_id: $session_id, type: 'SubagentStart', \
+                                            agent_id: call.agent_id}) } \
+       THEN call.agent_id END, \
+  COLLECT { MATCH (request:ExecutionNode {session_id: $session_id, type: 'Request'}) \
+            WHERE request.order < call.order \
+            RETURN request.payload_json ORDER BY request.order DESC LIMIT 1 }[0] AS request";
 
+// Segments also bring the paragraphs hidden where they appeared, and whether a later Call was
+// traced to them.
 const SEQUENCE_MEMBERS: &str = "\
 UNWIND $numbers AS number \
 MATCH (:Sequence {session_id: $session_id, number: number})-[:MEMBER]->(node:ExecutionNode) \
 WHERE node.type IN ['Request', 'Instructions', 'Message', 'Call', 'Segment'] \
   AND node.order < $call_order \
-RETURN number, node.seq, node.order, node.type, node.payload_json \
+RETURN number, node.seq, node.order, node.type, node.payload_json, \
+  COLLECT { MATCH (node)-[contains:CONTAINS_PARAGRAPH]->(paragraph:Paragraph) \
+            WHERE contains.hidden RETURN paragraph.text ORDER BY contains.index } AS hidden, \
+  EXISTS { MATCH (node)-[:NEXT {kind: 'cause'}]->(effect:ExecutionNode) \
+           WHERE effect.order < $call_order } AS caused \
 ORDER BY number, node.order";
 
-// Step 2 links the Call's sequence to the chosen one; step 4 links the activated Segments to
-// the Call with NEXT edges (marked `kind: 'cause'`, apart from the order chain).
+// Takes the Session lock first like Generator commits, so the two never deadlock. Step 2 links
+// the Call's sequence to the chosen one; step 4 links the activated Segments to the Call with
+// NEXT edges (marked `kind: 'cause'`, apart from the order chain). A repeated decision of the
+// same Call replaces its edges, and the Sequence keeps the parent of its latest Call.
 const PERSIST_TRACE: &str = "\
+MATCH (session:Session {session_id: $session_id}) \
+SET session.commit_lock = true \
+WITH session \
 MATCH (call:ExecutionNode {session_id: $session_id, seq: $call_seq, type: 'Call'}) \
 SET call.parent = $parent, call.trace_json = $trace_json, call.intent_score = $intent_score \
 WITH call \
+CALL (call) { \
+  OPTIONAL MATCH ()-[old:NEXT {kind: 'cause', call_seq: $call_seq}]->(call) \
+  DELETE old \
+} \
+CALL (call) { \
+  OPTIONAL MATCH (:Sequence {session_id: $session_id})-[old:PARENT {call_seq: $call_seq}]->() \
+  DELETE old \
+} \
 MERGE (current:Sequence {session_id: $session_id, number: $sequence}) \
-SET current.parent = $parent, current.parent_call_seq = $call_seq \
+WITH call, current, coalesce(current.parent_call_order, -1) <= call.order AS latest \
+SET current.parent = CASE WHEN latest THEN $parent ELSE current.parent END, \
+    current.parent_call_seq = CASE WHEN latest THEN $call_seq ELSE current.parent_call_seq END, \
+    current.parent_call_order = CASE WHEN latest THEN call.order ELSE current.parent_call_order END \
 WITH call, current \
 OPTIONAL MATCH (parent:Sequence {session_id: $session_id, number: $parent_number}) \
 FOREACH (_ IN CASE WHEN parent IS NULL THEN [] ELSE [1] END | \
@@ -86,9 +129,16 @@ CALL (call) { \
 RETURN linked";
 
 const MARK_UNRESOLVED: &str = "\
+MATCH (session:Session {session_id: $session_id}) \
+SET session.commit_lock = true \
+WITH session \
 MATCH (call:ExecutionNode {session_id: $session_id, seq: $call_seq, type: 'Call'}) \
 SET call.parent = 'unresolved', call.trace_error = $error \
 RETURN true";
+
+/// Concurrent writes to one session can deadlock; Neo4j reports that as a transient error and
+/// the statement is safe to run again.
+const TRANSIENT_ATTEMPTS: u32 = 5;
 
 /// What steps 1–4 decided for a Call, as stored.
 #[derive(Debug, Clone, PartialEq)]
@@ -175,6 +225,26 @@ impl Neo4jDecisionRepository {
         &self,
         statement: &str,
         parameters: Value,
+    ) -> Result<QueryData, RepositoryError> {
+        let mut attempt = 1;
+        loop {
+            match self.execute_once(statement, &parameters).await {
+                Err(RepositoryError::Query(message))
+                    if message.starts_with("Neo.TransientError.")
+                        && attempt < TRANSIENT_ATTEMPTS =>
+                {
+                    tokio::time::sleep(Duration::from_millis(u64::from(attempt) * 20)).await;
+                    attempt += 1;
+                }
+                result => return result,
+            }
+        }
+    }
+
+    async fn execute_once(
+        &self,
+        statement: &str,
+        parameters: &Value,
     ) -> Result<QueryData, RepositoryError> {
         let response = self
             .client
@@ -274,27 +344,47 @@ impl DecisionRepository for Neo4jDecisionRepository {
             .await?;
         let row = data.values.first().ok_or(RepositoryError::NotFound)?;
         let call_payload = payload(row.get(2));
-        let parents = row
-            .get(6)
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
+        let sequence = row
+            .get(1)
+            .and_then(Value::as_u64)
+            .ok_or(RepositoryError::Unsequenced)?;
+        let sequences = pairs(row.get(3))
             .filter_map(|pair| {
-                let number = pair.get(0)?.as_u64()?;
-                let parent = pair.get(1)?.as_str()?;
-                let parent = match parent.strip_prefix('s') {
-                    Some(number) => ParentKey::Sequence(number.parse().ok()?),
-                    None if parent == "none" => ParentKey::None,
-                    None => return None,
-                };
-                Some((number, parent))
+                Some((
+                    pair.first()?.as_u64()?,
+                    pair.get(1).and_then(Value::as_str).map(str::to_owned),
+                ))
             })
             .collect();
+        let mut tokens = BTreeSet::new();
+        let mut shared_tokens = BTreeSet::new();
+        for pair in pairs(row.get(5)) {
+            let Some(number) = pair.first().and_then(Value::as_u64) else {
+                continue;
+            };
+            tokens.insert(number);
+            if pair.get(1).and_then(Value::as_bool) == Some(true) {
+                shared_tokens.insert(number);
+            }
+        }
+        let mut parents: BTreeMap<u64, BTreeSet<ParentKey>> = BTreeMap::new();
+        for pair in pairs(row.get(6)) {
+            let (Some(number), Some(parent)) = (
+                pair.first().and_then(Value::as_u64),
+                pair.get(1)
+                    .and_then(Value::as_str)
+                    .and_then(ParentKey::parse),
+            ) else {
+                continue;
+            };
+            parents.entry(number).or_default().insert(parent);
+        }
         Ok(TraceGraph {
             call: CallInfo {
                 seq: request.call_seq,
                 order: number(row.first(), "call order")?,
-                sequence: number(row.get(1), "call session_sequence")?,
+                sequence,
+                agent_id: row.get(7).and_then(Value::as_str).map(str::to_owned),
                 tool_name: call_payload
                     .get("tool_name")
                     .and_then(Value::as_str)
@@ -305,10 +395,15 @@ impl DecisionRepository for Neo4jDecisionRepository {
                     .cloned()
                     .unwrap_or(Value::Null),
             },
-            sequences: numbers(row.get(3)),
+            sequences,
             hidden: numbers(row.get(4)),
-            tokens: numbers(row.get(5)),
+            tokens,
+            shared_tokens,
             parents,
+            request: payload(row.get(8))
+                .get("prompt")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
         })
     }
 
@@ -337,6 +432,15 @@ impl DecisionRepository for Neo4jDecisionRepository {
                     order: row.get(2)?.as_u64()?,
                     kind: MemberKind::from_node_type(row.get(3)?.as_str()?)?,
                     payload: payload(row.get(4)),
+                    hidden: row
+                        .get(5)
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect(),
+                    caused: row.get(6).and_then(Value::as_bool).unwrap_or_default(),
                 })
             })
             .collect())
@@ -393,7 +497,15 @@ fn number(value: Option<&Value>, field: &str) -> Result<u64, RepositoryError> {
         .ok_or_else(|| RepositoryError::InvalidResponse(format!("{field} is not a number")))
 }
 
-fn numbers(value: Option<&Value>) -> std::collections::BTreeSet<u64> {
+fn pairs(value: Option<&Value>) -> impl Iterator<Item = &Vec<Value>> {
+    value
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_array)
+}
+
+fn numbers(value: Option<&Value>) -> BTreeSet<u64> {
     value
         .and_then(Value::as_array)
         .map(|values| values.iter().filter_map(Value::as_u64).collect())
@@ -410,7 +522,7 @@ fn payload(value: Option<&Value>) -> Value {
 #[derive(Serialize)]
 struct QueryRequest<'a> {
     statement: &'a str,
-    parameters: Value,
+    parameters: &'a Value,
 }
 
 #[derive(Deserialize)]
@@ -439,6 +551,8 @@ pub enum RepositoryError {
     Query(String),
     InvalidResponse(String),
     NotFound,
+    /// The Call was committed without a session sequence (before sequences were numbered).
+    Unsequenced,
 }
 
 impl fmt::Display for RepositoryError {
@@ -448,6 +562,7 @@ impl fmt::Display for RepositoryError {
             Self::Query(error) => write!(formatter, "Neo4j query failed: {error}"),
             Self::InvalidResponse(error) => write!(formatter, "invalid Neo4j response: {error}"),
             Self::NotFound => formatter.write_str("requested graph version or Call was not found"),
+            Self::Unsequenced => formatter.write_str("the Call has no session sequence"),
         }
     }
 }
