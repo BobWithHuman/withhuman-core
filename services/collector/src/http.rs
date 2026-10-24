@@ -422,11 +422,7 @@ async fn pre_tool_use(
         .verdicts
         .insert(
             tool_use_id,
-            StoredVerdict {
-                decision: decision.clone(),
-                tool_name,
-                arguments,
-            },
+            StoredVerdict::new(decision.clone(), tool_name, &arguments),
         )
         .await;
     if !enforced_at_hook {

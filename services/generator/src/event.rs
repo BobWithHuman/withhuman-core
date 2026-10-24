@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::BTreeSet};
+use std::collections::BTreeSet;
 
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -379,37 +379,10 @@ fn paragraph_slot(source: &str) -> &'static str {
 fn redacted_json<T: Serialize>(value: &T) -> Result<String, RepositoryError> {
     let invalid = |error: serde_json::Error| RepositoryError::InvalidEvent(error.to_string());
     let mut tree = serde_json::to_value(value).map_err(invalid)?;
-    if redact_json(&mut tree) {
+    if tokens::redact_json(&mut tree) {
         serde_json::to_string(&tree).map_err(invalid)
     } else {
         serde_json::to_string(value).map_err(invalid)
-    }
-}
-
-/// Masks sensitive values in every string and every field named as a secret; reports whether
-/// anything changed.
-fn redact_json(value: &mut Value) -> bool {
-    match value {
-        Value::String(text) => match tokens::redact(text) {
-            Cow::Owned(redacted) => {
-                *text = redacted;
-                true
-            }
-            Cow::Borrowed(_) => false,
-        },
-        Value::Array(items) => items
-            .iter_mut()
-            .fold(false, |changed, item| redact_json(item) | changed),
-        Value::Object(fields) => fields.iter_mut().fold(false, |changed, (name, item)| {
-            if let Value::String(text) = item {
-                if let Some(masked) = tokens::redact_field(name, text) {
-                    *text = masked;
-                    return true;
-                }
-            }
-            redact_json(item) | changed
-        }),
-        _ => false,
     }
 }
 

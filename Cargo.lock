@@ -1489,6 +1489,7 @@ dependencies = [
  "tonic",
  "tower",
  "utoipa",
+ "withhuman-common",
  "withhuman-contracts",
 ]
 
@@ -1498,6 +1499,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "regex",
+ "serde_json",
  "sha2",
 ]
 

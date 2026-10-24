@@ -146,6 +146,36 @@ async fn serves_the_envoy_authorization_contract_over_grpc() {
 }
 
 #[tokio::test]
+async fn matches_arguments_whatever_their_key_order() {
+    let verdicts = InMemoryVerdictStore::new(2);
+    verdicts
+        .insert(
+            "tool-1".to_owned(),
+            StoredVerdict::new(
+                DecisionResponse {
+                    decision: Decision::Allow,
+                    reason: String::new(),
+                    rule: "test-rule".to_owned(),
+                    start: CausalStart::User,
+                    written: true,
+                    jev: None,
+                },
+                "mcp__filesystem__write_file".to_owned(),
+                &json!({"path":"a","options":{"mode":1,"force":true}}),
+            ),
+        )
+        .await
+        .unwrap();
+    let service = ExtAuthzService::new(Arc::new(verdicts), EnforcementMode::Enforce);
+
+    let reordered = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"write_file",
+        "arguments":{"options":{"force":true,"mode":1},"path":"a"},
+        "_meta":{"claudecode/toolUseId":"tool-1"}}}"#;
+    let response = check(&service, serde_json::from_str(reordered).unwrap()).await;
+    assert_allowed(&response);
+}
+
+#[tokio::test]
 async fn denies_when_the_verdict_store_is_unavailable() {
     struct UnavailableVerdicts;
 
@@ -174,8 +204,8 @@ async fn service(mode: EnforcementMode, decision: Decision, reason: &str) -> Ext
     verdicts
         .insert(
             "tool-1".to_owned(),
-            StoredVerdict {
-                decision: DecisionResponse {
+            StoredVerdict::new(
+                DecisionResponse {
                     decision,
                     reason: reason.to_owned(),
                     rule: "test-rule".to_owned(),
@@ -183,9 +213,9 @@ async fn service(mode: EnforcementMode, decision: Decision, reason: &str) -> Ext
                     written: true,
                     jev: None,
                 },
-                tool_name: "mcp__filesystem__write_file".to_owned(),
-                arguments: json!({"path":"a"}),
-            },
+                "mcp__filesystem__write_file".to_owned(),
+                &json!({"path":"a"}),
+            ),
         )
         .await
         .unwrap();

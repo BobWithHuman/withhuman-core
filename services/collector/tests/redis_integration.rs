@@ -84,11 +84,11 @@ async fn verdicts_expire_after_their_ttl() {
     store
         .insert(
             tool_use_id.clone(),
-            withhuman_collector::StoredVerdict {
-                decision: decision(Decision::Allow),
-                tool_name: "Read".to_owned(),
-                arguments: json!({}),
-            },
+            withhuman_collector::StoredVerdict::new(
+                decision(Decision::Allow),
+                "Read".to_owned(),
+                &json!({}),
+            ),
         )
         .await
         .unwrap();
@@ -308,6 +308,113 @@ async fn restores_session_context_after_redis_state_is_lost() {
     assert_eq!(results[0].payload.tool_input, Some(json!({"command":"ls"})));
     assert_eq!(results[0].meta.cwd.as_deref(), Some("/repo"));
     assert_eq!(results[0].meta.prompt_id.as_deref(), Some("p1"));
+}
+
+/// Verdicts, remembered tool inputs and message fragments wait in Redis without their secrets,
+/// and still authorize the call and complete the result.
+#[tokio::test]
+async fn keeps_no_secrets_in_redis() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    let generator = Arc::new(RecordingGenerator::default());
+    let service = replica(&url, generator.clone());
+    let ext_authz = ExtAuthzService::new(service.verdicts.clone(), EnforcementMode::Enforce);
+    let app = app_with_transport(service);
+    let session_id = unique("secrets");
+    let tool_use_id = unique("mcp-secret");
+    let arguments =
+        json!({"path":"a","api_key":"q8Zr2Lm4Np6Tx0Vb3Kd7","note":"AKIAIOSFODNN7EXAMPLE"});
+    for request in [
+        json_request(
+            "/v1/hooks/PreToolUse",
+            json!({
+                "session_id":session_id,"tool_name":"mcp__filesystem__write_file",
+                "tool_input":arguments,"tool_use_id":tool_use_id
+            }),
+        ),
+        json_request(
+            "/v1/hooks/MessageDisplay",
+            json!({
+                "session_id":session_id,"message_id":"m-1","index":0,
+                "delta":"token AKIAIOSFODNN7EXAMPLE\n","final":false
+            }),
+        ),
+    ] {
+        assert_eq!(
+            app.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::OK
+        );
+    }
+
+    let mut connection = redis_connection(&url).unwrap();
+    let mut keys: Vec<String> = redis::cmd("KEYS")
+        .arg(format!("withhuman:session:{{{session_id}}}*"))
+        .query_async(&mut connection)
+        .await
+        .unwrap();
+    keys.push(format!("withhuman:verdict:{tool_use_id}"));
+    assert_eq!(
+        keys.len(),
+        4,
+        "session, tool input, fragment and verdict keys"
+    );
+    for key in keys {
+        let kind: String = redis::cmd("TYPE")
+            .arg(&key)
+            .query_async(&mut connection)
+            .await
+            .unwrap();
+        let dump = match kind.as_str() {
+            "string" => redis::cmd("GET")
+                .arg(&key)
+                .query_async::<String>(&mut connection)
+                .await
+                .unwrap(),
+            "hash" => redis::cmd("HGETALL")
+                .arg(&key)
+                .query_async::<Vec<String>>(&mut connection)
+                .await
+                .unwrap()
+                .join("\n"),
+            other => panic!("{key} has unexpected type {other}"),
+        };
+        assert!(!dump.is_empty(), "{key} is empty");
+        for secret in ["q8Zr2Lm4Np6Tx0Vb3Kd7", "AKIAIOSFODNN7EXAMPLE"] {
+            assert!(!dump.contains(secret), "{secret} stored in {key}");
+        }
+    }
+
+    let check = Authorization::check(
+        &ext_authz,
+        tonic::Request::new(check_request(&tool_use_id, arguments)),
+    )
+    .await
+    .unwrap()
+    .into_inner();
+    assert_eq!(
+        check.status.map(|status| status.code),
+        Some(0),
+        "expected allow"
+    );
+
+    app.oneshot(json_request(
+        "/v1/hooks/PostToolUse",
+        json!({
+            "session_id":session_id,"tool_name":"mcp__filesystem__write_file",
+            "tool_response":"ok","tool_use_id":tool_use_id
+        }),
+    ))
+    .await
+    .unwrap();
+    let restored = generator.results.lock().unwrap()[0]
+        .payload
+        .tool_input
+        .clone()
+        .unwrap();
+    assert_eq!(restored["path"], "a");
+    assert_eq!(restored["api_key"], "q8Zr…3Kd7");
+    assert_eq!(restored["note"], "AKIA…MPLE");
 }
 
 /// Replicas that meet an unknown session at the same time seed it once and share one numbering.
