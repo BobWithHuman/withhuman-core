@@ -184,6 +184,19 @@ pub struct PostToolBatchRequest {
     pub session_id: String,
     #[serde(default)]
     pub hook_event_name: Option<HookEventName>,
+    /// Set when the batch ran in a subagent.
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub agent_type: Option<String>,
+    /// The calls of the batch; only their ids are read.
+    #[serde(default)]
+    pub tool_calls: Vec<BatchedToolCall>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+pub struct BatchedToolCall {
+    pub tool_use_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]

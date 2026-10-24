@@ -63,7 +63,8 @@ impl CollectorService {
         Self {
             normalizer: Normalizer::default()
                 .with_history(generator.clone())
-                .with_network_commands(config.network_commands.clone()),
+                .with_network_commands(config.network_commands.clone())
+                .with_intent_capture(config.intent_capture),
             config,
             generator,
             verdicts,
@@ -86,7 +87,8 @@ impl CollectorService {
             )),
             normalizer: Normalizer::new(RedisSessionStore::new(connection, config.session_ttl))
                 .with_history(generator.clone())
-                .with_network_commands(config.network_commands.clone()),
+                .with_network_commands(config.network_commands.clone())
+                .with_intent_capture(config.intent_capture),
             config,
             generator,
         })

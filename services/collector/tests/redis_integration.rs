@@ -484,6 +484,35 @@ async fn redis_sequences_match_in_memory_sequences() {
     assert_eq!(in_memory, redis);
 }
 
+/// Redis resumes a lost session inside its committed open sequence like the in-memory store, and
+/// keeps an intent a fragment stated before the seed.
+#[tokio::test]
+async fn redis_resumes_sequences_like_in_memory() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    let session_id = unique("resume-sequences");
+    let committed = || Arc::new(support::Committed(support::resume_cursor()));
+    let in_memory = support::run_steps(
+        Normalizer::new(InMemorySessionStore::default()).with_history(committed()),
+        &session_id,
+        support::RESUME_SCENARIO,
+    )
+    .await;
+    let redis = support::run_steps(
+        Normalizer::new(RedisSessionStore::new(
+            redis_connection(&url).unwrap(),
+            Duration::from_secs(60),
+        ))
+        .with_history(committed()),
+        &session_id,
+        support::RESUME_SCENARIO,
+    )
+    .await;
+
+    assert_eq!(in_memory, redis);
+}
+
 /// Replicas that meet an unknown session at the same time seed it once and share one numbering.
 #[tokio::test]
 async fn replicas_seed_a_resumed_session_once() {
