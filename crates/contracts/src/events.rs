@@ -322,9 +322,33 @@ pub struct SessionCursor {
     /// The highest session sequence committed.
     #[serde(default)]
     pub last_sequence: Option<u64>,
-    /// The latest user intent a message stated.
+    /// Where the main agent's sequences stood.
+    #[serde(default)]
+    pub sequences: SequenceCursor,
+    /// The intent the current turn stated (none once a later prompt started a new turn).
     #[serde(default)]
     pub intent: Option<String>,
+}
+
+/// The main agent's latest sequence as committed, so numbering resumes inside it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+pub struct SequenceCursor {
+    /// The main agent's latest sequence.
+    #[serde(default)]
+    pub current: Option<u64>,
+    /// It holds a Message or Call and no ToolBatch closed it.
+    #[serde(default)]
+    pub open: bool,
+    #[serde(default)]
+    pub has_message: bool,
+    #[serde(default)]
+    pub has_call: bool,
+    /// Sequence 0 holds the first user prompt.
+    #[serde(default)]
+    pub zero_has_request: bool,
+    /// Sequences of Calls still waiting for their batch, by tool_use_id.
+    #[serde(default)]
+    pub calls: BTreeMap<String, u64>,
 }
 
 /// A committed PreToolUse call, used to restore the tool input of a result whose Hook omits it

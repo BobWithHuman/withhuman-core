@@ -289,6 +289,57 @@ async fn resumes_numbering_after_the_generator_cursor() {
     assert_eq!(second.order(), first.event.order + 1);
 }
 
+/// A lost session resumes inside its committed open sequence: the waiting call's result joins it,
+/// the next call too, and the intent a fragment stated before the seed is kept.
+#[tokio::test]
+async fn resumes_inside_the_committed_open_sequence() {
+    let normalizer =
+        Normalizer::default().with_history(Arc::new(support::Committed(support::resume_cursor())));
+    let emitted = support::run_steps(normalizer, "session-1", support::RESUME_SCENARIO).await;
+    let observed: Vec<(u64, Option<String>)> = emitted
+        .iter()
+        .map(|event| {
+            let event: serde_json::Value = serde_json::from_str(event).unwrap();
+            (
+                event["session_sequence"].as_u64().unwrap(),
+                event["intent"].as_str().map(str::to_owned),
+            )
+        })
+        .collect();
+    let intent = Some("새 의도".to_owned());
+    assert_eq!(
+        observed,
+        [(3, None), (3, intent.clone()), (4, None), (4, intent)]
+    );
+}
+
+/// A session committed before sequences were numbered continues after sequence 0, which
+/// belongs to a session's first prompt.
+#[tokio::test]
+async fn numbers_a_session_without_sequences_after_sequence_zero() {
+    let normalizer =
+        Normalizer::default().with_history(Arc::new(support::Committed(SessionCursor {
+            last_order: 12,
+            ..Default::default()
+        })));
+    let emitted = support::run_steps(
+        normalizer,
+        "session-1",
+        r#"[["MessageDisplay", {"message_id": "m1", "delta": "hi", "final": true}],
+            ["UserPromptSubmit", {"prompt": "next"}]]"#,
+    )
+    .await;
+    let sequences: Vec<u64> = emitted
+        .iter()
+        .map(|event| {
+            serde_json::from_str::<serde_json::Value>(event).unwrap()["session_sequence"]
+                .as_u64()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(sequences, [1, 2]);
+}
+
 #[tokio::test]
 async fn reports_an_unreadable_generator_cursor() {
     let history = Arc::new(History(Err(GeneratorError::Unavailable("down".to_owned()))));
@@ -427,6 +478,7 @@ async fn numbers_session_wide_sequences_and_carries_the_stated_intent() {
             let event: serde_json::Value = serde_json::from_str(event).unwrap();
             let hook = match event["payload"].as_object().unwrap() {
                 payload if payload.contains_key("prompt") => "Request",
+                payload if payload.contains_key("agent_id") => "Subagent",
                 payload if payload.contains_key("text") => "Message",
                 payload if payload.contains_key("load_reason") => "Instructions",
                 payload if payload.contains_key("tool_response") => "Result",
@@ -441,6 +493,7 @@ async fn numbers_session_wide_sequences_and_carries_the_stated_intent() {
         })
         .collect();
     let intent = Some("로그인 버그 수정 (확신도: 높음)".to_owned());
+    let deploy = Some("배포 (확신도: 중간)".to_owned());
     let expected: Vec<(String, u64, Option<String>)> = [
         ("Instructions", 0, None),
         ("Request", 0, None),
@@ -460,6 +513,25 @@ async fn numbers_session_wide_sequences_and_carries_the_stated_intent() {
         ("Request", 4, None),
         ("Call", 5, None),
         ("Instructions", 5, None),
+        // A subagent's calls get sequences of their own; the main agent's sequence stays open.
+        ("Subagent", 5, None),
+        ("Message", 5, None),
+        ("Call", 6, deploy.clone()),
+        ("Call", 5, deploy.clone()),
+        // A repeated message keeps its sequence; a later intent line does not replace the
+        // turn's first.
+        ("Message", 5, None),
+        ("Message", 7, None),
+        ("Result", 6, None),
+        ("Batch", 6, None),
+        ("Result", 5, None),
+        // A batch closes the sequence of its calls only.
+        ("Batch", 5, None),
+        ("Call", 7, deploy.clone()),
+        // Naming only batched calls, a late repeat closes nothing.
+        ("Batch", 7, None),
+        ("Result", 7, None),
+        ("Batch", 7, None),
     ]
     .into_iter()
     .map(|(hook, sequence, intent)| (hook.to_owned(), sequence, intent))

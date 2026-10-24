@@ -1,9 +1,17 @@
 //! Replays `fixtures/session_scenario.json` through a [`Normalizer`] and returns every emitted
 //! event serialized exactly as the Collector sends it to the Generator.
 
+use std::collections::BTreeMap;
+
+use async_trait::async_trait;
 use serde_json::{Value, json};
-use withhuman_collector::{NormalizedEvent, Normalizer, TrustedHookContext};
-use withhuman_contracts::{decisions::EnforcementMode, events::SidePending};
+use withhuman_collector::{
+    GeneratorError, GeneratorTransport, NormalizedEvent, Normalizer, TrustedHookContext,
+};
+use withhuman_contracts::{
+    decisions::EnforcementMode,
+    events::{EventResponse, SequenceCursor, SessionCursor, SidePending},
+};
 
 /// Output of the scenario on the in-process Collector before shared state stores existed, plus
 /// the `session_sequence` field added since.
@@ -15,6 +23,46 @@ pub const GOLDEN: &str = include_str!("../fixtures/session_scenario.golden.jsonl
 /// Hooks covering how events join session-wide sequences and carry the stated intent.
 #[allow(dead_code)]
 pub const SEQUENCE_SCENARIO: &str = include_str!("../fixtures/sequence_scenario.json");
+
+/// Hooks of a session the Collector lost, resumed from [`resume_cursor`]. The first fragment
+/// arrives before the session is seeded again.
+#[allow(dead_code)]
+pub const RESUME_SCENARIO: &str = include_str!("../fixtures/resume_scenario.json");
+
+/// What the Generator committed for [`RESUME_SCENARIO`]: sequence 3 is open with its message,
+/// and call `t1` still waits for its result.
+#[allow(dead_code)]
+pub fn resume_cursor() -> SessionCursor {
+    SessionCursor {
+        last_order: 20,
+        last_sequence: Some(3),
+        sequences: SequenceCursor {
+            current: Some(3),
+            open: true,
+            has_message: true,
+            has_call: true,
+            zero_has_request: true,
+            calls: BTreeMap::from([("t1".to_owned(), 3)]),
+        },
+        intent: Some("이전 의도".to_owned()),
+        ..SessionCursor::default()
+    }
+}
+
+/// A Generator that only reports what it committed.
+#[allow(dead_code)]
+pub struct Committed(pub SessionCursor);
+
+#[async_trait]
+impl GeneratorTransport for Committed {
+    async fn send(&self, _event: NormalizedEvent) -> Result<EventResponse, GeneratorError> {
+        unreachable!("normalization never sends events")
+    }
+
+    async fn session_cursor(&self, _session_id: &str) -> Result<SessionCursor, GeneratorError> {
+        Ok(self.0.clone())
+    }
+}
 
 pub async fn run_scenario(normalizer: Normalizer, session_id: &str) -> Vec<String> {
     run_steps(

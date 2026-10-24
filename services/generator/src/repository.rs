@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use withhuman_contracts::events::{
     CreatedNode, EventResponse, ParagraphClassificationRequest, ParagraphClassificationResponse,
-    ParagraphReference, RequestContinuationRequest, RequestContinuationResponse, SessionCursor,
-    ToolCall,
+    ParagraphReference, RequestContinuationRequest, RequestContinuationResponse, SequenceCursor,
+    SessionCursor, ToolCall,
 };
 
 use crate::{GeneratorConfig, GeneratorEvent, event::GraphMutation};
@@ -209,7 +209,9 @@ RETURN applied, request_seq";
 
 // Every event carries the session cwd and prompt id as they were after it, so the values of the
 // highest order are the current ones. Commits made before they were recorded on EventCommit fall
-// back to their ExecutionNode.
+// back to their ExecutionNode. The main agent's nodes carry no agent_id that a SubagentStart
+// announced; its latest sequence is open when a Message or Call came after the last ToolBatch or Request in it. The intent is the
+// first one stated after the last prompt.
 const SESSION_CURSOR: &str = "\
 OPTIONAL MATCH (commit:EventCommit {session_id: $session_id}) \
 WITH coalesce(max(commit.order), 0) AS last_order \
@@ -218,6 +220,22 @@ WHERE node.agent_id IS NOT NULL AND node.sequence IS NOT NULL \
 WITH last_order, node.agent_id AS agent_id, max(node.sequence) AS sequence \
 WITH last_order, \
      collect(CASE WHEN agent_id IS NULL THEN NULL ELSE [agent_id, sequence] END) AS agents \
+WITH last_order, agents, \
+  COLLECT { MATCH (n:ExecutionNode {session_id: $session_id}) \
+            WHERE n.session_sequence IS NOT NULL AND NOT EXISTS { \
+              MATCH (:ExecutionNode {session_id: $session_id, type: 'SubagentStart', agent_id: n.agent_id}) } \
+            RETURN max(n.session_sequence) }[0] AS main_sequence, \
+  coalesce(COLLECT { MATCH (r:ExecutionNode {session_id: $session_id, type: 'Request'}) \
+                     RETURN max(r.order) }[0], -1) AS last_request \
+WITH last_order, agents, main_sequence, last_request, \
+  COLLECT { MATCH (n:ExecutionNode {session_id: $session_id, session_sequence: main_sequence}) \
+            WHERE n.type IN ['Message', 'Call'] AND NOT EXISTS { \
+              MATCH (:ExecutionNode {session_id: $session_id, type: 'SubagentStart', agent_id: n.agent_id}) } \
+            RETURN max(n.order) }[0] AS last_opening, \
+  COLLECT { MATCH (n:ExecutionNode {session_id: $session_id, session_sequence: main_sequence}) \
+            WHERE n.type IN ['ToolBatch', 'Request'] AND NOT EXISTS { \
+              MATCH (:ExecutionNode {session_id: $session_id, type: 'SubagentStart', agent_id: n.agent_id}) } \
+            RETURN max(n.order) }[0] AS last_closing \
 RETURN last_order, agents, \
   coalesce( \
     COLLECT { MATCH (c:EventCommit {session_id: $session_id}) WHERE c.cwd IS NOT NULL \
@@ -232,8 +250,21 @@ RETURN last_order, agents, \
   COLLECT { MATCH (n:ExecutionNode {session_id: $session_id}) WHERE n.session_sequence IS NOT NULL \
             RETURN max(n.session_sequence) }[0] AS last_sequence, \
   COLLECT { MATCH (n:ExecutionNode {session_id: $session_id, type: 'Message'}) \
-            WHERE n.intent IS NOT NULL \
-            RETURN n.intent ORDER BY n.order DESC LIMIT 1 }[0] AS intent";
+            WHERE n.intent IS NOT NULL AND n.order > last_request \
+            RETURN n.intent ORDER BY n.order LIMIT 1 }[0] AS intent, \
+  main_sequence, \
+  last_opening IS NOT NULL AND coalesce(last_closing, -1) < last_opening AS open, \
+  EXISTS { MATCH (n:ExecutionNode {session_id: $session_id, session_sequence: main_sequence, type: 'Message'}) } \
+    AS has_message, \
+  EXISTS { MATCH (n:ExecutionNode {session_id: $session_id, session_sequence: main_sequence, type: 'Call'}) \
+           WHERE NOT EXISTS { \
+              MATCH (:ExecutionNode {session_id: $session_id, type: 'SubagentStart', agent_id: n.agent_id}) } } AS has_call, \
+  EXISTS { MATCH (n:ExecutionNode {session_id: $session_id, session_sequence: 0, type: 'Request'}) } \
+    AS zero_has_request, \
+  COLLECT { MATCH (call:ExecutionNode {session_id: $session_id, type: 'Call'}) \
+            WHERE call.order > last_request AND call.session_sequence IS NOT NULL \
+              AND call.tool_use_id IS NOT NULL \
+            RETURN [call.tool_use_id, call.session_sequence] ORDER BY call.order DESC LIMIT 200 } AS calls";
 
 const TOOL_CALL: &str = "\
 MATCH (call:ExecutionNode {session_id: $session_id, type: 'Call', tool_use_id: $tool_use_id}) \
@@ -663,6 +694,22 @@ impl GraphRepository for Neo4jRepository {
             prompt_id: row.get(3).and_then(Value::as_str).map(str::to_owned),
             last_sequence: row.get(4).and_then(Value::as_u64),
             intent: row.get(5).and_then(Value::as_str).map(str::to_owned),
+            sequences: SequenceCursor {
+                current: row.get(6).and_then(Value::as_u64),
+                open: row.get(7).and_then(Value::as_bool).unwrap_or_default(),
+                has_message: row.get(8).and_then(Value::as_bool).unwrap_or_default(),
+                has_call: row.get(9).and_then(Value::as_bool).unwrap_or_default(),
+                zero_has_request: row.get(10).and_then(Value::as_bool).unwrap_or_default(),
+                calls: row
+                    .get(11)
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|pair| {
+                        Some((pair.get(0)?.as_str()?.to_owned(), pair.get(1)?.as_u64()?))
+                    })
+                    .collect(),
+            },
         })
     }
 
