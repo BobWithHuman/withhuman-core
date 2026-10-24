@@ -12,13 +12,20 @@
 //! account numbers, IMSI, passport numbers, unhyphenated ID numbers) need a context keyword next
 //! to them.
 
-use std::{collections::BTreeSet, net::IpAddr, sync::LazyLock};
+use std::{borrow::Cow, collections::BTreeSet, net::IpAddr, ops::Range, sync::LazyLock};
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use regex::Regex;
 use sha2::{Digest, Sha256};
 
 use crate::chunking::sha256;
+
+macro_rules! regex {
+    ($pattern:expr) => {{
+        static PATTERN: LazyLock<Regex> = LazyLock::new(|| Regex::new($pattern).unwrap());
+        &*PATTERN
+    }};
+}
 
 /// Characters inspected on each side of a candidate when a context keyword is required.
 const CONTEXT_BEFORE: usize = 48;
@@ -67,6 +74,52 @@ pub struct Token {
 
 /// Every token found in `text`, deduplicated and in a stable order.
 pub fn extract_tokens(text: &str) -> Vec<Token> {
+    scan(text).tokens.into_iter().collect()
+}
+
+/// `text` with every sensitive value (credential, PII, financial, device identifier, DSN
+/// password) replaced by its masked form, so stored events never hold the secret. Redacting
+/// already redacted text changes nothing.
+pub fn redact(text: &str) -> Cow<'_, str> {
+    let mut redactions = scan(text).redactions;
+    if redactions.is_empty() {
+        return Cow::Borrowed(text);
+    }
+    // Earliest first and, at the same start, the widest; overlapped spans are dropped.
+    redactions.sort_by(|a, b| a.0.start.cmp(&b.0.start).then(b.0.end.cmp(&a.0.end)));
+    let mut redacted = String::with_capacity(text.len());
+    let mut cursor = 0;
+    for (span, replacement) in redactions {
+        if span.start < cursor {
+            continue;
+        }
+        redacted.push_str(&text[cursor..span.start]);
+        redacted.push_str(&replacement);
+        cursor = span.end;
+    }
+    redacted.push_str(&text[cursor..]);
+    Cow::Owned(redacted)
+}
+
+/// The masked value of a structured field whose name marks it as secret (`api_key`,
+/// `GITHUB_TOKEN`, `password`, `Authorization`, ...), whatever the value looks like.
+pub fn redact_field(name: &str, value: &str) -> Option<String> {
+    let secret_name = regex!(
+        r"(?i)(?:^|[_.-])(?:api[_-]?key|apikey|access[_-]?key(?:[_-]?id)?|secret(?:[_-]?(?:access[_-]?)?key)?|client[_-]?secret|auth[_-]?token|access[_-]?token|refresh[_-]?token|token|password|passwd|pwd|authorization|private[_-]?key)$"
+    );
+    (secret_name.is_match(name) && !is_placeholder(value)).then(|| mask_ends(value))
+}
+
+/// Values that are references or masks rather than secrets.
+fn is_placeholder(value: &str) -> bool {
+    value.len() < 4
+        || value.chars().all(|c| c == '*')
+        || value.contains('…')
+        || value.starts_with("${")
+        || value.starts_with('<')
+}
+
+fn scan(text: &str) -> Tokens {
     let mut found = Tokens::default();
     locators(text, &mut found);
     socket_addresses(text, &mut found);
@@ -80,15 +133,19 @@ pub fn extract_tokens(text: &str) -> Vec<Token> {
     personal_ids(text, &mut found);
     financial_ids(text, &mut found);
     device_ids(text, &mut found);
-    found.0.into_iter().collect()
+    found
 }
 
 #[derive(Default)]
-struct Tokens(BTreeSet<Token>);
+struct Tokens {
+    tokens: BTreeSet<Token>,
+    /// Byte spans of sensitive values in the scanned text and their masked replacement.
+    redactions: Vec<(Range<usize>, String)>,
+}
 
 impl Tokens {
     fn address(&mut self, kind: &'static str, value: &str) {
-        self.0.insert(Token {
+        self.tokens.insert(Token {
             kind,
             category: Category::Address,
             key: value.to_owned(),
@@ -102,8 +159,10 @@ impl Tokens {
         category: Category,
         normalized: &str,
         masked: String,
+        span: Range<usize>,
     ) {
-        self.0.insert(Token {
+        self.redactions.push((span, masked.clone()));
+        self.tokens.insert(Token {
             kind,
             category,
             key: format!("sha256:{}", sha256(normalized)),
@@ -112,17 +171,10 @@ impl Tokens {
     }
 
     fn contains(&self, kind: &str, key: &str) -> bool {
-        self.0
+        self.tokens
             .iter()
             .any(|token| token.kind == kind && token.key == key)
     }
-}
-
-macro_rules! regex {
-    ($pattern:expr) => {{
-        static PATTERN: LazyLock<Regex> = LazyLock::new(|| Regex::new($pattern).unwrap());
-        &*PATTERN
-    }};
 }
 
 fn trim_punctuation(value: &str) -> &str {
@@ -221,19 +273,37 @@ fn endpoints(text: &str, found: &mut Tokens) {
         if previous_char(text, value.start()) == Some(':') {
             continue;
         }
-        found.address(
-            "db_dsn",
-            &mask_dsn_password(trim_punctuation(value.as_str())),
-        );
+        let dsn = trim_punctuation(value.as_str());
+        let mut masked = String::with_capacity(dsn.len());
+        let mut cursor = 0;
+        for password in dsn_passwords(dsn) {
+            found.redactions.push((
+                value.start() + password.start..value.start() + password.end,
+                "***".to_owned(),
+            ));
+            masked.push_str(&dsn[cursor..password.start]);
+            masked.push_str("***");
+            cursor = password.end;
+        }
+        masked.push_str(&dsn[cursor..]);
+        found.address("db_dsn", &masked);
     }
 }
 
-/// Replaces the password of a DSN so the index never stores it.
-fn mask_dsn_password(dsn: &str) -> String {
-    let userinfo = regex!(r"(://[^/:@\s]*:)[^@/\s]*@");
-    let parameter = regex!(r"(?i)\b((?:password|pwd)\s*=\s*)[^;&\s]*");
-    let masked = userinfo.replace(dsn, "${1}***@");
-    parameter.replace_all(&masked, "${1}***").into_owned()
+/// Byte spans of the passwords in a DSN, in order.
+fn dsn_passwords(dsn: &str) -> Vec<Range<usize>> {
+    let userinfo = regex!(r"://[^/:@\s]*:([^@/\s]+)@");
+    let parameter = regex!(r"(?i)\b(?:password|pwd)\s*=\s*([^;&\s]+)");
+    let mut spans: Vec<Range<usize>> = userinfo
+        .captures_iter(dsn)
+        .chain(parameter.captures_iter(dsn))
+        .filter_map(|captures| captures.get(1))
+        .filter(|password| password.as_str() != "***")
+        .map(|password| password.range())
+        .collect();
+    spans.sort_by_key(|span| span.start);
+    spans.dedup_by(|later, earlier| later.start < earlier.end);
+    spans
 }
 
 fn hardware_addresses(text: &str, found: &mut Tokens) {
@@ -398,7 +468,10 @@ fn credentials(text: &str, found: &mut Tokens) {
         r"\b(?:(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{36,255}|github_pat_[A-Za-z0-9_]{60,255}|glpat-[A-Za-z0-9_-]{20,}|xox[abposr]-[A-Za-z0-9-]{10,}|(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|AIza[0-9A-Za-z_-]{35}|sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|npm_[A-Za-z0-9]{36}|hf_[A-Za-z0-9]{30,}|SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43})"
     );
     let assigned = regex!(
-        r#"(?i)\b(?:api[_-]?key|apikey|access[_-]?key(?:[_-]?id)?|secret[_-]?(?:access[_-]?)?key|client[_-]?secret|auth[_-]?token|access[_-]?token|secret|token)\\?["']?\s*[:=]\s*\\?["']?([A-Za-z0-9_\-./+=]{16,256})"#
+        r#"(?i)(?:\b|_)(?:api[_-]?key|apikey|access[_-]?key(?:[_-]?id)?|secret[_-]?(?:access[_-]?)?key|client[_-]?secret|auth[_-]?token|access[_-]?token|secret|token)\\?["']?\s*[:=]\s*\\?["']?([A-Za-z0-9_\-./+=]{16,256})"#
+    );
+    let password = regex!(
+        r#"(?i)(?:\b|_)(?:password|passwd|pwd)\\?["']?\s*[:=]\s*\\?["']?([^\s"'\\,;&]{1,128})"#
     );
 
     for value in jwt.find_iter(text) {
@@ -408,6 +481,7 @@ fn credentials(text: &str, found: &mut Tokens) {
                 Category::Credential,
                 value.as_str(),
                 format!("jwt(alg={alg}) {}", mask_ends(value.as_str())),
+                value.range(),
             );
         }
     }
@@ -417,15 +491,37 @@ fn credentials(text: &str, found: &mut Tokens) {
             Category::Credential,
             value.as_str(),
             mask_ends(value.as_str()),
+            value.range(),
         );
     }
     for captures in assigned.captures_iter(text) {
-        let value = &captures[1];
+        let matched = captures.get(1).expect("value group");
+        let value = matched.as_str();
         let has_letter = value.chars().any(|c| c.is_ascii_alphabetic());
         let has_digit = value.chars().any(|c| c.is_ascii_digit());
         let key = format!("sha256:{}", sha256(value));
         if has_letter && has_digit && !found.contains("jwt", &key) {
-            found.sensitive("api_key", Category::Credential, value, mask_ends(value));
+            found.sensitive(
+                "api_key",
+                Category::Credential,
+                value,
+                mask_ends(value),
+                matched.range(),
+            );
+        }
+    }
+    for captures in password.captures_iter(text) {
+        let matched = captures.get(1).expect("value group");
+        let value = matched.as_str();
+        // `pwd: /repo` is a working directory, not a password.
+        if !is_placeholder(value) && !value.starts_with(['/', '~', '.']) {
+            found.sensitive(
+                "password",
+                Category::Credential,
+                value,
+                mask_ends(value),
+                matched.range(),
+            );
         }
     }
     private_keys(text, found);
@@ -442,9 +538,15 @@ fn private_keys(text: &str, found: &mut Tokens) {
                 .find("PRIVATE KEY-----")
                 .is_some_and(|tail| tail < 48)
         });
-        let body = match end {
-            Some(end) => &rest[..end],
-            None => &rest[..rest.find(|c: char| !body_char(c)).unwrap_or(rest.len())],
+        let (body, block_end) = match end {
+            Some(end) => {
+                let marker = rest[end..].find("PRIVATE KEY-----").expect("checked above");
+                (&rest[..end], end + marker + "PRIVATE KEY-----".len())
+            }
+            None => {
+                let body_end = rest.find(|c: char| !body_char(c)).unwrap_or(rest.len());
+                (&rest[..body_end], body_end)
+            }
         };
         // Escaped newlines in JSON and real whitespace do not change the key.
         let normalized: String = body
@@ -453,11 +555,16 @@ fn private_keys(text: &str, found: &mut Tokens) {
             .chars()
             .filter(|c| !c.is_whitespace())
             .collect();
+        let label = header
+            .as_str()
+            .trim_start_matches("-----BEGIN ")
+            .trim_end_matches("-----");
         found.sensitive(
             "private_key",
             Category::Credential,
             &format!("{}{normalized}", header.as_str()),
-            format!("{} ({} chars)", header.as_str(), normalized.len()),
+            format!("[{label} ({} chars)]", normalized.len()),
+            header.start()..header.end() + block_end,
         );
     }
 }
@@ -482,13 +589,19 @@ fn personal_ids(text: &str, found: &mut Tokens) {
         if valid_date && (hyphenated || has_context(text, whole.start(), whole.end(), RRN)) {
             let digits = digits_only(whole.as_str());
             let masked = format!("{}-{}******", &digits[..6], &digits[6..7]);
-            found.sensitive("kr_rrn", Category::Pii, &digits, masked);
+            found.sensitive("kr_rrn", Category::Pii, &digits, masked, whole.range());
         }
     }
     for value in passport.find_iter(text) {
         if has_context(text, value.start(), value.end(), PASSPORT) {
             let masked = format!("{}*******", &value.as_str()[..2]);
-            found.sensitive("passport", Category::Pii, value.as_str(), masked);
+            found.sensitive(
+                "passport",
+                Category::Pii,
+                value.as_str(),
+                masked,
+                value.range(),
+            );
         }
     }
     for captures in license.captures_iter(text) {
@@ -502,7 +615,13 @@ fn personal_ids(text: &str, found: &mut Tokens) {
         {
             let digits = digits_only(whole.as_str());
             let masked = format!("{}-{}-******-**", &digits[..2], &digits[2..4]);
-            found.sensitive("driver_license", Category::Pii, &digits, masked);
+            found.sensitive(
+                "driver_license",
+                Category::Pii,
+                &digits,
+                masked,
+                whole.range(),
+            );
         }
     }
 }
@@ -524,7 +643,13 @@ fn financial_ids(text: &str, found: &mut Tokens) {
         let digits = digits_only(value.as_str());
         if card_brand_length_ok(&digits) && luhn_valid(&digits) {
             let masked = format!("{}******{}", &digits[..6], &digits[digits.len() - 4..]);
-            found.sensitive("card_pan", Category::Financial, &digits, masked);
+            found.sensitive(
+                "card_pan",
+                Category::Financial,
+                &digits,
+                masked,
+                value.range(),
+            );
             cards.insert(digits);
         }
     }
@@ -535,7 +660,13 @@ fn financial_ids(text: &str, found: &mut Tokens) {
         }
         if has_context(text, value.start(), value.end(), ACCOUNT) {
             let masked = format!("{}****{}", &digits[..3], &digits[digits.len() - 2..]);
-            found.sensitive("bank_account", Category::Financial, &digits, masked);
+            found.sensitive(
+                "bank_account",
+                Category::Financial,
+                &digits,
+                masked,
+                value.range(),
+            );
         }
     }
     for value in iban.find_iter(text) {
@@ -550,7 +681,13 @@ fn financial_ids(text: &str, found: &mut Tokens) {
                 &normalized[..4],
                 &normalized[normalized.len() - 4..]
             );
-            found.sensitive("iban", Category::Financial, &normalized, masked);
+            found.sensitive(
+                "iban",
+                Category::Financial,
+                &normalized,
+                masked,
+                value.range(),
+            );
         }
     }
 }
@@ -570,13 +707,19 @@ fn device_ids(text: &str, found: &mut Tokens) {
             && (hyphenated || has_context(text, value.start(), value.end(), IMEI))
         {
             let masked = format!("{}*******{}", &digits[..8], &digits[14..]);
-            found.sensitive("imei", Category::Device, &digits, masked);
+            found.sensitive("imei", Category::Device, &digits, masked, value.range());
         }
     }
     for value in imsi.find_iter(text) {
         if has_context(text, value.start(), value.end(), IMSI) {
             let masked = format!("{}*******{}", &value.as_str()[..5], &value.as_str()[12..]);
-            found.sensitive("imsi", Category::Device, value.as_str(), masked);
+            found.sensitive(
+                "imsi",
+                Category::Device,
+                value.as_str(),
+                masked,
+                value.range(),
+            );
         }
     }
     for value in vin.find_iter(text) {
@@ -591,6 +734,7 @@ fn device_ids(text: &str, found: &mut Tokens) {
                 Category::Device,
                 vin,
                 format!("{}********", &vin[..9]),
+                value.range(),
             );
         }
     }

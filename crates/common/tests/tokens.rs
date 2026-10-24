@@ -1,4 +1,6 @@
-use withhuman_common::tokens::{Category, Token, extract_tokens};
+use std::borrow::Cow;
+
+use withhuman_common::tokens::{Category, Token, extract_tokens, redact, redact_field};
 
 fn of_kind(text: &str, kind: &str) -> Vec<Token> {
     extract_tokens(text)
@@ -212,6 +214,14 @@ fn hashes_and_masks_credentials() {
         }
     }
     assert!(of_kind("token=${GITHUB_TOKEN} secret: changeme", "api_key").is_empty());
+    assert_eq!(
+        of_kind(
+            "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            "api_key"
+        )
+        .len(),
+        1
+    );
 }
 
 #[test]
@@ -223,7 +233,10 @@ fn keys_private_keys_the_same_raw_or_json_escaped() {
     let raw_keys = keys(&raw, "private_key");
     assert_eq!(raw_keys.len(), 1);
     assert_eq!(raw_keys, keys(&escaped, "private_key"));
-    assert!(decoded(&raw, "private_key")[0].starts_with("-----BEGIN RSA PRIVATE KEY----- ("));
+    assert_eq!(
+        decoded(&raw, "private_key"),
+        ["[RSA PRIVATE KEY (128 chars)]"]
+    );
     assert_eq!(
         keys("-----BEGIN OPENSSH PRIVATE KEY-----", "private_key").len(),
         1
@@ -330,4 +343,66 @@ fn categorizes_every_kind() {
             "{expected:?} in {categories:?}"
         );
     }
+}
+
+const SECRETS: &str = "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n\
+    DATABASE_URL=postgres://app:s3cret@db:5432/app\n\
+    DB_PASSWORD=hunter2!\n\
+    card 4111 1111 1111 1111, 주민번호 900101-1234567\n\
+    -----BEGIN EC PRIVATE KEY-----\nMHcCAQEEIIrYSSNQFaA2Hwf1duRSxKtLYX5CB04fSeQ6tF1aY/PuoAoGCCqGSM49\n-----END EC PRIVATE KEY-----\n\
+    see https://example.test/docs";
+
+#[test]
+fn redacts_every_sensitive_value() {
+    let redacted = redact(SECRETS);
+
+    for secret in [
+        "AKIAIOSFODNN7EXAMPLE",
+        "s3cret",
+        "hunter2!",
+        "4111 1111 1111 1111",
+        "900101-1234567",
+        "MHcCAQEEIIrYSSNQ",
+        "BEGIN EC PRIVATE KEY",
+    ] {
+        assert!(!redacted.contains(secret), "{secret} in {redacted}");
+    }
+    for kept in [
+        "AWS_ACCESS_KEY_ID=AKIA…MPLE",
+        "postgres://app:***@db:5432/app",
+        "411111******1111",
+        "900101-1******",
+        "[EC PRIVATE KEY (",
+        "https://example.test/docs",
+    ] {
+        assert!(redacted.contains(kept), "{kept} missing from {redacted}");
+    }
+}
+
+#[test]
+fn redaction_is_idempotent_and_keeps_clean_text() {
+    let once = redact(SECRETS).into_owned();
+    assert_eq!(redact(&once), once);
+    assert!(matches!(
+        redact("ls -la /repo && curl https://example.test 10.0.0.5:6379"),
+        Cow::Borrowed(_)
+    ));
+    assert!(matches!(redact("pwd: /repo"), Cow::Borrowed(_)));
+}
+
+#[test]
+fn redacts_fields_named_as_secrets() {
+    assert_eq!(
+        redact_field("GITHUB_TOKEN", "abc123def456ghi"),
+        Some("abc1…6ghi".to_owned())
+    );
+    assert_eq!(redact_field("x-api-key", "k1"), None);
+    assert_eq!(
+        redact_field("password", "hunter22"),
+        Some("********".to_owned())
+    );
+    assert!(redact_field("Authorization", "Bearer abcdefghijkl").is_some());
+    assert_eq!(redact_field("max_tokens", "4096"), None);
+    assert_eq!(redact_field("password", "${DB_PASSWORD}"), None);
+    assert_eq!(redact_field("token", "abc1…6ghi"), None);
 }

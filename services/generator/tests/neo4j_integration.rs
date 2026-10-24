@@ -393,17 +393,16 @@ async fn indexes_sensitive_tool_output_without_storing_it() {
     };
     let session_id = unique_session("generator-tokens-it");
     let client = reqwest::Client::new();
-    post_event(
-        &client,
-        &generator_url,
-        "PostToolUse",
-        json!({
-            "session_id":session_id,"order":1,"observed_at":1,"meta":{"tool_use_id":"tool-1"},
-            "payload":{"tool_name":"Bash","tool_input":{"command":"cat .env"},
-                       "tool_response":"AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\nDATABASE_URL=postgres://app:s3cret@db:5432/app"}
-        }),
-    )
-    .await;
+    let event = json!({
+        "session_id":session_id,"order":1,"observed_at":1,"meta":{"tool_use_id":"tool-1"},
+        "payload":{"tool_name":"Bash",
+                   "tool_input":{"command":"cat .env","env":{"API_KEY":"plain-field-secret-1"}},
+                   "tool_response":"AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\nDATABASE_URL=postgres://app:s3cret@db:5432/app"}
+    });
+    let first = post_event(&client, &generator_url, "PostToolUse", event.clone()).await;
+    // Redaction is deterministic, so a replay is recognized as the same committed event.
+    let replay = post_event(&client, &generator_url, "PostToolUse", event).await;
+    assert_eq!(first, replay);
 
     let rows = query
         .one(
@@ -428,13 +427,24 @@ async fn indexes_sensitive_tool_output_without_storing_it() {
     ])));
     let stored = query
         .one(
-            "MATCH (t:Token {session_id:$session_id}) \
-             RETURN any(t IN collect(t) WHERE t.key CONTAINS 'AKIAIOSFODNN7EXAMPLE' \
-                    OR t.key CONTAINS 's3cret' OR t.decoded CONTAINS 's3cret')",
+            "MATCH (c:EventCommit {session_id:$session_id})-[:CREATED]->(n:ExecutionNode) \
+             OPTIONAL MATCH (n)-[:CONTAINS_PARAGRAPH]->(p:Paragraph) \
+             OPTIONAL MATCH (n)-[:MENTIONS_TOKEN]->(t:Token) \
+             WITH c, n, collect(DISTINCT p.text) AS paragraphs, \
+                  collect(DISTINCT t.key) + collect(DISTINCT t.decoded) AS tokens \
+             RETURN c.event_json, n.payload_json, paragraphs, tokens",
             json!({"session_id":session_id}),
         )
         .await;
-    assert_eq!(stored, vec![json!(false)]);
+    let stored = Value::Array(stored).to_string();
+    for secret in ["AKIAIOSFODNN7EXAMPLE", "s3cret", "plain-field-secret-1"] {
+        assert!(!stored.contains(secret), "{secret} stored in {stored}");
+    }
+    assert!(stored.contains("AKIA…MPLE"), "{stored}");
+    assert!(
+        stored.contains("postgres://app:***@db:5432/app"),
+        "{stored}"
+    );
 
     delete_session(&query, &session_id).await;
 }
