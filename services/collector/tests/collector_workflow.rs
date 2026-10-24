@@ -19,7 +19,7 @@ use withhuman_collector::{
 };
 use withhuman_contracts::{
     decisions::{CausalStart, Decision, DecisionResponse, EnforcementMode},
-    events::{EventResponse, SessionCursor, SidePending},
+    events::{ContentOrigin, EventResponse, SessionCursor, SidePending},
     ext_authz::{AttributeContext, Authorization, CheckRequest, attribute_context},
 };
 
@@ -436,6 +436,91 @@ async fn hides_the_intent_line_from_the_user_but_records_it() {
         [
             "[의도] 로그인 버그 수정 (확신도: 높음)\n[의도] 이건 본문\n",
             "[의도] 테스트 추가\n추가했습니다."
+        ]
+    );
+}
+
+#[tokio::test]
+async fn marks_tool_results_from_downloads_and_fetches_as_external() {
+    let generator = Arc::new(RecordingGenerator::allow());
+    let config = CollectorConfig {
+        network_commands: vec!["corp-fetch".to_owned()],
+        ..Default::default()
+    };
+    let app = test_app(config, generator.clone());
+    let pre = |id: &str, tool: &str, input: Value| {
+        json_request(
+            "/v1/hooks/PreToolUse",
+            json!({"session_id":"s1","cwd":"/repo","tool_name":tool,"tool_input":input,"tool_use_id":id}),
+        )
+    };
+    let post = |id: &str, tool: &str, input: Value, response: Value| {
+        json_request(
+            "/v1/hooks/PostToolUse",
+            json!({"session_id":"s1","cwd":"/repo","tool_name":tool,"tool_input":input,
+                   "tool_response":response,"tool_use_id":id}),
+        )
+    };
+    let page = "<!DOCTYPE html><html><head></head><body>hi</body></html>";
+    for request in [
+        pre(
+            "t1",
+            "Bash",
+            json!({"command":"curl -sL https://x.test/p -o page.html"}),
+        ),
+        post(
+            "t1",
+            "Bash",
+            json!({"command":"curl -sL https://x.test/p -o page.html"}),
+            json!({"stdout":"","stderr":""}),
+        ),
+        post(
+            "t2",
+            "Read",
+            json!({"file_path":"/repo/page.html"}),
+            json!({"type":"text","file":{"content":page}}),
+        ),
+        post(
+            "t3",
+            "Read",
+            json!({"file_path":"/repo/src/main.rs"}),
+            json!({"type":"text","file":{"content":"fn main() {}"}}),
+        ),
+        post(
+            "t4",
+            "Bash",
+            json!({"command":"python fetch.py"}),
+            json!({"stdout":page,"stderr":""}),
+        ),
+        post(
+            "t5",
+            "Bash",
+            json!({"command":"corp-fetch wiki/Home"}),
+            json!({"stdout":"wiki text","stderr":""}),
+        ),
+    ] {
+        app.clone().oneshot(request).await.unwrap();
+    }
+
+    let events = generator.events.lock().unwrap();
+    let origins: Vec<(String, Option<ContentOrigin>)> = events
+        .iter()
+        .filter_map(|event| match event {
+            NormalizedEvent::PostToolUse(event) => Some((
+                event.meta.tool_use_id.clone().unwrap(),
+                event.meta.content_origin,
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        origins,
+        [
+            ("t1".to_owned(), Some(ContentOrigin::External)),
+            ("t2".to_owned(), Some(ContentOrigin::External)),
+            ("t3".to_owned(), None),
+            ("t4".to_owned(), Some(ContentOrigin::External)),
+            ("t5".to_owned(), Some(ContentOrigin::External)),
         ]
     );
 }

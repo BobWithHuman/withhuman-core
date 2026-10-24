@@ -39,6 +39,8 @@ pub struct CollectorConfig {
     /// Ask the model to state the inferred user intent first; the line is hidden from the user
     /// and stored by the Generator.
     pub intent_capture: bool,
+    /// Commands, besides the built-in list, whose output comes from the network.
+    pub network_commands: Vec<String>,
 }
 
 impl Default for CollectorConfig {
@@ -62,6 +64,7 @@ impl Default for CollectorConfig {
             verdict_ttl: Duration::from_secs(3_600),
             session_ttl: Duration::from_secs(604_800),
             intent_capture: true,
+            network_commands: Vec::new(),
         }
     }
 }
@@ -134,16 +137,7 @@ impl CollectorConfig {
             })?,
             enforce_mcp_at_hook: env::var("WITHHUMAN_MCP_ENFORCE")
                 .is_ok_and(|value| value == "hook"),
-            watch_paths: env::var("WITHHUMAN_WATCH_PATHS")
-                .map(|value| {
-                    value
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(str::to_owned)
-                        .collect()
-                })
-                .unwrap_or_default(),
+            watch_paths: list_env("WITHHUMAN_WATCH_PATHS"),
             verdict_capacity,
             redis_url: env::var("REDIS_URL")
                 .ok()
@@ -156,8 +150,23 @@ impl CollectorConfig {
                 "off" => Some(false),
                 _ => None,
             })?,
+            network_commands: list_env("WITHHUMAN_EXTERNAL_COMMANDS"),
         })
     }
+}
+
+/// A comma-separated list; empty when unset.
+fn list_env(name: &str) -> Vec<String> {
+    env::var(name)
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn parse_env<T>(name: &str, default: T) -> io::Result<T>

@@ -21,7 +21,7 @@ use withhuman_collector::{
 };
 use withhuman_contracts::{
     decisions::{CausalStart, Decision, DecisionResponse, EnforcementMode},
-    events::{EventResponse, PostToolUseEventRequest, SessionCursor},
+    events::{ContentOrigin, EventResponse, PostToolUseEventRequest, SessionCursor},
     ext_authz::{AttributeContext, Authorization, CheckRequest, attribute_context},
 };
 
@@ -415,6 +415,49 @@ async fn keeps_no_secrets_in_redis() {
     assert_eq!(restored["path"], "a");
     assert_eq!(restored["api_key"], "q8Zr…3Kd7");
     assert_eq!(restored["note"], "AKIA…MPLE");
+}
+
+/// A clone on one replica makes reads of its files external on another.
+#[tokio::test]
+async fn shares_downloaded_paths_across_replicas() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    let generator = Arc::new(RecordingGenerator::default());
+    let replica_a = app_with_transport(replica(&url, generator.clone()));
+    let replica_b = app_with_transport(replica(&url, generator.clone()));
+    let session_id = unique("downloads");
+    let clone = json!({"command":"git clone https://github.com/acme/tool.git"});
+    replica_a
+        .oneshot(json_request(
+            "/v1/hooks/PreToolUse",
+            json!({"session_id":session_id,"cwd":"/repo","tool_name":"Bash",
+                   "tool_input":clone,"tool_use_id":"t1"}),
+        ))
+        .await
+        .unwrap();
+    replica_b
+        .oneshot(json_request(
+            "/v1/hooks/PostToolUse",
+            json!({"session_id":session_id,"cwd":"/repo","tool_name":"Read",
+                   "tool_input":{"file_path":"/repo/tool/README.md"},
+                   "tool_response":{"type":"text","file":{"content":"readme"}},"tool_use_id":"t2"}),
+        ))
+        .await
+        .unwrap();
+
+    let results = generator.results.lock().unwrap();
+    assert_eq!(
+        results[0].meta.content_origin,
+        Some(ContentOrigin::External)
+    );
+    let mut connection = redis_connection(&url).unwrap();
+    let ttl: i64 = redis::cmd("TTL")
+        .arg(format!("withhuman:session:{{{session_id}}}:downloads"))
+        .query_async(&mut connection)
+        .await
+        .unwrap();
+    assert!(ttl > 0);
 }
 
 /// Replicas that meet an unknown session at the same time seed it once and share one numbering.

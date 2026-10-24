@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     sync::{Arc, LazyLock, Mutex, MutexGuard},
     time::Duration,
 };
@@ -28,6 +28,9 @@ pub struct SessionUpdate {
     pub agent_id: Option<String>,
     /// Adds the final fragment, then assembles and removes the message buffer.
     pub finish_message: Option<MessageFragment>,
+    /// Remembers paths a command saves downloaded content to, so later reads of them count as
+    /// external content.
+    pub record_downloads: Vec<String>,
 }
 
 /// One MessageDisplay flush. Fragments are assembled by `index`, so retried or reordered
@@ -51,6 +54,8 @@ pub struct SessionSnapshot {
     pub message: Option<String>,
     /// The assembled message misses a fragment index below the final one.
     pub message_incomplete: bool,
+    /// Every path the session downloaded content to, sorted.
+    pub downloads: Vec<String>,
 }
 
 #[async_trait]
@@ -140,6 +145,7 @@ impl SessionStore for InMemorySessionStore {
             let incomplete = pieces.keys().copied().ne(0..pieces.len() as u64);
             (pieces.into_values().collect::<String>(), incomplete)
         });
+        state.downloads.extend(update.record_downloads);
         let order = state.last_order.unwrap_or_default() + 1;
         state.last_order = Some(order);
         Ok(SessionSnapshot {
@@ -151,6 +157,7 @@ impl SessionStore for InMemorySessionStore {
             tool_input,
             message_incomplete: message.as_ref().is_some_and(|(_, incomplete)| *incomplete),
             message: message.map(|(text, _)| text),
+            downloads: state.downloads.iter().cloned().collect(),
         })
     }
 
@@ -206,6 +213,7 @@ struct SessionState {
     tool_inputs: HashMap<String, Value>,
     agent_sequences: HashMap<String, u64>,
     side_pending: SidePending,
+    downloads: BTreeSet<String>,
 }
 
 impl SessionState {
@@ -224,14 +232,15 @@ impl SessionState {
 /// Applies one event's [`SessionUpdate`] and reserves its order in a single script run, so
 /// replicas sharing Redis serialize per session exactly like the in-memory mutex does.
 ///
-/// KEYS: session hash, tool input to store, tool input to take, message buffer.
+/// KEYS: session hash, tool input to store, tool input to take, message buffer, download set.
 /// ARGV: ttl, then presence flag and value for cwd, prompt_id, stored tool input, taken tool
-/// input (flag only), agent id, and the final fragment (flag, index flag, index, delta). Flags
-/// keep `Some("")` distinct from `None`. An unseeded session returns order 0 and writes nothing.
+/// input (flag only), agent id, the final fragment (flag, index flag, index, delta), and the
+/// downloaded paths to record. Flags keep `Some("")` distinct from `None`. An unseeded session
+/// returns order 0 and writes nothing.
 const APPLY_EVENT: &str = r"
 local session = KEYS[1]
 if redis.call('HEXISTS', session, 'next_order') == 0 then
-  return {0, false, false, false, false, false, false, 0}
+  return {0, false, false, false, false, false, false, 0, {}}
 end
 local ttl = tonumber(ARGV[1])
 if ARGV[2] == '1' then redis.call('HSET', session, 'cwd', ARGV[3]) end
@@ -266,10 +275,13 @@ if ARGV[11] == '1' then
   message = table.concat(parts)
   redis.call('DEL', KEYS[4])
 end
+for i = 15, #ARGV do redis.call('SADD', KEYS[5], ARGV[i]) end
+redis.call('EXPIRE', KEYS[5], ttl)
+local downloads = redis.call('SMEMBERS', KEYS[5])
 local order = redis.call('HINCRBY', session, 'next_order', 1)
 redis.call('EXPIRE', session, ttl)
 local fields = redis.call('HMGET', session, 'cwd', 'prompt_id', 'side_pending')
-return {order, fields[1], fields[2], fields[3], sequence, tool_input, message, incomplete}
+return {order, fields[1], fields[2], fields[3], sequence, tool_input, message, incomplete, downloads}
 ";
 
 /// KEYS: session hash. ARGV: ttl, last order, presence flag and value for cwd and prompt_id,
@@ -331,6 +343,10 @@ fn fragment_key(session_id: &str, message_id: &str) -> String {
     format!("{}:fragment:{message_id}", session_key(session_id))
 }
 
+fn downloads_key(session_id: &str) -> String {
+    format!("{}:downloads", session_key(session_id))
+}
+
 fn flag<T>(value: &Option<T>) -> &'static str {
     if value.is_some() { "1" } else { "0" }
 }
@@ -344,6 +360,7 @@ type ApplyEventReply = (
     Option<String>,
     Option<String>,
     u8,
+    Vec<String>,
 );
 
 #[async_trait]
@@ -366,28 +383,43 @@ impl SessionStore for RedisSessionStore {
         let take_id = update.take_tool_input.as_deref().unwrap_or_default();
         let fragment = update.finish_message.clone().unwrap_or_default();
 
-        let (order, cwd, prompt_id, side_pending, agent_sequence, tool_input, message, incomplete): ApplyEventReply =
-            APPLY_EVENT_SCRIPT
-                .key(session_key(session_id))
-                .key(tool_input_key(session_id, store_id))
-                .key(tool_input_key(session_id, take_id))
-                .key(fragment_key(session_id, &fragment.message_id))
-                .arg(self.ttl_secs)
-                .arg(flag(&update.cwd))
-                .arg(update.cwd.as_deref().unwrap_or_default())
-                .arg(flag(&update.prompt_id))
-                .arg(update.prompt_id.as_deref().unwrap_or_default())
-                .arg(flag(&stored_tool_input))
-                .arg(store_value)
-                .arg(flag(&update.take_tool_input))
-                .arg(flag(&update.agent_id))
-                .arg(update.agent_id.as_deref().unwrap_or_default())
-                .arg(flag(&update.finish_message))
-                .arg(flag(&fragment.index))
-                .arg(fragment.index.unwrap_or_default())
-                .arg(&fragment.delta)
-                .invoke_async(&mut self.connection.clone())
-                .await?;
+        let mut invocation = APPLY_EVENT_SCRIPT.key(session_key(session_id));
+        invocation
+            .key(tool_input_key(session_id, store_id))
+            .key(tool_input_key(session_id, take_id))
+            .key(fragment_key(session_id, &fragment.message_id))
+            .key(downloads_key(session_id))
+            .arg(self.ttl_secs)
+            .arg(flag(&update.cwd))
+            .arg(update.cwd.as_deref().unwrap_or_default())
+            .arg(flag(&update.prompt_id))
+            .arg(update.prompt_id.as_deref().unwrap_or_default())
+            .arg(flag(&stored_tool_input))
+            .arg(store_value)
+            .arg(flag(&update.take_tool_input))
+            .arg(flag(&update.agent_id))
+            .arg(update.agent_id.as_deref().unwrap_or_default())
+            .arg(flag(&update.finish_message))
+            .arg(flag(&fragment.index))
+            .arg(fragment.index.unwrap_or_default())
+            .arg(&fragment.delta);
+        for path in &update.record_downloads {
+            invocation.arg(path);
+        }
+        let (
+            order,
+            cwd,
+            prompt_id,
+            side_pending,
+            agent_sequence,
+            tool_input,
+            message,
+            incomplete,
+            mut downloads,
+        ): ApplyEventReply = invocation
+            .invoke_async(&mut self.connection.clone())
+            .await?;
+        downloads.sort();
         if order == 0 {
             return Err(StoreError::UnknownSession);
         }
@@ -406,6 +438,7 @@ impl SessionStore for RedisSessionStore {
                 .transpose()?,
             message,
             message_incomplete: incomplete == 1,
+            downloads,
         })
     }
 

@@ -61,8 +61,10 @@ impl CollectorService {
     pub fn new(config: CollectorConfig, generator: Arc<dyn GeneratorTransport>) -> Self {
         let verdicts = Arc::new(InMemoryVerdictStore::new(config.verdict_capacity));
         Self {
+            normalizer: Normalizer::default()
+                .with_history(generator.clone())
+                .with_network_commands(config.network_commands.clone()),
             config,
-            normalizer: Normalizer::default().with_history(generator.clone()),
             generator,
             verdicts,
         }
@@ -83,7 +85,8 @@ impl CollectorService {
                 config.verdict_ttl,
             )),
             normalizer: Normalizer::new(RedisSessionStore::new(connection, config.session_ttl))
-                .with_history(generator.clone()),
+                .with_history(generator.clone())
+                .with_network_commands(config.network_commands.clone()),
             config,
             generator,
         })

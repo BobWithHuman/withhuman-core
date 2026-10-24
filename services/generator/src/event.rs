@@ -1,18 +1,18 @@
 use std::collections::BTreeSet;
 
 use serde::{Serialize, de::DeserializeOwned};
-use serde_json::Value;
 use withhuman_common::{
     chunking::{self, Profile},
-    hidden::{self, Origin},
-    intent, tokens,
+    intent,
+    origin::{self, Origin, OriginContext},
+    tokens,
 };
 use withhuman_contracts::events::{
-    ConfigChangeEventRequest, FileChangedEventRequest, InstructionsLoadedEventRequest,
-    MessageDisplayEventRequest, PostToolBatchEventRequest, PostToolUseEventRequest,
-    PostToolUseFailureEventRequest, PreToolUseEventRequest, SessionStartEventRequest,
-    SubagentStartEventRequest, SubagentStopEventRequest, ToolDescriptionsEventRequest,
-    UserPromptSubmitEventRequest,
+    ConfigChangeEventRequest, ContentOrigin, FileChangedEventRequest,
+    InstructionsLoadedEventRequest, MessageDisplayEventRequest, PostToolBatchEventRequest,
+    PostToolUseEventRequest, PostToolUseFailureEventRequest, PreToolUseEventRequest,
+    SessionStartEventRequest, SubagentStartEventRequest, SubagentStopEventRequest,
+    ToolDescriptionsEventRequest, UserPromptSubmitEventRequest,
 };
 
 use crate::RepositoryError;
@@ -140,13 +140,24 @@ impl GeneratorEvent {
                 })
             }
             Self::PostToolUse(event) => {
-                let origin = hidden::tool_origin(
-                    &event.payload.tool_name,
-                    event.payload.tool_input.as_ref(),
-                    event.meta.cwd.as_deref(),
-                );
-                let text =
-                    text_content(&event.payload.tool_response).map(|body| Text { body, origin });
+                let text = origin::tool_output(&event.payload.tool_response).map(|body| {
+                    // The Collector knows the session's downloads and configured commands; events
+                    // it did not judge external fall back to what the event itself shows.
+                    let origin = if event.meta.content_origin == Some(ContentOrigin::External) {
+                        Origin::External
+                    } else {
+                        origin::tool_origin(
+                            &event.payload.tool_name,
+                            event.payload.tool_input.as_ref(),
+                            Some(&body),
+                            &OriginContext {
+                                cwd: event.meta.cwd.as_deref(),
+                                ..Default::default()
+                            },
+                        )
+                    };
+                    Text { body, origin }
+                });
                 mutation(
                     "PostToolUse",
                     Some("Sequence"),
@@ -428,15 +439,6 @@ fn extract_tokens(value: &str, slot: &str, tokens: &mut BTreeSet<TokenMutation>)
             category: token.category.as_str().to_owned(),
         });
     }
-}
-
-fn text_content(value: &Value) -> Option<String> {
-    value.as_str().map(str::to_owned).or_else(|| {
-        value
-            .get("content")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-    })
 }
 
 fn chunk_text(text: &str, source: &str, origin: Origin) -> Vec<ParagraphMutation> {
