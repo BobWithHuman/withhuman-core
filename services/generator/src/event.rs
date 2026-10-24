@@ -1,9 +1,9 @@
-use std::{collections::BTreeSet, fmt::Write as _, net::IpAddr, sync::LazyLock};
+use std::{collections::BTreeSet, net::IpAddr, sync::LazyLock};
 
 use regex::Regex;
-use serde::Serialize;
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
+use withhuman_common::chunking::{self, Profile};
 use withhuman_contracts::events::{
     ConfigChangeEventRequest, FileChangedEventRequest, InstructionsLoadedEventRequest,
     MessageDisplayEventRequest, PostToolBatchEventRequest, PostToolUseEventRequest,
@@ -84,6 +84,35 @@ impl GeneratorEvent {
             Self::PostToolBatch(event) => event.order,
             Self::ToolDescriptions(event) => event.order,
         }
+    }
+
+    /// Rebuilds an event from the JSON stored on its `EventCommit`.
+    pub fn from_json(event_name: &str, event_json: &str) -> Result<Self, RepositoryError> {
+        fn parse<T: DeserializeOwned>(event_json: &str) -> Result<T, RepositoryError> {
+            serde_json::from_str(event_json)
+                .map_err(|error| RepositoryError::InvalidEvent(error.to_string()))
+        }
+
+        Ok(match event_name {
+            "SessionStart" => Self::SessionStart(parse(event_json)?),
+            "UserPromptSubmit" => Self::UserPromptSubmit(parse(event_json)?),
+            "PreToolUse" => Self::PreToolUse(parse(event_json)?),
+            "PostToolUse" => Self::PostToolUse(parse(event_json)?),
+            "PostToolUseFailure" => Self::PostToolUseFailure(parse(event_json)?),
+            "SubagentStart" => Self::SubagentStart(parse(event_json)?),
+            "SubagentStop" => Self::SubagentStop(parse(event_json)?),
+            "InstructionsLoaded" => Self::InstructionsLoaded(parse(event_json)?),
+            "ConfigChange" => Self::ConfigChange(parse(event_json)?),
+            "FileChanged" => Self::FileChanged(parse(event_json)?),
+            "MessageDisplay" => Self::MessageDisplay(parse(event_json)?),
+            "PostToolBatch" => Self::PostToolBatch(parse(event_json)?),
+            "ToolDescriptions" => Self::ToolDescriptions(parse(event_json)?),
+            other => {
+                return Err(RepositoryError::InvalidEvent(format!(
+                    "unknown event {other}"
+                )));
+            }
+        })
     }
 
     pub(crate) fn into_mutation(self) -> Result<GraphMutation, RepositoryError> {
@@ -236,6 +265,7 @@ pub(crate) struct ParagraphMutation {
     pub(crate) source: String,
     pub(crate) hidden: bool,
     pub(crate) from_user_doc: Option<bool>,
+    pub(crate) long_paragraph: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -274,6 +304,7 @@ where
                     source: chunk.source.clone(),
                     hidden: chunk.hidden,
                     from_user_doc: chunk.from_user_doc,
+                    long_paragraph: false,
                 })
             })
             .collect::<Result<Vec<_>, RepositoryError>>()?,
@@ -374,28 +405,22 @@ fn text_content(value: &Value) -> Option<String> {
 }
 
 fn chunk_text(text: &str, source: &str) -> Vec<ParagraphMutation> {
-    text.split("\n\n")
-        .map(str::trim)
-        .filter(|paragraph| !paragraph.is_empty())
-        .enumerate()
-        .map(|(index, text)| ParagraphMutation {
-            index: i64::try_from(index).unwrap_or(i64::MAX),
-            text: text.to_owned(),
-            hash: sha256(text),
+    let profile = match source {
+        "PostToolUse" => Profile::ToolOutput,
+        _ => Profile::Prose,
+    };
+    chunking::chunk_text(text, profile)
+        .into_iter()
+        .map(|chunk| ParagraphMutation {
+            index: i64::try_from(chunk.index).unwrap_or(i64::MAX),
+            text: chunk.text,
+            hash: chunk.hash,
             source: source.to_owned(),
             hidden: false,
             from_user_doc: Some(false),
+            long_paragraph: chunk.long_paragraph,
         })
         .collect()
-}
-
-fn sha256(value: &str) -> String {
-    Sha256::digest(value.as_bytes())
-        .iter()
-        .fold(String::with_capacity(64), |mut output, byte| {
-            write!(output, "{byte:02x}").expect("writing to String cannot fail");
-            output
-        })
 }
 
 fn signed(value: u64, field: &str) -> Result<i64, RepositoryError> {

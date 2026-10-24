@@ -1344,6 +1344,10 @@ dependencies = [
 [[package]]
 name = "withhuman-common"
 version = "0.1.0"
+dependencies = [
+ "regex",
+ "sha2",
+]
 
 [[package]]
 name = "withhuman-contracts"
@@ -1381,10 +1385,10 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "sha2",
  "tokio",
  "tower",
  "utoipa",
+ "withhuman-common",
  "withhuman-contracts",
 ]
 

@@ -73,7 +73,7 @@ CALL (node) { \
   MERGE (stored:Paragraph {hash: paragraph.hash}) \
   ON CREATE SET stored.text = paragraph.text, stored.source = paragraph.source, \
                 stored.hidden = paragraph.hidden, stored.from_user_doc = paragraph.from_user_doc, \
-                stored.created_in_seq = node.seq \
+                stored.long_paragraph = paragraph.long_paragraph, stored.created_in_seq = node.seq \
   MERGE (node)-[:CONTAINS_PARAGRAPH {index: paragraph.index}]->(stored) \
   WITH node, stored, paragraph \
   OPTIONAL MATCH (pending:PendingParagraphEnrichment {session_id: $session_id, hash: paragraph.hash}) \
@@ -156,6 +156,45 @@ CALL (session, request, target) { \
 } \
 RETURN applied, request_seq";
 
+const DELETE_PARAGRAPHS: &str = "\
+MATCH (paragraph) WHERE paragraph:Paragraph OR paragraph:PendingParagraphEnrichment \
+DETACH DELETE paragraph";
+
+const LIST_NODE_COMMITS: &str = "\
+MATCH (commit:EventCommit) WHERE commit.has_node \
+RETURN commit.event_name, commit.event_json \
+ORDER BY commit.observed_at, commit.session_id, commit.order \
+SKIP $skip LIMIT $limit";
+
+const REINDEX_PARAGRAPHS: &str = "\
+UNWIND $rows AS row \
+MATCH (commit:EventCommit {session_id: row.session_id, order: row.order})-[:CREATED]->(node:ExecutionNode) \
+CALL (node, row) { \
+  UNWIND row.paragraphs AS paragraph \
+  MERGE (stored:Paragraph {hash: paragraph.hash}) \
+  ON CREATE SET stored.text = paragraph.text, stored.source = paragraph.source, \
+                stored.hidden = paragraph.hidden, stored.from_user_doc = paragraph.from_user_doc, \
+                stored.long_paragraph = paragraph.long_paragraph, stored.created_in_seq = node.seq \
+  MERGE (node)-[:CONTAINS_PARAGRAPH {index: paragraph.index}]->(stored) \
+} \
+CALL (node, commit, row) { \
+  UNWIND row.tokens AS token \
+  MERGE (stored_token:Token {session_id: row.session_id, key_kind: token.key_kind, key: token.key, slot: token.slot}) \
+  ON CREATE SET stored_token.node_seq = node.seq, stored_token.decoded = token.decoded, \
+                stored_token.version = commit.version \
+  MERGE (node)-[:MENTIONS_TOKEN {slot: token.slot}]->(stored_token) \
+} \
+RETURN count(node) AS reindexed";
+
+const REINDEX_PAGE: usize = 500;
+
+/// Outcome of [`Neo4jRepository::reindex_paragraphs`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReindexReport {
+    pub scanned: usize,
+    pub reindexed: usize,
+}
+
 #[async_trait]
 pub trait GraphRepository: Send + Sync + 'static {
     async fn health(&self) -> Result<(), RepositoryError>;
@@ -237,6 +276,60 @@ impl Neo4jRepository {
         }
         body.data
             .ok_or_else(|| RepositoryError::InvalidResponse("missing data".to_owned()))
+    }
+
+    /// Drops every Paragraph and re-chunks the text of each committed event with the current
+    /// rules. Paragraph classifications are lost and must be requested again.
+    pub async fn reindex_paragraphs(&self) -> Result<ReindexReport, RepositoryError> {
+        self.execute(DELETE_PARAGRAPHS, json!({})).await?;
+        let mut report = ReindexReport {
+            scanned: 0,
+            reindexed: 0,
+        };
+        loop {
+            let page = self
+                .execute(
+                    LIST_NODE_COMMITS,
+                    json!({"skip": report.scanned, "limit": REINDEX_PAGE}),
+                )
+                .await?;
+            if page.values.is_empty() {
+                return Ok(report);
+            }
+            report.scanned += page.values.len();
+            let mut rows = Vec::new();
+            for row in &page.values {
+                let text = |index, field| {
+                    value_at(row, index, field)?.as_str().ok_or_else(|| {
+                        RepositoryError::InvalidResponse(format!("{field} is not a string"))
+                    })
+                };
+                let mutation =
+                    GeneratorEvent::from_json(text(0, "event_name")?, text(1, "event_json")?)?
+                        .into_mutation()?;
+                if !mutation.paragraphs.is_empty() {
+                    rows.push(json!({
+                        "session_id": mutation.session_id,
+                        "order": mutation.order,
+                        "paragraphs": mutation.paragraphs,
+                        "tokens": mutation.tokens,
+                    }));
+                }
+            }
+            if rows.is_empty() {
+                continue;
+            }
+            let data = self
+                .execute(REINDEX_PARAGRAPHS, json!({"rows": rows}))
+                .await?;
+            report.reindexed += data
+                .values
+                .first()
+                .and_then(|row| row.first())
+                .and_then(Value::as_u64)
+                .and_then(|count| usize::try_from(count).ok())
+                .unwrap_or(0);
+        }
     }
 
     async fn commit_mutation(
