@@ -294,6 +294,52 @@ async fn concurrent_out_of_order_events_form_one_chain() {
     delete_session(&query, &session_id).await;
 }
 
+#[tokio::test]
+async fn reports_the_session_cursor_for_resuming_collectors() {
+    let Some((query, generator_url)) = start_without_decision().await else {
+        return;
+    };
+    let session_id = unique_session("generator-cursor-it");
+    let client = reqwest::Client::new();
+    for (order, agent_id, sequence) in [(1, "main", 1), (4, "main", 2), (2, "sub-1", 5)] {
+        post_event(
+            &client,
+            &generator_url,
+            "UserPromptSubmit",
+            json!({
+                "session_id":session_id,"order":order,"observed_at":order,"sequence":sequence,
+                "meta":{"agent_id":agent_id},
+                "payload":{"prompt":format!("prompt {order}"),"kind":"user","user_docs":[]}
+            }),
+        )
+        .await;
+    }
+
+    let cursor = |session: String| {
+        let (client, url) = (client.clone(), generator_url.clone());
+        async move {
+            client
+                .get(format!("{url}/v1/sessions/{session}/cursor"))
+                .send()
+                .await
+                .unwrap()
+                .json::<Value>()
+                .await
+                .unwrap()
+        }
+    };
+    assert_eq!(
+        cursor(session_id.clone()).await,
+        json!({"last_order":4,"agent_sequences":{"main":2,"sub-1":5}})
+    );
+    assert_eq!(
+        cursor(unique_session("generator-cursor-unknown")).await,
+        json!({"last_order":0,"agent_sequences":{}})
+    );
+
+    delete_session(&query, &session_id).await;
+}
+
 async fn start_without_decision() -> Option<(QueryClient, String)> {
     let Some(neo4j_url) = std::env::var("NEO4J_INTEGRATION_URL").ok() else {
         eprintln!("skipping Neo4j integration test; NEO4J_INTEGRATION_URL is unset");

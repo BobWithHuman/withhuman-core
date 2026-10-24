@@ -28,6 +28,23 @@ services:
       start_period: 20s
     networks: [engine]
 
+  # Shared Collector state (session orders, verdicts) so the Collector can run several
+  # replicas. Append-only persistence keeps session orders across a Redis restart.
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks: [engine]
+
   neo4j-bootstrap:
     image: neo4j:5.26.0
     depends_on:
@@ -109,6 +126,7 @@ services:
       COLLECTOR_ADDR: 0.0.0.0:8080
       COLLECTOR_EXT_AUTHZ_ADDR: 0.0.0.0:9000
       GENERATOR_URL: http://generator:8081
+      REDIS_URL: redis://redis:6379
       WITHHUMAN_MODE: ${WITHHUMAN_MODE:-enforce}
       WITHHUMAN_ON_FAILURE: ${WITHHUMAN_ON_FAILURE:-closed}
       WITHHUMAN_ASK: ${WITHHUMAN_ASK:-ask}
@@ -118,6 +136,8 @@ services:
       - "${COLLECTOR_EXT_AUTHZ_PORT:-9000}:9000"
     depends_on:
       generator:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/healthz"]
@@ -160,6 +180,7 @@ services:
 volumes:
   neo4j-data:
   neo4j-logs:
+  redis-data:
 
 networks:
   engine:

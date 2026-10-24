@@ -1,4 +1,4 @@
-use std::{error::Error, fmt};
+use std::{error::Error, fmt, sync::Arc};
 
 use withhuman_contracts::{
     events::{
@@ -20,7 +20,18 @@ use withhuman_contracts::{
     },
 };
 
-use crate::{SessionStore, TrustedHookContext, state::SessionState};
+use crate::{
+    GeneratorError, GeneratorTransport, InMemorySessionStore, MessageFragment, SessionSnapshot,
+    SessionStore, SessionUpdate, StoreError, TrustedHookContext,
+};
+
+/// Orders skipped when a session resumes without Collector state, so events that were still on
+/// their way to the Generator when the state was lost keep orders nobody reuses. The Generator
+/// links events by order, so the gap leaves the graph intact.
+pub const RESUME_ORDER_GAP: u64 = 100;
+
+/// Set on a MessageDisplay event whose fragments had a missing index below the final one.
+pub const MESSAGE_INCOMPLETE_FLAG: &str = "message_incomplete";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum NormalizedEvent {
@@ -77,32 +88,91 @@ impl NormalizedEvent {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone)]
 pub struct Normalizer {
-    sessions: SessionStore,
+    sessions: Arc<dyn SessionStore>,
+    history: Option<Arc<dyn GeneratorTransport>>,
+}
+
+impl Default for Normalizer {
+    fn default() -> Self {
+        Self::new(InMemorySessionStore::default())
+    }
+}
+
+impl fmt::Debug for Normalizer {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_struct("Normalizer").finish_non_exhaustive()
+    }
 }
 
 impl Normalizer {
-    pub fn new(sessions: SessionStore) -> Self {
-        Self { sessions }
+    pub fn new(sessions: impl SessionStore + 'static) -> Self {
+        Self {
+            sessions: Arc::new(sessions),
+            history: None,
+        }
     }
 
-    pub fn sessions(&self) -> &SessionStore {
-        &self.sessions
+    /// Resumes sessions the store does not know from the Generator's committed cursor. Without
+    /// history such sessions start at order 1.
+    pub fn with_history(mut self, history: Arc<dyn GeneratorTransport>) -> Self {
+        self.history = Some(history);
+        self
     }
 
-    pub fn session_start(
+    pub fn sessions(&self) -> &dyn SessionStore {
+        self.sessions.as_ref()
+    }
+
+    async fn apply(
+        &self,
+        session_id: &str,
+        update: SessionUpdate,
+    ) -> Result<SessionSnapshot, NormalizeError> {
+        match self.sessions.apply_event(session_id, update.clone()).await {
+            Err(StoreError::UnknownSession) => {}
+            result => return result.map_err(NormalizeError::Store),
+        }
+        let cursor = match &self.history {
+            Some(history) => history
+                .session_cursor(session_id)
+                .await
+                .map_err(NormalizeError::History)?,
+            None => Default::default(),
+        };
+        let last_order = match cursor.last_order {
+            0 => 0,
+            committed => committed + RESUME_ORDER_GAP,
+        };
+        self.sessions
+            .seed(session_id, last_order, &cursor.agent_sequences)
+            .await
+            .map_err(NormalizeError::Store)?;
+        self.sessions
+            .apply_event(session_id, update)
+            .await
+            .map_err(NormalizeError::Store)
+    }
+
+    pub async fn session_start(
         &self,
         context: &TrustedHookContext,
         request: SessionStartRequest,
         observed_at: u64,
-    ) -> NormalizedEvent {
-        let mut sessions = self.sessions.lock();
-        let state = sessions.entry(request.session_id.clone()).or_default();
-        update_context(state, request.cwd, None);
-        let meta = metadata(state, context, None, None, None, None);
+    ) -> Result<NormalizedEvent, NormalizeError> {
+        let state = self
+            .apply(
+                &request.session_id,
+                SessionUpdate {
+                    cwd: request.cwd,
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let meta = metadata(&state, context, None, None, None, None);
         let envelope = envelope(
-            state,
+            &state,
             context,
             request.session_id,
             observed_at,
@@ -113,21 +183,28 @@ impl Normalizer {
                 ..Default::default()
             },
         );
-        NormalizedEvent::SessionStart(envelope)
+        Ok(NormalizedEvent::SessionStart(envelope))
     }
 
-    pub fn user_prompt_submit(
+    pub async fn user_prompt_submit(
         &self,
         context: &TrustedHookContext,
         request: UserPromptSubmitRequest,
         observed_at: u64,
-    ) -> NormalizedEvent {
-        let mut sessions = self.sessions.lock();
-        let state = sessions.entry(request.session_id.clone()).or_default();
-        update_context(state, request.cwd, request.prompt_id);
-        let meta = metadata(state, context, None, None, None, None);
-        NormalizedEvent::UserPromptSubmit(envelope(
-            state,
+    ) -> Result<NormalizedEvent, NormalizeError> {
+        let state = self
+            .apply(
+                &request.session_id,
+                SessionUpdate {
+                    cwd: request.cwd,
+                    prompt_id: request.prompt_id,
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let meta = metadata(&state, context, None, None, None, None);
+        Ok(NormalizedEvent::UserPromptSubmit(envelope(
+            &state,
             context,
             request.session_id,
             observed_at,
@@ -139,39 +216,47 @@ impl Normalizer {
                 user_docs: Vec::new(),
                 additional_fields: Default::default(),
             },
-        ))
+        )))
     }
 
-    pub fn pre_tool_use(
+    pub async fn pre_tool_use(
         &self,
         context: &TrustedHookContext,
         request: PreToolUseRequest,
         observed_at: u64,
         mode: withhuman_contracts::events::EnforcementMode,
         deadline_ms: Option<u64>,
-    ) -> NormalizedEvent {
-        let mut sessions = self.sessions.lock();
-        let state = sessions.entry(request.session_id.clone()).or_default();
-        update_context(state, request.cwd, request.prompt_id);
-        state
-            .tool_inputs
-            .insert(request.tool_use_id.clone(), request.tool_input.clone());
-        let sequence = state.next_agent_sequence(request.agent_id.as_deref());
+    ) -> Result<NormalizedEvent, NormalizeError> {
+        let state = self
+            .apply(
+                &request.session_id,
+                SessionUpdate {
+                    cwd: request.cwd,
+                    prompt_id: request.prompt_id,
+                    store_tool_input: Some((
+                        request.tool_use_id.clone(),
+                        request.tool_input.clone(),
+                    )),
+                    agent_id: request.agent_id.clone(),
+                    ..Default::default()
+                },
+            )
+            .await?;
         let meta = metadata(
-            state,
+            &state,
             context,
             Some(request.tool_use_id),
             request.agent_id,
             request.agent_type,
             None,
         );
-        NormalizedEvent::PreToolUse(PreToolUseEventRequest {
+        Ok(NormalizedEvent::PreToolUse(PreToolUseEventRequest {
             event: envelope(
-                state,
+                &state,
                 context,
                 request.session_id,
                 observed_at,
-                sequence,
+                state.agent_sequence,
                 meta,
                 PreToolUsePayload {
                     tool_name: request.tool_name,
@@ -181,35 +266,42 @@ impl Normalizer {
             ),
             mode,
             deadline_ms,
-        })
+        }))
     }
 
-    pub fn post_tool_use(
+    pub async fn post_tool_use(
         &self,
         context: &TrustedHookContext,
         request: PostToolUseRequest,
         observed_at: u64,
-    ) -> NormalizedEvent {
-        let mut sessions = self.sessions.lock();
-        let state = sessions.entry(request.session_id.clone()).or_default();
-        update_context(state, request.cwd, request.prompt_id);
-        let cached_tool_input = state.tool_inputs.remove(&request.tool_use_id);
-        let tool_input = request.tool_input.or(cached_tool_input);
-        let sequence = state.next_agent_sequence(request.agent_id.as_deref());
+    ) -> Result<NormalizedEvent, NormalizeError> {
+        let state = self
+            .apply(
+                &request.session_id,
+                SessionUpdate {
+                    cwd: request.cwd,
+                    prompt_id: request.prompt_id,
+                    take_tool_input: Some(request.tool_use_id.clone()),
+                    agent_id: request.agent_id.clone(),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let tool_input = request.tool_input.or_else(|| state.tool_input.clone());
         let meta = metadata(
-            state,
+            &state,
             context,
             Some(request.tool_use_id),
             request.agent_id,
             request.agent_type,
             None,
         );
-        NormalizedEvent::PostToolUse(envelope(
-            state,
+        Ok(NormalizedEvent::PostToolUse(envelope(
+            &state,
             context,
             request.session_id,
             observed_at,
-            sequence,
+            state.agent_sequence,
             meta,
             PostToolUsePayload {
                 tool_name: request.tool_name,
@@ -217,35 +309,42 @@ impl Normalizer {
                 tool_response: request.tool_response,
                 additional_fields: Default::default(),
             },
-        ))
+        )))
     }
 
-    pub fn post_tool_use_failure(
+    pub async fn post_tool_use_failure(
         &self,
         context: &TrustedHookContext,
         request: PostToolUseFailureRequest,
         observed_at: u64,
-    ) -> NormalizedEvent {
-        let mut sessions = self.sessions.lock();
-        let state = sessions.entry(request.session_id.clone()).or_default();
-        update_context(state, request.cwd, request.prompt_id);
-        let cached_tool_input = state.tool_inputs.remove(&request.tool_use_id);
-        let tool_input = request.tool_input.or(cached_tool_input);
-        let sequence = state.next_agent_sequence(request.agent_id.as_deref());
+    ) -> Result<NormalizedEvent, NormalizeError> {
+        let state = self
+            .apply(
+                &request.session_id,
+                SessionUpdate {
+                    cwd: request.cwd,
+                    prompt_id: request.prompt_id,
+                    take_tool_input: Some(request.tool_use_id.clone()),
+                    agent_id: request.agent_id.clone(),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let tool_input = request.tool_input.or_else(|| state.tool_input.clone());
         let meta = metadata(
-            state,
+            &state,
             context,
             Some(request.tool_use_id),
             request.agent_id,
             request.agent_type,
             None,
         );
-        NormalizedEvent::PostToolUseFailure(envelope(
-            state,
+        Ok(NormalizedEvent::PostToolUseFailure(envelope(
+            &state,
             context,
             request.session_id,
             observed_at,
-            sequence,
+            state.agent_sequence,
             meta,
             PostToolUseFailurePayload {
                 tool_name: request.tool_name,
@@ -253,83 +352,96 @@ impl Normalizer {
                 error: request.error,
                 additional_fields: Default::default(),
             },
-        ))
+        )))
     }
 
-    pub fn subagent_start(
+    pub async fn subagent_start(
         &self,
         context: &TrustedHookContext,
         request: SubagentLifecycleRequest,
         observed_at: u64,
-    ) -> NormalizedEvent {
-        let mut sessions = self.sessions.lock();
-        let state = sessions.entry(request.session_id.clone()).or_default();
-        let sequence = state.next_agent_sequence(Some(&request.agent_id));
+    ) -> Result<NormalizedEvent, NormalizeError> {
+        let state = self
+            .apply(
+                &request.session_id,
+                SessionUpdate {
+                    agent_id: Some(request.agent_id.clone()),
+                    ..Default::default()
+                },
+            )
+            .await?;
         let meta = metadata(
-            state,
+            &state,
             context,
             None,
             Some(request.agent_id.clone()),
             request.agent_type.clone(),
             None,
         );
-        NormalizedEvent::SubagentStart(envelope(
-            state,
+        Ok(NormalizedEvent::SubagentStart(envelope(
+            &state,
             context,
             request.session_id,
             observed_at,
-            sequence,
+            state.agent_sequence,
             meta,
             SubagentStartPayload {
                 agent_id: request.agent_id,
                 agent_type: request.agent_type,
                 additional_fields: Default::default(),
             },
-        ))
+        )))
     }
 
-    pub fn subagent_stop(
+    pub async fn subagent_stop(
         &self,
         context: &TrustedHookContext,
         request: SubagentLifecycleRequest,
         observed_at: u64,
-    ) -> NormalizedEvent {
-        let mut sessions = self.sessions.lock();
-        let state = sessions.entry(request.session_id.clone()).or_default();
-        let sequence = state.next_agent_sequence(Some(&request.agent_id));
+    ) -> Result<NormalizedEvent, NormalizeError> {
+        let state = self
+            .apply(
+                &request.session_id,
+                SessionUpdate {
+                    agent_id: Some(request.agent_id.clone()),
+                    ..Default::default()
+                },
+            )
+            .await?;
         let meta = metadata(
-            state,
+            &state,
             context,
             None,
             Some(request.agent_id.clone()),
             request.agent_type,
             None,
         );
-        NormalizedEvent::SubagentStop(envelope(
-            state,
+        Ok(NormalizedEvent::SubagentStop(envelope(
+            &state,
             context,
             request.session_id,
             observed_at,
-            sequence,
+            state.agent_sequence,
             meta,
             SubagentStopPayload {
                 agent_id: request.agent_id,
                 additional_fields: Default::default(),
             },
-        ))
+        )))
     }
 
-    pub fn instructions_loaded(
+    pub async fn instructions_loaded(
         &self,
         context: &TrustedHookContext,
         request: InstructionsLoadedRequest,
         observed_at: u64,
-    ) -> NormalizedEvent {
-        let mut sessions = self.sessions.lock();
-        let state = sessions.entry(request.session_id.clone()).or_default();
-        let meta = metadata(state, context, None, None, None, None);
-        NormalizedEvent::InstructionsLoaded(envelope(
-            state,
+    ) -> Result<NormalizedEvent, NormalizeError> {
+        let state = self
+            .apply(&request.session_id, SessionUpdate::default())
+            .await?;
+        let meta = metadata(&state, context, None, None, None, None);
+        Ok(NormalizedEvent::InstructionsLoaded(envelope(
+            &state,
             context,
             request.session_id,
             observed_at,
@@ -343,20 +455,21 @@ impl Normalizer {
                 parent_file_path: request.parent_file_path,
                 additional_fields: Default::default(),
             },
-        ))
+        )))
     }
 
-    pub fn config_change(
+    pub async fn config_change(
         &self,
         context: &TrustedHookContext,
         request: ConfigChangeRequest,
         observed_at: u64,
-    ) -> NormalizedEvent {
-        let mut sessions = self.sessions.lock();
-        let state = sessions.entry(request.session_id.clone()).or_default();
-        let meta = metadata(state, context, None, None, None, None);
-        NormalizedEvent::ConfigChange(envelope(
-            state,
+    ) -> Result<NormalizedEvent, NormalizeError> {
+        let state = self
+            .apply(&request.session_id, SessionUpdate::default())
+            .await?;
+        let meta = metadata(&state, context, None, None, None, None);
+        Ok(NormalizedEvent::ConfigChange(envelope(
+            &state,
             context,
             request.session_id,
             observed_at,
@@ -367,24 +480,25 @@ impl Normalizer {
                 source: request.source,
                 additional_fields: Default::default(),
             },
-        ))
+        )))
     }
 
-    pub fn file_changed(
+    pub async fn file_changed(
         &self,
         context: &TrustedHookContext,
         request: FileChangedRequest,
         observed_at: u64,
-    ) -> NormalizedEvent {
-        let mut sessions = self.sessions.lock();
-        let state = sessions.entry(request.session_id.clone()).or_default();
-        let meta = metadata(state, context, None, None, None, None);
+    ) -> Result<NormalizedEvent, NormalizeError> {
+        let state = self
+            .apply(&request.session_id, SessionUpdate::default())
+            .await?;
+        let meta = metadata(&state, context, None, None, None, None);
         let mut additional_fields = withhuman_contracts::events::AdditionalFields::new();
         if let Some(event) = request.event {
             additional_fields.insert("event".to_owned(), event.into());
         }
-        NormalizedEvent::FileChanged(envelope(
-            state,
+        Ok(NormalizedEvent::FileChanged(envelope(
+            &state,
             context,
             request.session_id,
             observed_at,
@@ -394,32 +508,43 @@ impl Normalizer {
                 file_path: request.file_path,
                 additional_fields,
             },
-        ))
+        )))
     }
 
-    pub fn message_display(
+    pub async fn message_display(
         &self,
         context: &TrustedHookContext,
         request: MessageDisplayRequest,
         observed_at: u64,
     ) -> Result<Option<NormalizedEvent>, NormalizeError> {
-        let mut sessions = self.sessions.lock();
-        let state = sessions.entry(request.session_id.clone()).or_default();
-        let buffer = state
-            .message_fragments
-            .entry(request.message_id.clone())
-            .or_default();
-        buffer.push_str(&request.delta);
+        let fragment = MessageFragment {
+            message_id: request.message_id.clone(),
+            index: request.index,
+            delta: request.delta,
+        };
         if !request.final_ {
+            self.sessions
+                .append_fragment(&request.session_id, fragment)
+                .await
+                .map_err(NormalizeError::Store)?;
             return Ok(None);
         }
+        let state = self
+            .apply(
+                &request.session_id,
+                SessionUpdate {
+                    finish_message: Some(fragment),
+                    ..Default::default()
+                },
+            )
+            .await?;
         let text = state
-            .message_fragments
-            .remove(&request.message_id)
+            .message
+            .clone()
             .ok_or(NormalizeError::MissingMessageBuffer)?;
-        let meta = metadata(state, context, None, None, None, request.turn_id);
-        Ok(Some(NormalizedEvent::MessageDisplay(envelope(
-            state,
+        let meta = metadata(&state, context, None, None, None, request.turn_id);
+        let mut event = envelope(
+            &state,
             context,
             request.session_id,
             observed_at,
@@ -430,40 +555,46 @@ impl Normalizer {
                 text,
                 additional_fields: Default::default(),
             },
-        ))))
+        );
+        if state.message_incomplete {
+            event.flags = Some(vec![MESSAGE_INCOMPLETE_FLAG.to_owned()]);
+        }
+        Ok(Some(NormalizedEvent::MessageDisplay(event)))
     }
 
-    pub fn post_tool_batch(
+    pub async fn post_tool_batch(
         &self,
         context: &TrustedHookContext,
         request: PostToolBatchRequest,
         observed_at: u64,
-    ) -> NormalizedEvent {
-        let mut sessions = self.sessions.lock();
-        let state = sessions.entry(request.session_id.clone()).or_default();
-        let meta = metadata(state, context, None, None, None, None);
-        NormalizedEvent::PostToolBatch(envelope(
-            state,
+    ) -> Result<NormalizedEvent, NormalizeError> {
+        let state = self
+            .apply(&request.session_id, SessionUpdate::default())
+            .await?;
+        let meta = metadata(&state, context, None, None, None, None);
+        Ok(NormalizedEvent::PostToolBatch(envelope(
+            &state,
             context,
             request.session_id,
             observed_at,
             None,
             meta,
             PostToolBatchPayload::default(),
-        ))
+        )))
     }
 
-    pub fn tool_descriptions(
+    pub async fn tool_descriptions(
         &self,
         context: &TrustedHookContext,
         request: ToolDescriptionsRequest,
         observed_at: u64,
-    ) -> NormalizedEvent {
-        let mut sessions = self.sessions.lock();
-        let state = sessions.entry(request.session_id.clone()).or_default();
-        let meta = metadata(state, context, None, None, None, None);
-        NormalizedEvent::ToolDescriptions(envelope(
-            state,
+    ) -> Result<NormalizedEvent, NormalizeError> {
+        let state = self
+            .apply(&request.session_id, SessionUpdate::default())
+            .await?;
+        let meta = metadata(&state, context, None, None, None, None);
+        Ok(NormalizedEvent::ToolDescriptions(envelope(
+            &state,
             context,
             request.session_id,
             observed_at,
@@ -480,12 +611,12 @@ impl Normalizer {
                     .collect(),
                 additional_fields: Default::default(),
             },
-        ))
+        )))
     }
 }
 
 fn envelope<T>(
-    state: &mut SessionState,
+    state: &SessionSnapshot,
     context: &TrustedHookContext,
     session_id: String,
     observed_at: u64,
@@ -495,7 +626,7 @@ fn envelope<T>(
 ) -> EventRequest<T> {
     EventRequest {
         session_id,
-        order: state.reserve_order(),
+        order: state.order,
         observed_at,
         client_id: context.client_id.clone(),
         sequence,
@@ -509,7 +640,7 @@ fn envelope<T>(
 }
 
 fn metadata(
-    state: &SessionState,
+    state: &SessionSnapshot,
     context: &TrustedHookContext,
     tool_use_id: Option<String>,
     agent_id: Option<String>,
@@ -528,23 +659,23 @@ fn metadata(
     }
 }
 
-fn update_context(state: &mut SessionState, cwd: Option<String>, prompt_id: Option<String>) {
-    if cwd.is_some() {
-        state.cwd = cwd;
-    }
-    if prompt_id.is_some() {
-        state.prompt_id = prompt_id;
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NormalizeError {
     MissingMessageBuffer,
+    Store(StoreError),
+    /// The Generator cursor needed to resume the session could not be read.
+    History(GeneratorError),
 }
 
 impl fmt::Display for NormalizeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("completed message has no aggregation buffer")
+        match self {
+            Self::MissingMessageBuffer => {
+                formatter.write_str("completed message has no aggregation buffer")
+            }
+            Self::Store(error) => error.fmt(formatter),
+            Self::History(error) => error.fmt(formatter),
+        }
     }
 }
 

@@ -56,6 +56,15 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 20
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -71,6 +80,7 @@ jobs:
           NEO4J_INTEGRATION_URL: http://127.0.0.1:7474
           NEO4J_INTEGRATION_USER: neo4j
           NEO4J_INTEGRATION_PASSWORD: withhuman-integration
+          REDIS_INTEGRATION_URL: redis://127.0.0.1:6379
         # Generator and Decision integration suites share the Neo4j service.
         # Serialize test binaries so concurrent schema DDL cannot deadlock Neo4j.
         run: cargo nextest run --no-tests=pass --test-threads=1

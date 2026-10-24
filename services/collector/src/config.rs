@@ -30,6 +30,12 @@ pub struct CollectorConfig {
     pub enforce_mcp_at_hook: bool,
     pub watch_paths: Vec<String>,
     pub verdict_capacity: usize,
+    /// Shared state for running several replicas; in-process state when unset.
+    pub redis_url: Option<String>,
+    pub verdict_ttl: Duration,
+    /// Inactivity after which a session's shared state expires. A session that resumes later
+    /// restarts its orders at 1, so keep this longer than any session pause.
+    pub session_ttl: Duration,
 }
 
 impl Default for CollectorConfig {
@@ -49,6 +55,9 @@ impl Default for CollectorConfig {
             enforce_mcp_at_hook: false,
             watch_paths: Vec::new(),
             verdict_capacity: 10_000,
+            redis_url: None,
+            verdict_ttl: Duration::from_secs(3_600),
+            session_ttl: Duration::from_secs(604_800),
         }
     }
 }
@@ -77,6 +86,19 @@ impl CollectorConfig {
         if verdict_capacity == 0 {
             return Err(invalid(
                 "WITHHUMAN_VERDICT_CAPACITY must be greater than zero",
+            ));
+        }
+
+        let verdict_ttl = parse_env("WITHHUMAN_VERDICT_TTL_SECS", 3_600)?;
+        if verdict_ttl == 0 {
+            return Err(invalid(
+                "WITHHUMAN_VERDICT_TTL_SECS must be greater than zero",
+            ));
+        }
+        let session_ttl = parse_env("WITHHUMAN_SESSION_TTL_SECS", 604_800)?;
+        if session_ttl == 0 {
+            return Err(invalid(
+                "WITHHUMAN_SESSION_TTL_SECS must be greater than zero",
             ));
         }
 
@@ -119,6 +141,12 @@ impl CollectorConfig {
                 })
                 .unwrap_or_default(),
             verdict_capacity,
+            redis_url: env::var("REDIS_URL")
+                .ok()
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty()),
+            verdict_ttl: Duration::from_secs(verdict_ttl),
+            session_ttl: Duration::from_secs(session_ttl),
         })
     }
 }

@@ -287,6 +287,16 @@ pub struct EventResponse<D = DecisionResponse> {
     pub decision_response: Option<D>,
 }
 
+/// The highest order and per-agent sequence the Generator committed for a session. A Collector
+/// that holds no state for the session (restart, expired or lost shared state) continues the
+/// numbering after them instead of reusing committed orders.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+pub struct SessionCursor {
+    pub last_order: u64,
+    #[serde(default)]
+    pub agent_sequences: BTreeMap<String, u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct SentenceProbability {
     pub index: u64,

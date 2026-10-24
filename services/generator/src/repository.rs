@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use withhuman_contracts::events::{
     CreatedNode, EventResponse, ParagraphClassificationRequest, ParagraphClassificationResponse,
-    ParagraphReference, RequestContinuationRequest, RequestContinuationResponse,
+    ParagraphReference, RequestContinuationRequest, RequestContinuationResponse, SessionCursor,
 };
 
 use crate::{GeneratorConfig, GeneratorEvent, event::GraphMutation};
@@ -193,6 +193,15 @@ CALL (session, request, target) { \
 } \
 RETURN applied, request_seq";
 
+const SESSION_CURSOR: &str = "\
+OPTIONAL MATCH (commit:EventCommit {session_id: $session_id}) \
+WITH coalesce(max(commit.order), 0) AS last_order \
+OPTIONAL MATCH (node:ExecutionNode {session_id: $session_id}) \
+WHERE node.agent_id IS NOT NULL AND node.sequence IS NOT NULL \
+WITH last_order, node.agent_id AS agent_id, max(node.sequence) AS sequence \
+RETURN last_order, \
+       collect(CASE WHEN agent_id IS NULL THEN NULL ELSE [agent_id, sequence] END) AS agents";
+
 const DELETE_PARAGRAPHS: &str = "\
 MATCH (paragraph) WHERE paragraph:Paragraph OR paragraph:PendingParagraphEnrichment \
 DETACH DELETE paragraph";
@@ -254,6 +263,11 @@ pub trait GraphRepository: Send + Sync + 'static {
         _order: u64,
         _request: RequestContinuationRequest,
     ) -> Result<RequestContinuationResponse, RepositoryError> {
+        Err(RepositoryError::NotFound)
+    }
+
+    /// Unknown sessions have a zero cursor.
+    async fn session_cursor(&self, _session_id: &str) -> Result<SessionCursor, RepositoryError> {
         Err(RepositoryError::NotFound)
     }
 }
@@ -573,6 +587,34 @@ impl GraphRepository for Neo4jRepository {
             request_seq: row.get(1).and_then(Value::as_u64),
         })
     }
+
+    async fn session_cursor(&self, session_id: &str) -> Result<SessionCursor, RepositoryError> {
+        let data = self
+            .execute(SESSION_CURSOR, json!({"session_id": session_id}))
+            .await?;
+        let row = data
+            .values
+            .first()
+            .ok_or_else(|| RepositoryError::InvalidResponse("missing cursor row".to_owned()))?;
+        Ok(SessionCursor {
+            last_order: unsigned(value_at(row, 0, "last_order")?, "last_order")?,
+            agent_sequences: value_at(row, 1, "agents")?
+                .as_array()
+                .ok_or_else(|| {
+                    RepositoryError::InvalidResponse("agents is not an array".to_owned())
+                })?
+                .iter()
+                .map(agent_sequence)
+                .collect::<Result<_, _>>()?,
+        })
+    }
+}
+
+fn agent_sequence(pair: &Value) -> Result<(String, u64), RepositoryError> {
+    let invalid = || RepositoryError::InvalidResponse("invalid agent sequence".to_owned());
+    let agent_id = pair.get(0).and_then(Value::as_str).ok_or_else(invalid)?;
+    let sequence = pair.get(1).and_then(Value::as_u64).ok_or_else(invalid)?;
+    Ok((agent_id.to_owned(), sequence))
 }
 
 fn parse_choice_order(choice: &str) -> Result<Option<u64>, RepositoryError> {

@@ -169,6 +169,9 @@ pub struct MessageDisplayRequest {
     #[serde(default)]
     pub hook_event_name: Option<HookEventName>,
     pub message_id: String,
+    /// Zero-based flush index within the message; Claude Code increments it once per flush.
+    #[serde(default)]
+    pub index: Option<u64>,
     pub delta: String,
     #[serde(rename = "final")]
     pub final_: bool,

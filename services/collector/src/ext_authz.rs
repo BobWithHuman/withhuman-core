@@ -1,3 +1,5 @@
+use std::{fmt, sync::Arc};
+
 use serde_json::Value;
 use tonic::{Request, Response, Status};
 use withhuman_contracts::{
@@ -13,19 +15,29 @@ const INVALID_REQUEST: &str = "Invalid MCP authorization request.";
 const MISSING_VERDICT: &str = "No policy verdict exists for this MCP request.";
 const REQUEST_MISMATCH: &str = "MCP request does not match the authorized tool call.";
 const REVIEW_REQUIRED: &str = "MCP request requires review.";
+const VERDICT_STORE_UNAVAILABLE: &str = "Policy verdict store is unavailable.";
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ExtAuthzService {
-    verdicts: VerdictStore,
+    verdicts: Arc<dyn VerdictStore>,
     mode: EnforcementMode,
 }
 
+impl fmt::Debug for ExtAuthzService {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ExtAuthzService")
+            .field("mode", &self.mode)
+            .finish_non_exhaustive()
+    }
+}
+
 impl ExtAuthzService {
-    pub fn new(verdicts: VerdictStore, mode: EnforcementMode) -> Self {
+    pub fn new(verdicts: Arc<dyn VerdictStore>, mode: EnforcementMode) -> Self {
         Self { verdicts, mode }
     }
 
-    fn authorize(&self, request: &CheckRequest) -> CheckResponse {
+    async fn authorize(&self, request: &CheckRequest) -> CheckResponse {
         if self.mode != EnforcementMode::Enforce {
             return allow_response();
         }
@@ -49,8 +61,11 @@ impl ExtAuthzService {
         else {
             return deny_response(INVALID_REQUEST);
         };
-        let Some(verdict) = self.verdicts.get(tool_use_id) else {
-            return deny_response(MISSING_VERDICT);
+        let verdict = match self.verdicts.get(tool_use_id).await {
+            Ok(Some(verdict)) => verdict,
+            Ok(None) => return deny_response(MISSING_VERDICT),
+            // Fail closed: an unreadable verdict is never treated as an allow.
+            Err(_) => return deny_response(VERDICT_STORE_UNAVAILABLE),
         };
         let arguments = call.arguments.unwrap_or_else(empty_object);
         if mcp_tool_name(&verdict.tool_name) != call.name || verdict.arguments != arguments {
@@ -75,7 +90,7 @@ impl Authorization for ExtAuthzService {
         &self,
         request: Request<CheckRequest>,
     ) -> Result<Response<CheckResponse>, Status> {
-        Ok(Response::new(self.authorize(request.get_ref())))
+        Ok(Response::new(self.authorize(request.get_ref()).await))
     }
 }
 

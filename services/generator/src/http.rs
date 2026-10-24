@@ -101,6 +101,7 @@ pub fn app(service: GeneratorService) -> Router {
             "/v1/sessions/{session_id}/requests/{order}",
             patch(continue_request),
         )
+        .route("/v1/sessions/{session_id}/cursor", get(session_cursor))
         .route("/api-docs/openapi.json", get(openapi_document))
         .route("/swagger-ui", get(swagger_ui))
         .route("/swagger-ui/", get(swagger_ui))
@@ -125,7 +126,8 @@ pub fn app(service: GeneratorService) -> Router {
         post_tool_batch,
         tool_descriptions,
         classify_paragraph,
-        continue_request
+        continue_request,
+        session_cursor
     ),
     tags((name = "Generator", description = "Normalized event persistence and graph enrichment API"))
 )]
@@ -351,6 +353,26 @@ async fn continue_request(
         .await
     {
         Ok(response) => Json(response).into_response(),
+        Err(error) => repository_error_response(error),
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/sessions/{session_id}/cursor",
+    tag = "Generator",
+    params(("session_id" = String, Path)),
+    responses(
+        (status = 200, description = "Last committed order and agent sequences; zero for an unknown session", body = withhuman_contracts::events::SessionCursor),
+        (status = 500, body = ErrorResponse)
+    )
+)]
+async fn session_cursor(
+    State(service): State<GeneratorService>,
+    Path(session_id): Path<String>,
+) -> Response {
+    match service.repository.session_cursor(&session_id).await {
+        Ok(cursor) => Json(cursor).into_response(),
         Err(error) => repository_error_response(error),
     }
 }
