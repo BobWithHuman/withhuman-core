@@ -1,8 +1,11 @@
-use std::collections::BTreeSet;
+use std::{borrow::Cow, collections::BTreeSet};
 
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
-use withhuman_common::chunking::{self, Profile};
+use withhuman_common::{
+    chunking::{self, Profile},
+    tokens,
+};
 use withhuman_contracts::events::{
     ConfigChangeEventRequest, FileChangedEventRequest, InstructionsLoadedEventRequest,
     MessageDisplayEventRequest, PostToolBatchEventRequest, PostToolUseEventRequest,
@@ -289,18 +292,20 @@ where
     T: Serialize,
     E: Serialize,
 {
-    let event_json = serde_json::to_string(&event)
-        .map_err(|error| RepositoryError::InvalidEvent(error.to_string()))?;
+    // Tokens come from the original values so sensitive ones are keyed by their real hash;
+    // everything stored (event, payload, paragraphs) is redacted.
+    let event_json = redacted_json(&event)?;
     let envelope = envelope(&event);
-    let payload_json = serde_json::to_string(&envelope.payload)
+    let original_payload_json = serde_json::to_string(&envelope.payload)
         .map_err(|error| RepositoryError::InvalidEvent(error.to_string()))?;
+    let payload_json = redacted_json(&envelope.payload)?;
     let paragraphs = match &envelope.chunks {
         Some(chunks) => chunks
             .iter()
             .map(|chunk| {
                 Ok(ParagraphMutation {
                     index: signed(chunk.index, "chunk.index")?,
-                    text: chunk.text.clone(),
+                    text: tokens::redact(&chunk.text).into_owned(),
                     hash: chunk.hash.clone(),
                     source: chunk.source.clone(),
                     hidden: chunk.hidden,
@@ -311,7 +316,7 @@ where
             .collect::<Result<Vec<_>, RepositoryError>>()?,
         None => text
             .as_deref()
-            .map(|text| chunk_text(text, event_name))
+            .map(|text| chunk_text(&tokens::redact(text), event_name))
             .unwrap_or_default(),
     };
 
@@ -321,14 +326,18 @@ where
         "UserPromptSubmit" => "user",
         _ => "external",
     };
-    extract_tokens(&payload_json, payload_slot, &mut tokens);
-    for paragraph in &paragraphs {
-        let slot = match paragraph.source.as_str() {
-            "user" | "UserPromptSubmit" => "user",
-            "MessageDisplay" => "agent",
-            _ => "external",
-        };
-        extract_tokens(&paragraph.text, slot, &mut tokens);
+    extract_tokens(&original_payload_json, payload_slot, &mut tokens);
+    match &envelope.chunks {
+        Some(chunks) => {
+            for chunk in chunks {
+                extract_tokens(&chunk.text, paragraph_slot(&chunk.source), &mut tokens);
+            }
+        }
+        None => {
+            if let Some(text) = &text {
+                extract_tokens(text, paragraph_slot(event_name), &mut tokens);
+            }
+        }
     }
 
     Ok(GraphMutation {
@@ -357,8 +366,55 @@ where
     })
 }
 
+fn paragraph_slot(source: &str) -> &'static str {
+    match source {
+        "user" | "UserPromptSubmit" => "user",
+        "MessageDisplay" => "agent",
+        _ => "external",
+    }
+}
+
+/// `value` as JSON with sensitive strings masked. It is re-serialized only when something was
+/// masked, so events without secrets keep their exact bytes.
+fn redacted_json<T: Serialize>(value: &T) -> Result<String, RepositoryError> {
+    let invalid = |error: serde_json::Error| RepositoryError::InvalidEvent(error.to_string());
+    let mut tree = serde_json::to_value(value).map_err(invalid)?;
+    if redact_json(&mut tree) {
+        serde_json::to_string(&tree).map_err(invalid)
+    } else {
+        serde_json::to_string(value).map_err(invalid)
+    }
+}
+
+/// Masks sensitive values in every string and every field named as a secret; reports whether
+/// anything changed.
+fn redact_json(value: &mut Value) -> bool {
+    match value {
+        Value::String(text) => match tokens::redact(text) {
+            Cow::Owned(redacted) => {
+                *text = redacted;
+                true
+            }
+            Cow::Borrowed(_) => false,
+        },
+        Value::Array(items) => items
+            .iter_mut()
+            .fold(false, |changed, item| redact_json(item) | changed),
+        Value::Object(fields) => fields.iter_mut().fold(false, |changed, (name, item)| {
+            if let Value::String(text) = item {
+                if let Some(masked) = tokens::redact_field(name, text) {
+                    *text = masked;
+                    return true;
+                }
+            }
+            redact_json(item) | changed
+        }),
+        _ => false,
+    }
+}
+
 fn extract_tokens(value: &str, slot: &str, tokens: &mut BTreeSet<TokenMutation>) {
-    for token in withhuman_common::tokens::extract_tokens(value) {
+    for token in tokens::extract_tokens(value) {
         tokens.insert(TokenMutation {
             key_kind: token.kind.to_owned(),
             key: token.key,
