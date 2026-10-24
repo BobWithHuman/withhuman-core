@@ -318,6 +318,7 @@ async fn reports_the_session_cursor_for_resuming_collectors() {
             "UserPromptSubmit",
             json!({
                 "session_id":session_id,"order":order,"observed_at":order,"sequence":sequence,
+                "session_sequence":order,
                 "meta":{"agent_id":agent_id,"cwd":cwd,"prompt_id":prompt_id},
                 "payload":{"prompt":format!("prompt {order}"),"kind":"user","user_docs":[]}
             }),
@@ -352,12 +353,16 @@ async fn reports_the_session_cursor_for_resuming_collectors() {
     assert_eq!(
         cursor(session_id.clone()).await,
         json!({
-            "last_order":4,"agent_sequences":{"main":2,"sub-1":5},"cwd":"/c","prompt_id":"p2"
+            "last_order":4,"agent_sequences":{"main":2,"sub-1":5},"cwd":"/c","prompt_id":"p2",
+            "last_sequence":4,"intent":null
         })
     );
     assert_eq!(
         cursor(unique_session("generator-cursor-unknown")).await,
-        json!({"last_order":0,"agent_sequences":{},"cwd":null,"prompt_id":null})
+        json!({
+            "last_order":0,"agent_sequences":{},"cwd":null,"prompt_id":null,
+            "last_sequence":null,"intent":null
+        })
     );
 
     let call = client

@@ -31,6 +31,32 @@ pub struct SessionUpdate {
     /// Remembers paths a command saves downloaded content to, so later reads of them count as
     /// external content.
     pub record_downloads: Vec<String>,
+    /// How the event takes part in the session-wide sequences.
+    pub sequence_step: SequenceStep,
+    /// Forgets the stated intent of the previous turn (a new prompt).
+    pub clear_intent: bool,
+}
+
+/// How an event moves the session-wide sequence numbering (see
+/// [`SessionSnapshot::session_sequence`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum SequenceStep {
+    /// Stays in the current sequence (sequence 0 before any other): session start, config and
+    /// file changes, subagent lifecycle, tool descriptions, and Instructions — before the first
+    /// Message they belong to sequence 0, later to the sequence that is open.
+    #[default]
+    Join,
+    /// A user prompt: sequence 0 for the first one, otherwise a sequence of its own.
+    Request,
+    /// A completed assistant message: opens a sequence, or joins one a Call opened before the
+    /// message arrived.
+    Message,
+    /// A tool call: joins the open sequence or opens one; remembered for its result.
+    Call(String),
+    /// A tool result: the sequence of its Call.
+    Result(String),
+    /// PostToolBatch: the current sequence, which it closes.
+    Batch,
 }
 
 /// One MessageDisplay flush. Fragments are assembled by `index`, so retried or reordered
@@ -40,6 +66,8 @@ pub struct MessageFragment {
     pub message_id: String,
     pub index: Option<u64>,
     pub delta: String,
+    /// The user intent the fragment states, kept as the session's current intent.
+    pub intent: Option<String>,
 }
 
 /// The session as seen by the event right after its [`SessionUpdate`] was applied.
@@ -56,6 +84,10 @@ pub struct SessionSnapshot {
     pub message_incomplete: bool,
     /// Every path the session downloaded content to, sorted.
     pub downloads: Vec<String>,
+    /// The session-wide sequence the event belongs to.
+    pub session_sequence: u64,
+    /// The user intent stated in the current turn.
+    pub intent: Option<String>,
 }
 
 #[async_trait]
@@ -71,9 +103,9 @@ pub trait SessionStore: Send + Sync {
     ) -> Result<SessionSnapshot, StoreError>;
 
     /// Starts a session this store holds no state for from `cursor`: the next order is
-    /// `cursor.last_order + 1`, each agent continues after its sequence, and the cwd and prompt
-    /// id are restored. A session that is already seeded, possibly by another replica, keeps
-    /// its state.
+    /// `cursor.last_order + 1`, each agent continues after its sequence, sequences continue
+    /// after the last one in a new sequence, and the cwd, prompt id and intent are restored. A
+    /// session that is already seeded, possibly by another replica, keeps its state.
     async fn seed(&self, session_id: &str, cursor: &SessionCursor) -> Result<(), StoreError>;
 
     /// Buffers a non-final message fragment; it reserves no order.
@@ -135,6 +167,10 @@ impl SessionStore for InMemorySessionStore {
             *sequence += 1;
             *sequence
         });
+        let stated_intent = update
+            .finish_message
+            .as_ref()
+            .and_then(|fragment| fragment.intent.clone());
         let message = update.finish_message.map(|fragment| {
             let message_id = fragment.message_id.clone();
             state.add_fragment(fragment);
@@ -146,6 +182,13 @@ impl SessionStore for InMemorySessionStore {
             (pieces.into_values().collect::<String>(), incomplete)
         });
         state.downloads.extend(update.record_downloads);
+        if update.clear_intent {
+            state.intent = None;
+        }
+        if stated_intent.is_some() {
+            state.intent = stated_intent;
+        }
+        let session_sequence = state.sequences.step(&update.sequence_step);
         let order = state.last_order.unwrap_or_default() + 1;
         state.last_order = Some(order);
         Ok(SessionSnapshot {
@@ -158,6 +201,8 @@ impl SessionStore for InMemorySessionStore {
             message_incomplete: message.as_ref().is_some_and(|(_, incomplete)| *incomplete),
             message: message.map(|(text, _)| text),
             downloads: state.downloads.iter().cloned().collect(),
+            session_sequence,
+            intent: state.intent.clone(),
         })
     }
 
@@ -168,6 +213,8 @@ impl SessionStore for InMemorySessionStore {
             state.last_order = Some(cursor.last_order);
             state.cwd = cursor.cwd.clone();
             state.prompt_id = cursor.prompt_id.clone();
+            state.intent = cursor.intent.clone();
+            state.sequences.last = cursor.last_sequence;
             for (agent_id, sequence) in &cursor.agent_sequences {
                 state
                     .agent_sequences
@@ -183,10 +230,12 @@ impl SessionStore for InMemorySessionStore {
         session_id: &str,
         fragment: MessageFragment,
     ) -> Result<(), StoreError> {
-        self.lock()
-            .entry(session_id.to_owned())
-            .or_default()
-            .add_fragment(fragment);
+        let mut sessions = self.lock();
+        let state = sessions.entry(session_id.to_owned()).or_default();
+        if fragment.intent.is_some() {
+            state.intent.clone_from(&fragment.intent);
+        }
+        state.add_fragment(fragment);
         Ok(())
     }
 
@@ -214,6 +263,104 @@ struct SessionState {
     agent_sequences: HashMap<String, u64>,
     side_pending: SidePending,
     downloads: BTreeSet<String>,
+    sequences: Sequences,
+    intent: Option<String>,
+}
+
+/// Session-wide sequence numbering for the in-memory store; the Redis script mirrors it.
+#[derive(Debug, Default)]
+struct Sequences {
+    /// The latest sequence number handed out.
+    last: Option<u64>,
+    /// A Message or Call opened the latest sequence and no PostToolBatch closed it.
+    open: bool,
+    /// Sequence 0 is still collecting the first Request and Instructions.
+    zero: bool,
+    zero_has_request: bool,
+    /// The open sequence already has its Message.
+    has_message: bool,
+    calls: HashMap<String, u64>,
+}
+
+impl Sequences {
+    fn step(&mut self, step: &SequenceStep) -> u64 {
+        match step {
+            SequenceStep::Join => self.current(),
+            SequenceStep::Request => match self.last {
+                None => {
+                    self.start_zero();
+                    self.zero_has_request = true;
+                    0
+                }
+                Some(0) if self.zero && !self.zero_has_request => {
+                    self.zero_has_request = true;
+                    0
+                }
+                Some(_) => {
+                    let number = self.next();
+                    self.open = false;
+                    number
+                }
+            },
+            SequenceStep::Message => {
+                if self.open && !self.has_message {
+                    self.has_message = true;
+                    self.zero = false;
+                    return self.current();
+                }
+                let number = self.next();
+                self.open = true;
+                self.has_message = true;
+                number
+            }
+            SequenceStep::Call(tool_use_id) => {
+                let number = if self.open {
+                    self.current()
+                } else {
+                    let number = self.next();
+                    self.open = true;
+                    self.has_message = false;
+                    number
+                };
+                self.calls.insert(tool_use_id.clone(), number);
+                number
+            }
+            SequenceStep::Result(tool_use_id) => self
+                .calls
+                .remove(tool_use_id)
+                .unwrap_or_else(|| self.current()),
+            SequenceStep::Batch => {
+                let number = self.current();
+                self.open = false;
+                number
+            }
+        }
+    }
+
+    fn start_zero(&mut self) {
+        self.last = Some(0);
+        self.zero = true;
+        self.open = false;
+    }
+
+    fn current(&mut self) -> u64 {
+        match self.last {
+            Some(number) => number,
+            None => {
+                self.start_zero();
+                0
+            }
+        }
+    }
+
+    /// A new sequence after the latest one; it ends sequence 0's collection.
+    fn next(&mut self) -> u64 {
+        let number = self.last.map_or(0, |last| last + 1);
+        self.last = Some(number);
+        self.zero = false;
+        self.has_message = false;
+        number
+    }
 }
 
 impl SessionState {
@@ -240,7 +387,7 @@ impl SessionState {
 const APPLY_EVENT: &str = r"
 local session = KEYS[1]
 if redis.call('HEXISTS', session, 'next_order') == 0 then
-  return {0, false, false, false, false, false, false, 0, {}}
+  return {0, false, false, false, false, false, false, 0, {}, 0, false}
 end
 local ttl = tonumber(ARGV[1])
 if ARGV[2] == '1' then redis.call('HSET', session, 'cwd', ARGV[3]) end
@@ -275,22 +422,80 @@ if ARGV[11] == '1' then
   message = table.concat(parts)
   redis.call('DEL', KEYS[4])
 end
-for i = 15, #ARGV do redis.call('SADD', KEYS[5], ARGV[i]) end
+-- Session-wide sequences, mirroring `Sequences` of the in-memory store.
+local function hget(field) return redis.call('HGET', session, field) end
+local function set(field, value) redis.call('HSET', session, field, value) end
+local function start_zero() set('seq_last', 0); set('seq_zero', '1'); set('seq_open', '0') end
+local function current()
+  local last = hget('seq_last')
+  if not last then start_zero(); return 0 end
+  return tonumber(last)
+end
+local function next_number()
+  local last = hget('seq_last')
+  local number = 0
+  if last then number = tonumber(last) + 1 end
+  set('seq_last', number); set('seq_zero', '0'); set('seq_msg', '0')
+  return number
+end
+local step, step_id = ARGV[15], ARGV[16]
+local session_sequence
+if step == 'request' then
+  local last = hget('seq_last')
+  if not last then
+    start_zero(); set('seq_zero_req', '1'); session_sequence = 0
+  elseif last == '0' and hget('seq_zero') == '1' and hget('seq_zero_req') ~= '1' then
+    set('seq_zero_req', '1'); session_sequence = 0
+  else
+    session_sequence = next_number(); set('seq_open', '0')
+  end
+elseif step == 'message' then
+  if hget('seq_open') == '1' and hget('seq_msg') ~= '1' then
+    set('seq_msg', '1'); set('seq_zero', '0'); session_sequence = current()
+  else
+    session_sequence = next_number(); set('seq_open', '1'); set('seq_msg', '1')
+  end
+elseif step == 'call' then
+  if hget('seq_open') == '1' then
+    session_sequence = current()
+  else
+    session_sequence = next_number(); set('seq_open', '1'); set('seq_msg', '0')
+  end
+  set('seqcall:' .. step_id, session_sequence)
+elseif step == 'result' then
+  local mapped = hget('seqcall:' .. step_id)
+  if mapped then
+    redis.call('HDEL', session, 'seqcall:' .. step_id); session_sequence = tonumber(mapped)
+  else
+    session_sequence = current()
+  end
+elseif step == 'batch' then
+  session_sequence = current(); set('seq_open', '0')
+else
+  session_sequence = current()
+end
+if ARGV[17] == '1' then redis.call('HDEL', session, 'intent') end
+if ARGV[18] == '1' then set('intent', ARGV[19]) end
+for i = 20, #ARGV do redis.call('SADD', KEYS[5], ARGV[i]) end
 redis.call('EXPIRE', KEYS[5], ttl)
 local downloads = redis.call('SMEMBERS', KEYS[5])
 local order = redis.call('HINCRBY', session, 'next_order', 1)
 redis.call('EXPIRE', session, ttl)
-local fields = redis.call('HMGET', session, 'cwd', 'prompt_id', 'side_pending')
-return {order, fields[1], fields[2], fields[3], sequence, tool_input, message, incomplete, downloads}
+local fields = redis.call('HMGET', session, 'cwd', 'prompt_id', 'side_pending', 'intent')
+return {order, fields[1], fields[2], fields[3], sequence, tool_input, message, incomplete, downloads,
+  session_sequence, fields[4]}
 ";
 
-/// KEYS: session hash. ARGV: ttl, last order, presence flag and value for cwd and prompt_id,
-/// then agent id and sequence pairs. Only the first replica to seed a session sets its state.
+/// KEYS: session hash. ARGV: ttl, last order, presence flag and value for cwd, prompt_id, the
+/// last sequence and the intent, then agent id and sequence pairs. Only the first replica to
+/// seed a session sets its state.
 const SEED_SESSION: &str = r"
 if redis.call('HSETNX', KEYS[1], 'next_order', ARGV[2]) == 1 then
   if ARGV[3] == '1' then redis.call('HSETNX', KEYS[1], 'cwd', ARGV[4]) end
   if ARGV[5] == '1' then redis.call('HSETNX', KEYS[1], 'prompt_id', ARGV[6]) end
-  for i = 7, #ARGV, 2 do
+  if ARGV[7] == '1' then redis.call('HSETNX', KEYS[1], 'seq_last', ARGV[8]) end
+  if ARGV[9] == '1' then redis.call('HSETNX', KEYS[1], 'intent', ARGV[10]) end
+  for i = 11, #ARGV, 2 do
     redis.call('HSETNX', KEYS[1], 'agent:' .. ARGV[i], ARGV[i + 1])
   end
 end
@@ -298,12 +503,16 @@ redis.call('EXPIRE', KEYS[1], ARGV[1])
 return 1
 ";
 
-/// KEYS: message buffer. ARGV: ttl, index flag, index, delta.
+/// KEYS: message buffer, session hash. ARGV: ttl, index flag, index, delta, intent flag, intent.
 const APPEND_FRAGMENT: &str = r"
 local index = ARGV[3]
 if ARGV[2] ~= '1' then index = tostring(redis.call('HLEN', KEYS[1])) end
 redis.call('HSET', KEYS[1], index, ARGV[4])
 redis.call('EXPIRE', KEYS[1], ARGV[1])
+if ARGV[5] == '1' then
+  redis.call('HSET', KEYS[2], 'intent', ARGV[6])
+  redis.call('EXPIRE', KEYS[2], ARGV[1])
+end
 return 1
 ";
 
@@ -361,7 +570,21 @@ type ApplyEventReply = (
     Option<String>,
     u8,
     Vec<String>,
+    u64,
+    Option<String>,
 );
+
+/// The step name and tool_use_id the script reads for a [`SequenceStep`].
+fn sequence_arguments(step: &SequenceStep) -> (&'static str, &str) {
+    match step {
+        SequenceStep::Join => ("join", ""),
+        SequenceStep::Request => ("request", ""),
+        SequenceStep::Message => ("message", ""),
+        SequenceStep::Call(tool_use_id) => ("call", tool_use_id),
+        SequenceStep::Result(tool_use_id) => ("result", tool_use_id),
+        SequenceStep::Batch => ("batch", ""),
+    }
+}
 
 #[async_trait]
 impl SessionStore for RedisSessionStore {
@@ -403,6 +626,13 @@ impl SessionStore for RedisSessionStore {
             .arg(flag(&fragment.index))
             .arg(fragment.index.unwrap_or_default())
             .arg(&fragment.delta);
+        let (step, step_id) = sequence_arguments(&update.sequence_step);
+        invocation
+            .arg(step)
+            .arg(step_id)
+            .arg(if update.clear_intent { "1" } else { "0" })
+            .arg(flag(&fragment.intent))
+            .arg(fragment.intent.as_deref().unwrap_or_default());
         for path in &update.record_downloads {
             invocation.arg(path);
         }
@@ -416,6 +646,8 @@ impl SessionStore for RedisSessionStore {
             message,
             incomplete,
             mut downloads,
+            session_sequence,
+            intent,
         ): ApplyEventReply = invocation
             .invoke_async(&mut self.connection.clone())
             .await?;
@@ -439,6 +671,8 @@ impl SessionStore for RedisSessionStore {
             message,
             message_incomplete: incomplete == 1,
             downloads,
+            session_sequence,
+            intent,
         })
     }
 
@@ -450,7 +684,11 @@ impl SessionStore for RedisSessionStore {
             .arg(flag(&cursor.cwd))
             .arg(cursor.cwd.as_deref().unwrap_or_default())
             .arg(flag(&cursor.prompt_id))
-            .arg(cursor.prompt_id.as_deref().unwrap_or_default());
+            .arg(cursor.prompt_id.as_deref().unwrap_or_default())
+            .arg(flag(&cursor.last_sequence))
+            .arg(cursor.last_sequence.unwrap_or_default())
+            .arg(flag(&cursor.intent))
+            .arg(cursor.intent.as_deref().unwrap_or_default());
         for (agent_id, sequence) in &cursor.agent_sequences {
             invocation.arg(agent_id).arg(sequence);
         }
@@ -467,10 +705,13 @@ impl SessionStore for RedisSessionStore {
     ) -> Result<(), StoreError> {
         APPEND_FRAGMENT_SCRIPT
             .key(fragment_key(session_id, &fragment.message_id))
+            .key(session_key(session_id))
             .arg(self.ttl_secs)
             .arg(flag(&fragment.index))
             .arg(fragment.index.unwrap_or_default())
             .arg(&fragment.delta)
+            .arg(flag(&fragment.intent))
+            .arg(fragment.intent.as_deref().unwrap_or_default())
             .invoke_async::<()>(&mut self.connection.clone())
             .await?;
         Ok(())

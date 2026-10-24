@@ -89,8 +89,14 @@ pub struct EventRequest<T> {
     pub observed_at: u64,
     #[serde(default)]
     pub client_id: Option<String>,
+    /// Per-agent counter of the agent's events.
     #[serde(default)]
     pub sequence: Option<u64>,
+    /// Session-wide sequence: a Request, or a Message with the Calls and results that follow
+    /// it until PostToolBatch. Sequence 0 holds the first Request and the Instructions loaded
+    /// before the first Message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_sequence: Option<u64>,
     pub meta: EventMetadata,
     #[serde(default)]
     pub side_pending: Option<SidePending>,
@@ -111,6 +117,9 @@ pub struct PreToolUseEventRequest {
     pub mode: EnforcementMode,
     #[serde(default)]
     pub deadline_ms: Option<u64>,
+    /// The user intent the model stated (`[의도] ...`) for the current turn, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize, ToSchema)]
@@ -310,6 +319,12 @@ pub struct SessionCursor {
     pub cwd: Option<String>,
     #[serde(default)]
     pub prompt_id: Option<String>,
+    /// The highest session sequence committed.
+    #[serde(default)]
+    pub last_sequence: Option<u64>,
+    /// The latest user intent a message stated.
+    #[serde(default)]
+    pub intent: Option<String>,
 }
 
 /// A committed PreToolUse call, used to restore the tool input of a result whose Hook omits it

@@ -250,6 +250,7 @@ async fn pre_tool_use(
     let session_id = request.event.session_id.clone();
     let mode = request.mode;
     let deadline_ms = request.deadline_ms;
+    let intent = request.intent.clone();
     let mut response = match service
         .repository
         .commit(GeneratorEvent::PreToolUse(request))
@@ -291,6 +292,7 @@ async fn pre_tool_use(
         } else {
             remaining_ms
         },
+        intent,
     };
 
     if mode == EnforcementMode::Record {

@@ -236,7 +236,7 @@ async fn snapshots_pending_side_analysis_references() {
 }
 
 /// Every Hook must normalize to the exact bytes the Collector produced before its session state
-/// moved behind `SessionStore`.
+/// moved behind `SessionStore`, plus the `session_sequence` field added since.
 #[tokio::test]
 async fn normalizes_the_scenario_byte_for_byte_like_the_original_collector() {
     let emitted = support::run_scenario(Normalizer::default(), support::GOLDEN_SESSION_ID).await;
@@ -408,4 +408,61 @@ impl GeneratorTransport for History {
     ) -> Result<Option<serde_json::Value>, GeneratorError> {
         Ok(Some(json!({"restored": tool_use_id})))
     }
+}
+
+/// Session-wide sequences follow the conversation: sequence 0 holds the first prompt and the
+/// Instructions before the first message; each message opens a sequence its calls and results
+/// join (also when the message arrives after its first call); a later prompt stands alone.
+#[tokio::test]
+async fn numbers_session_wide_sequences_and_carries_the_stated_intent() {
+    let emitted = support::run_steps(
+        Normalizer::default(),
+        "session-1",
+        support::SEQUENCE_SCENARIO,
+    )
+    .await;
+    let observed: Vec<(String, u64, Option<String>)> = emitted
+        .iter()
+        .map(|event| {
+            let event: serde_json::Value = serde_json::from_str(event).unwrap();
+            let hook = match event["payload"].as_object().unwrap() {
+                payload if payload.contains_key("prompt") => "Request",
+                payload if payload.contains_key("text") => "Message",
+                payload if payload.contains_key("load_reason") => "Instructions",
+                payload if payload.contains_key("tool_response") => "Result",
+                payload if payload.contains_key("tool_input") => "Call",
+                _ => "Batch",
+            };
+            (
+                hook.to_owned(),
+                event["session_sequence"].as_u64().unwrap(),
+                event["intent"].as_str().map(str::to_owned),
+            )
+        })
+        .collect();
+    let intent = Some("로그인 버그 수정 (확신도: 높음)".to_owned());
+    let expected: Vec<(String, u64, Option<String>)> = [
+        ("Instructions", 0, None),
+        ("Request", 0, None),
+        ("Message", 1, None),
+        ("Call", 1, intent.clone()),
+        ("Call", 1, intent.clone()),
+        ("Result", 1, None),
+        ("Result", 1, None),
+        ("Batch", 1, None),
+        ("Call", 2, intent.clone()),
+        ("Message", 2, None),
+        ("Result", 2, None),
+        ("Batch", 2, None),
+        ("Call", 3, intent),
+        ("Result", 3, None),
+        ("Batch", 3, None),
+        ("Request", 4, None),
+        ("Call", 5, None),
+        ("Instructions", 5, None),
+    ]
+    .into_iter()
+    .map(|(hook, sequence, intent)| (hook.to_owned(), sequence, intent))
+    .collect();
+    assert_eq!(observed, expected);
 }

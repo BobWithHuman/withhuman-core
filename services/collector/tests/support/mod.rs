@@ -5,15 +5,29 @@ use serde_json::{Value, json};
 use withhuman_collector::{NormalizedEvent, Normalizer, TrustedHookContext};
 use withhuman_contracts::{decisions::EnforcementMode, events::SidePending};
 
-/// Output of the scenario on the in-process Collector before shared state stores existed.
+/// Output of the scenario on the in-process Collector before shared state stores existed, plus
+/// the `session_sequence` field added since.
 #[allow(dead_code)]
 pub const GOLDEN_SESSION_ID: &str = "golden-session";
 #[allow(dead_code)]
 pub const GOLDEN: &str = include_str!("../fixtures/session_scenario.golden.jsonl");
 
+/// Hooks covering how events join session-wide sequences and carry the stated intent.
+#[allow(dead_code)]
+pub const SEQUENCE_SCENARIO: &str = include_str!("../fixtures/sequence_scenario.json");
+
 pub async fn run_scenario(normalizer: Normalizer, session_id: &str) -> Vec<String> {
-    let steps: Vec<(String, Value)> =
-        serde_json::from_str(include_str!("../fixtures/session_scenario.json")).unwrap();
+    run_steps(
+        normalizer,
+        session_id,
+        include_str!("../fixtures/session_scenario.json"),
+    )
+    .await
+}
+
+/// Replays `[hook, request]` steps (JSON) and returns the serialized emitted events.
+pub async fn run_steps(normalizer: Normalizer, session_id: &str, steps: &str) -> Vec<String> {
+    let steps: Vec<(String, Value)> = serde_json::from_str(steps).unwrap();
     let mut emitted = Vec::new();
     for (index, (hook, mut request)) in steps.into_iter().enumerate() {
         let observed_at = 1_000 + u64::try_from(index).unwrap();
