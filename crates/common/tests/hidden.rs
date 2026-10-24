@@ -1,7 +1,8 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use serde_json::json;
 use withhuman_common::{
-    chunking::{Profile, chunk_text},
-    hidden::hidden_spans,
+    chunking::{Profile, chunk_text, chunk_text_from},
+    hidden::{Origin, Scope, hidden_spans, tool_origin},
 };
 
 fn rules(text: &str) -> Vec<&'static str> {
@@ -384,4 +385,95 @@ fn marks_only_the_piece_of_a_long_line_with_hidden_content() {
             .find(|chunk| chunk.hidden)
             .is_some_and(|chunk| chunk.text.contains("ignore the user"))
     );
+}
+
+#[test]
+fn hides_source_constructs_only_in_external_content() {
+    let scopes: Vec<(&str, Scope)> = hidden_spans(
+        "<!-- note -->\u{E0041} BT 3 Tr (x) Tj ET <span style=\"display:none\">x</span>",
+    )
+    .into_iter()
+    .map(|span| (span.rule, span.scope))
+    .collect();
+    assert_eq!(
+        scopes,
+        [
+            ("html_comment", Scope::External),
+            ("unicode_tag", Scope::Always),
+            ("pdf_invisible_text", Scope::Always),
+            ("css_display_none", Scope::External),
+        ]
+    );
+
+    let source = "<!-- TODO: tidy the header -->\n<h1>Title</h1>";
+    let hidden = |text: &str, origin| {
+        chunk_text_from(text, Profile::ToolOutput, origin)
+            .into_iter()
+            .any(|chunk| chunk.hidden)
+    };
+    assert!(!hidden(source, Origin::Local));
+    assert!(hidden(source, Origin::External));
+    assert!(hidden("let name = \"pay\u{200B}pal\";", Origin::Local));
+    assert!(hidden("BT /F1 9 Tf 3 Tr (secret) Tj ET", Origin::Local));
+}
+
+#[test]
+fn tells_external_tool_results_from_local_ones() {
+    let origin =
+        |tool: &str, input: serde_json::Value| tool_origin(tool, Some(&input), Some("/repo"));
+
+    assert_eq!(
+        origin("WebFetch", json!({"url":"https://a.test"})),
+        Origin::External
+    );
+    assert_eq!(origin("WebSearch", json!({"query":"x"})), Origin::External);
+    assert_eq!(
+        origin("mcp__browser__navigate", json!({})),
+        Origin::External
+    );
+    assert_eq!(
+        origin("Bash", json!({"command":"curl -s https://a.test"})),
+        Origin::External
+    );
+    assert_eq!(
+        origin("Bash", json!({"command":"cd /tmp && wget a.test/x"})),
+        Origin::External
+    );
+    assert_eq!(
+        origin("Bash", json!({"command":"gh issue view 42"})),
+        Origin::External
+    );
+    assert_eq!(
+        origin(
+            "Read",
+            json!({"file_path":"/home/me/Downloads/invoice.html"})
+        ),
+        Origin::External
+    );
+    assert_eq!(
+        origin("Grep", json!({"pattern":"x","path":"/etc"})),
+        Origin::External
+    );
+
+    assert_eq!(
+        origin("Bash", json!({"command":"cat index.html"})),
+        Origin::Local
+    );
+    assert_eq!(
+        origin(
+            "Bash",
+            json!({"command":"git remote add origin https://github.com/a/b"})
+        ),
+        Origin::Local
+    );
+    assert_eq!(
+        origin("Read", json!({"file_path":"/repo/web/index.html"})),
+        Origin::Local
+    );
+    assert_eq!(
+        origin("Read", json!({"file_path":"web/index.html"})),
+        Origin::Local
+    );
+    assert_eq!(origin("Task", json!({"prompt":"summarize"})), Origin::Local);
+    assert_eq!(tool_origin("Read", None, Some("/repo")), Origin::Local);
 }

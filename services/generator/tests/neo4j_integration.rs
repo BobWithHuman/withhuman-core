@@ -517,10 +517,24 @@ async fn marks_paragraphs_with_hidden_content() {
         }),
     )
     .await;
+    // The same kind of markup read from a workspace file is source the user sees in an editor.
+    let source = format!("<!-- {visible} -->\n{visible} workspace copy");
+    post_event(
+        &client,
+        &generator_url,
+        "PostToolUse",
+        json!({
+            "session_id":session_id,"order":2,"observed_at":2,
+            "meta":{"tool_use_id":"tool-2","cwd":"/repo"},
+            "payload":{"tool_name":"Read","tool_input":{"file_path":"/repo/web/index.html"},
+                       "tool_response":source}
+        }),
+    )
+    .await;
 
     let rows = query
         .one(
-            "MATCH (:ExecutionNode {session_id:$session_id})-[r:CONTAINS_PARAGRAPH]->(p:Paragraph) \
+            "MATCH (:ExecutionNode {session_id:$session_id, order:1})-[r:CONTAINS_PARAGRAPH]->(p:Paragraph) \
              WITH p ORDER BY r.index \
              RETURN collect([p.hidden, p.hidden_rules])",
             json!({"session_id":session_id}),
@@ -531,6 +545,14 @@ async fn marks_paragraphs_with_hidden_content() {
         rows,
         vec![json!([[false, []], [true, ["css_display_none"]]])]
     );
+    let workspace = query
+        .one(
+            "MATCH (:ExecutionNode {session_id:$session_id, order:2})-[:CONTAINS_PARAGRAPH]->(p:Paragraph) \
+             RETURN collect(p.hidden)",
+            json!({"session_id":session_id}),
+        )
+        .await;
+    assert_eq!(workspace, vec![json!([false, false])]);
 
     query
         .one(
