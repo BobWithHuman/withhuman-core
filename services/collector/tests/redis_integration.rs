@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -20,7 +21,7 @@ use withhuman_collector::{
 };
 use withhuman_contracts::{
     decisions::{CausalStart, Decision, DecisionResponse, EnforcementMode},
-    events::{EventResponse, SessionCursor},
+    events::{EventResponse, PostToolUseEventRequest, SessionCursor},
     ext_authz::{AttributeContext, Authorization, CheckRequest, attribute_context},
 };
 
@@ -250,6 +251,65 @@ async fn resumes_orders_after_redis_state_is_lost() {
     assert_eq!(sequences, vec![1, 2, 3, 4]);
 }
 
+/// Losing all of a session's Redis state also restores its cwd, prompt id and the input of a
+/// tool result whose Hook omits it.
+#[tokio::test]
+async fn restores_session_context_after_redis_state_is_lost() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    let generator = Arc::new(RecordingGenerator::default());
+    let app = app_with_transport(replica(&url, generator.clone()));
+    let session_id = unique("context");
+    for request in [
+        json_request(
+            "/v1/hooks/UserPromptSubmit",
+            json!({"session_id":session_id,"prompt":"go","prompt_id":"p1","cwd":"/repo"}),
+        ),
+        json_request(
+            "/v1/hooks/PreToolUse",
+            json!({
+                "session_id":session_id,"tool_name":"Bash","tool_input":{"command":"ls"},
+                "tool_use_id":"tool-1"
+            }),
+        ),
+    ] {
+        assert_eq!(
+            app.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::OK
+        );
+    }
+    let mut connection = redis_connection(&url).unwrap();
+    let keys: Vec<String> = redis::cmd("KEYS")
+        .arg(format!("withhuman:session:{{{session_id}}}*"))
+        .query_async(&mut connection)
+        .await
+        .unwrap();
+    assert_eq!(keys.len(), 2, "session hash and remembered tool input");
+    redis::cmd("DEL")
+        .arg(&keys)
+        .query_async::<()>(&mut connection)
+        .await
+        .unwrap();
+
+    let response = app
+        .oneshot(json_request(
+            "/v1/hooks/PostToolUse",
+            json!({
+                "session_id":session_id,"tool_name":"Bash","tool_response":"ok",
+                "tool_use_id":"tool-1"
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let results = generator.results.lock().unwrap();
+    assert_eq!(results[0].payload.tool_input, Some(json!({"command":"ls"})));
+    assert_eq!(results[0].meta.cwd.as_deref(), Some("/repo"));
+    assert_eq!(results[0].meta.prompt_id.as_deref(), Some("p1"));
+}
+
 /// Replicas that meet an unknown session at the same time seed it once and share one numbering.
 #[tokio::test]
 async fn replicas_seed_a_resumed_session_once() {
@@ -321,13 +381,19 @@ async fn assembles_fragments_by_index_across_replicas() {
     assert_eq!(generator.messages.lock().unwrap().clone(), vec!["ABCD"]);
 }
 
-/// Records what it receives and reports the highest recorded order and sequence as the cursor,
-/// like the Generator does for committed events.
+/// `(order, cwd, prompt_id)` of a committed event.
+type CommittedContext = (u64, Option<String>, Option<String>);
+
+/// Records what it receives and answers cursor and tool input lookups from what it recorded,
+/// like the Generator does from committed events.
 #[derive(Default)]
 struct RecordingGenerator {
     orders: Mutex<Vec<u64>>,
     sequences: Mutex<Vec<u64>>,
     messages: Mutex<Vec<String>>,
+    contexts: Mutex<Vec<CommittedContext>>,
+    inputs: Mutex<HashMap<String, Value>>,
+    results: Mutex<Vec<PostToolUseEventRequest>>,
     resume_after: u64,
 }
 
@@ -343,49 +409,70 @@ impl RecordingGenerator {
 #[async_trait]
 impl GeneratorTransport for RecordingGenerator {
     async fn send(&self, event: NormalizedEvent) -> Result<EventResponse, GeneratorError> {
+        let acknowledged = EventResponse {
+            nodes: Vec::new(),
+            paragraphs: None,
+            version: 1,
+            decision_response: None,
+        };
         let event = match event {
             NormalizedEvent::PreToolUse(event) => event,
             NormalizedEvent::MessageDisplay(event) => {
                 self.messages.lock().unwrap().push(event.payload.text);
-                return Ok(EventResponse {
-                    nodes: Vec::new(),
-                    paragraphs: None,
-                    version: 1,
-                    decision_response: None,
-                });
+                return Ok(acknowledged);
+            }
+            NormalizedEvent::UserPromptSubmit(event) => {
+                self.contexts.lock().unwrap().push((
+                    event.order,
+                    event.meta.cwd,
+                    event.meta.prompt_id,
+                ));
+                return Ok(acknowledged);
+            }
+            NormalizedEvent::PostToolUse(event) => {
+                self.results.lock().unwrap().push(event);
+                return Ok(acknowledged);
             }
             other => panic!("unexpected {}", other.event_name()),
         };
         self.orders.lock().unwrap().push(event.event.order);
-        self.sequences
-            .lock()
-            .unwrap()
-            .push(event.event.sequence.unwrap());
+        self.sequences.lock().unwrap().extend(event.event.sequence);
+        self.contexts.lock().unwrap().push((
+            event.event.order,
+            event.event.meta.cwd.clone(),
+            event.event.meta.prompt_id.clone(),
+        ));
+        self.inputs.lock().unwrap().insert(
+            event.event.meta.tool_use_id.clone().unwrap(),
+            event.event.payload.tool_input.clone(),
+        );
         Ok(EventResponse {
-            nodes: Vec::new(),
-            paragraphs: None,
-            version: 1,
             decision_response: Some(decision(Decision::Allow)),
+            ..acknowledged
         })
     }
 
     async fn session_cursor(&self, _session_id: &str) -> Result<SessionCursor, GeneratorError> {
-        let last_order = self
-            .orders
-            .lock()
-            .unwrap()
-            .iter()
-            .copied()
-            .max()
-            .unwrap_or(self.resume_after);
+        let contexts = self.contexts.lock().unwrap().clone();
+        let latest = contexts.iter().max_by_key(|(order, _, _)| *order);
         let sequence = self.sequences.lock().unwrap().iter().copied().max();
         Ok(SessionCursor {
-            last_order,
+            last_order: latest.map_or(self.resume_after, |(order, _, _)| *order),
             agent_sequences: sequence
                 .map(|sequence| ("main".to_owned(), sequence))
                 .into_iter()
                 .collect(),
+            cwd: latest.and_then(|(_, cwd, _)| cwd.clone()),
+            prompt_id: latest.and_then(|(_, _, prompt_id)| prompt_id.clone()),
         })
+    }
+
+    async fn tool_input(
+        &self,
+        _session_id: &str,
+        tool_use_id: &str,
+    ) -> Result<Option<Value>, GeneratorError> {
+        Ok(self.inputs.lock().unwrap().get(tool_use_id).cloned())
     }
 }
 

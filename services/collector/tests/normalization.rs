@@ -251,6 +251,7 @@ async fn resumes_numbering_after_the_generator_cursor() {
     let history = Arc::new(History(Ok(SessionCursor {
         last_order: 41,
         agent_sequences: BTreeMap::from([("agent-1".to_owned(), 7)]),
+        ..Default::default()
     })));
     let normalizer = Normalizer::default().with_history(history);
 
@@ -302,6 +303,39 @@ async fn reports_an_unreadable_generator_cursor() {
         .await;
 
     assert!(matches!(result, Err(NormalizeError::History(_))));
+}
+
+/// The cwd, prompt id and remembered tool inputs of a session the Collector lost come back from
+/// the Generator instead of going missing until a later Hook resends them.
+#[tokio::test]
+async fn restores_lost_session_context_from_the_generator() {
+    let history = Arc::new(History(Ok(SessionCursor {
+        last_order: 9,
+        cwd: Some("/repo".to_owned()),
+        prompt_id: Some("prompt-3".to_owned()),
+        ..Default::default()
+    })));
+    let normalizer = Normalizer::default().with_history(history);
+
+    let post = normalizer
+        .post_tool_use(
+            &context(),
+            serde_json::from_value(json!({
+                "session_id":"session-1","tool_name":"Bash","tool_response":"ok",
+                "tool_use_id":"tool-9"
+            }))
+            .unwrap(),
+            1,
+        )
+        .await
+        .unwrap();
+
+    let NormalizedEvent::PostToolUse(post) = post else {
+        panic!("expected PostToolUse");
+    };
+    assert_eq!(post.meta.cwd.as_deref(), Some("/repo"));
+    assert_eq!(post.meta.prompt_id.as_deref(), Some("prompt-3"));
+    assert_eq!(post.payload.tool_input, Some(json!({"restored": "tool-9"})));
 }
 
 /// Fragments join by their flush index, so retried and reordered deliveries still yield the
@@ -365,5 +399,13 @@ impl GeneratorTransport for History {
 
     async fn session_cursor(&self, _session_id: &str) -> Result<SessionCursor, GeneratorError> {
         self.0.clone()
+    }
+
+    async fn tool_input(
+        &self,
+        _session_id: &str,
+        tool_use_id: &str,
+    ) -> Result<Option<serde_json::Value>, GeneratorError> {
+        Ok(Some(json!({"restored": tool_use_id})))
     }
 }

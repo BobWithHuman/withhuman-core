@@ -1,5 +1,7 @@
 use std::{error::Error, fmt, sync::Arc};
 
+use serde_json::Value;
+
 use withhuman_contracts::{
     events::{
         ConfigChangeEventRequest, ConfigChangePayload, EventMetadata, EventRequest,
@@ -7,10 +9,11 @@ use withhuman_contracts::{
         InstructionsLoadedPayload, MessageDisplayEventRequest, MessageDisplayPayload,
         PostToolBatchEventRequest, PostToolBatchPayload, PostToolUseEventRequest,
         PostToolUseFailureEventRequest, PostToolUseFailurePayload, PostToolUsePayload,
-        PreToolUseEventRequest, PreToolUsePayload, SessionStartEventRequest, SessionStartPayload,
-        SubagentStartEventRequest, SubagentStartPayload, SubagentStopEventRequest,
-        SubagentStopPayload, ToolDescription, ToolDescriptionsEventRequest,
-        ToolDescriptionsPayload, UserPromptSubmitEventRequest, UserPromptSubmitPayload,
+        PreToolUseEventRequest, PreToolUsePayload, SessionCursor, SessionStartEventRequest,
+        SessionStartPayload, SubagentStartEventRequest, SubagentStartPayload,
+        SubagentStopEventRequest, SubagentStopPayload, ToolDescription,
+        ToolDescriptionsEventRequest, ToolDescriptionsPayload, UserPromptSubmitEventRequest,
+        UserPromptSubmitPayload,
     },
     hooks::{
         ConfigChangeRequest, FileChangedRequest, InstructionsLoadedRequest, MessageDisplayRequest,
@@ -146,13 +149,40 @@ impl Normalizer {
             committed => committed + RESUME_ORDER_GAP,
         };
         self.sessions
-            .seed(session_id, last_order, &cursor.agent_sequences)
+            .seed(
+                session_id,
+                &SessionCursor {
+                    last_order,
+                    ..cursor
+                },
+            )
             .await
             .map_err(NormalizeError::Store)?;
         self.sessions
             .apply_event(session_id, update)
             .await
             .map_err(NormalizeError::Store)
+    }
+
+    /// The input of a tool result whose Hook omits it: the one remembered at PreToolUse, or, when
+    /// the Collector lost it, the committed PreToolUse call's.
+    async fn tool_input(
+        &self,
+        session_id: &str,
+        tool_use_id: &str,
+        sent: Option<Value>,
+        remembered: Option<Value>,
+    ) -> Result<Option<Value>, NormalizeError> {
+        if let Some(input) = sent.or(remembered) {
+            return Ok(Some(input));
+        }
+        match &self.history {
+            Some(history) => history
+                .tool_input(session_id, tool_use_id)
+                .await
+                .map_err(NormalizeError::History),
+            None => Ok(None),
+        }
     }
 
     pub async fn session_start(
@@ -287,7 +317,14 @@ impl Normalizer {
                 },
             )
             .await?;
-        let tool_input = request.tool_input.or_else(|| state.tool_input.clone());
+        let tool_input = self
+            .tool_input(
+                &request.session_id,
+                &request.tool_use_id,
+                request.tool_input,
+                state.tool_input.clone(),
+            )
+            .await?;
         let meta = metadata(
             &state,
             context,
@@ -330,7 +367,14 @@ impl Normalizer {
                 },
             )
             .await?;
-        let tool_input = request.tool_input.or_else(|| state.tool_input.clone());
+        let tool_input = self
+            .tool_input(
+                &request.session_id,
+                &request.tool_use_id,
+                request.tool_input,
+                state.tool_input.clone(),
+            )
+            .await?;
         let meta = metadata(
             &state,
             context,

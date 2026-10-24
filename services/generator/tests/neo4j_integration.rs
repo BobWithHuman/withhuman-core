@@ -301,19 +301,34 @@ async fn reports_the_session_cursor_for_resuming_collectors() {
     };
     let session_id = unique_session("generator-cursor-it");
     let client = reqwest::Client::new();
-    for (order, agent_id, sequence) in [(1, "main", 1), (4, "main", 2), (2, "sub-1", 5)] {
+    for (order, agent_id, sequence, cwd, prompt_id) in [
+        (1, "main", 1, "/a", "p1"),
+        (4, "main", 2, "/c", "p2"),
+        (2, "sub-1", 5, "/b", "p1"),
+    ] {
         post_event(
             &client,
             &generator_url,
             "UserPromptSubmit",
             json!({
                 "session_id":session_id,"order":order,"observed_at":order,"sequence":sequence,
-                "meta":{"agent_id":agent_id},
+                "meta":{"agent_id":agent_id,"cwd":cwd,"prompt_id":prompt_id},
                 "payload":{"prompt":format!("prompt {order}"),"kind":"user","user_docs":[]}
             }),
         )
         .await;
     }
+    post_event(
+        &client,
+        &generator_url,
+        "PreToolUse",
+        json!({
+            "session_id":session_id,"order":3,"observed_at":3,"meta":{"tool_use_id":"tool-7"},
+            "payload":{"tool_name":"Bash","tool_input":{"command":"ls","flags":[1,2]}},
+            "mode":"record"
+        }),
+    )
+    .await;
 
     let cursor = |session: String| {
         let (client, url) = (client.clone(), generator_url.clone());
@@ -330,12 +345,35 @@ async fn reports_the_session_cursor_for_resuming_collectors() {
     };
     assert_eq!(
         cursor(session_id.clone()).await,
-        json!({"last_order":4,"agent_sequences":{"main":2,"sub-1":5}})
+        json!({
+            "last_order":4,"agent_sequences":{"main":2,"sub-1":5},"cwd":"/c","prompt_id":"p2"
+        })
     );
     assert_eq!(
         cursor(unique_session("generator-cursor-unknown")).await,
-        json!({"last_order":0,"agent_sequences":{}})
+        json!({"last_order":0,"agent_sequences":{},"cwd":null,"prompt_id":null})
     );
+
+    let call = client
+        .get(format!(
+            "{generator_url}/v1/sessions/{session_id}/calls/tool-7"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert!(call.status().is_success());
+    assert_eq!(
+        call.json::<Value>().await.unwrap(),
+        json!({"tool_name":"Bash","tool_input":{"command":"ls","flags":[1,2]}})
+    );
+    let missing = client
+        .get(format!(
+            "{generator_url}/v1/sessions/{session_id}/calls/unknown"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
 
     delete_session(&query, &session_id).await;
 }

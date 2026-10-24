@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeMap,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -20,7 +19,7 @@ use withhuman_collector::{
 };
 use withhuman_contracts::{
     decisions::{CausalStart, Decision, DecisionResponse, EnforcementMode},
-    events::{EventResponse, SidePending},
+    events::{EventResponse, SessionCursor, SidePending},
     ext_authz::{AttributeContext, Authorization, CheckRequest, attribute_context},
 };
 
@@ -488,7 +487,7 @@ impl SessionStore for UnavailableSessions {
         Err(StoreError::Unavailable("down".to_owned()))
     }
 
-    async fn seed(&self, _: &str, _: u64, _: &BTreeMap<String, u64>) -> Result<(), StoreError> {
+    async fn seed(&self, _: &str, _: &SessionCursor) -> Result<(), StoreError> {
         Err(StoreError::Unavailable("down".to_owned()))
     }
 
@@ -522,10 +521,7 @@ impl GeneratorTransport for NoCursorGenerator {
         Ok(event_response(Some(decision(Decision::Allow, ""))))
     }
 
-    async fn session_cursor(
-        &self,
-        _session_id: &str,
-    ) -> Result<withhuman_contracts::events::SessionCursor, GeneratorError> {
+    async fn session_cursor(&self, _session_id: &str) -> Result<SessionCursor, GeneratorError> {
         Err(GeneratorError::Unavailable("offline".to_owned()))
     }
 }

@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use withhuman_contracts::events::{
     CreatedNode, EventResponse, ParagraphClassificationRequest, ParagraphClassificationResponse,
     ParagraphReference, RequestContinuationRequest, RequestContinuationResponse, SessionCursor,
+    ToolCall,
 };
 
 use crate::{GeneratorConfig, GeneratorEvent, event::GraphMutation};
@@ -25,7 +26,8 @@ ON CREATE SET session.version = 0, session.created_at = $observed_at \
 SET session.commit_lock = true \
 MERGE (commit:EventCommit {session_id: $session_id, order: $order}) \
 ON CREATE SET commit.event_name = $event_name, commit.observed_at = $observed_at, \
-commit.client_id = $client_id, commit.event_json = $event_json \
+commit.client_id = $client_id, commit.event_json = $event_json, \
+commit.cwd = $cwd, commit.prompt_id = $prompt_id \
 WITH session, commit, commit.version IS NULL AS is_new \
 CALL (session, commit, is_new) { \
   WITH session, commit WHERE is_new \
@@ -193,14 +195,32 @@ CALL (session, request, target) { \
 } \
 RETURN applied, request_seq";
 
+// Every event carries the session cwd and prompt id as they were after it, so the values of the
+// highest order are the current ones. Commits made before they were recorded on EventCommit fall
+// back to their ExecutionNode.
 const SESSION_CURSOR: &str = "\
 OPTIONAL MATCH (commit:EventCommit {session_id: $session_id}) \
 WITH coalesce(max(commit.order), 0) AS last_order \
 OPTIONAL MATCH (node:ExecutionNode {session_id: $session_id}) \
 WHERE node.agent_id IS NOT NULL AND node.sequence IS NOT NULL \
 WITH last_order, node.agent_id AS agent_id, max(node.sequence) AS sequence \
-RETURN last_order, \
-       collect(CASE WHEN agent_id IS NULL THEN NULL ELSE [agent_id, sequence] END) AS agents";
+WITH last_order, \
+     collect(CASE WHEN agent_id IS NULL THEN NULL ELSE [agent_id, sequence] END) AS agents \
+RETURN last_order, agents, \
+  coalesce( \
+    COLLECT { MATCH (c:EventCommit {session_id: $session_id}) WHERE c.cwd IS NOT NULL \
+              RETURN c.cwd ORDER BY c.order DESC LIMIT 1 }[0], \
+    COLLECT { MATCH (n:ExecutionNode {session_id: $session_id}) WHERE n.cwd IS NOT NULL \
+              RETURN n.cwd ORDER BY n.order DESC LIMIT 1 }[0]) AS cwd, \
+  coalesce( \
+    COLLECT { MATCH (c:EventCommit {session_id: $session_id}) WHERE c.prompt_id IS NOT NULL \
+              RETURN c.prompt_id ORDER BY c.order DESC LIMIT 1 }[0], \
+    COLLECT { MATCH (n:ExecutionNode {session_id: $session_id}) WHERE n.prompt_id IS NOT NULL \
+              RETURN n.prompt_id ORDER BY n.order DESC LIMIT 1 }[0]) AS prompt_id";
+
+const TOOL_CALL: &str = "\
+MATCH (call:ExecutionNode {session_id: $session_id, type: 'Call', tool_use_id: $tool_use_id}) \
+RETURN call.payload_json ORDER BY call.order DESC LIMIT 1";
 
 const DELETE_PARAGRAPHS: &str = "\
 MATCH (paragraph) WHERE paragraph:Paragraph OR paragraph:PendingParagraphEnrichment \
@@ -268,6 +288,15 @@ pub trait GraphRepository: Send + Sync + 'static {
 
     /// Unknown sessions have a zero cursor.
     async fn session_cursor(&self, _session_id: &str) -> Result<SessionCursor, RepositoryError> {
+        Err(RepositoryError::NotFound)
+    }
+
+    /// The committed PreToolUse call with this tool_use_id; `NotFound` when there is none.
+    async fn tool_call(
+        &self,
+        _session_id: &str,
+        _tool_use_id: &str,
+    ) -> Result<ToolCall, RepositoryError> {
         Err(RepositoryError::NotFound)
     }
 }
@@ -606,7 +635,30 @@ impl GraphRepository for Neo4jRepository {
                 .iter()
                 .map(agent_sequence)
                 .collect::<Result<_, _>>()?,
+            cwd: row.get(2).and_then(Value::as_str).map(str::to_owned),
+            prompt_id: row.get(3).and_then(Value::as_str).map(str::to_owned),
         })
+    }
+
+    async fn tool_call(
+        &self,
+        session_id: &str,
+        tool_use_id: &str,
+    ) -> Result<ToolCall, RepositoryError> {
+        let data = self
+            .execute(
+                TOOL_CALL,
+                json!({"session_id": session_id, "tool_use_id": tool_use_id}),
+            )
+            .await?;
+        let payload = data
+            .values
+            .first()
+            .and_then(|row| row.first())
+            .and_then(Value::as_str)
+            .ok_or(RepositoryError::NotFound)?;
+        serde_json::from_str(payload)
+            .map_err(|error| RepositoryError::InvalidResponse(error.to_string()))
     }
 }
 

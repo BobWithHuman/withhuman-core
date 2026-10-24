@@ -3,11 +3,12 @@ use std::{error::Error, fmt};
 use async_trait::async_trait;
 use std::time::Duration;
 
-use withhuman_contracts::events::{EventResponse, SessionCursor};
+use serde_json::Value;
+use withhuman_contracts::events::{EventResponse, SessionCursor, ToolCall};
 
 use crate::NormalizedEvent;
 
-/// Bounds the cursor lookup that runs before the first event of a session without state.
+/// Bounds the lookups that restore session state the Collector lost.
 const CURSOR_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[async_trait]
@@ -17,6 +18,15 @@ pub trait GeneratorTransport: Send + Sync {
     /// The last order and agent sequences committed for a session; zero when it is unknown.
     async fn session_cursor(&self, _session_id: &str) -> Result<SessionCursor, GeneratorError> {
         Ok(SessionCursor::default())
+    }
+
+    /// The input of a committed PreToolUse call; `None` when no such call was committed.
+    async fn tool_input(
+        &self,
+        _session_id: &str,
+        _tool_use_id: &str,
+    ) -> Result<Option<Value>, GeneratorError> {
+        Ok(None)
     }
 }
 
@@ -58,11 +68,34 @@ impl GeneratorTransport for GeneratorHttpClient {
     }
 
     async fn session_cursor(&self, session_id: &str) -> Result<SessionCursor, GeneratorError> {
+        self.get_json(&["v1", "sessions", session_id, "cursor"])
+            .await?
+            .ok_or(GeneratorError::Rejected(404))
+    }
+
+    async fn tool_input(
+        &self,
+        session_id: &str,
+        tool_use_id: &str,
+    ) -> Result<Option<Value>, GeneratorError> {
+        Ok(self
+            .get_json::<ToolCall>(&["v1", "sessions", session_id, "calls", tool_use_id])
+            .await?
+            .map(|call| call.tool_input))
+    }
+}
+
+impl GeneratorHttpClient {
+    /// GETs a JSON resource below the Generator URL; `None` when it does not exist.
+    async fn get_json<T: serde::de::DeserializeOwned>(
+        &self,
+        segments: &[&str],
+    ) -> Result<Option<T>, GeneratorError> {
         let mut url = reqwest::Url::parse(&self.base_url)
             .map_err(|error| GeneratorError::InvalidRequest(error.to_string()))?;
         url.path_segments_mut()
             .map_err(|()| GeneratorError::InvalidRequest("Generator URL has no path".to_owned()))?
-            .extend(["v1", "sessions", session_id, "cursor"]);
+            .extend(segments);
         let response = self
             .client
             .get(url)
@@ -71,12 +104,16 @@ impl GeneratorTransport for GeneratorHttpClient {
             .await
             .map_err(|error| GeneratorError::Unavailable(error.to_string()))?;
         let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
         if !status.is_success() {
             return Err(GeneratorError::Rejected(status.as_u16()));
         }
         response
             .json()
             .await
+            .map(Some)
             .map_err(|error| GeneratorError::InvalidResponse(error.to_string()))
     }
 }

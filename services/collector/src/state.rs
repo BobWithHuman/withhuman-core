@@ -7,7 +7,7 @@ use std::{
 use async_trait::async_trait;
 use redis::{Script, aio::ConnectionManager};
 use serde_json::Value;
-use withhuman_contracts::events::SidePending;
+use withhuman_contracts::events::{SessionCursor, SidePending};
 
 use crate::StoreError;
 
@@ -65,15 +65,11 @@ pub trait SessionStore: Send + Sync {
         update: SessionUpdate,
     ) -> Result<SessionSnapshot, StoreError>;
 
-    /// Starts the numbering of a session this store holds no state for: the next order is
-    /// `last_order + 1` and each agent continues after its sequence. A session that is already
-    /// seeded, possibly by another replica, keeps its numbering.
-    async fn seed(
-        &self,
-        session_id: &str,
-        last_order: u64,
-        agent_sequences: &BTreeMap<String, u64>,
-    ) -> Result<(), StoreError>;
+    /// Starts a session this store holds no state for from `cursor`: the next order is
+    /// `cursor.last_order + 1`, each agent continues after its sequence, and the cwd and prompt
+    /// id are restored. A session that is already seeded, possibly by another replica, keeps
+    /// its state.
+    async fn seed(&self, session_id: &str, cursor: &SessionCursor) -> Result<(), StoreError>;
 
     /// Buffers a non-final message fragment; it reserves no order.
     async fn append_fragment(
@@ -158,17 +154,14 @@ impl SessionStore for InMemorySessionStore {
         })
     }
 
-    async fn seed(
-        &self,
-        session_id: &str,
-        last_order: u64,
-        agent_sequences: &BTreeMap<String, u64>,
-    ) -> Result<(), StoreError> {
+    async fn seed(&self, session_id: &str, cursor: &SessionCursor) -> Result<(), StoreError> {
         let mut sessions = self.lock();
         let state = sessions.entry(session_id.to_owned()).or_default();
         if state.last_order.is_none() {
-            state.last_order = Some(last_order);
-            for (agent_id, sequence) in agent_sequences {
+            state.last_order = Some(cursor.last_order);
+            state.cwd = cursor.cwd.clone();
+            state.prompt_id = cursor.prompt_id.clone();
+            for (agent_id, sequence) in &cursor.agent_sequences {
                 state
                     .agent_sequences
                     .entry(agent_id.clone())
@@ -279,11 +272,13 @@ local fields = redis.call('HMGET', session, 'cwd', 'prompt_id', 'side_pending')
 return {order, fields[1], fields[2], fields[3], sequence, tool_input, message, incomplete}
 ";
 
-/// KEYS: session hash. ARGV: ttl, last order, then agent id and sequence pairs. Only the first
-/// replica to seed a session sets its numbering.
+/// KEYS: session hash. ARGV: ttl, last order, presence flag and value for cwd and prompt_id,
+/// then agent id and sequence pairs. Only the first replica to seed a session sets its state.
 const SEED_SESSION: &str = r"
 if redis.call('HSETNX', KEYS[1], 'next_order', ARGV[2]) == 1 then
-  for i = 3, #ARGV, 2 do
+  if ARGV[3] == '1' then redis.call('HSETNX', KEYS[1], 'cwd', ARGV[4]) end
+  if ARGV[5] == '1' then redis.call('HSETNX', KEYS[1], 'prompt_id', ARGV[6]) end
+  for i = 7, #ARGV, 2 do
     redis.call('HSETNX', KEYS[1], 'agent:' .. ARGV[i], ARGV[i + 1])
   end
 end
@@ -414,15 +409,16 @@ impl SessionStore for RedisSessionStore {
         })
     }
 
-    async fn seed(
-        &self,
-        session_id: &str,
-        last_order: u64,
-        agent_sequences: &BTreeMap<String, u64>,
-    ) -> Result<(), StoreError> {
+    async fn seed(&self, session_id: &str, cursor: &SessionCursor) -> Result<(), StoreError> {
         let mut invocation = SEED_SESSION_SCRIPT.key(session_key(session_id));
-        invocation.arg(self.ttl_secs).arg(last_order);
-        for (agent_id, sequence) in agent_sequences {
+        invocation
+            .arg(self.ttl_secs)
+            .arg(cursor.last_order)
+            .arg(flag(&cursor.cwd))
+            .arg(cursor.cwd.as_deref().unwrap_or_default())
+            .arg(flag(&cursor.prompt_id))
+            .arg(cursor.prompt_id.as_deref().unwrap_or_default());
+        for (agent_id, sequence) in &cursor.agent_sequences {
             invocation.arg(agent_id).arg(sequence);
         }
         invocation
