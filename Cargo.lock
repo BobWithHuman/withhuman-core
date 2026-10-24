@@ -1496,6 +1496,7 @@ dependencies = [
 name = "withhuman-common"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "regex",
  "sha2",
 ]
@@ -1532,7 +1533,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
- "regex",
  "reqwest",
  "serde",
  "serde_json",

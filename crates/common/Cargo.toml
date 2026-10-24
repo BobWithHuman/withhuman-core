@@ -9,5 +9,6 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+base64 = "0.22"
 regex = "1.11"
 sha2 = "0.10"
