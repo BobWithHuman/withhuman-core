@@ -46,7 +46,7 @@ FOREACH (_ IN CASE WHEN created AND $has_node THEN [1] ELSE [] END | \
     client_id: $client_id, sequence: $sequence, prompt_id: $prompt_id, \
     agent_id: $agent_id, agent_type: $agent_type, cwd: $cwd, \
     tool_use_id: $tool_use_id, turn_id: $turn_id, repository: $repository, \
-    payload_json: $payload_json \
+    intent: $intent, payload_json: $payload_json \
   }) \
   CREATE (commit)-[:CREATED]->(node) \
   CREATE (session)-[:CONTAINS]->(node) \
@@ -466,6 +466,7 @@ impl Neo4jRepository {
             "file_path": mutation.file_path,
             "paragraphs": mutation.paragraphs,
             "tokens": mutation.tokens,
+            "intent": mutation.intent,
             "is_tool_result": is_tool_result,
         });
         let data = self.execute(COMMIT_EVENT, parameters).await?;

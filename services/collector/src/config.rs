@@ -36,8 +36,9 @@ pub struct CollectorConfig {
     /// Inactivity after which a session's shared state expires. A session that resumes later
     /// restarts its orders at 1, so keep this longer than any session pause.
     pub session_ttl: Duration,
-    /// Ask the model to state the inferred user intent first and highlight it on screen.
-    pub intent_echo: bool,
+    /// Ask the model to state the inferred user intent first; the line is hidden from the user
+    /// and stored by the Generator.
+    pub intent_capture: bool,
 }
 
 impl Default for CollectorConfig {
@@ -60,7 +61,7 @@ impl Default for CollectorConfig {
             redis_url: None,
             verdict_ttl: Duration::from_secs(3_600),
             session_ttl: Duration::from_secs(604_800),
-            intent_echo: true,
+            intent_capture: true,
         }
     }
 }
@@ -150,7 +151,7 @@ impl CollectorConfig {
                 .filter(|value| !value.is_empty()),
             verdict_ttl: Duration::from_secs(verdict_ttl),
             session_ttl: Duration::from_secs(session_ttl),
-            intent_echo: match_env("WITHHUMAN_INTENT_ECHO", true, |value| match value {
+            intent_capture: match_env("WITHHUMAN_INTENT_CAPTURE", true, |value| match value {
                 "on" => Some(true),
                 "off" => Some(false),
                 _ => None,

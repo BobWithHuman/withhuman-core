@@ -449,6 +449,51 @@ async fn indexes_sensitive_tool_output_without_storing_it() {
     delete_session(&query, &session_id).await;
 }
 
+#[tokio::test]
+async fn stores_the_intent_a_message_states() {
+    let Some((query, generator_url)) = start_without_decision().await else {
+        return;
+    };
+    let session_id = unique_session("generator-intent-it");
+    let client = reqwest::Client::new();
+    for (order, text) in [
+        (
+            1,
+            "[의도] 로그인 실패 원인 조사 (확신도: 높음)\n원인을 찾아볼게요.",
+        ),
+        (2, "의도 줄이 없는 메시지"),
+    ] {
+        post_event(
+            &client,
+            &generator_url,
+            "MessageDisplay",
+            json!({
+                "session_id":session_id,"order":order,"observed_at":order,"meta":{},
+                "payload":{"message_id":format!("m{order}"),"text":text}
+            }),
+        )
+        .await;
+    }
+
+    let rows = query
+        .one(
+            "MATCH (n:ExecutionNode {session_id:$session_id, type:'Message'}) \
+             WITH n ORDER BY n.order \
+             RETURN collect([n.intent, n.payload_json CONTAINS '[의도]'])",
+            json!({"session_id":session_id}),
+        )
+        .await;
+    assert_eq!(
+        rows,
+        vec![json!([
+            ["로그인 실패 원인 조사 (확신도: 높음)", true],
+            [null, false]
+        ])]
+    );
+
+    delete_session(&query, &session_id).await;
+}
+
 async fn start_without_decision() -> Option<(QueryClient, String)> {
     let Some(neo4j_url) = std::env::var("NEO4J_INTEGRATION_URL").ok() else {
         eprintln!("skipping Neo4j integration test; NEO4J_INTEGRATION_URL is unset");
