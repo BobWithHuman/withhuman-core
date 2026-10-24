@@ -49,3 +49,7 @@ ON (node.prompt_id);
 CREATE INDEX event_commit_observed_at IF NOT EXISTS
 FOR (commit:EventCommit)
 ON (commit.observed_at);
+
+CREATE INDEX execution_node_session_order IF NOT EXISTS
+FOR (node:ExecutionNode)
+ON (node.session_id, node.order);
