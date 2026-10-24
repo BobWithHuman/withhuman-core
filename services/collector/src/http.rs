@@ -13,6 +13,7 @@ use axum::{
 };
 use serde::{Serialize, de::DeserializeOwned};
 use utoipa::{OpenApi, ToSchema};
+use withhuman_common::intent::split_intent;
 use withhuman_contracts::{
     decisions::{Decision, DecisionResponse},
     events::EventResponse,
@@ -297,7 +298,7 @@ regular_handler!(
     ),
     request_body = UserPromptSubmitRequest,
     responses(
-        (status = 200, description = "Event accepted; with intent echo on, the intent instruction as additional context", body = HookSpecificResponse<UserPromptSubmitOutput>),
+        (status = 200, description = "Event accepted; with intent capture on, the intent instruction as additional context", body = HookSpecificResponse<UserPromptSubmitOutput>),
         (status = 400, description = "Invalid JSON", body = ErrorResponse),
         (status = 415, description = "Content-Type is not application/json", body = ErrorResponse),
         (status = 502, description = "Generator or session store unavailable", body = ErrorResponse)
@@ -316,7 +317,7 @@ async fn user_prompt_submit(
         Ok(event) => send_regular(&service, event).await,
         Err(error) => normalize_failure(error),
     };
-    if response.status() != StatusCode::OK || !service.config.intent_echo {
+    if response.status() != StatusCode::OK || !service.config.intent_capture {
         return response;
     }
     Json(HookSpecificResponse {
@@ -377,15 +378,16 @@ async fn subagent_stop(
     path = "/v1/hooks/MessageDisplay",
     tag = "Collector",
     request_body = MessageDisplayRequest,
-    responses((status = 200, description = "Fragment accepted; the highlighted intent line as display content when the first flush opens with it", body = HookSpecificResponse<MessageDisplayOutput>), (status = 400, body = ErrorResponse), (status = 415, body = ErrorResponse), (status = 500, body = ErrorResponse), (status = 502, body = ErrorResponse))
+    responses((status = 200, description = "Fragment accepted; when the first flush opens with the intent line, the flush without it as display content", body = HookSpecificResponse<MessageDisplayOutput>), (status = 400, body = ErrorResponse), (status = 415, body = ErrorResponse), (status = 500, body = ErrorResponse), (status = 502, body = ErrorResponse))
 )]
 async fn message_display(
     State(service): State<CollectorService>,
     headers: HeaderMap,
     StrictJson(request): StrictJson<MessageDisplayRequest>,
 ) -> Response {
-    let display = (service.config.intent_echo && request.index.unwrap_or(0) == 0)
-        .then(|| crate::highlight_intent(&request.delta))
+    // The first flush shows everything but the intent line, which only the engine keeps.
+    let display = (service.config.intent_capture && request.index.unwrap_or(0) == 0)
+        .then(|| split_intent(&request.delta).map(|line| line.rest.to_owned()))
         .flatten();
     let response = match service
         .normalizer

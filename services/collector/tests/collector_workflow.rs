@@ -369,7 +369,7 @@ async fn adds_the_intent_instruction_to_prompts() {
     );
 
     let off = CollectorConfig {
-        intent_echo: false,
+        intent_capture: false,
         ..Default::default()
     };
     let (status, body) = response_json(
@@ -384,53 +384,45 @@ async fn adds_the_intent_instruction_to_prompts() {
 }
 
 #[tokio::test]
-async fn highlights_the_intent_line_of_the_first_flush_only() {
+async fn hides_the_intent_line_from_the_user_but_records_it() {
     let generator = Arc::new(RecordingGenerator::allow());
     let app = test_app(CollectorConfig::default(), generator.clone());
-    let flush = |index: u64, delta: &str, final_: bool| {
+    let flush = |message: &str, index: u64, delta: &str, final_: bool| {
         json_request(
             "/v1/hooks/MessageDisplay",
-            json!({"session_id":"s1","message_id":"m1","index":index,"delta":delta,"final":final_}),
+            json!({"session_id":"s1","message_id":message,"index":index,"delta":delta,"final":final_}),
         )
     };
+    let display = |app: axum::Router, request| async move {
+        response_json(app.oneshot(request).await.unwrap()).await.1
+            ["hookSpecificOutput"]["displayContent"]
+            .clone()
+    };
 
-    let (_, first) = response_json(
-        app.clone()
-            .oneshot(flush(0, "[의도] 로그인 버그 수정 (확신도: 높음)\n", false))
-            .await
-            .unwrap(),
-    )
-    .await;
+    // A first flush holding only the intent line shows nothing.
     assert_eq!(
-        first["hookSpecificOutput"]["displayContent"],
-        "**[파악한 의도] → 로그인 버그 수정 (확신도: 높음)**\n"
+        display(
+            app.clone(),
+            flush("m1", 0, "[의도] 로그인 버그 수정 (확신도: 높음)\n", false)
+        )
+        .await,
+        ""
     );
-    let (_, later) = response_json(
-        app.clone()
-            .oneshot(flush(1, "[의도] 이건 본문\n", true))
-            .await
-            .unwrap(),
-    )
-    .await;
-    assert!(later.is_null());
-
+    assert_eq!(
+        display(app.clone(), flush("m1", 1, "[의도] 이건 본문\n", true)).await,
+        Value::Null
+    );
     // A message delivered whole arrives as one final flush with index 0.
-    let (_, whole) = response_json(
-        app.oneshot(json_request(
-            "/v1/hooks/MessageDisplay",
-            json!({"session_id":"s1","message_id":"m2","index":0,
-                   "delta":"[의도] 테스트 추가\n추가했습니다.","final":true}),
-        ))
-        .await
-        .unwrap(),
-    )
-    .await;
     assert_eq!(
-        whole["hookSpecificOutput"]["displayContent"],
-        "**[파악한 의도] → 테스트 추가**\n추가했습니다."
+        display(
+            app,
+            flush("m2", 0, "[의도] 테스트 추가\n추가했습니다.", true)
+        )
+        .await,
+        "추가했습니다."
     );
 
-    // Display only: the recorded message keeps what the model wrote.
+    // The recorded message keeps the intent line for the Generator to store.
     let events = generator.events.lock().unwrap();
     let texts: Vec<&str> = events
         .iter()

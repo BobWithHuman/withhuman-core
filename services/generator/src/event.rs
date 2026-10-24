@@ -4,7 +4,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use withhuman_common::{
     chunking::{self, Profile},
-    tokens,
+    intent, tokens,
 };
 use withhuman_contracts::events::{
     ConfigChangeEventRequest, FileChangedEventRequest, InstructionsLoadedEventRequest,
@@ -207,15 +207,19 @@ impl GeneratorEvent {
                 )
             }
             Self::MessageDisplay(event) => {
-                let text = Some(event.payload.text.clone());
-                mutation(
+                let text = event.payload.text.clone();
+                let intent = intent::split_intent(&text)
+                    .map(|line| tokens::redact(line.intent).into_owned());
+                let mut mutation = mutation(
                     "MessageDisplay",
                     Some("Message"),
-                    text,
+                    Some(text),
                     None,
                     event,
                     |event| event,
-                )
+                )?;
+                mutation.intent = intent;
+                Ok(mutation)
             }
             Self::PostToolBatch(event) => mutation(
                 "PostToolBatch",
@@ -257,6 +261,8 @@ pub(crate) struct GraphMutation {
     pub(crate) file_path: Option<String>,
     pub(crate) paragraphs: Vec<ParagraphMutation>,
     pub(crate) tokens: Vec<TokenMutation>,
+    /// The user intent a message states on its first line.
+    pub(crate) intent: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -363,6 +369,7 @@ where
         file_path,
         paragraphs,
         tokens: tokens.into_iter().collect(),
+        intent: None,
     })
 }
 
