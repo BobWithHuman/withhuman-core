@@ -16,7 +16,9 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.0", features = ["macros", "net", "rt-multi-thread", "signal", "time"] }
 utoipa = "5.4"
+withhuman-common = { version = "0.1.0", path = "../../crates/common" }
 withhuman-contracts = { version = "0.1.0", path = "../../crates/contracts" }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+withhuman-generator = { version = "0.1.0", path = "../generator" }

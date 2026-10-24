@@ -71,7 +71,12 @@ services:
     environment:
       DECISION_ADDR: 0.0.0.0:8082
       WITHHUMAN_ENV: test
-      DECISION_PROVIDER: mock
+      # `jev` traces each Call's cause through Jev and denies calls against the stated intent.
+      DECISION_PROVIDER: ${DECISION_PROVIDER:-mock}
+      JEV_URL: ${JEV_URL:-https://api.typesafe.ai}
+      JEV_API_KEY: ${JEV_API_KEY:-}
+      JEV_TIMEOUT_MS: ${JEV_TIMEOUT_MS:-3000}
+      WITHHUMAN_INTENT_BLOCK_THRESHOLD: ${WITHHUMAN_INTENT_BLOCK_THRESHOLD:-0.5}
       MOCK_DECISION: ${MOCK_DECISION:-ALLOW}
       MOCK_DECISION_REASON: ${MOCK_DECISION_REASON:-}
       MOCK_DECISION_DELAY_MS: ${MOCK_DECISION_DELAY_MS:-0}
