@@ -446,11 +446,8 @@ async fn shares_downloaded_paths_across_replicas() {
         .await
         .unwrap();
 
-    let results = generator.results.lock().unwrap();
-    assert_eq!(
-        results[0].meta.content_origin,
-        Some(ContentOrigin::External)
-    );
+    let origin = generator.results.lock().unwrap()[0].meta.content_origin;
+    assert_eq!(origin, Some(ContentOrigin::External));
     let mut connection = redis_connection(&url).unwrap();
     let ttl: i64 = redis::cmd("TTL")
         .arg(format!("withhuman:session:{{{session_id}}}:downloads"))
