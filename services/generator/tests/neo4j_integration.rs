@@ -401,6 +401,88 @@ async fn links_a_subgraph_as_its_message_calls_and_results() {
     delete_session(&query, &session_id).await;
 }
 
+/// A Call of a SubGraph without a Message hangs off the latest Message or Intent before its
+/// SubGraph rather than the previous Call's result, and an Intent that arrives after the first
+/// Call still follows its Request and leads that Call.
+#[tokio::test]
+async fn hangs_calls_without_a_message_off_the_previous_message_or_intent() {
+    let Some((query, generator_url)) = start_without_decision().await else {
+        return;
+    };
+    let session_id = unique_session("generator-subgraph-head-it");
+    let client = reqwest::Client::new();
+    let ls = json!({"tool_name":"Bash","tool_input":{"command":"ls"}});
+    let pwd = json!({"tool_name":"Bash","tool_input":{"command":"pwd"}});
+    let ask = json!({"tool_name":"AskUserQuestion","tool_input":{"questions":[]}});
+    let write = json!({"tool_name":"Write","tool_input":{"file_path":"/repo/a.html"}});
+    let result = |tool: &Value| {
+        let mut payload = tool.clone();
+        payload["tool_response"] = json!({"stdout":"ok"});
+        payload
+    };
+    post_steps(
+        &client,
+        &generator_url,
+        &session_id,
+        &[
+            (
+                "UserPromptSubmit",
+                1,
+                0,
+                None,
+                json!({"prompt":"make a site","kind":"user"}),
+            ),
+            ("PreToolUse", 2, 1, Some("t1"), ls.clone()),
+            (
+                "Intent",
+                3,
+                0,
+                None,
+                json!({"message_id":"m0","intent":"make a site"}),
+            ),
+            ("PostToolUse", 4, 1, Some("t1"), result(&ls)),
+            ("PreToolUse", 5, 1, Some("t2"), pwd.clone()),
+            ("PostToolUse", 6, 1, Some("t2"), result(&pwd)),
+            ("PostToolBatch", 7, 1, None, json!({})),
+            ("PreToolUse", 8, 2, Some("t3"), ask.clone()),
+            (
+                "MessageDisplay",
+                9,
+                2,
+                None,
+                json!({"message_id":"m1","text":"Pick a theme."}),
+            ),
+            ("PostToolUse", 10, 2, Some("t3"), result(&ask)),
+            ("PostToolBatch", 11, 2, None, json!({})),
+            ("PreToolUse", 12, 3, Some("t4"), write.clone()),
+            ("PostToolUse", 13, 3, Some("t4"), result(&write)),
+            ("PostToolBatch", 14, 3, None, json!({})),
+        ],
+    )
+    .await;
+
+    assert_eq!(
+        shape(&query, &session_id).await,
+        json!([
+            [3, 2, "intent"],
+            [1, 3, "request"],
+            [2, 4, "call"],
+            [3, 5, "intent"],
+            [5, 6, "call"],
+            [6, 7, "order"],
+            [9, 8, "message"],
+            [7, 9, "order"],
+            [8, 10, "call"],
+            [10, 11, "order"],
+            [9, 12, "message"],
+            [12, 13, "call"],
+            [13, 14, "order"]
+        ])
+    );
+
+    delete_session(&query, &session_id).await;
+}
+
 /// A Message that arrives after its SubGraph's first Call still leads it, and follows what came
 /// before the SubGraph; results committed before their Call are relinked to it.
 #[tokio::test]
@@ -851,7 +933,7 @@ async fn keeps_the_intent_in_its_prompts_subgraph() {
                 [1, "Message", null]
             ]),
             json!([
-                ["Request", "Intent", "order"],
+                ["Request", "Intent", "request"],
                 ["Intent", "Message", "order"]
             ])
         ]
