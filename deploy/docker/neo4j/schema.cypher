@@ -75,6 +75,15 @@ CALL (node) {
   REMOVE node.session_sequence
 } IN TRANSACTIONS OF 5000 ROWS;
 
+// Queries reach a session's nodes through the Session's CONTAINS edges. Tool results from
+// before every node got one are given theirs.
+MATCH (node:Request|Intent|Message|Call|Segment|Error|ToolBatch|SubagentStart|SubagentStop|ConfigChange|ToolDescriptions)
+WHERE NOT EXISTS { MATCH (:Session)-[:CONTAINS]->(node) }
+MATCH (session:Session {session_id: node.session_id})
+CALL (session, node) {
+  MERGE (session)-[:CONTAINS]->(node)
+} IN TRANSACTIONS OF 5000 ROWS;
+
 CREATE CONSTRAINT subgraph_number_unique IF NOT EXISTS
 FOR (subgraph:SubGraph)
 REQUIRE (subgraph.session_id, subgraph.number) IS UNIQUE;
