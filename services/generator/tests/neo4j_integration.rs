@@ -158,7 +158,7 @@ async fn persists_and_replays_execution_graph_through_real_http() {
         .one(
             "MATCH (s:Session {session_id:$session_id})-[:CONTAINS]->(n) \
              OPTIONAL MATCH (n)-[next:NEXT]->() \
-             OPTIONAL MATCH (n)-[result:RESULTED_IN]->() \
+             OPTIONAL MATCH (n)-[result:RESULT_OF]->() \
              RETURN count(DISTINCT next), count(DISTINCT result)",
             json!({"session_id":session_id}),
         )
@@ -535,6 +535,15 @@ async fn relinks_a_subgraph_whose_message_or_call_arrives_late() {
             [4, 5, "order"]
         ])
     );
+    // The result committed before its Call still points back at it.
+    let result_of = query
+        .one(
+            "MATCH (s:Segment {session_id:$session_id})-[:RESULT_OF]->(c:Call) \
+             RETURN collect([s.order, c.order])",
+            json!({"session_id":session_id}),
+        )
+        .await;
+    assert_eq!(result_of, vec![json!([[4, 2]])]);
 
     delete_session(&query, &session_id).await;
 }

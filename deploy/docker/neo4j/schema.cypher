@@ -84,6 +84,19 @@ CALL (session, node) {
   MERGE (session)-[:CONTAINS]->(node)
 } IN TRANSACTIONS OF 5000 ROWS;
 
+// A tool result points up to its Call. Results pointed down from their Call (`RESULTED_IN`).
+MATCH (result:Segment|Error) WHERE result.tool_use_id IS NOT NULL
+  AND NOT EXISTS { MATCH (result)-[:RESULT_OF]->() }
+MATCH (call:Call {session_id: result.session_id, tool_use_id: result.tool_use_id})
+CALL (result, call) {
+  MERGE (result)-[:RESULT_OF]->(call)
+} IN TRANSACTIONS OF 5000 ROWS;
+
+MATCH ()-[old:RESULTED_IN]->()
+CALL (old) {
+  DELETE old
+} IN TRANSACTIONS OF 5000 ROWS;
+
 CREATE CONSTRAINT subgraph_number_unique IF NOT EXISTS
 FOR (subgraph:SubGraph)
 REQUIRE (subgraph.session_id, subgraph.number) IS UNIQUE;

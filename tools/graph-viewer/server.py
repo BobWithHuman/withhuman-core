@@ -47,7 +47,7 @@ ORDER BY g.number
 """
 
 EDGES = """
-MATCH (:Session {session_id: $session})-[:CONTAINS]->(a)-[r:NEXT|RESULTED_IN|AGENT_SEQUENCE]->(b)
+MATCH (:Session {session_id: $session})-[:CONTAINS]->(a)-[r:NEXT|RESULT_OF|AGENT_SEQUENCE]->(b)
 RETURN a.seq AS source, b.seq AS target, type(r) AS type, properties(r) AS props
 """
 

@@ -30,7 +30,8 @@ use crate::{GeneratorConfig, GeneratorEvent, event::GraphMutation};
 // other node follows the node before it in order (`via: 'order'`); a Message follows the node
 // before its SubGraph's first member, so a Message that arrives after its Calls makes no loop.
 // A commit relinks itself, every node after it in order, and every node of its SubGraph and
-// the later ones.
+// the later ones. A tool result points back at its Call (`RESULT_OF`), whichever of the two
+// arrives first, so a chain of causes can be followed upward.
 // The node is labeled with
 // its kind (`$node_type`). Each paragraph belongs to the one node it was cut from; one whose text
 // the session already had classified takes that classification. A SubagentStop of an agent no
@@ -158,10 +159,17 @@ FOREACH (_ IN CASE WHEN node IS NULL OR agent_next IS NULL THEN [] ELSE [1] END 
   MERGE (node)-[:AGENT_SEQUENCE]->(agent_next) \
 ) \
 WITH commit, node \
-OPTIONAL MATCH (call:Call {session_id: $session_id, tool_use_id: $tool_use_id}) \
-FOREACH (_ IN CASE WHEN node IS NULL OR call IS NULL OR NOT $is_tool_result THEN [] ELSE [1] END | \
-  MERGE (call)-[:RESULTED_IN]->(node) \
-) \
+CALL (node) { \
+  WITH node WHERE node IS NOT NULL AND $is_tool_result \
+  MATCH (call:Call {session_id: $session_id, tool_use_id: $tool_use_id}) \
+  MERGE (node)-[:RESULT_OF]->(call) \
+} \
+CALL (node) { \
+  WITH node WHERE node:Call AND node.tool_use_id IS NOT NULL \
+  MATCH (:Session {session_id: $session_id})-[:CONTAINS]->(result:Segment|Error \
+    {tool_use_id: node.tool_use_id}) \
+  MERGE (result)-[:RESULT_OF]->(node) \
+} \
 WITH commit, node \
 FOREACH (_ IN CASE WHEN node IS NULL OR $file_path IS NULL THEN [] ELSE [1] END | \
   MERGE (file:File {repository: coalesce($repository, ''), path: $file_path}) \
