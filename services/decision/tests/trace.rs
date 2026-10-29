@@ -357,7 +357,7 @@ fn asks_about_one_parent_at_a_time() {
 }
 
 #[test]
-fn takes_every_parent_reaching_half_the_top_influence() {
+fn takes_the_most_influential_candidate_alone() {
     let mut graph = graph(6);
     graph.tokens = BTreeSet::from([2]);
     let plan = plan(&graph, &members(), None, &TraceSettings::default());
@@ -370,21 +370,21 @@ fn takes_every_parent_reaching_half_the_top_influence() {
     assert_eq!(keys(&one.chosen), ["s2"]);
     assert_eq!(one.influence["s5"], 0.2);
 
-    // 0.3 reaches half of 0.5; none (0.2) does not.
+    // s2 comes close to s5 but is not chosen.
     let two = parents(
         &plan,
         &response(&[("parent", answer(&[("s2", 0.3), ("s5", 0.5), ("none", 0.2)]))]),
     )
     .unwrap();
-    assert_eq!(keys(&two.chosen), ["s5", "s2"]);
+    assert_eq!(keys(&two.chosen), ["s5"]);
 
-    // Among equals the more relevant candidate comes first.
+    // Among equals the more relevant candidate is chosen.
     let tie = parents(
         &plan,
         &response(&[("parent", answer(&[("s3", 0.5), ("s5", 0.5)]))]),
     )
     .unwrap();
-    assert_eq!(keys(&tie.chosen), ["s5", "s3"]);
+    assert_eq!(keys(&tie.chosen), ["s5"]);
 
     let none = parents(
         &plan,
@@ -483,7 +483,7 @@ fn reports_missing_answers() {
 }
 
 #[test]
-fn judges_by_the_least_serving_parent() {
+fn judges_by_the_parent_alone() {
     let mut graph = graph(6);
     graph.tokens = BTreeSet::from([2]);
     let plan = plan(
@@ -513,13 +513,12 @@ fn judges_by_the_least_serving_parent() {
     let outcome = outcome(chosen, judgements);
 
     assert_eq!(outcome.primary().key, "s5");
-    assert_eq!(keys(&outcome.parents), ["s5", "s2"]);
+    assert_eq!(keys(&outcome.parents), ["s5"]);
     assert_eq!(
         outcome.intent_scores,
-        BTreeMap::from([("s2".to_owned(), 0.1), ("s5".to_owned(), 0.9)])
+        BTreeMap::from([("s5".to_owned(), 0.9)])
     );
-    assert_eq!(outcome.judged_score, Some(0.1));
-    assert_eq!(outcome.segments.len(), 1);
+    assert_eq!(outcome.judged_score, Some(0.9));
 }
 
 #[test]

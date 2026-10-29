@@ -6,17 +6,17 @@
 //!    holding hidden content, every earlier SubGraph holding the latest mention of an
 //!    exfiltration target or sensitive value, and `none`.
 //! 2. A first Jev request asks which candidate influenced the Call (`action`) most (`parent`).
-//!    Every candidate whose influence is at least half the top one becomes a parent.
-//! 3. A second request per parent, sent together, asks which of the parent's tool results
-//!    (Segments and Errors) made the agent take the Call (`segment_<key>`), and whether the
-//!    chain of events the parent implies is what the user asked for, given every intent the
-//!    session stated (`intent_<key>`). A parent's results whose influence is at least half its
-//!    top one are activated.
-//! 4. The Call is judged by its least intent-serving parent, so text that steers the parent
-//!    question toward a harmless SubGraph does not hide a departing one.
+//!    The most influential one is the Call's parent, so a Call is traced to one SubGraph.
+//! 3. A second request asks which of the parent's tool results (Segments and Errors) made the
+//!    agent take the Call (`segment_<key>`), and whether the chain of events the parent implies
+//!    is what the user asked for, given every intent the session stated (`intent_<key>`). Every
+//!    result whose influence is at least half the top one is activated, so a Call can have
+//!    several causes, all in its parent.
+//! 4. The Call is judged by its parent's intent score.
 //!
-//! Asking for one parent's tool results at a time keeps every request within Jev's token limit,
-//! which one request holding every candidate's results passes on long Korean output. Questions
+//! Asking for the parent's tool results in a request of their own keeps every request within
+//! Jev's token limit, which one request holding every candidate's results passes on long Korean
+//! output. Questions
 //! are in Korean (Jev 1.14), like the intents and paths they refer to. Jev sees a prompt only as
 //! the intent the agent stated for it, never the prompt's text.
 
@@ -287,7 +287,7 @@ pub struct Parent {
 pub struct Parents {
     /// Influence of every candidate on the Call (`parent` probabilities).
     pub influence: BTreeMap<String, f64>,
-    /// Candidates whose influence is at least half the top one, the most influential first.
+    /// The most influential candidate, alone.
     pub chosen: Vec<Parent>,
 }
 
@@ -640,7 +640,7 @@ pub fn plan(
     }
 }
 
-/// Reads the `parent` answer: every candidate whose influence is at least half the top one.
+/// Reads the `parent` answer: the most influential candidate, the earlier one among equals.
 pub fn parents(plan: &Plan, response: &JevResponse) -> Result<Parents, TraceError> {
     let answer = response
         .answers
@@ -656,19 +656,16 @@ pub fn parents(plan: &Plan, response: &JevResponse) -> Result<Parents, TraceErro
     if top <= 0.0 {
         return Err(TraceError::MissingAnswer("parent".to_owned()));
     }
-    let mut chosen: Vec<Parent> = plan
+    let chosen = plan
         .candidates
         .iter()
-        .filter_map(|candidate| {
-            let value = *influence.get(&candidate.key)?;
-            (value >= top / 2.0).then(|| Parent {
-                candidate: candidate.clone(),
-                influence: value,
-            })
+        .find(|candidate| influence.get(&candidate.key) == Some(&top))
+        .map(|candidate| Parent {
+            candidate: candidate.clone(),
+            influence: top,
         })
+        .into_iter()
         .collect();
-    // A stable sort keeps the more relevant candidate first among equals.
-    chosen.sort_by(|a, b| b.influence.total_cmp(&a.influence));
     Ok(Parents { influence, chosen })
 }
 
@@ -799,7 +796,7 @@ pub fn judge(
     })
 }
 
-/// Joins the parents and their judgements; the Call is judged by the least serving parent.
+/// Joins the parent and its judgement; the Call is judged by the parent's intent score.
 pub fn outcome(parents: Parents, judgements: Vec<Judgement>) -> Outcome {
     let mut intent_scores = BTreeMap::new();
     let mut segments = Vec::new();

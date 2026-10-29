@@ -276,7 +276,7 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
     // The agent learns neither the intent nor the path it was judged by.
     assert!(!decision["reason"].as_str().unwrap().contains("README 요약"));
 
-    // First the parent, then one request about it (s0 and none fall short of half of s1).
+    // First the parent, then one request about it, the most influential one (s1).
     let requests = jev.requests.lock().unwrap().clone();
     assert_eq!(requests.len(), 2, "{requests:?}");
     for (authorization, request) in &requests {
