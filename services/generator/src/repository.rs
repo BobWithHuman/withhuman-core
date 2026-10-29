@@ -24,10 +24,13 @@ use crate::{GeneratorConfig, GeneratorEvent, event::GraphMutation};
 // NEXT keeps a SubGraph's shape rather than plain arrival order: its Message leads to each of
 // its Calls (and ConfigChanges, which take a Call's place), and each Call to its result (Segment
 // or Error, `via: 'call'`), so a second Call hangs off the Message, not off the first Call's
-// result (`via: 'message'`). Every other node, and a Call of a SubGraph without a Message,
-// follows the node before it in order (`via: 'order'`); a Message follows the node before its
-// SubGraph's first member, so a Message that arrives after its Calls makes no loop. A commit
-// relinks itself, every node after it in order, and for a Message its SubGraph's members.
+// result (`via: 'message'`). A Call of a SubGraph without a Message hangs off the latest
+// Message, Intent or Request of an earlier SubGraph instead (`via` names which), and an Intent
+// off its prompt's Request (`via: 'request'`), even when it arrives after the Calls. Every other
+// node follows the node before it in order (`via: 'order'`); a Message follows the node before
+// its SubGraph's first member, so a Message that arrives after its Calls makes no loop. A commit
+// relinks itself, every node after it in order, and for a Message or Intent every node of its
+// SubGraph and the later ones.
 // The node is labeled with
 // its kind (`$node_type`). Each paragraph belongs to the one node it was cut from; one whose text
 // the session already had classified takes that classification. A SubagentStop of an agent no
@@ -86,8 +89,8 @@ CALL (node, created) { \
     UNION \
     MATCH (:Session {session_id: $session_id})-[:CONTAINS]->(linked:",
     withhuman_common::node_labels!(),
-    " {subgraph: node.subgraph}) \
-    WHERE node:Message \
+    ") \
+    WHERE (node:Message OR node:Intent) AND linked.subgraph >= node.subgraph \
     RETURN linked \
   } \
   CALL (linked) { \
@@ -99,23 +102,34 @@ CALL (node, created) { \
       COLLECT { MATCH (call:Call {session_id: $session_id, tool_use_id: linked.tool_use_id}) \
                 RETURN call ORDER BY call.order LIMIT 1 }[0] END AS call, \
     CASE WHEN (linked:Call OR linked:ConfigChange) AND linked.subgraph IS NOT NULL THEN \
-      COLLECT { MATCH (message:Message {session_id: $session_id, subgraph: linked.subgraph}) \
-                RETURN message ORDER BY message.order LIMIT 1 }[0] END AS message, \
+      coalesce( \
+        COLLECT { MATCH (message:Message {session_id: $session_id, subgraph: linked.subgraph}) \
+                  RETURN message ORDER BY message.order LIMIT 1 }[0], \
+        COLLECT { MATCH (:Session {session_id: $session_id})-[:CONTAINS]->(head:Message|Intent|Request) \
+                  WHERE head.subgraph < linked.subgraph \
+                  RETURN head ORDER BY head.subgraph DESC, \
+                    CASE WHEN head:Request THEN 1 ELSE 0 END, head.order DESC LIMIT 1 }[0]) \
+    END AS head, \
+    CASE WHEN linked:Intent AND linked.subgraph IS NOT NULL THEN \
+      COLLECT { MATCH (:Session {session_id: $session_id})-[:CONTAINS]->(request:Request {subgraph: linked.subgraph}) \
+                RETURN request ORDER BY request.order LIMIT 1 }[0] END AS request, \
     CASE WHEN linked:Message AND linked.subgraph IS NOT NULL THEN \
       COLLECT { MATCH (:Session {session_id: $session_id})-[:CONTAINS]->(member:",
     withhuman_common::node_labels!(),
     " {subgraph: linked.subgraph}) \
                 RETURN min(member.order) }[0] \
     ELSE linked.order END AS position \
-  WITH linked, call, message, \
+  WITH linked, call, head, request, \
     COLLECT { MATCH (:Session {session_id: $session_id})-[:CONTAINS]->(earlier:",
     withhuman_common::node_labels!(),
     ") \
               WHERE earlier.order < position \
                 AND NOT (linked:Message AND coalesce(earlier.subgraph = linked.subgraph, false)) \
               RETURN earlier ORDER BY earlier.order DESC LIMIT 1 }[0] AS earlier \
-  WITH linked, coalesce(call, message, earlier) AS before, \
-    CASE WHEN call IS NOT NULL THEN 'call' WHEN message IS NOT NULL THEN 'message' \
+  WITH linked, coalesce(call, head, request, earlier) AS before, \
+    CASE WHEN call IS NOT NULL THEN 'call' \
+         WHEN head:Message THEN 'message' WHEN head:Intent THEN 'intent' \
+         WHEN head IS NOT NULL OR request IS NOT NULL THEN 'request' \
          ELSE 'order' END AS via \
   FOREACH (_ IN CASE WHEN before IS NULL THEN [] ELSE [1] END | \
     MERGE (before)-[edge:NEXT {via: via}]->(linked) \
