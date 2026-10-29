@@ -10,8 +10,8 @@ services:
       NEO4J_server_memory_heap_max__size: ${NEO4J_HEAP_MAX_SIZE:-512m}
       NEO4J_server_memory_pagecache_size: ${NEO4J_PAGECACHE_SIZE:-512m}
     ports:
-      - "${NEO4J_HTTP_PORT:-7474}:7474"
-      - "${NEO4J_BOLT_PORT:-7687}:7687"
+      - "127.0.0.1:${NEO4J_HTTP_PORT:-7474}:7474"
+      - "127.0.0.1:${NEO4J_BOLT_PORT:-7687}:7687"
     volumes:
       - neo4j-data:/data
       - neo4j-logs:/logs
@@ -34,8 +34,6 @@ services:
     image: redis:7.4-alpine
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis-data:/data
     healthcheck:
@@ -68,24 +66,20 @@ services:
       dockerfile: deploy/docker/Dockerfile
       args:
         BINARY: withhuman-decision
+    env_file:
+      - ../../.env
     environment:
       DECISION_ADDR: 0.0.0.0:8082
-      WITHHUMAN_ENV: test
+      WITHHUMAN_ENV: production
       # `jev` traces each Call's cause through Jev and denies calls against the stated intent.
-      DECISION_PROVIDER: ${DECISION_PROVIDER:-mock}
+      DECISION_PROVIDER: jev
       JEV_URL: ${JEV_URL:-https://api.typesafe.ai}
-      JEV_API_KEY: ${JEV_API_KEY:-}
       JEV_TIMEOUT_MS: ${JEV_TIMEOUT_MS:-3000}
       WITHHUMAN_INTENT_BLOCK_THRESHOLD: ${WITHHUMAN_INTENT_BLOCK_THRESHOLD:-0.5}
-      MOCK_DECISION: ${MOCK_DECISION:-ALLOW}
-      MOCK_DECISION_REASON: ${MOCK_DECISION_REASON:-}
-      MOCK_DECISION_DELAY_MS: ${MOCK_DECISION_DELAY_MS:-0}
       NEO4J_URL: http://neo4j:7474
       NEO4J_USER: neo4j
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:-withhuman-e2e}
       NEO4J_DATABASE: neo4j
-    ports:
-      - "${DECISION_PORT:-8082}:8082"
     depends_on:
       neo4j-bootstrap:
         condition: service_completed_successfully
@@ -109,8 +103,6 @@ services:
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:-withhuman-e2e}
       NEO4J_DATABASE: neo4j
       DECISION_URL: http://decision:8082
-    ports:
-      - "${GENERATOR_PORT:-8081}:8081"
     depends_on:
       decision:
         condition: service_healthy
@@ -136,9 +128,6 @@ services:
       WITHHUMAN_ON_FAILURE: ${WITHHUMAN_ON_FAILURE:-closed}
       WITHHUMAN_ASK: ${WITHHUMAN_ASK:-ask}
       WITHHUMAN_DECISION_TIMEOUT_MS: ${WITHHUMAN_DECISION_TIMEOUT_MS:-4200}
-    ports:
-      - "${COLLECTOR_PORT:-8080}:8080"
-      - "${COLLECTOR_EXT_AUTHZ_PORT:-9000}:9000"
     depends_on:
       generator:
         condition: service_healthy
@@ -159,8 +148,6 @@ services:
         BINARY: withhuman-mcp-fixture
     environment:
       MCP_FIXTURE_ADDR: 0.0.0.0:8090
-    ports:
-      - "${MCP_FIXTURE_PORT:-8090}:8090"
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8090/healthz"]
       interval: 3s
@@ -172,7 +159,7 @@ services:
     image: cr.agentgateway.dev/agentgateway:v1.6.0
     command: ["-f", "/config.yaml"]
     ports:
-      - "${AGENTGATEWAY_PORT:-3000}:3000"
+      - "127.0.0.1:${AGENTGATEWAY_PORT:-3000}:3000"
     volumes:
       - ./agentgateway/config.yaml:/config.yaml:ro
     depends_on:

@@ -1,0 +1,13 @@
+{
+	default_sni 54.252.92.35
+}
+
+54.252.92.35 {
+	tls {
+		issuer acme {
+			profile shortlived
+		}
+	}
+
+	reverse_proxy 127.0.0.1:3000
+}
