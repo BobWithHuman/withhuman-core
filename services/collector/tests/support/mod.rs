@@ -42,6 +42,7 @@ pub fn resume_cursor() -> SessionCursor {
             has_message: true,
             has_call: true,
             zero_has_request: true,
+            request: Some(2),
             calls: BTreeMap::from([("t1".to_owned(), 3)]),
         },
         intent: Some("이전 의도".to_owned()),
@@ -148,14 +149,12 @@ pub async fn run_steps(normalizer: Normalizer, session_id: &str, steps: &str) ->
                     .await
             }
             "MessageDisplay" => {
-                match normalizer
+                let events = normalizer
                     .message_display(&ctx, from(request), observed_at)
                     .await
-                    .unwrap()
-                {
-                    Some(event) => Ok(event),
-                    None => continue,
-                }
+                    .unwrap();
+                emitted.extend(events.iter().map(serialize));
+                continue;
             }
             other => panic!("unknown hook {other}"),
         };
@@ -179,6 +178,7 @@ pub fn serialize(event: &NormalizedEvent) -> String {
         NormalizedEvent::SubagentStop(value) => serde_json::to_string(value),
         NormalizedEvent::ConfigChange(value) => serde_json::to_string(value),
         NormalizedEvent::MessageDisplay(value) => serde_json::to_string(value),
+        NormalizedEvent::Intent(value) => serde_json::to_string(value),
         NormalizedEvent::PostToolBatch(value) => serde_json::to_string(value),
         NormalizedEvent::ToolDescriptions(value) => serde_json::to_string(value),
     }

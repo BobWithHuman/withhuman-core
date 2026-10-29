@@ -10,11 +10,12 @@ use withhuman_common::{
 use withhuman_contracts::{
     events::{
         ConfigChangeEventRequest, ConfigChangePayload, ContentOrigin, EventMetadata, EventRequest,
-        MessageDisplayEventRequest, MessageDisplayPayload, PostToolBatchEventRequest,
-        PostToolBatchPayload, PostToolUseEventRequest, PostToolUseFailureEventRequest,
-        PostToolUseFailurePayload, PostToolUsePayload, PreToolUseEventRequest, PreToolUsePayload,
-        SessionCursor, SessionStartEventRequest, SessionStartPayload, SubagentStartEventRequest,
-        SubagentStartPayload, SubagentStopEventRequest, SubagentStopPayload, ToolDescription,
+        IntentEventRequest, IntentPayload, MessageDisplayEventRequest, MessageDisplayPayload,
+        PostToolBatchEventRequest, PostToolBatchPayload, PostToolUseEventRequest,
+        PostToolUseFailureEventRequest, PostToolUseFailurePayload, PostToolUsePayload,
+        PreToolUseEventRequest, PreToolUsePayload, SessionCursor, SessionStartEventRequest,
+        SessionStartPayload, SubagentStartEventRequest, SubagentStartPayload,
+        SubagentStopEventRequest, SubagentStopPayload, ToolDescription,
         ToolDescriptionsEventRequest, ToolDescriptionsPayload, UserPromptSubmitEventRequest,
         UserPromptSubmitPayload,
     },
@@ -49,6 +50,7 @@ pub enum NormalizedEvent {
     SubagentStop(SubagentStopEventRequest),
     ConfigChange(ConfigChangeEventRequest),
     MessageDisplay(MessageDisplayEventRequest),
+    Intent(IntentEventRequest),
     PostToolBatch(PostToolBatchEventRequest),
     ToolDescriptions(ToolDescriptionsEventRequest),
 }
@@ -65,6 +67,7 @@ impl NormalizedEvent {
             Self::SubagentStop(_) => "SubagentStop",
             Self::ConfigChange(_) => "ConfigChange",
             Self::MessageDisplay(_) => "MessageDisplay",
+            Self::Intent(_) => "Intent",
             Self::PostToolBatch(_) => "PostToolBatch",
             Self::ToolDescriptions(_) => "ToolDescriptions",
         }
@@ -81,6 +84,7 @@ impl NormalizedEvent {
             Self::SubagentStop(event) => event.order,
             Self::ConfigChange(event) => event.order,
             Self::MessageDisplay(event) => event.order,
+            Self::Intent(event) => event.order,
             Self::PostToolBatch(event) => event.order,
             Self::ToolDescriptions(event) => event.order,
         }
@@ -553,30 +557,63 @@ impl Normalizer {
         )))
     }
 
+    /// The events a MessageDisplay flush adds, in order: the turn's intent when the first flush
+    /// opens with a `[의도]` line the turn had not stated yet, then the message once its final
+    /// flush arrives, unless nothing but the intent line was written.
     pub async fn message_display(
         &self,
         context: &TrustedHookContext,
         request: MessageDisplayRequest,
         observed_at: u64,
-    ) -> Result<Option<NormalizedEvent>, NormalizeError> {
-        // Buffered fragments wait in shared state, so they are kept redacted.
-        // The `[의도]` line opens a message's first flush; it becomes the turn's intent.
-        let intent = (self.intent_capture && request.index.unwrap_or(0) == 0)
+    ) -> Result<Vec<NormalizedEvent>, NormalizeError> {
+        let mut events = Vec::new();
+        // The `[의도]` line opens a message's first flush. It becomes the turn's intent, in the
+        // SubGraph of the prompt, and is left out of the message.
+        let line = (self.intent_capture && request.index.unwrap_or(0) == 0)
             .then(|| split_intent(&request.delta))
-            .flatten()
-            .map(|line| tokens::redact(line.intent).into_owned());
+            .flatten();
+        if let Some(line) = line {
+            let intent = tokens::redact(line.intent).into_owned();
+            let state = self
+                .apply(
+                    &request.session_id,
+                    SessionUpdate {
+                        state_intent: Some(intent.clone()),
+                        subgraph_step: SubGraphStep::Intent,
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            if state.intent_stated {
+                let meta = metadata(&state, context, None, None, None, request.turn_id.clone());
+                events.push(NormalizedEvent::Intent(envelope(
+                    &state,
+                    context,
+                    request.session_id.clone(),
+                    observed_at,
+                    None,
+                    meta,
+                    IntentPayload {
+                        message_id: request.message_id.clone(),
+                        intent,
+                        additional_fields: Default::default(),
+                    },
+                )));
+            }
+        }
+        // Buffered fragments wait in shared state, so they are kept redacted.
+        let delta = line.map_or(request.delta.as_str(), |line| line.rest);
         let fragment = MessageFragment {
             message_id: request.message_id.clone(),
             index: request.index,
-            delta: tokens::redact(&request.delta).into_owned(),
-            intent,
+            delta: tokens::redact(delta).into_owned(),
         };
         if !request.final_ {
             self.sessions
                 .append_fragment(&request.session_id, fragment)
                 .await
                 .map_err(NormalizeError::Store)?;
-            return Ok(None);
+            return Ok(events);
         }
         let state = self
             .apply(
@@ -592,6 +629,9 @@ impl Normalizer {
             .message
             .clone()
             .ok_or(NormalizeError::MissingMessageBuffer)?;
+        if text.trim().is_empty() {
+            return Ok(events);
+        }
         let meta = metadata(&state, context, None, None, None, request.turn_id);
         let mut event = envelope(
             &state,
@@ -609,7 +649,8 @@ impl Normalizer {
         if state.message_incomplete {
             event.flags = Some(vec![MESSAGE_INCOMPLETE_FLAG.to_owned()]);
         }
-        Ok(Some(NormalizedEvent::MessageDisplay(event)))
+        events.push(NormalizedEvent::MessageDisplay(event));
+        Ok(events)
     }
 
     pub async fn post_tool_batch(

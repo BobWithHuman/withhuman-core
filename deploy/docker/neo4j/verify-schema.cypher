@@ -9,6 +9,7 @@ WHERE name IN [
   'token_key_unique',
   'subgraph_number_unique',
   'request_seq_unique',
+  'intent_seq_unique',
   'message_seq_unique',
   'call_seq_unique',
   'segment_seq_unique',
@@ -19,7 +20,7 @@ WHERE name IN [
   'config_change_seq_unique',
   'tool_descriptions_seq_unique'
 ]
-RETURN count(*) = 18 AS schema_ready;
+RETURN count(*) = 19 AS schema_ready;
 
 SHOW INDEXES YIELD name
 WHERE name IN [

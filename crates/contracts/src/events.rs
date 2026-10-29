@@ -23,6 +23,9 @@ pub enum EventName {
     SubagentStop,
     ConfigChange,
     MessageDisplay,
+    /// The user intent a reply states on its `[의도]` line, split off the message by the
+    /// Collector. It belongs to the SubGraph of the prompt it answers.
+    Intent,
     PostToolBatch,
     ToolDescriptions,
 }
@@ -223,6 +226,16 @@ pub struct MessageDisplayPayload {
     pub additional_fields: AdditionalFields,
 }
 
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
+pub struct IntentPayload {
+    /// The message whose first line stated the intent.
+    pub message_id: String,
+    pub intent: String,
+    #[serde(flatten)]
+    #[schema(ignore)]
+    pub additional_fields: AdditionalFields,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct PostToolBatchPayload {
     #[serde(flatten)]
@@ -252,6 +265,7 @@ pub type SubagentStartEventRequest = EventRequest<SubagentStartPayload>;
 pub type SubagentStopEventRequest = EventRequest<SubagentStopPayload>;
 pub type ConfigChangeEventRequest = EventRequest<ConfigChangePayload>;
 pub type MessageDisplayEventRequest = EventRequest<MessageDisplayPayload>;
+pub type IntentEventRequest = EventRequest<IntentPayload>;
 pub type PostToolBatchEventRequest = EventRequest<PostToolBatchPayload>;
 pub type ToolDescriptionsEventRequest = EventRequest<ToolDescriptionsPayload>;
 
@@ -317,6 +331,9 @@ pub struct SubGraphCursor {
     /// SubGraph 0 holds the first user prompt.
     #[serde(default)]
     pub zero_has_request: bool,
+    /// The SubGraph of the latest user prompt, where the turn's intent goes.
+    #[serde(default)]
+    pub request: Option<u64>,
     /// SubGraphs of Calls still waiting for their batch, by tool_use_id.
     #[serde(default)]
     pub calls: BTreeMap<String, u64>,

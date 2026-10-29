@@ -392,8 +392,7 @@ async fn message_display(
         .message_display(&trusted(&headers), request, now())
         .await
     {
-        Ok(Some(event)) => send_regular(&service, event).await,
-        Ok(None) => StatusCode::OK.into_response(),
+        Ok(events) => send_all(&service, events).await,
         Err(error) => normalize_failure(error),
     };
     match display {
@@ -547,6 +546,17 @@ async fn send_regular(service: &CollectorService, event: crate::NormalizedEvent)
         Ok(result) => acknowledge(result),
         Err(_) => generator_failure(GeneratorError::Timeout),
     }
+}
+
+/// Sends events in order, stopping at the first failure.
+async fn send_all(service: &CollectorService, events: Vec<crate::NormalizedEvent>) -> Response {
+    for event in events {
+        let response = send_regular(service, event).await;
+        if response.status() != StatusCode::OK {
+            return response;
+        }
+    }
+    StatusCode::OK.into_response()
 }
 
 /// Session store and cursor failures answer like Generator failures (502); a message that

@@ -10,11 +10,11 @@ use axum::{
 use serde::{Serialize, de::DeserializeOwned};
 use utoipa::{OpenApi, ToSchema};
 use withhuman_contracts::events::{
-    ConfigChangeEventRequest, MessageDisplayEventRequest, ParagraphClassificationRequest,
-    PostToolBatchEventRequest, PostToolUseEventRequest, PostToolUseFailureEventRequest,
-    PreToolUseEventRequest, RequestContinuationRequest, SessionStartEventRequest,
-    SubagentStartEventRequest, SubagentStopEventRequest, ToolDescriptionsEventRequest,
-    UserPromptSubmitEventRequest,
+    ConfigChangeEventRequest, IntentEventRequest, MessageDisplayEventRequest,
+    ParagraphClassificationRequest, PostToolBatchEventRequest, PostToolUseEventRequest,
+    PostToolUseFailureEventRequest, PreToolUseEventRequest, RequestContinuationRequest,
+    SessionStartEventRequest, SubagentStartEventRequest, SubagentStopEventRequest,
+    ToolDescriptionsEventRequest, UserPromptSubmitEventRequest,
 };
 use withhuman_contracts::{
     decisions::{DecisionRequest, EnforcementMode},
@@ -89,6 +89,7 @@ pub fn app(service: GeneratorService) -> Router {
         .route("/v1/events/SubagentStop", post(subagent_stop))
         .route("/v1/events/ConfigChange", post(config_change))
         .route("/v1/events/MessageDisplay", post(message_display))
+        .route("/v1/events/Intent", post(intent))
         .route("/v1/events/PostToolBatch", post(post_tool_batch))
         .route("/v1/events/ToolDescriptions", post(tool_descriptions))
         .route(
@@ -123,6 +124,7 @@ pub fn app(service: GeneratorService) -> Router {
         subagent_stop,
         config_change,
         message_display,
+        intent,
         post_tool_batch,
         tool_descriptions,
         classify_paragraph,
@@ -437,6 +439,7 @@ event_handler!(
     MessageDisplay,
     "/v1/events/MessageDisplay"
 );
+event_handler!(intent, IntentEventRequest, Intent, "/v1/events/Intent");
 event_handler!(
     post_tool_batch,
     PostToolBatchEventRequest,

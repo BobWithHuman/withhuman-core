@@ -552,7 +552,7 @@ async fn reports_the_session_cursor_for_resuming_collectors() {
             "last_order":4,"agent_sequences":{"main":2,"sub-1":5},"cwd":"/c","prompt_id":"p2",
             "last_subgraph":4,"intent":null,
             "subgraphs":{"current":4,"open":false,"has_message":false,"has_call":false,
-                         "zero_has_request":false,"calls":{}}
+                         "zero_has_request":false,"request":4,"calls":{}}
         })
     );
     assert_eq!(
@@ -561,7 +561,7 @@ async fn reports_the_session_cursor_for_resuming_collectors() {
             "last_order":0,"agent_sequences":{},"cwd":null,"prompt_id":null,
             "last_subgraph":null,"intent":null,
             "subgraphs":{"current":null,"open":false,"has_message":false,"has_call":false,
-                         "zero_has_request":false,"calls":{}}
+                         "zero_has_request":false,"request":null,"calls":{}}
         })
     );
 
@@ -653,7 +653,7 @@ async fn reports_the_open_subgraph_and_the_turns_intent() {
     assert_eq!(
         resumed["subgraphs"],
         json!({"current":3,"open":true,"has_message":true,"has_call":true,
-               "zero_has_request":true,"calls":{"t2":3}})
+               "zero_has_request":true,"request":2,"calls":{"t2":3}})
     );
 
     send(
@@ -788,6 +788,84 @@ async fn stores_the_intent_a_message_states() {
             [null, false, false]
         ])]
     );
+
+    delete_session(&query, &session_id).await;
+}
+
+#[tokio::test]
+async fn keeps_the_intent_in_its_prompts_subgraph() {
+    let Some((query, generator_url)) = start_without_decision().await else {
+        return;
+    };
+    let session_id = unique_session("generator-intent-node-it");
+    let client = reqwest::Client::new();
+    for (order, subgraph, event, payload) in [
+        (
+            1,
+            0,
+            "UserPromptSubmit",
+            json!({"prompt":"로그인 고쳐줘","kind":"user"}),
+        ),
+        (
+            2,
+            0,
+            "Intent",
+            json!({"message_id":"m1","intent":"로그인 버그 수정"}),
+        ),
+        (
+            3,
+            1,
+            "MessageDisplay",
+            json!({"message_id":"m1","text":"원인을 찾아볼게요."}),
+        ),
+    ] {
+        post_event(
+            &client,
+            &generator_url,
+            event,
+            json!({
+                "session_id":session_id,"order":order,"observed_at":order,
+                "subgraph":subgraph,"meta":{},"payload":payload
+            }),
+        )
+        .await;
+    }
+
+    let rows = query
+        .one(
+            "MATCH (g:SubGraph {session_id:$session_id})-[:MEMBER]->(n) \
+             WITH g, n ORDER BY g.number, n.order \
+             WITH collect([g.number, labels(n)[0], n.intent]) AS members \
+             RETURN members, \
+               COLLECT { MATCH (a {session_id:$session_id})-[r:NEXT]->(b) \
+                         RETURN [labels(a)[0], labels(b)[0], r.via] ORDER BY a.order } AS next",
+            json!({"session_id":session_id}),
+        )
+        .await;
+    assert_eq!(
+        rows,
+        vec![
+            json!([
+                [0, "Request", null],
+                [0, "Intent", "로그인 버그 수정"],
+                [1, "Message", null]
+            ]),
+            json!([
+                ["Request", "Intent", "order"],
+                ["Intent", "Message", "order"]
+            ])
+        ]
+    );
+    let cursor = client
+        .get(format!("{generator_url}/v1/sessions/{session_id}/cursor"))
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(cursor["intent"], "로그인 버그 수정");
+    assert_eq!(cursor["subgraphs"]["request"], 0);
 
     delete_session(&query, &session_id).await;
 }

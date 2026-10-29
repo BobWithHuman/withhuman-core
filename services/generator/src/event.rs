@@ -8,10 +8,10 @@ use withhuman_common::{
     tokens,
 };
 use withhuman_contracts::events::{
-    ConfigChangeEventRequest, ContentOrigin, MessageDisplayEventRequest, PostToolBatchEventRequest,
-    PostToolUseEventRequest, PostToolUseFailureEventRequest, PreToolUseEventRequest,
-    SessionStartEventRequest, SubagentStartEventRequest, SubagentStopEventRequest,
-    ToolDescriptionsEventRequest, UserPromptSubmitEventRequest,
+    ConfigChangeEventRequest, ContentOrigin, IntentEventRequest, MessageDisplayEventRequest,
+    PostToolBatchEventRequest, PostToolUseEventRequest, PostToolUseFailureEventRequest,
+    PreToolUseEventRequest, SessionStartEventRequest, SubagentStartEventRequest,
+    SubagentStopEventRequest, ToolDescriptionsEventRequest, UserPromptSubmitEventRequest,
 };
 
 use crate::RepositoryError;
@@ -27,6 +27,7 @@ pub enum GeneratorEvent {
     SubagentStop(SubagentStopEventRequest),
     ConfigChange(ConfigChangeEventRequest),
     MessageDisplay(MessageDisplayEventRequest),
+    Intent(IntentEventRequest),
     PostToolBatch(PostToolBatchEventRequest),
     ToolDescriptions(ToolDescriptionsEventRequest),
 }
@@ -43,6 +44,7 @@ impl GeneratorEvent {
             Self::SubagentStop(_) => "SubagentStop",
             Self::ConfigChange(_) => "ConfigChange",
             Self::MessageDisplay(_) => "MessageDisplay",
+            Self::Intent(_) => "Intent",
             Self::PostToolBatch(_) => "PostToolBatch",
             Self::ToolDescriptions(_) => "ToolDescriptions",
         }
@@ -59,6 +61,7 @@ impl GeneratorEvent {
             Self::SubagentStop(event) => &event.session_id,
             Self::ConfigChange(event) => &event.session_id,
             Self::MessageDisplay(event) => &event.session_id,
+            Self::Intent(event) => &event.session_id,
             Self::PostToolBatch(event) => &event.session_id,
             Self::ToolDescriptions(event) => &event.session_id,
         }
@@ -75,6 +78,7 @@ impl GeneratorEvent {
             Self::SubagentStop(event) => event.order,
             Self::ConfigChange(event) => event.order,
             Self::MessageDisplay(event) => event.order,
+            Self::Intent(event) => event.order,
             Self::PostToolBatch(event) => event.order,
             Self::ToolDescriptions(event) => event.order,
         }
@@ -97,6 +101,7 @@ impl GeneratorEvent {
             "SubagentStop" => Self::SubagentStop(parse(event_json)?),
             "ConfigChange" => Self::ConfigChange(parse(event_json)?),
             "MessageDisplay" => Self::MessageDisplay(parse(event_json)?),
+            "Intent" => Self::Intent(parse(event_json)?),
             "PostToolBatch" => Self::PostToolBatch(parse(event_json)?),
             "ToolDescriptions" => Self::ToolDescriptions(parse(event_json)?),
             other => {
@@ -201,6 +206,13 @@ impl GeneratorEvent {
                 mutation.intent = intent;
                 Ok(mutation)
             }
+            Self::Intent(event) => {
+                let intent = tokens::redact(&event.payload.intent).into_owned();
+                let mut mutation =
+                    mutation("Intent", Some("Intent"), None, None, event, |event| event)?;
+                mutation.intent = Some(intent);
+                Ok(mutation)
+            }
             Self::PostToolBatch(event) => mutation(
                 "PostToolBatch",
                 Some("ToolBatch"),
@@ -241,7 +253,8 @@ pub(crate) struct GraphMutation {
     pub(crate) file_path: Option<String>,
     pub(crate) paragraphs: Vec<ParagraphMutation>,
     pub(crate) tokens: Vec<TokenMutation>,
-    /// The user intent a message states on its first line.
+    /// The user intent an Intent node records, or (from before intents had nodes of their own) a
+    /// message stated on its first line.
     pub(crate) intent: Option<String>,
     /// The session-wide SubGraph the event belongs to.
     pub(crate) subgraph: Option<i64>,
@@ -330,7 +343,7 @@ where
 
     let mut tokens = BTreeSet::new();
     let payload_slot = match event_name {
-        "PreToolUse" | "MessageDisplay" => "agent",
+        "PreToolUse" | "MessageDisplay" | "Intent" => "agent",
         "UserPromptSubmit" => "user",
         _ => "external",
     };

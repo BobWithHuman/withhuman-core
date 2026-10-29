@@ -262,7 +262,8 @@ RETURN applied, request_seq";
 // highest order are the current ones. Commits made before they were recorded on EventCommit fall
 // back to their node. The main agent's nodes carry no agent_id that a SubagentStart
 // announced; its latest SubGraph is open when a Message or Call came after the last ToolBatch or
-// Request in it. The intent is the first one stated after the last prompt.
+// Request in it. The intent is the first one stated after the last prompt: an Intent node, or a
+// Message that stated it before intents had nodes of their own.
 const SESSION_CURSOR: &str = concat!(
     "\
 OPTIONAL MATCH (commit:EventCommit {session_id: $session_id}) \
@@ -314,7 +315,7 @@ RETURN last_order, agents, \
     " {session_id: $session_id}) \
             WHERE n.subgraph IS NOT NULL \
             RETURN max(n.subgraph) }[0] AS last_subgraph, \
-  COLLECT { MATCH (n:Message {session_id: $session_id}) \
+  COLLECT { MATCH (n:Intent|Message {session_id: $session_id}) \
             WHERE n.intent IS NOT NULL AND n.order > last_request \
             RETURN n.intent ORDER BY n.order LIMIT 1 }[0] AS intent, \
   main_subgraph, \
@@ -329,7 +330,9 @@ RETURN last_order, agents, \
   COLLECT { MATCH (call:Call {session_id: $session_id}) \
             WHERE call.order > last_request AND call.subgraph IS NOT NULL \
               AND call.tool_use_id IS NOT NULL \
-            RETURN [call.tool_use_id, call.subgraph] ORDER BY call.order DESC LIMIT 200 } AS calls"
+            RETURN [call.tool_use_id, call.subgraph] ORDER BY call.order DESC LIMIT 200 } AS calls, \
+  COLLECT { MATCH (r:Request {session_id: $session_id}) WHERE r.subgraph IS NOT NULL \
+            RETURN r.subgraph ORDER BY r.order DESC LIMIT 1 }[0] AS request"
 );
 
 const TOOL_CALL: &str = "\
@@ -776,6 +779,7 @@ impl GraphRepository for Neo4jRepository {
                         Some((pair.get(0)?.as_str()?.to_owned(), pair.get(1)?.as_u64()?))
                     })
                     .collect(),
+                request: row.get(12).and_then(Value::as_u64),
             },
         })
     }

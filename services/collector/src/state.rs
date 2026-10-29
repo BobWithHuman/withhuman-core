@@ -35,6 +35,8 @@ pub struct SessionUpdate {
     pub subgraph_step: SubGraphStep,
     /// Forgets the stated intent of the previous turn (a new prompt).
     pub clear_intent: bool,
+    /// Keeps this as the turn's intent unless the turn already stated one.
+    pub state_intent: Option<String>,
 }
 
 /// How an event moves the session-wide SubGraph numbering (see
@@ -56,6 +58,7 @@ pub enum SubGraphStep {
     Request,
     /// A completed assistant message, by message_id: opens a SubGraph, or joins one a Call opened
     /// before the message arrived. A repeated message_id gets the SubGraph it got the first time.
+    /// A message left blank once its intent line is split off joins like [`SubGraphStep::Join`].
     Message(String),
     /// A tool call: joins its agent's open SubGraph or opens one; remembered for its result.
     Call {
@@ -67,6 +70,9 @@ pub enum SubGraphStep {
         tool_use_id: String,
         agent_id: Option<String>,
     },
+    /// The intent a reply stated: the SubGraph of the turn's prompt, so a prompt and its intent
+    /// stay together.
+    Intent,
     /// PostToolBatch: the SubGraph of its calls, which it closes if it is still its agent's open
     /// SubGraph (a repeated or late batch closes nothing).
     Batch {
@@ -82,8 +88,6 @@ pub struct MessageFragment {
     pub message_id: String,
     pub index: Option<u64>,
     pub delta: String,
-    /// The user intent the fragment states, kept as the session's current intent.
-    pub intent: Option<String>,
 }
 
 /// The session as seen by the event right after its [`SessionUpdate`] was applied.
@@ -104,6 +108,8 @@ pub struct SessionSnapshot {
     pub subgraph: u64,
     /// The user intent stated in the current turn.
     pub intent: Option<String>,
+    /// This event's `state_intent` became the turn's intent.
+    pub intent_stated: bool,
 }
 
 #[async_trait]
@@ -183,10 +189,6 @@ impl SessionStore for InMemorySessionStore {
             *sequence += 1;
             *sequence
         });
-        let stated_intent = update
-            .finish_message
-            .as_ref()
-            .and_then(|fragment| fragment.intent.clone());
         let message = update.finish_message.map(|fragment| {
             let message_id = fragment.message_id.clone();
             state.add_fragment(fragment);
@@ -201,10 +203,17 @@ impl SessionStore for InMemorySessionStore {
         if update.clear_intent {
             state.intent = None;
         }
-        if state.intent.is_none() {
-            state.intent = stated_intent;
+        let intent_stated = state.intent.is_none() && update.state_intent.is_some();
+        if intent_stated {
+            state.intent = update.state_intent;
         }
-        let subgraph = state.subgraphs.step(&update.subgraph_step);
+        let step = match (&update.subgraph_step, &message) {
+            (SubGraphStep::Message(_), Some((text, _))) if text.trim().is_empty() => {
+                &SubGraphStep::Join
+            }
+            (step, _) => step,
+        };
+        let subgraph = state.subgraphs.step(step);
         let order = state.last_order.unwrap_or_default() + 1;
         state.last_order = Some(order);
         Ok(SessionSnapshot {
@@ -219,6 +228,7 @@ impl SessionStore for InMemorySessionStore {
             downloads: state.downloads.iter().cloned().collect(),
             subgraph,
             intent: state.intent.clone(),
+            intent_stated,
         })
     }
 
@@ -229,10 +239,7 @@ impl SessionStore for InMemorySessionStore {
             state.last_order = Some(cursor.last_order);
             state.cwd = cursor.cwd.clone();
             state.prompt_id = cursor.prompt_id.clone();
-            // A fragment buffered before the seed may already have stated this turn's intent.
-            if state.intent.is_none() {
-                state.intent.clone_from(&cursor.intent);
-            }
+            state.intent.clone_from(&cursor.intent);
             state.subgraphs = SubGraphs::resume(cursor);
             for (agent_id, sequence) in &cursor.agent_sequences {
                 state
@@ -249,12 +256,10 @@ impl SessionStore for InMemorySessionStore {
         session_id: &str,
         fragment: MessageFragment,
     ) -> Result<(), StoreError> {
-        let mut sessions = self.lock();
-        let state = sessions.entry(session_id.to_owned()).or_default();
-        if state.intent.is_none() {
-            state.intent.clone_from(&fragment.intent);
-        }
-        state.add_fragment(fragment);
+        self.lock()
+            .entry(session_id.to_owned())
+            .or_default()
+            .add_fragment(fragment);
         Ok(())
     }
 
@@ -294,6 +299,8 @@ struct SubGraphs {
     /// SubGraph 0 is still collecting the first Request.
     zero: bool,
     zero_has_request: bool,
+    /// The SubGraph of the latest user prompt.
+    request: Option<u64>,
     main: Lane,
     /// Subagents' SubGraphs, by agent_id.
     agents: HashMap<String, Lane>,
@@ -325,6 +332,7 @@ impl SubGraphs {
             return Self {
                 last: Some(0),
                 zero_has_request: true,
+                request: Some(0),
                 main: Lane {
                     current: Some(0),
                     ..Lane::default()
@@ -337,6 +345,7 @@ impl SubGraphs {
             last,
             zero: last == Some(0),
             zero_has_request: cursor.zero_has_request,
+            request: cursor.request,
             main: Lane {
                 current: cursor.current.or(last),
                 open: cursor.open,
@@ -359,14 +368,17 @@ impl SubGraphs {
                 None => {
                     self.start_zero();
                     self.zero_has_request = true;
+                    self.request = Some(0);
                     0
                 }
                 Some(0) if self.zero && !self.zero_has_request => {
                     self.zero_has_request = true;
+                    self.request = Some(0);
                     0
                 }
                 Some(_) => {
                     let number = self.next();
+                    self.request = Some(number);
                     self.main = Lane {
                         current: Some(number),
                         ..Lane::default()
@@ -376,6 +388,10 @@ impl SubGraphs {
                     self.messages.clear();
                     number
                 }
+            },
+            SubGraphStep::Intent => match self.request {
+                Some(number) => number,
+                None => self.current(),
             },
             SubGraphStep::Message(message_id) => {
                 if let Some(number) = self.messages.get(message_id) {
@@ -515,12 +531,12 @@ impl SessionState {
 /// ARGV: ttl, then presence flag and value for cwd, prompt_id, stored tool input, taken tool
 /// input (flag only), agent id, the final fragment (flag, index flag, index, delta), the SubGraph
 /// step (name, tool_use_id, message_id or newline-separated batch ids, and the lane's agent id),
-/// the intent (clear flag, set flag, value), and the downloaded paths to record. Flags keep `Some("")` distinct from `None`. An unseeded session
+/// the intent (clear flag, state flag, value), and the downloaded paths to record. Flags keep `Some("")` distinct from `None`. An unseeded session
 /// returns order 0 and writes nothing.
 const APPLY_EVENT: &str = r"
 local session = KEYS[1]
 if redis.call('HEXISTS', session, 'next_order') == 0 then
-  return {0, false, false, false, false, false, false, 0, {}, 0, false}
+  return {0, false, false, false, false, false, false, 0, {}, 0, false, 0}
 end
 local ttl = tonumber(ARGV[1])
 if ARGV[2] == '1' then redis.call('HSET', session, 'cwd', ARGV[3]) end
@@ -579,8 +595,11 @@ end
 -- Seeded before SubGraphs were numbered: continue after SubGraph 0, like a resumed session.
 if not hget('sg_last') and tonumber(redis.call('HGET', session, 'next_order')) > 0 then
   set('sg_last', 0); set('sg_zero', '0'); set('sg_zero_req', '1'); set('sg_cur', 0)
+  set('sg_req', 0)
 end
 local step, step_id, agent = ARGV[15], ARGV[16], ARGV[17]
+-- A message left blank once its intent line is split off opens no SubGraph.
+if step == 'message' and not (message and string.find(message, '%S')) then step = 'join' end
 local lane = 'sg_'
 if agent ~= '' and hget('subagent:' .. agent) then lane = 'sga:' .. agent .. ':' end
 local function lane_current()
@@ -598,11 +617,12 @@ local subgraph
 if step == 'request' then
   local last = hget('sg_last')
   if not last then
-    start_zero(); set('sg_zero_req', '1'); subgraph = 0
+    start_zero(); set('sg_zero_req', '1'); set('sg_req', 0); subgraph = 0
   elseif last == '0' and hget('sg_zero') == '1' and hget('sg_zero_req') ~= '1' then
-    set('sg_zero_req', '1'); subgraph = 0
+    set('sg_zero_req', '1'); set('sg_req', 0); subgraph = 0
   else
     subgraph = next_number()
+    set('sg_req', subgraph)
     set('sg_cur', subgraph); set('sg_open', '0'); set('sg_msg', '0'); set('sg_call', '0')
     for _, field in ipairs(redis.call('HKEYS', session)) do
       if string.sub(field, 1, 7) == 'sgcall:' or string.sub(field, 1, 6) == 'sgmsg:'
@@ -611,6 +631,9 @@ if step == 'request' then
       end
     end
   end
+elseif step == 'intent' then
+  local request = hget('sg_req')
+  if request then subgraph = tonumber(request) else subgraph = current() end
 elseif step == 'message' then
   local seen = hget('sgmsg:' .. step_id)
   if seen then
@@ -658,7 +681,8 @@ else
 end
 if ARGV[18] == '1' then redis.call('HDEL', session, 'intent') end
 -- The first intent the turn states is kept.
-if ARGV[19] == '1' then redis.call('HSETNX', session, 'intent', ARGV[20]) end
+local stated = 0
+if ARGV[19] == '1' then stated = redis.call('HSETNX', session, 'intent', ARGV[20]) end
 for i = 21, #ARGV do redis.call('SADD', KEYS[5], ARGV[i]) end
 redis.call('EXPIRE', KEYS[5], ttl)
 local downloads = redis.call('SMEMBERS', KEYS[5])
@@ -666,12 +690,13 @@ local order = redis.call('HINCRBY', session, 'next_order', 1)
 redis.call('EXPIRE', session, ttl)
 local fields = redis.call('HMGET', session, 'cwd', 'prompt_id', 'side_pending', 'intent')
 return {order, fields[1], fields[2], fields[3], sequence, tool_input, message, incomplete, downloads,
-  subgraph, fields[4]}
+  subgraph, fields[4], stated}
 ";
 
 /// KEYS: session hash. ARGV: ttl, last order, presence flag and value for cwd, prompt_id, the
 /// last SubGraph and the intent; the main agent's SubGraph (presence flag and number, open,
-/// has message, has call, SubGraph 0 has its request); the count of pending calls and their
+/// has message, has call, SubGraph 0 has its request); the latest prompt's SubGraph (presence
+/// flag and number); the count of pending calls and their
 /// tool_use_id and SubGraph pairs; then agent id and sequence pairs. Only the first replica to
 /// seed a session sets its state.
 const SEED_SESSION: &str = r"
@@ -686,6 +711,7 @@ if redis.call('HSETNX', KEYS[1], 'next_order', ARGV[2]) == 1 then
     redis.call('HSETNX', KEYS[1], 'sg_last', 0)
     redis.call('HSETNX', KEYS[1], 'sg_cur', 0)
     redis.call('HSETNX', KEYS[1], 'sg_zero_req', '1')
+    redis.call('HSETNX', KEYS[1], 'sg_req', 0)
   end
   if ARGV[9] == '1' then redis.call('HSETNX', KEYS[1], 'intent', ARGV[10]) end
   if ARGV[11] == '1' then redis.call('HSETNX', KEYS[1], 'sg_cur', ARGV[12]) end
@@ -693,11 +719,12 @@ if redis.call('HSETNX', KEYS[1], 'next_order', ARGV[2]) == 1 then
   redis.call('HSETNX', KEYS[1], 'sg_msg', ARGV[14])
   redis.call('HSETNX', KEYS[1], 'sg_call', ARGV[15])
   redis.call('HSETNX', KEYS[1], 'sg_zero_req', ARGV[16])
-  local calls = tonumber(ARGV[17])
-  for i = 18, 17 + calls * 2, 2 do
+  if ARGV[17] == '1' then redis.call('HSETNX', KEYS[1], 'sg_req', ARGV[18]) end
+  local calls = tonumber(ARGV[19])
+  for i = 20, 19 + calls * 2, 2 do
     redis.call('HSETNX', KEYS[1], 'sgcall:' .. ARGV[i], ARGV[i + 1])
   end
-  for i = 18 + calls * 2, #ARGV, 2 do
+  for i = 20 + calls * 2, #ARGV, 2 do
     redis.call('HSETNX', KEYS[1], 'agent:' .. ARGV[i], ARGV[i + 1])
   end
 end
@@ -705,16 +732,12 @@ redis.call('EXPIRE', KEYS[1], ARGV[1])
 return 1
 ";
 
-/// KEYS: message buffer, session hash. ARGV: ttl, index flag, index, delta, intent flag, intent.
+/// KEYS: message buffer. ARGV: ttl, index flag, index, delta.
 const APPEND_FRAGMENT: &str = r"
 local index = ARGV[3]
 if ARGV[2] ~= '1' then index = tostring(redis.call('HLEN', KEYS[1])) end
 redis.call('HSET', KEYS[1], index, ARGV[4])
 redis.call('EXPIRE', KEYS[1], ARGV[1])
-if ARGV[5] == '1' then
-  redis.call('HSETNX', KEYS[2], 'intent', ARGV[6])
-  redis.call('EXPIRE', KEYS[2], ARGV[1])
-end
 return 1
 ";
 
@@ -774,6 +797,7 @@ type ApplyEventReply = (
     Vec<String>,
     u64,
     Option<String>,
+    u8,
 );
 
 /// The step name, its id and the lane's agent id the script reads for a [`SubGraphStep`].
@@ -786,6 +810,7 @@ fn subgraph_arguments(step: &SubGraphStep) -> (&'static str, String, &str) {
         SubGraphStep::SubagentStart(agent_id) => ("subagent", agent_id.clone(), ""),
         SubGraphStep::Request => ("request", String::new(), ""),
         SubGraphStep::Message(message_id) => ("message", message_id.clone(), ""),
+        SubGraphStep::Intent => ("intent", String::new(), ""),
         SubGraphStep::Call {
             tool_use_id,
             agent_id,
@@ -847,8 +872,8 @@ impl SessionStore for RedisSessionStore {
             .arg(step_id)
             .arg(lane)
             .arg(if update.clear_intent { "1" } else { "0" })
-            .arg(flag(&fragment.intent))
-            .arg(fragment.intent.as_deref().unwrap_or_default());
+            .arg(flag(&update.state_intent))
+            .arg(update.state_intent.as_deref().unwrap_or_default());
         for path in &update.record_downloads {
             invocation.arg(path);
         }
@@ -864,6 +889,7 @@ impl SessionStore for RedisSessionStore {
             mut downloads,
             subgraph,
             intent,
+            stated,
         ): ApplyEventReply = invocation
             .invoke_async(&mut self.connection.clone())
             .await?;
@@ -889,6 +915,7 @@ impl SessionStore for RedisSessionStore {
             downloads,
             subgraph,
             intent,
+            intent_stated: stated == 1,
         })
     }
 
@@ -914,6 +941,8 @@ impl SessionStore for RedisSessionStore {
             .arg(bit(subgraphs.has_message))
             .arg(bit(subgraphs.has_call))
             .arg(bit(subgraphs.zero_has_request))
+            .arg(flag(&subgraphs.request))
+            .arg(subgraphs.request.unwrap_or_default())
             .arg(subgraphs.calls.len());
         for (tool_use_id, subgraph) in &subgraphs.calls {
             invocation.arg(tool_use_id).arg(subgraph);
@@ -934,13 +963,10 @@ impl SessionStore for RedisSessionStore {
     ) -> Result<(), StoreError> {
         APPEND_FRAGMENT_SCRIPT
             .key(fragment_key(session_id, &fragment.message_id))
-            .key(session_key(session_id))
             .arg(self.ttl_secs)
             .arg(flag(&fragment.index))
             .arg(fragment.index.unwrap_or_default())
             .arg(&fragment.delta)
-            .arg(flag(&fragment.intent))
-            .arg(fragment.intent.as_deref().unwrap_or_default())
             .invoke_async::<()>(&mut self.connection.clone())
             .await?;
         Ok(())

@@ -31,5 +31,8 @@
   ["PreToolUse", {"tool_name": "Bash", "tool_input": {"command": "make deploy"}, "tool_use_id": "t8"}],
   ["PostToolBatch", {"tool_calls": [{"tool_use_id": "t5"}]}],
   ["PostToolUse", {"tool_name": "Bash", "tool_response": {"stdout": "deployed"}, "tool_use_id": "t8"}],
-  ["PostToolBatch", {"tool_calls": [{"tool_use_id": "t8"}]}]
+  ["PostToolBatch", {"tool_calls": [{"tool_use_id": "t8"}]}],
+  ["UserPromptSubmit", {"prompt": "clean up"}],
+  ["MessageDisplay", {"message_id": "m7", "index": 0, "delta": "[의도] 빌드 폴더 정리\n", "final": true}],
+  ["PreToolUse", {"tool_name": "Bash", "tool_input": {"command": "rm -rf build"}, "tool_use_id": "t9"}]
 ]
