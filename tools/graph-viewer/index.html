@@ -135,7 +135,8 @@ function build(data) {
   const groupOf = new Map();
   data.subgraphs.forEach(s => s.members.forEach(seq => groupOf.set(seq, s.props.number)));
   const nodes = data.nodes.filter(shown);
-  return { bySeq, resultOf, groupOf, nodes, flows: [...flows.values()], causes };
+  const subgraphParent = new Map(data.subgraphs.map(s => [s.props.number, s.props.parent]));
+  return { bySeq, resultOf, groupOf, subgraphParent, nodes, flows: [...flows.values()], causes };
 }
 
 function label(node) {
@@ -199,21 +200,74 @@ function flowElements() {
   return { elements, layout: { name: 'preset' } };
 }
 
-// The cause tree: prompts on top, each Call under what caused it, its edge pointing up at it.
+// The cause tree: SubGraphs as areas, each under the SubGraph its Calls were traced to (its
+// `parent`), prompts on top. Cause edges run from each Call up to its cause in the parent area.
 function treeElements() {
-  const inTree = new Set();
-  for (const c of model.causes) { inTree.add(c.from); inTree.add(c.to); }
-  for (const node of model.nodes) if (node.kind === 'Request' || node.kind === 'Call') inTree.add(node.props.seq);
-  const elements = [];
-  for (const seq of inTree) {
-    const node = model.bySeq.get(seq);
-    if (node) elements.push({ group: 'nodes', data: nodeData(node, undefined) });
+  const W = 190, H = 46, GAP_X = 50, GAP_Y = 90, PAD = 40;
+  const members = new Map();
+  for (const node of model.nodes) {
+    const number = model.groupOf.get(node.props.seq);
+    if (number === undefined) continue;
+    if (!members.has(number)) members.set(number, []);
+    members.get(number).push(node);
   }
-  for (const c of model.causes) elements.push({ group: 'edges', data: {
-    id: `c${c.from}-${c.via}`, source: `n${c.from}`, target: `n${c.to}`, cause: true, label: percent(c.props.probability), props: c.props } });
-  const caused = new Set(model.causes.map(c => c.from));
-  const roots = [...inTree].filter(seq => !caused.has(seq)).map(seq => `#n${seq}`).join(', ');
-  return { elements, layout: { name: 'breadthfirst', directed: false, roots, spacingFactor: 1.1, padding: 30 } };
+  for (const list of members.values()) {
+    list.sort((a, b) => (LEAD.has(b.kind) - LEAD.has(a.kind)) || a.props.order - b.props.order);
+  }
+  const numbers = [...members.keys()].sort((a, b) => a - b);
+  const parentOf = new Map();
+  for (const number of numbers) {
+    const key = model.subgraphParent.get(number);
+    const parent = /^s\d+$/.test(key || '') ? Number(key.slice(1)) : null;
+    if (parent !== null && parent !== number && members.has(parent)) parentOf.set(number, parent);
+  }
+  const children = new Map(numbers.map(n => [n, []]));
+  for (const [child, parent] of parentOf) children.get(parent).push(child);
+  const roots = numbers.filter(n => !parentOf.has(n));
+
+  // Each subtree is as wide as its children side by side, or its own area.
+  const width = new Map();
+  const measure = (n, seen = new Set()) => {
+    if (seen.has(n)) return W;
+    seen.add(n);
+    const kids = children.get(n).reduce((sum, c) => sum + measure(c, seen) + GAP_X, -GAP_X);
+    width.set(n, Math.max(W, kids));
+    return width.get(n);
+  };
+  roots.forEach(n => measure(n));
+  const depth = new Map(), center = new Map();
+  const place = (n, left, level, seen = new Set()) => {
+    if (seen.has(n)) return;
+    seen.add(n);
+    depth.set(n, level);
+    center.set(n, left + width.get(n) / 2);
+    let x = left + (width.get(n) - children.get(n).reduce((s, c) => s + width.get(c) + GAP_X, -GAP_X)) / 2;
+    for (const c of children.get(n)) { place(c, x, level + 1, seen); x += width.get(c) + GAP_X; }
+  };
+  let x = 0;
+  for (const root of roots) { place(root, x, 0); x += width.get(root) + GAP_X * 2; }
+  const levelHeight = [];
+  for (const n of numbers) {
+    const d = depth.get(n) ?? 0;
+    levelHeight[d] = Math.max(levelHeight[d] || 0, members.get(n).length * H);
+  }
+  const levelTop = [];
+  levelHeight.forEach((h, d) => { levelTop[d] = d === 0 ? 0 : levelTop[d - 1] + levelHeight[d - 1] + GAP_Y + PAD; });
+
+  const elements = [];
+  for (const n of numbers) {
+    const parent = `g${n}`;
+    elements.push({ group: 'nodes', data: { id: parent, area: true, label: `S${n}` } });
+    members.get(n).forEach((node, i) => elements.push({ group: 'nodes', data: nodeData(node, parent),
+      position: { x: center.get(n) ?? 0, y: (levelTop[depth.get(n) ?? 0] || 0) + i * H } }));
+  }
+  for (const c of model.causes) {
+    if (!model.groupOf.has(c.from) || !model.groupOf.has(c.to)) continue;
+    elements.push({ group: 'edges', data: {
+      id: `c${c.from}-${c.via}`, source: `n${c.from}`, target: `n${c.to}`, cause: true,
+      label: percent(c.props.probability), props: c.props } });
+  }
+  return { elements, layout: { name: 'preset' } };
 }
 
 function style() {
