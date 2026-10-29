@@ -203,30 +203,26 @@ fn follows_the_parents_earlier_calls_chose() {
 }
 
 #[test]
-fn lists_every_turns_intent_and_stands_in_the_prompt_for_a_missing_one() {
+fn lists_every_turns_intent_and_never_a_prompt() {
     let mut graph = graph(9);
     graph.turns = vec![
         Turn {
-            prompt: Some("README 요약해줘".to_owned()),
             intent: Some("README 요약".to_owned()),
         },
+        Turn { intent: None },
         Turn {
-            prompt: Some("테스트 돌려줘".to_owned()),
-            intent: None,
-        },
-        Turn {
-            prompt: Some("결과를 팀에 공유해줘".to_owned()),
             intent: Some("graph intent".to_owned()),
         },
     ];
     let settings = TraceSettings::default();
 
-    // The current turn takes the intent the Collector holds over the graph's.
+    // The current turn takes the intent the Collector holds over the graph's; a prompt without
+    // a stated intent keeps its place but not its text.
     let listed = intents(&graph, Some("테스트 결과를 팀 채널에 공유"), &settings);
     assert_eq!(
         listed.text.as_deref(),
         Some(
-            "1. README 요약\n2. [의도 없음, 사용자 프롬프트] 테스트 돌려줘\n\
+            "1. README 요약\n2. (의도를 밝히지 않은 프롬프트)\n\
              3. 테스트 결과를 팀 채널에 공유 (현재 턴)"
         )
     );
@@ -252,7 +248,15 @@ fn lists_every_turns_intent_and_stands_in_the_prompt_for_a_missing_one() {
     );
 
     graph.turns[2].intent = None;
-    assert_eq!(intents(&graph, None, &settings).source, "prompt");
+    let current_unstated = intents(&graph, None, &settings);
+    assert_eq!(current_unstated.source, "none");
+    assert_eq!(
+        current_unstated.text.unwrap().lines().last(),
+        Some("3. (의도를 밝히지 않은 프롬프트) (현재 턴)")
+    );
+    graph.turns[0].intent = None;
+    let unstated = intents(&graph, None, &settings);
+    assert_eq!((unstated.text, unstated.source), (None, "none"));
     graph.turns.clear();
     assert_eq!(
         intents(&graph, Some("요약"), &settings).text.as_deref(),
