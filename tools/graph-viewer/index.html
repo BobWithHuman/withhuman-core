@@ -144,8 +144,10 @@ function toElements(data) {
       borderWidth: decision ? 4 : 1.5,
     }, position: { x: column * 280, y: row * 84 }});
   };
+  // A SubGraph's prompt, intent or message leads it even when it arrived after its Calls.
+  const rank = node => ({ Request: 0, Intent: 1, Message: 2 })[node.kind] ?? 3;
   for (const number of numbers) {
-    columns.get(number).sort((a, b) => a.props.order - b.props.order)
+    columns.get(number).sort((a, b) => rank(a) - rank(b) || a.props.order - b.props.order)
       .forEach((node, row) => place(node, columnOf.get(number), row, `s${number}`));
   }
   loose.forEach((node, row) => place(node, numbers.length, row, undefined));
