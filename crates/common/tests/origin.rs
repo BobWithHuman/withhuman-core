@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 use withhuman_common::origin::{
-    Origin, OriginContext, downloaded_paths, looks_rendered, tool_origin,
+    Origin, OriginContext, downloaded_paths, looks_rendered, tool_origin, tool_output,
 };
 
 fn origin(tool: &str, input: Value) -> Origin {
@@ -211,4 +211,27 @@ fn treats_files_from_downloads_as_external() {
     assert_eq!(judge("/repo/lib/src/index.js"), Origin::External);
     assert_eq!(judge("/repo/library.md"), Origin::Local);
     assert_eq!(judge("/repo/src/main.rs"), Origin::Local);
+}
+
+#[test]
+fn reads_web_search_results() {
+    let response = json!({
+        "query": "shared office",
+        "results": [
+            {"tool_use_id": "srvtoolu_1", "content": [
+                {"title": "Office A", "url": "https://a.example.test"},
+                {"title": "Office B", "url": "https://b.example.test"}
+            ]},
+            "Office A is next to the station."
+        ],
+        "durationSeconds": 1.2
+    });
+
+    assert_eq!(
+        tool_output(&response).as_deref(),
+        Some(
+            "Office A\nhttps://a.example.test\n\nOffice B\nhttps://b.example.test\n\n\
+             Office A is next to the station."
+        )
+    );
 }
