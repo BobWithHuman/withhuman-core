@@ -59,8 +59,8 @@ CALL (verdict) {
 
 // The groups of a Message with its Calls and their results were once `Sequence` nodes, and
 // each node carried its group number as `session_sequence`. They are now `SubGraph` nodes and
-// `subgraph`. Tool results from before then may still carry `Sequence` beside `Segment`; they are
-// not groups and stay as they are.
+// `subgraph`. Tool results from before then may still carry `Sequence` beside `Segment`. They
+// are not groups and stay as they are.
 DROP CONSTRAINT sequence_number_unique IF EXISTS;
 
 MATCH (group:Sequence) WHERE NOT group:Segment
