@@ -78,15 +78,15 @@ OPTIONAL MATCH (commit)-[:CREATED]->(node) \
 CALL (node, created) { \
   WITH node WHERE created AND node IS NOT NULL \
   CALL (node) { \
-    MATCH (linked:",
+    MATCH (:Session {session_id: $session_id})-[:CONTAINS]->(linked:",
     withhuman_common::node_labels!(),
-    " {session_id: $session_id}) \
+    ") \
     WHERE linked.order >= node.order \
     RETURN linked \
     UNION \
-    MATCH (linked:",
+    MATCH (:Session {session_id: $session_id})-[:CONTAINS]->(linked:",
     withhuman_common::node_labels!(),
-    " {session_id: $session_id, subgraph: node.subgraph}) \
+    " {subgraph: node.subgraph}) \
     WHERE node:Message \
     RETURN linked \
   } \
@@ -102,15 +102,15 @@ CALL (node, created) { \
       COLLECT { MATCH (message:Message {session_id: $session_id, subgraph: linked.subgraph}) \
                 RETURN message ORDER BY message.order LIMIT 1 }[0] END AS message, \
     CASE WHEN linked:Message AND linked.subgraph IS NOT NULL THEN \
-      COLLECT { MATCH (member:",
+      COLLECT { MATCH (:Session {session_id: $session_id})-[:CONTAINS]->(member:",
     withhuman_common::node_labels!(),
-    " {session_id: $session_id, subgraph: linked.subgraph}) \
+    " {subgraph: linked.subgraph}) \
                 RETURN min(member.order) }[0] \
     ELSE linked.order END AS position \
   WITH linked, call, message, \
-    COLLECT { MATCH (earlier:",
+    COLLECT { MATCH (:Session {session_id: $session_id})-[:CONTAINS]->(earlier:",
     withhuman_common::node_labels!(),
-    " {session_id: $session_id}) \
+    ") \
               WHERE earlier.order < position \
                 AND NOT (linked:Message AND coalesce(earlier.subgraph = linked.subgraph, false)) \
               RETURN earlier ORDER BY earlier.order DESC LIMIT 1 }[0] AS earlier \
@@ -125,19 +125,19 @@ CALL (node, created) { \
   RETURN count(*) AS relinked \
 } \
 WITH commit, node \
-OPTIONAL MATCH (agent_previous:",
+OPTIONAL MATCH (:Session {session_id: $session_id})-[:CONTAINS]->(agent_previous:",
     withhuman_common::node_labels!(),
     " { \
-  session_id: $session_id, agent_id: $agent_id, sequence: $previous_sequence \
+  agent_id: $agent_id, sequence: $previous_sequence \
 }) \
 FOREACH (_ IN CASE WHEN node IS NULL OR agent_previous IS NULL THEN [] ELSE [1] END | \
   MERGE (agent_previous)-[:AGENT_SEQUENCE]->(node) \
 ) \
 WITH commit, node \
-OPTIONAL MATCH (agent_next:",
+OPTIONAL MATCH (:Session {session_id: $session_id})-[:CONTAINS]->(agent_next:",
     withhuman_common::node_labels!(),
     " { \
-  session_id: $session_id, agent_id: $agent_id, sequence: $next_sequence \
+  agent_id: $agent_id, sequence: $next_sequence \
 }) \
 FOREACH (_ IN CASE WHEN node IS NULL OR agent_next IS NULL THEN [] ELSE [1] END | \
   MERGE (node)-[:AGENT_SEQUENCE]->(agent_next) \
@@ -268,28 +268,28 @@ const SESSION_CURSOR: &str = concat!(
     "\
 OPTIONAL MATCH (commit:EventCommit {session_id: $session_id}) \
 WITH coalesce(max(commit.order), 0) AS last_order \
-OPTIONAL MATCH (node:",
+OPTIONAL MATCH (:Session {session_id: $session_id})-[:CONTAINS]->(node:",
     withhuman_common::node_labels!(),
-    " {session_id: $session_id}) \
+    ") \
 WHERE node.agent_id IS NOT NULL AND node.sequence IS NOT NULL \
 WITH last_order, node.agent_id AS agent_id, max(node.sequence) AS sequence \
 WITH last_order, \
      collect(CASE WHEN agent_id IS NULL THEN NULL ELSE [agent_id, sequence] END) AS agents \
 WITH last_order, agents, \
-  COLLECT { MATCH (n:",
+  COLLECT { MATCH (:Session {session_id: $session_id})-[:CONTAINS]->(n:",
     withhuman_common::node_labels!(),
-    " {session_id: $session_id}) \
+    ") \
             WHERE n.subgraph IS NOT NULL AND NOT EXISTS { \
               MATCH (:SubagentStart {session_id: $session_id, agent_id: n.agent_id}) } \
             RETURN max(n.subgraph) }[0] AS main_subgraph, \
-  coalesce(COLLECT { MATCH (r:Request {session_id: $session_id}) \
+  coalesce(COLLECT { MATCH (:Session {session_id: $session_id})-[:CONTAINS]->(r:Request) \
                      RETURN max(r.order) }[0], -1) AS last_request \
 WITH last_order, agents, main_subgraph, last_request, \
-  COLLECT { MATCH (n:Message|Call {session_id: $session_id, subgraph: main_subgraph}) \
+  COLLECT { MATCH (:Session {session_id: $session_id})-[:CONTAINS]->(n:Message|Call {subgraph: main_subgraph}) \
             WHERE NOT EXISTS { \
               MATCH (:SubagentStart {session_id: $session_id, agent_id: n.agent_id}) } \
             RETURN max(n.order) }[0] AS last_opening, \
-  COLLECT { MATCH (n:ToolBatch|Request {session_id: $session_id, subgraph: main_subgraph}) \
+  COLLECT { MATCH (:Session {session_id: $session_id})-[:CONTAINS]->(n:ToolBatch|Request {subgraph: main_subgraph}) \
             WHERE NOT EXISTS { \
               MATCH (:SubagentStart {session_id: $session_id, agent_id: n.agent_id}) } \
             RETURN max(n.order) }[0] AS last_closing \
@@ -297,32 +297,32 @@ RETURN last_order, agents, \
   coalesce( \
     COLLECT { MATCH (c:EventCommit {session_id: $session_id}) WHERE c.cwd IS NOT NULL \
               RETURN c.cwd ORDER BY c.order DESC LIMIT 1 }[0], \
-    COLLECT { MATCH (n:",
+    COLLECT { MATCH (:Session {session_id: $session_id})-[:CONTAINS]->(n:",
     withhuman_common::node_labels!(),
-    " {session_id: $session_id}) \
+    ") \
               WHERE n.cwd IS NOT NULL \
               RETURN n.cwd ORDER BY n.order DESC LIMIT 1 }[0]) AS cwd, \
   coalesce( \
     COLLECT { MATCH (c:EventCommit {session_id: $session_id}) WHERE c.prompt_id IS NOT NULL \
               RETURN c.prompt_id ORDER BY c.order DESC LIMIT 1 }[0], \
-    COLLECT { MATCH (n:",
+    COLLECT { MATCH (:Session {session_id: $session_id})-[:CONTAINS]->(n:",
     withhuman_common::node_labels!(),
-    " {session_id: $session_id}) \
+    ") \
               WHERE n.prompt_id IS NOT NULL \
               RETURN n.prompt_id ORDER BY n.order DESC LIMIT 1 }[0]) AS prompt_id, \
-  COLLECT { MATCH (n:",
+  COLLECT { MATCH (:Session {session_id: $session_id})-[:CONTAINS]->(n:",
     withhuman_common::node_labels!(),
-    " {session_id: $session_id}) \
+    ") \
             WHERE n.subgraph IS NOT NULL \
             RETURN max(n.subgraph) }[0] AS last_subgraph, \
-  COLLECT { MATCH (n:Intent|Message {session_id: $session_id}) \
+  COLLECT { MATCH (:Session {session_id: $session_id})-[:CONTAINS]->(n:Intent|Message) \
             WHERE n.intent IS NOT NULL AND n.order > last_request \
             RETURN n.intent ORDER BY n.order LIMIT 1 }[0] AS intent, \
   main_subgraph, \
   last_opening IS NOT NULL AND coalesce(last_closing, -1) < last_opening AS open, \
-  EXISTS { MATCH (n:Message {session_id: $session_id, subgraph: main_subgraph}) } \
+  EXISTS { MATCH (:Session {session_id: $session_id})-[:CONTAINS]->(n:Message {subgraph: main_subgraph}) } \
     AS has_message, \
-  EXISTS { MATCH (n:Call {session_id: $session_id, subgraph: main_subgraph}) \
+  EXISTS { MATCH (:Session {session_id: $session_id})-[:CONTAINS]->(n:Call {subgraph: main_subgraph}) \
            WHERE NOT EXISTS { \
               MATCH (:SubagentStart {session_id: $session_id, agent_id: n.agent_id}) } } AS has_call, \
   EXISTS { MATCH (n:Request {session_id: $session_id, subgraph: 0}) } \
@@ -331,7 +331,7 @@ RETURN last_order, agents, \
             WHERE call.order > last_request AND call.subgraph IS NOT NULL \
               AND call.tool_use_id IS NOT NULL \
             RETURN [call.tool_use_id, call.subgraph] ORDER BY call.order DESC LIMIT 200 } AS calls, \
-  COLLECT { MATCH (r:Request {session_id: $session_id}) WHERE r.subgraph IS NOT NULL \
+  COLLECT { MATCH (:Session {session_id: $session_id})-[:CONTAINS]->(r:Request) WHERE r.subgraph IS NOT NULL \
             RETURN r.subgraph ORDER BY r.order DESC LIMIT 1 }[0] AS request"
 );
 
