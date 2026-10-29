@@ -12,118 +12,135 @@ use withhuman_contracts::decisions::{DecisionRequest, DecisionResponse};
 
 use crate::{
     DecisionConfig,
-    trace::{CallInfo, Member, MemberKind, ParentKey, TOKEN_KINDS, TraceGraph},
+    trace::{CallInfo, Member, MemberKind, ParentKey, TOKEN_KINDS, TraceGraph, Turn},
 };
 
 const VERIFY_GRAPH: &str = "\
 MATCH (session:Session {session_id: $session_id}) \
-MATCH (call:ExecutionNode {session_id: $session_id, seq: $call_seq, type: 'Call'}) \
+MATCH (call:Call {session_id: $session_id, seq: $call_seq}) \
 WHERE session.version >= $graph_version AND call.seq <= $graph_version \
 RETURN session.version, call.seq";
 
-const WRITE_VERDICT: &str = "\
+// The verdict is kept on the Call itself.
+const WRITE_DECISION: &str = "\
 MATCH (session:Session {session_id: $session_id}) \
-MATCH (call:ExecutionNode {session_id: $session_id, seq: $call_seq, type: 'Call'}) \
-MERGE (verdict:Verdict {session_id: $session_id, call_seq: $call_seq}) \
-SET verdict.decision = $decision, verdict.reason = $reason, verdict.rule = $rule, \
-    verdict.start = $start, verdict.graph_version = $graph_version, \
-    verdict.mode = $mode, verdict.jev_json = $jev_json, verdict.updated_at = timestamp() \
+MATCH (call:Call {session_id: $session_id, seq: $call_seq}) \
 SET call.decision = $decision, call.decision_reason = $reason, call.decision_rule = $rule, \
-    call.decision_start = $start, call.decision_version = $graph_version \
-MERGE (call)-[cause:CAUSE {kind: 'mock'}]->(verdict) \
-SET cause.graph_version = $graph_version \
-MERGE (call)-[:HAS_VERDICT]->(verdict) \
+    call.decision_start = $start, call.decision_version = $graph_version, \
+    call.decision_mode = $mode, call.decision_jev_json = $jev_json, \
+    call.decided_at = timestamp() \
 RETURN true AS written";
 
-// The Call; the sequences before it with the subagent whose calls they hold (none for the main
-// agent; a subagent is an agent_id a SubagentStart announced); which of them hold content that was hidden where it appeared; which hold the latest
-// mention before the Call (outside the Call's own sequence) of an exfiltration target or
-// sensitive value — one per value whatever slot mentioned it — and whether the Call mentions
-// that value too; every parent earlier Calls of a sequence chose; and the latest user prompt.
-const TRACE_GRAPH: &str = "\
-MATCH (call:ExecutionNode {session_id: $session_id, seq: $call_seq, type: 'Call'}) \
-RETURN call.order, call.session_sequence, call.payload_json, \
-  COLLECT { MATCH (group:Sequence {session_id: $session_id}) \
-            WHERE group.number < call.session_sequence \
-            OPTIONAL MATCH (group)-[:MEMBER]->(member:ExecutionNode {type: 'Call'}) \
-            WHERE EXISTS { MATCH (:ExecutionNode {session_id: $session_id, type: 'SubagentStart', \
-                                                  agent_id: member.agent_id}) } \
+// The Call; the SubGraphs before it with the subagent whose calls they hold (none for the main
+// agent; a subagent is an agent_id a SubagentStart announced); which of them hold content that
+// was hidden where it appeared; which hold the latest mention before the Call (outside the
+// Call's own SubGraph) of an exfiltration target or sensitive value — one per value whatever
+// slot mentioned it — and whether the Call mentions that value too; every parent earlier Calls
+// of a SubGraph chose; and every user prompt before the Call with the first intent the agent
+// stated after it (and before the next prompt).
+const TRACE_GRAPH: &str = concat!(
+    "\
+MATCH (call:Call {session_id: $session_id, seq: $call_seq}) \
+RETURN call.order, call.subgraph, call.payload_json, \
+  COLLECT { MATCH (group:SubGraph {session_id: $session_id}) \
+            WHERE group.number < call.subgraph \
+            OPTIONAL MATCH (group)-[:MEMBER]->(member:Call) \
+            WHERE EXISTS { MATCH (:SubagentStart {session_id: $session_id, agent_id: member.agent_id}) } \
             WITH group, head(collect(member.agent_id)) AS agent \
-            RETURN [group.number, agent] } AS sequences, \
-  COLLECT { MATCH (node:ExecutionNode {session_id: $session_id})-[contains:CONTAINS_PARAGRAPH]->(:Paragraph) \
-            WHERE contains.hidden AND node.session_sequence < call.session_sequence \
+            RETURN [group.number, agent] } AS subgraphs, \
+  COLLECT { MATCH (node:Segment|Error {session_id: $session_id}) \
+                  -[:CONTAINS_PARAGRAPH]->(:Paragraph {hidden: true}) \
+            WHERE node.subgraph < call.subgraph \
               AND node.order < call.order \
-            RETURN DISTINCT node.session_sequence } AS hidden, \
-  COLLECT { MATCH (node:ExecutionNode {session_id: $session_id})-[:MENTIONS_TOKEN]->(token:Token) \
+            RETURN DISTINCT node.subgraph } AS hidden, \
+  COLLECT { MATCH (node:",
+    withhuman_common::node_labels!(),
+    " {session_id: $session_id}) \
+                  -[:MENTIONS_TOKEN]->(token:Token) \
             WHERE token.key_kind IN $token_kinds AND node.order < call.order \
-              AND node.session_sequence < call.session_sequence \
+              AND node.subgraph < call.subgraph \
             WITH token.key_kind AS kind, token.key AS key, node ORDER BY node.order DESC \
             WITH kind, key, collect(node)[0] AS latest \
-            RETURN [latest.session_sequence, \
+            RETURN [latest.subgraph, \
                     EXISTS { MATCH (call)-[:MENTIONS_TOKEN]->(:Token {key_kind: kind, key: key}) }] } \
     AS tokens, \
-  COLLECT { MATCH (earlier:ExecutionNode {session_id: $session_id, type: 'Call'}) \
-            WHERE earlier.session_sequence < call.session_sequence \
+  COLLECT { MATCH (earlier:Call {session_id: $session_id}) \
+            WHERE earlier.subgraph < call.subgraph \
               AND earlier.parent IS NOT NULL AND earlier.parent <> 'unresolved' \
-            RETURN DISTINCT [earlier.session_sequence, earlier.parent] } AS parents, \
-  CASE WHEN EXISTS { MATCH (:ExecutionNode {session_id: $session_id, type: 'SubagentStart', \
-                                            agent_id: call.agent_id}) } \
+            UNWIND coalesce(earlier.parents, [earlier.parent]) AS parent \
+            RETURN DISTINCT [earlier.subgraph, parent] } AS parents, \
+  CASE WHEN EXISTS { MATCH (:SubagentStart {session_id: $session_id, agent_id: call.agent_id}) } \
        THEN call.agent_id END, \
-  COLLECT { MATCH (request:ExecutionNode {session_id: $session_id, type: 'Request'}) \
+  COLLECT { MATCH (request:Request {session_id: $session_id}) \
             WHERE request.order < call.order \
-            RETURN request.payload_json ORDER BY request.order DESC LIMIT 1 }[0] AS request";
+            WITH request, coalesce(COLLECT { MATCH (next:Request {session_id: $session_id}) \
+                                             WHERE next.order > request.order \
+                                             RETURN min(next.order) }[0], call.order) AS until \
+            RETURN [request.payload_json, \
+                    COLLECT { MATCH (message:Message {session_id: $session_id}) \
+                              WHERE message.intent IS NOT NULL AND message.order > request.order \
+                                AND message.order < until AND message.order < call.order \
+                              RETURN message.intent ORDER BY message.order LIMIT 1 }[0]] \
+            ORDER BY request.order } AS turns"
+);
 
-// Segments also bring the paragraphs hidden where they appeared, and whether a later Call was
-// traced to them.
-const SEQUENCE_MEMBERS: &str = "\
+// Tool results also bring the paragraphs hidden where they appeared, and whether a later Call
+// was traced to them. ConfigChanges stand where Calls do, Errors where Segments do.
+const SUBGRAPH_MEMBERS: &str = "\
 UNWIND $numbers AS number \
-MATCH (:Sequence {session_id: $session_id, number: number})-[:MEMBER]->(node:ExecutionNode) \
-WHERE node.type IN ['Request', 'Instructions', 'Message', 'Call', 'Segment'] \
-  AND node.order < $call_order \
-RETURN number, node.seq, node.order, node.type, node.payload_json, \
-  COLLECT { MATCH (node)-[contains:CONTAINS_PARAGRAPH]->(paragraph:Paragraph) \
-            WHERE contains.hidden RETURN paragraph.text ORDER BY contains.index } AS hidden, \
-  EXISTS { MATCH (node)-[:NEXT {kind: 'cause'}]->(effect:ExecutionNode) \
+MATCH (:SubGraph {session_id: $session_id, number: number}) \
+      -[:MEMBER]->(node:Request|Message|Call|ConfigChange|Segment|Error) \
+WHERE node.order < $call_order \
+RETURN number, node.seq, node.order, labels(node)[0], node.payload_json, \
+  COLLECT { MATCH (node)-[:CONTAINS_PARAGRAPH]->(paragraph:Paragraph {hidden: true}) \
+            RETURN paragraph.text ORDER BY paragraph.index } AS hidden, \
+  EXISTS { MATCH (node)-[:NEXT {kind: 'cause'}]->(effect) \
            WHERE effect.order < $call_order } AS caused \
 ORDER BY number, node.order";
 
-// Takes the Session lock first like Generator commits, so the two never deadlock. Step 2 links
-// the Call's sequence to the chosen one; step 4 links the activated Segments to the Call with
-// NEXT edges (marked `kind: 'cause'`, apart from the order chain). A repeated decision of the
-// same Call replaces its edges, and the Sequence keeps the parent of its latest Call.
+// Takes the Session lock first like Generator commits, so the two never deadlock. The Call's
+// SubGraph gets a PARENT edge to every SubGraph the Call was traced to, and the activated tool
+// results of each get NEXT edges to the Call (marked `kind: 'cause'`, apart from the order
+// chain). A repeated decision of the same Call replaces its edges, and the SubGraph keeps the
+// parents of its latest Call.
 const PERSIST_TRACE: &str = "\
 MATCH (session:Session {session_id: $session_id}) \
 SET session.commit_lock = true \
 WITH session \
-MATCH (call:ExecutionNode {session_id: $session_id, seq: $call_seq, type: 'Call'}) \
-SET call.parent = $parent, call.trace_json = $trace_json, call.intent_score = $intent_score \
+MATCH (call:Call {session_id: $session_id, seq: $call_seq}) \
+SET call.parent = $parent, call.parents = $parent_keys, call.trace_json = $trace_json, \
+    call.intent_score = $intent_score \
 WITH call \
 CALL (call) { \
   OPTIONAL MATCH ()-[old:NEXT {kind: 'cause', call_seq: $call_seq}]->(call) \
   DELETE old \
 } \
 CALL (call) { \
-  OPTIONAL MATCH (:Sequence {session_id: $session_id})-[old:PARENT {call_seq: $call_seq}]->() \
+  OPTIONAL MATCH (:SubGraph {session_id: $session_id})-[old:PARENT {call_seq: $call_seq}]->() \
   DELETE old \
 } \
-MERGE (current:Sequence {session_id: $session_id, number: $sequence}) \
+MERGE (current:SubGraph {session_id: $session_id, number: $subgraph}) \
 WITH call, current, coalesce(current.parent_call_order, -1) <= call.order AS latest \
 SET current.parent = CASE WHEN latest THEN $parent ELSE current.parent END, \
+    current.parents = CASE WHEN latest THEN $parent_keys ELSE current.parents END, \
     current.parent_call_seq = CASE WHEN latest THEN $call_seq ELSE current.parent_call_seq END, \
     current.parent_call_order = CASE WHEN latest THEN call.order ELSE current.parent_call_order END \
 WITH call, current \
-OPTIONAL MATCH (parent:Sequence {session_id: $session_id, number: $parent_number}) \
-FOREACH (_ IN CASE WHEN parent IS NULL THEN [] ELSE [1] END | \
-  MERGE (current)-[edge:PARENT {call_seq: $call_seq}]->(parent) \
-  SET edge.probability = $parent_probability, edge.candidates = $candidates, \
-      edge.decided_at = timestamp() \
-) \
+CALL (call, current) { \
+  UNWIND $parents AS chosen \
+  MATCH (parent:SubGraph {session_id: $session_id, number: chosen.number}) \
+  MERGE (current)-[edge:PARENT {call_seq: $call_seq, number: chosen.number}]->(parent) \
+  SET edge.probability = chosen.probability, edge.rank = chosen.rank, \
+      edge.candidates = $candidates, edge.decided_at = timestamp() \
+  RETURN count(edge) AS parented \
+} \
 WITH call \
 CALL (call) { \
   UNWIND $segments AS segment \
-  MATCH (source:ExecutionNode {session_id: $session_id, seq: segment.seq, type: 'Segment'}) \
+  MATCH (source:Segment|Error {session_id: $session_id, seq: segment.seq}) \
   MERGE (source)-[edge:NEXT {kind: 'cause', call_seq: $call_seq}]->(call) \
-  SET edge.probability = segment.probability, edge.rank = segment.rank \
+  SET edge.probability = segment.probability, edge.rank = segment.rank, \
+      edge.parent = segment.parent \
   RETURN count(edge) AS linked \
 } \
 RETURN linked";
@@ -132,7 +149,7 @@ const MARK_UNRESOLVED: &str = "\
 MATCH (session:Session {session_id: $session_id}) \
 SET session.commit_lock = true \
 WITH session \
-MATCH (call:ExecutionNode {session_id: $session_id, seq: $call_seq, type: 'Call'}) \
+MATCH (call:Call {session_id: $session_id, seq: $call_seq}) \
 SET call.parent = 'unresolved', call.trace_error = $error \
 RETURN true";
 
@@ -140,19 +157,38 @@ RETURN true";
 /// the statement is safe to run again.
 const TRANSIENT_ATTEMPTS: u32 = 5;
 
-/// What steps 1–4 decided for a Call, as stored.
+/// What tracing decided for a Call, as stored.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TraceRecord {
-    pub sequence: u64,
-    /// `s<number>` or `none`.
+    pub subgraph: u64,
+    /// The most influential parent: `s<number>` or `none`.
     pub parent: String,
-    pub parent_number: Option<u64>,
-    pub parent_probability: f64,
+    /// Every parent, the most influential first.
+    pub parents: Vec<TracedParent>,
     pub candidates: Vec<String>,
-    /// `(segment node seq, probability, rank)`.
-    pub segments: Vec<(u64, f64, usize)>,
+    /// Activated tool results.
+    pub segments: Vec<TracedSegment>,
     pub intent_score: Option<f64>,
     pub trace: Value,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TracedParent {
+    /// `s<number>` or `none`.
+    pub key: String,
+    /// None for `none`.
+    pub number: Option<u64>,
+    pub probability: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TracedSegment {
+    /// The tool result's node seq.
+    pub seq: u64,
+    pub probability: f64,
+    pub rank: usize,
+    /// The parent whose result it is.
+    pub parent: String,
 }
 
 #[async_trait]
@@ -169,8 +205,8 @@ pub trait DecisionRepository: Send + Sync + 'static {
         Err(RepositoryError::NotFound)
     }
 
-    /// The members of sequences `numbers` before the Call at `call_order`.
-    async fn sequence_members(
+    /// The members of SubGraphs `numbers` before the Call at `call_order`.
+    async fn subgraph_members(
         &self,
         _session_id: &str,
         _numbers: &[u64],
@@ -310,7 +346,7 @@ impl DecisionRepository for Neo4jDecisionRepository {
     ) -> Result<(), RepositoryError> {
         let data = self
             .execute(
-                WRITE_VERDICT,
+                WRITE_DECISION,
                 json!({
                     "session_id":request.session_id,
                     "call_seq":request.call_seq,
@@ -344,11 +380,11 @@ impl DecisionRepository for Neo4jDecisionRepository {
             .await?;
         let row = data.values.first().ok_or(RepositoryError::NotFound)?;
         let call_payload = payload(row.get(2));
-        let sequence = row
+        let subgraph = row
             .get(1)
             .and_then(Value::as_u64)
-            .ok_or(RepositoryError::Unsequenced)?;
-        let sequences = pairs(row.get(3))
+            .ok_or(RepositoryError::NoSubGraph)?;
+        let subgraphs = pairs(row.get(3))
             .filter_map(|pair| {
                 Some((
                     pair.first()?.as_u64()?,
@@ -383,7 +419,7 @@ impl DecisionRepository for Neo4jDecisionRepository {
             call: CallInfo {
                 seq: request.call_seq,
                 order: number(row.first(), "call order")?,
-                sequence,
+                subgraph,
                 agent_id: row.get(7).and_then(Value::as_str).map(str::to_owned),
                 tool_name: call_payload
                     .get("tool_name")
@@ -395,19 +431,24 @@ impl DecisionRepository for Neo4jDecisionRepository {
                     .cloned()
                     .unwrap_or(Value::Null),
             },
-            sequences,
+            subgraphs,
             hidden: numbers(row.get(4)),
             tokens,
             shared_tokens,
             parents,
-            request: payload(row.get(8))
-                .get("prompt")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
+            turns: pairs(row.get(8))
+                .map(|pair| Turn {
+                    prompt: payload(pair.first())
+                        .get("prompt")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    intent: pair.get(1).and_then(Value::as_str).map(str::to_owned),
+                })
+                .collect(),
         })
     }
 
-    async fn sequence_members(
+    async fn subgraph_members(
         &self,
         session_id: &str,
         numbers: &[u64],
@@ -418,7 +459,7 @@ impl DecisionRepository for Neo4jDecisionRepository {
         }
         let data = self
             .execute(
-                SEQUENCE_MEMBERS,
+                SUBGRAPH_MEMBERS,
                 json!({"session_id": session_id, "numbers": numbers, "call_order": call_order}),
             )
             .await?;
@@ -427,7 +468,7 @@ impl DecisionRepository for Neo4jDecisionRepository {
             .iter()
             .filter_map(|row| {
                 Some(Member {
-                    sequence: row.first()?.as_u64()?,
+                    subgraph: row.first()?.as_u64()?,
                     seq: row.get(1)?.as_u64()?,
                     order: row.get(2)?.as_u64()?,
                     kind: MemberKind::from_node_type(row.get(3)?.as_str()?)?,
@@ -454,19 +495,41 @@ impl DecisionRepository for Neo4jDecisionRepository {
         let segments: Vec<Value> = record
             .segments
             .iter()
-            .map(|(seq, probability, rank)| {
-                json!({"seq": seq, "probability": probability, "rank": rank})
+            .map(|segment| {
+                json!({
+                    "seq": segment.seq,
+                    "probability": segment.probability,
+                    "rank": segment.rank,
+                    "parent": segment.parent,
+                })
             })
+            .collect();
+        let parents: Vec<Value> = record
+            .parents
+            .iter()
+            .enumerate()
+            .filter_map(|(index, parent)| {
+                Some(json!({
+                    "number": parent.number?,
+                    "probability": parent.probability,
+                    "rank": index + 1,
+                }))
+            })
+            .collect();
+        let parent_keys: Vec<&str> = record
+            .parents
+            .iter()
+            .map(|parent| parent.key.as_str())
             .collect();
         self.execute(
             PERSIST_TRACE,
             json!({
                 "session_id": request.session_id,
                 "call_seq": request.call_seq,
-                "sequence": record.sequence,
+                "subgraph": record.subgraph,
                 "parent": record.parent,
-                "parent_number": record.parent_number,
-                "parent_probability": record.parent_probability,
+                "parent_keys": parent_keys,
+                "parents": parents,
                 "candidates": record.candidates,
                 "segments": segments,
                 "intent_score": record.intent_score,
@@ -551,8 +614,8 @@ pub enum RepositoryError {
     Query(String),
     InvalidResponse(String),
     NotFound,
-    /// The Call was committed without a session sequence (before sequences were numbered).
-    Unsequenced,
+    /// The Call was committed without a SubGraph (before SubGraphs were numbered).
+    NoSubGraph,
 }
 
 impl fmt::Display for RepositoryError {
@@ -562,7 +625,7 @@ impl fmt::Display for RepositoryError {
             Self::Query(error) => write!(formatter, "Neo4j query failed: {error}"),
             Self::InvalidResponse(error) => write!(formatter, "invalid Neo4j response: {error}"),
             Self::NotFound => formatter.write_str("requested graph version or Call was not found"),
-            Self::Unsequenced => formatter.write_str("the Call has no session sequence"),
+            Self::NoSubGraph => formatter.write_str("the Call has no SubGraph"),
         }
     }
 }

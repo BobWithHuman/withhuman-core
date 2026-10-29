@@ -20,9 +20,7 @@ pub enum HookEventName {
     PostToolUseFailure,
     SubagentStart,
     SubagentStop,
-    InstructionsLoaded,
     ConfigChange,
-    FileChanged,
     MessageDisplay,
     PostToolBatch,
     ToolDescriptions,
@@ -128,22 +126,6 @@ pub struct SubagentLifecycleRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
-pub struct InstructionsLoadedRequest {
-    pub session_id: String,
-    #[serde(default)]
-    pub hook_event_name: Option<HookEventName>,
-    pub file_path: String,
-    #[serde(default)]
-    pub memory_type: Option<String>,
-    #[serde(default)]
-    pub load_reason: Option<String>,
-    #[serde(default)]
-    pub trigger_file_path: Option<String>,
-    #[serde(default)]
-    pub parent_file_path: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 pub struct ConfigChangeRequest {
     pub session_id: String,
     #[serde(default)]
@@ -151,16 +133,6 @@ pub struct ConfigChangeRequest {
     pub file_path: String,
     #[serde(default)]
     pub source: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
-pub struct FileChangedRequest {
-    pub session_id: String,
-    #[serde(default)]
-    pub hook_event_name: Option<HookEventName>,
-    pub file_path: String,
-    #[serde(default)]
-    pub event: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]

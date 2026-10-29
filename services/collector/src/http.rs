@@ -18,11 +18,11 @@ use withhuman_contracts::{
     decisions::{Decision, DecisionResponse, EnforcementMode},
     events::EventResponse,
     hooks::{
-        ConfigChangeRequest, FileChangedRequest, HookEventName, HookSpecificResponse,
-        InstructionsLoadedRequest, MessageDisplayOutput, MessageDisplayRequest, PermissionDecision,
-        PostToolBatchRequest, PostToolUseFailureRequest, PostToolUseRequest, PreToolUseOutput,
-        PreToolUseRequest, SessionStartOutput, SessionStartRequest, SubagentLifecycleRequest,
-        ToolDescriptionsRequest, UserPromptSubmitOutput, UserPromptSubmitRequest,
+        ConfigChangeRequest, HookEventName, HookSpecificResponse, MessageDisplayOutput,
+        MessageDisplayRequest, PermissionDecision, PostToolBatchRequest, PostToolUseFailureRequest,
+        PostToolUseRequest, PreToolUseOutput, PreToolUseRequest, SessionStartOutput,
+        SessionStartRequest, SubagentLifecycleRequest, ToolDescriptionsRequest,
+        UserPromptSubmitOutput, UserPromptSubmitRequest,
     },
 };
 
@@ -113,9 +113,7 @@ pub fn app_with_transport(service: CollectorService) -> Router {
         .route("/v1/hooks/PostToolUseFailure", post(post_tool_use_failure))
         .route("/v1/hooks/SubagentStart", post(subagent_start))
         .route("/v1/hooks/SubagentStop", post(subagent_stop))
-        .route("/v1/hooks/InstructionsLoaded", post(instructions_loaded))
         .route("/v1/hooks/ConfigChange", post(config_change))
-        .route("/v1/hooks/FileChanged", post(file_changed))
         .route("/v1/hooks/MessageDisplay", post(message_display))
         .route("/v1/hooks/PostToolBatch", post(post_tool_batch))
         .route("/v1/hooks/ToolDescriptions", post(tool_descriptions))
@@ -136,9 +134,7 @@ pub fn app_with_transport(service: CollectorService) -> Router {
         post_tool_use_failure,
         subagent_start,
         subagent_stop,
-        instructions_loaded,
         config_change,
-        file_changed,
         message_display,
         post_tool_batch,
         tool_descriptions
@@ -266,22 +262,10 @@ regular_handler!(
     "/v1/hooks/PostToolUseFailure"
 );
 regular_handler!(
-    instructions_loaded,
-    InstructionsLoadedRequest,
-    instructions_loaded,
-    "/v1/hooks/InstructionsLoaded"
-);
-regular_handler!(
     config_change,
     ConfigChangeRequest,
     config_change,
     "/v1/hooks/ConfigChange"
-);
-regular_handler!(
-    file_changed,
-    FileChangedRequest,
-    file_changed,
-    "/v1/hooks/FileChanged"
 );
 regular_handler!(
     post_tool_batch,

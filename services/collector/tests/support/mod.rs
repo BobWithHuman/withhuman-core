@@ -10,11 +10,11 @@ use withhuman_collector::{
 };
 use withhuman_contracts::{
     decisions::EnforcementMode,
-    events::{EventResponse, SequenceCursor, SessionCursor, SidePending},
+    events::{EventResponse, SessionCursor, SidePending, SubGraphCursor},
 };
 
 /// Output of the scenario on the in-process Collector before shared state stores existed, plus
-/// the `session_sequence` field added since.
+/// the `subgraph` field added since.
 #[allow(dead_code)]
 pub const GOLDEN_SESSION_ID: &str = "golden-session";
 #[allow(dead_code)]
@@ -22,21 +22,21 @@ pub const GOLDEN: &str = include_str!("../fixtures/session_scenario.golden.jsonl
 
 /// Hooks covering how events join session-wide sequences and carry the stated intent.
 #[allow(dead_code)]
-pub const SEQUENCE_SCENARIO: &str = include_str!("../fixtures/sequence_scenario.json");
+pub const SUBGRAPH_SCENARIO: &str = include_str!("../fixtures/subgraph_scenario.json");
 
 /// Hooks of a session the Collector lost, resumed from [`resume_cursor`]. The first fragment
 /// arrives before the session is seeded again.
 #[allow(dead_code)]
 pub const RESUME_SCENARIO: &str = include_str!("../fixtures/resume_scenario.json");
 
-/// What the Generator committed for [`RESUME_SCENARIO`]: sequence 3 is open with its message,
+/// What the Generator committed for [`RESUME_SCENARIO`]: SubGraph 3 is open with its message,
 /// and call `t1` still waits for its result.
 #[allow(dead_code)]
 pub fn resume_cursor() -> SessionCursor {
     SessionCursor {
         last_order: 20,
-        last_sequence: Some(3),
-        sequences: SequenceCursor {
+        last_subgraph: Some(3),
+        subgraphs: SubGraphCursor {
             current: Some(3),
             open: true,
             has_message: true,
@@ -132,19 +132,9 @@ pub async fn run_steps(normalizer: Normalizer, session_id: &str, steps: &str) ->
                     .subagent_stop(&ctx, from(request), observed_at)
                     .await
             }
-            "InstructionsLoaded" => {
-                normalizer
-                    .instructions_loaded(&ctx, from(request), observed_at)
-                    .await
-            }
             "ConfigChange" => {
                 normalizer
                     .config_change(&ctx, from(request), observed_at)
-                    .await
-            }
-            "FileChanged" => {
-                normalizer
-                    .file_changed(&ctx, from(request), observed_at)
                     .await
             }
             "PostToolBatch" => {
@@ -187,9 +177,7 @@ pub fn serialize(event: &NormalizedEvent) -> String {
         NormalizedEvent::PostToolUseFailure(value) => serde_json::to_string(value),
         NormalizedEvent::SubagentStart(value) => serde_json::to_string(value),
         NormalizedEvent::SubagentStop(value) => serde_json::to_string(value),
-        NormalizedEvent::InstructionsLoaded(value) => serde_json::to_string(value),
         NormalizedEvent::ConfigChange(value) => serde_json::to_string(value),
-        NormalizedEvent::FileChanged(value) => serde_json::to_string(value),
         NormalizedEvent::MessageDisplay(value) => serde_json::to_string(value),
         NormalizedEvent::PostToolBatch(value) => serde_json::to_string(value),
         NormalizedEvent::ToolDescriptions(value) => serde_json::to_string(value),

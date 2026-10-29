@@ -4,11 +4,10 @@ use withhuman_contracts::{
     decisions::{DecisionRequest, DecisionResponse},
     events::{EventResponse, PreToolUseEventRequest, UserPromptSubmitEventRequest},
     hooks::{
-        ConfigChangeRequest, FileChangedRequest, HookSpecificResponse, InstructionsLoadedRequest,
-        MessageDisplayOutput, MessageDisplayRequest, PostToolBatchRequest,
-        PostToolUseFailureRequest, PostToolUseRequest, PreToolUseOutput, PreToolUseRequest,
-        SessionStartOutput, SessionStartRequest, SubagentLifecycleRequest, ToolDescriptionsRequest,
-        UserPromptSubmitOutput, UserPromptSubmitRequest,
+        ConfigChangeRequest, HookSpecificResponse, MessageDisplayOutput, MessageDisplayRequest,
+        PostToolBatchRequest, PostToolUseFailureRequest, PostToolUseRequest, PreToolUseOutput,
+        PreToolUseRequest, SessionStartOutput, SessionStartRequest, SubagentLifecycleRequest,
+        ToolDescriptionsRequest, UserPromptSubmitOutput, UserPromptSubmitRequest,
     },
 };
 
@@ -32,9 +31,7 @@ fn all_supported_hook_request_fixtures_match_contracts() {
     let _: PostToolUseFailureRequest = contract(&fixtures, "post_tool_use_failure");
     let _: SubagentLifecycleRequest = contract(&fixtures, "subagent_start");
     let _: SubagentLifecycleRequest = contract(&fixtures, "subagent_stop");
-    let _: InstructionsLoadedRequest = contract(&fixtures, "instructions_loaded");
     let _: ConfigChangeRequest = contract(&fixtures, "config_change");
-    let _: FileChangedRequest = contract(&fixtures, "file_changed");
     let _: MessageDisplayRequest = contract(&fixtures, "message_display");
     let _: PostToolBatchRequest = contract(&fixtures, "post_tool_batch");
     let _: ToolDescriptionsRequest = contract(&fixtures, "tool_descriptions");

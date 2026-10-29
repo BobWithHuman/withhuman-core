@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use withhuman_contracts::events::{
     CreatedNode, EventResponse, ParagraphClassificationRequest, ParagraphClassificationResponse,
-    ParagraphReference, RequestContinuationRequest, RequestContinuationResponse, SequenceCursor,
-    SessionCursor, ToolCall,
+    ParagraphReference, RequestContinuationRequest, RequestContinuationResponse, SessionCursor,
+    SubGraphCursor, ToolCall,
 };
 
 use crate::{GeneratorConfig, GeneratorEvent, event::GraphMutation};
@@ -20,7 +20,20 @@ use crate::{GeneratorConfig, GeneratorEvent, event::GraphMutation};
 // instead of deadlocking, and every later read sees the previous commit. `seq` stays the arrival
 // version that Decision snapshots against; NEXT, AGENT_SEQUENCE and a Token's first mention
 // follow `order` and are repaired when an earlier event arrives late.
-const COMMIT_EVENT: &str = "\
+//
+// NEXT keeps a SubGraph's shape rather than plain arrival order: its Message leads to each of
+// its Calls (and ConfigChanges, which take a Call's place), and each Call to its result (Segment
+// or Error, `via: 'call'`), so a second Call hangs off the Message, not off the first Call's
+// result (`via: 'message'`). Every other node, and a Call of a SubGraph without a Message,
+// follows the node before it in order (`via: 'order'`); a Message follows the node before its
+// SubGraph's first member, so a Message that arrives after its Calls makes no loop. A commit
+// relinks itself, every node after it in order, and for a Message its SubGraph's members.
+// The node is labeled with
+// its kind (`$node_type`). Each paragraph belongs to the one node it was cut from; one whose text
+// the session already had classified takes that classification. A SubagentStop of an agent no
+// SubagentStart announced (Claude Code's own helper agents) is kept as a commit without a node.
+const COMMIT_EVENT: &str = concat!(
+    "\
 MERGE (session:Session {session_id: $session_id}) \
 ON CREATE SET session.version = 0, session.created_at = $observed_at \
 SET session.commit_lock = true \
@@ -28,76 +41,109 @@ MERGE (commit:EventCommit {session_id: $session_id, order: $order}) \
 ON CREATE SET commit.event_name = $event_name, commit.observed_at = $observed_at, \
 commit.client_id = $client_id, commit.event_json = $event_json, \
 commit.cwd = $cwd, commit.prompt_id = $prompt_id \
-WITH session, commit, commit.version IS NULL AS is_new \
-CALL (session, commit, is_new) { \
-  WITH session, commit WHERE is_new \
+WITH session, commit, commit.version IS NULL AS is_new, \
+  $has_node AND ($node_type <> 'SubagentStop' OR \
+    EXISTS { MATCH (:SubagentStart {session_id: $session_id, agent_id: $agent_id}) }) AS has_node \
+CALL (session, commit, is_new, has_node) { \
+  WITH session, commit, has_node WHERE is_new \
   SET session.version = coalesce(session.version, 0) + 1 \
-  SET commit.version = session.version, commit.has_node = $has_node \
+  SET commit.version = session.version, commit.has_node = has_node \
   MERGE (session)-[:COMMITTED]->(commit) \
   RETURN true AS created \
   UNION \
   WITH session, commit WHERE NOT is_new \
   RETURN false AS created \
 } \
-FOREACH (_ IN CASE WHEN created AND $has_node THEN [1] ELSE [] END | \
-  CREATE (node:ExecutionNode { \
-    session_id: $session_id, seq: commit.version, type: $node_type, \
+FOREACH (_ IN CASE WHEN created AND has_node THEN [1] ELSE [] END | \
+  CREATE (node:$($node_type) { \
+    session_id: $session_id, seq: commit.version, \
     event_name: $event_name, order: $order, observed_at: $observed_at, \
     client_id: $client_id, sequence: $sequence, prompt_id: $prompt_id, \
     agent_id: $agent_id, agent_type: $agent_type, cwd: $cwd, \
     tool_use_id: $tool_use_id, turn_id: $turn_id, repository: $repository, \
-    intent: $intent, session_sequence: $session_sequence, payload_json: $payload_json \
+    intent: $intent, subgraph: $subgraph, payload_json: $payload_json \
   }) \
   CREATE (commit)-[:CREATED]->(node) \
   CREATE (session)-[:CONTAINS]->(node) \
 ) \
 WITH session, commit, created \
-OPTIONAL MATCH (member:ExecutionNode {session_id: $session_id, seq: commit.version}) \
-FOREACH (_ IN CASE WHEN created AND member IS NOT NULL AND $session_sequence IS NOT NULL \
+OPTIONAL MATCH (commit)-[:CREATED]->(member) \
+FOREACH (_ IN CASE WHEN created AND member IS NOT NULL AND $subgraph IS NOT NULL \
                    THEN [1] ELSE [] END | \
-  MERGE (group:Sequence {session_id: $session_id, number: $session_sequence}) \
+  MERGE (group:SubGraph {session_id: $session_id, number: $subgraph}) \
   MERGE (group)-[:MEMBER]->(member) \
 ) \
 WITH session, commit, created \
-OPTIONAL MATCH (node:ExecutionNode {session_id: $session_id, seq: commit.version}) \
+OPTIONAL MATCH (commit)-[:CREATED]->(node) \
 CALL (node, created) { \
   WITH node WHERE created AND node IS NOT NULL \
-  OPTIONAL MATCH (before:ExecutionNode {session_id: $session_id}) WHERE before.order < node.order \
-  WITH node, before ORDER BY before.order DESC LIMIT 1 \
-  OPTIONAL MATCH (after:ExecutionNode {session_id: $session_id}) WHERE after.order > node.order \
-  WITH node, before, after ORDER BY after.order LIMIT 1 \
-  OPTIONAL MATCH (before)-[stale:NEXT]->(after) WHERE stale.kind IS NULL \
-  DELETE stale \
+  CALL (node) { \
+    MATCH (linked:",
+    withhuman_common::node_labels!(),
+    " {session_id: $session_id}) \
+    WHERE linked.order >= node.order \
+    RETURN linked \
+    UNION \
+    MATCH (linked:",
+    withhuman_common::node_labels!(),
+    " {session_id: $session_id, subgraph: node.subgraph}) \
+    WHERE node:Message \
+    RETURN linked \
+  } \
+  CALL (linked) { \
+    OPTIONAL MATCH ()-[stale:NEXT]->(linked) WHERE stale.kind IS NULL \
+    DELETE stale \
+  } \
+  WITH linked, \
+    CASE WHEN (linked:Segment OR linked:Error) AND linked.tool_use_id IS NOT NULL THEN \
+      COLLECT { MATCH (call:Call {session_id: $session_id, tool_use_id: linked.tool_use_id}) \
+                RETURN call ORDER BY call.order LIMIT 1 }[0] END AS call, \
+    CASE WHEN (linked:Call OR linked:ConfigChange) AND linked.subgraph IS NOT NULL THEN \
+      COLLECT { MATCH (message:Message {session_id: $session_id, subgraph: linked.subgraph}) \
+                RETURN message ORDER BY message.order LIMIT 1 }[0] END AS message, \
+    CASE WHEN linked:Message AND linked.subgraph IS NOT NULL THEN \
+      COLLECT { MATCH (member:",
+    withhuman_common::node_labels!(),
+    " {session_id: $session_id, subgraph: linked.subgraph}) \
+                RETURN min(member.order) }[0] \
+    ELSE linked.order END AS position \
+  WITH linked, call, message, \
+    COLLECT { MATCH (earlier:",
+    withhuman_common::node_labels!(),
+    " {session_id: $session_id}) \
+              WHERE earlier.order < position \
+                AND NOT (linked:Message AND coalesce(earlier.subgraph = linked.subgraph, false)) \
+              RETURN earlier ORDER BY earlier.order DESC LIMIT 1 }[0] AS earlier \
+  WITH linked, coalesce(call, message, earlier) AS before, \
+    CASE WHEN call IS NOT NULL THEN 'call' WHEN message IS NOT NULL THEN 'message' \
+         ELSE 'order' END AS via \
   FOREACH (_ IN CASE WHEN before IS NULL THEN [] ELSE [1] END | \
-    MERGE (before)-[edge:NEXT]->(node) \
-    ON CREATE SET edge.edge_id = $session_id + ':' + toString(before.seq) + ':' + toString(node.seq), \
+    MERGE (before)-[edge:NEXT {via: via}]->(linked) \
+    ON CREATE SET edge.edge_id = $session_id + ':' + toString(before.seq) + ':' + toString(linked.seq), \
                   edge.probability = 1.0 \
   ) \
-  FOREACH (_ IN CASE WHEN after IS NULL THEN [] ELSE [1] END | \
-    MERGE (node)-[edge:NEXT]->(after) \
-    ON CREATE SET edge.edge_id = $session_id + ':' + toString(node.seq) + ':' + toString(after.seq), \
-                  edge.probability = 1.0 \
-  ) \
-  RETURN count(*) AS linked \
+  RETURN count(*) AS relinked \
 } \
 WITH commit, node \
-OPTIONAL MATCH (agent_previous:ExecutionNode { \
+OPTIONAL MATCH (agent_previous:",
+    withhuman_common::node_labels!(),
+    " { \
   session_id: $session_id, agent_id: $agent_id, sequence: $previous_sequence \
 }) \
 FOREACH (_ IN CASE WHEN node IS NULL OR agent_previous IS NULL THEN [] ELSE [1] END | \
   MERGE (agent_previous)-[:AGENT_SEQUENCE]->(node) \
 ) \
 WITH commit, node \
-OPTIONAL MATCH (agent_next:ExecutionNode { \
+OPTIONAL MATCH (agent_next:",
+    withhuman_common::node_labels!(),
+    " { \
   session_id: $session_id, agent_id: $agent_id, sequence: $next_sequence \
 }) \
 FOREACH (_ IN CASE WHEN node IS NULL OR agent_next IS NULL THEN [] ELSE [1] END | \
   MERGE (node)-[:AGENT_SEQUENCE]->(agent_next) \
 ) \
 WITH commit, node \
-OPTIONAL MATCH (call:ExecutionNode { \
-  session_id: $session_id, type: 'Call', tool_use_id: $tool_use_id \
-}) \
+OPTIONAL MATCH (call:Call {session_id: $session_id, tool_use_id: $tool_use_id}) \
 FOREACH (_ IN CASE WHEN node IS NULL OR call IS NULL OR NOT $is_tool_result THEN [] ELSE [1] END | \
   MERGE (call)-[:RESULTED_IN]->(node) \
 ) \
@@ -110,27 +156,30 @@ WITH commit, node \
 CALL (node) { \
   WITH node WHERE node IS NOT NULL AND size($paragraphs) > 0 \
   UNWIND $paragraphs AS paragraph \
-  MERGE (stored:Paragraph {hash: paragraph.hash}) \
-  ON CREATE SET stored.text = paragraph.text, stored.source = paragraph.source, \
-                stored.hidden = paragraph.hidden, stored.hidden_rules = paragraph.hidden_rules, \
-                stored.from_user_doc = paragraph.from_user_doc, \
-                stored.long_paragraph = paragraph.long_paragraph, stored.created_in_seq = node.seq \
-  ON MATCH SET stored.hidden = coalesce(stored.hidden, false) OR paragraph.hidden, \
-               stored.hidden_rules = coalesce(stored.hidden_rules, []) + \
-                 [rule IN paragraph.hidden_rules WHERE NOT rule IN coalesce(stored.hidden_rules, [])] \
-  MERGE (node)-[contains:CONTAINS_PARAGRAPH {index: paragraph.index}]->(stored) \
-  SET contains.hidden = paragraph.hidden, contains.hidden_rules = paragraph.hidden_rules \
-  WITH node, stored, paragraph \
   OPTIONAL MATCH (pending:PendingParagraphEnrichment {session_id: $session_id, hash: paragraph.hash}) \
-  SET stored.instructs = coalesce(pending.instructs, stored.instructs), \
-      stored.jev_ms = coalesce(pending.jev_ms, stored.jev_ms), \
-      stored.jev_error = coalesce(pending.error, stored.jev_error) \
-  FOREACH (_ IN CASE WHEN pending IS NULL THEN [] ELSE [1] END | DELETE pending) \
-  RETURN collect({hash: stored.hash, seq: node.seq, new: stored.created_in_seq = node.seq}) AS paragraph_refs \
+  WITH node, paragraph, pending, \
+    COLLECT { MATCH (earlier:Paragraph {session_id: $session_id, hash: paragraph.hash}) \
+              WHERE earlier.instructs IS NOT NULL OR earlier.jev_error IS NOT NULL \
+              RETURN earlier ORDER BY earlier.seq LIMIT 1 }[0] AS earlier, \
+    NOT EXISTS { MATCH (seen:Paragraph {session_id: $session_id, hash: paragraph.hash}) \
+                 WHERE seen.seq <> node.seq } AS new \
+  MERGE (stored:Paragraph {session_id: $session_id, seq: node.seq, index: paragraph.index}) \
+  ON CREATE SET stored.hash = paragraph.hash, stored.text = paragraph.text, \
+                stored.source = paragraph.source, stored.hidden = paragraph.hidden, \
+                stored.hidden_rules = paragraph.hidden_rules, \
+                stored.from_user_doc = paragraph.from_user_doc, \
+                stored.long_paragraph = paragraph.long_paragraph, \
+                stored.instructs = coalesce(pending.instructs, earlier.instructs), \
+                stored.jev_ms = coalesce(pending.jev_ms, earlier.jev_ms), \
+                stored.jev_error = coalesce(pending.error, earlier.jev_error) \
+  MERGE (node)-[:CONTAINS_PARAGRAPH]->(stored) \
+  RETURN collect({hash: stored.hash, seq: node.seq, new: new}) AS paragraph_refs, \
+         collect(DISTINCT pending) AS pending \
   UNION \
   WITH node WHERE node IS NULL OR size($paragraphs) = 0 \
-  RETURN [] AS paragraph_refs \
+  RETURN [] AS paragraph_refs, [] AS pending \
 } \
+FOREACH (enrichment IN pending | DELETE enrichment) \
 WITH commit, node, paragraph_refs \
 CALL (node, commit) { \
   WITH node, commit WHERE node IS NOT NULL AND size($tokens) > 0 \
@@ -153,8 +202,8 @@ CALL (node, commit) { \
 } \
 WITH commit, node, paragraph_refs \
 OPTIONAL MATCH (pending_request:PendingRequestContinuation {session_id: $session_id, order: $order}) \
-OPTIONAL MATCH (target_commit:EventCommit {session_id: $session_id, order: pending_request.choice_order})-[:CREATED]->(target_request:ExecutionNode {type: 'Request'}) \
-FOREACH (_ IN CASE WHEN node.type = 'Request' AND pending_request IS NOT NULL THEN [1] ELSE [] END | \
+OPTIONAL MATCH (target_commit:EventCommit {session_id: $session_id, order: pending_request.choice_order})-[:CREATED]->(target_request:Request) \
+FOREACH (_ IN CASE WHEN node:Request AND pending_request IS NOT NULL THEN [1] ELSE [] END | \
   SET node.continues = CASE WHEN pending_request.choice = 'none' THEN NULL ELSE target_request.seq END, \
       node.continuation_choice = pending_request.choice, \
       node.continuation_probabilities_json = pending_request.probabilities_json, \
@@ -162,12 +211,13 @@ FOREACH (_ IN CASE WHEN node.type = 'Request' AND pending_request IS NOT NULL TH
       node.continuation_error = pending_request.error \
   DELETE pending_request \
 ) \
-RETURN commit.version AS version, node.seq AS node_seq, node.type AS node_type, paragraph_refs, \
-       commit.event_json = $event_json AS same_event";
+RETURN commit.version AS version, node.seq AS node_seq, labels(node)[0] AS node_type, paragraph_refs, \
+       commit.event_json = $event_json AS same_event"
+);
 
 const APPLY_PARAGRAPH_CLASSIFICATION: &str = "\
 MATCH (session:Session {session_id: $session_id}) \
-OPTIONAL MATCH (session)-[:CONTAINS]->(:ExecutionNode)-[:CONTAINS_PARAGRAPH]->(paragraph:Paragraph {hash: $hash}) \
+OPTIONAL MATCH (paragraph:Paragraph {session_id: $session_id, hash: $hash}) \
 WITH session, collect(DISTINCT paragraph) AS paragraphs \
 CALL (session, paragraphs) { \
   WITH session, paragraphs WHERE size(paragraphs) > 0 \
@@ -187,8 +237,8 @@ RETURN applied, $instructs AS instructs";
 
 const APPLY_REQUEST_CONTINUATION: &str = "\
 MATCH (session:Session {session_id: $session_id}) \
-OPTIONAL MATCH (commit:EventCommit {session_id: $session_id, order: $order})-[:CREATED]->(request:ExecutionNode {type: 'Request'}) \
-OPTIONAL MATCH (target_commit:EventCommit {session_id: $session_id, order: $choice_order})-[:CREATED]->(target:ExecutionNode {type: 'Request'}) \
+OPTIONAL MATCH (commit:EventCommit {session_id: $session_id, order: $order})-[:CREATED]->(request:Request) \
+OPTIONAL MATCH (target_commit:EventCommit {session_id: $session_id, order: $choice_order})-[:CREATED]->(target:Request) \
 WITH session, request, target \
 CALL (session, request, target) { \
   WITH session, request, target WHERE request IS NOT NULL \
@@ -210,92 +260,107 @@ RETURN applied, request_seq";
 
 // Every event carries the session cwd and prompt id as they were after it, so the values of the
 // highest order are the current ones. Commits made before they were recorded on EventCommit fall
-// back to their ExecutionNode. The main agent's nodes carry no agent_id that a SubagentStart
-// announced; its latest sequence is open when a Message or Call came after the last ToolBatch or Request in it. The intent is the
-// first one stated after the last prompt.
-const SESSION_CURSOR: &str = "\
+// back to their node. The main agent's nodes carry no agent_id that a SubagentStart
+// announced; its latest SubGraph is open when a Message or Call came after the last ToolBatch or
+// Request in it. The intent is the first one stated after the last prompt.
+const SESSION_CURSOR: &str = concat!(
+    "\
 OPTIONAL MATCH (commit:EventCommit {session_id: $session_id}) \
 WITH coalesce(max(commit.order), 0) AS last_order \
-OPTIONAL MATCH (node:ExecutionNode {session_id: $session_id}) \
+OPTIONAL MATCH (node:",
+    withhuman_common::node_labels!(),
+    " {session_id: $session_id}) \
 WHERE node.agent_id IS NOT NULL AND node.sequence IS NOT NULL \
 WITH last_order, node.agent_id AS agent_id, max(node.sequence) AS sequence \
 WITH last_order, \
      collect(CASE WHEN agent_id IS NULL THEN NULL ELSE [agent_id, sequence] END) AS agents \
 WITH last_order, agents, \
-  COLLECT { MATCH (n:ExecutionNode {session_id: $session_id}) \
-            WHERE n.session_sequence IS NOT NULL AND NOT EXISTS { \
-              MATCH (:ExecutionNode {session_id: $session_id, type: 'SubagentStart', agent_id: n.agent_id}) } \
-            RETURN max(n.session_sequence) }[0] AS main_sequence, \
-  coalesce(COLLECT { MATCH (r:ExecutionNode {session_id: $session_id, type: 'Request'}) \
+  COLLECT { MATCH (n:",
+    withhuman_common::node_labels!(),
+    " {session_id: $session_id}) \
+            WHERE n.subgraph IS NOT NULL AND NOT EXISTS { \
+              MATCH (:SubagentStart {session_id: $session_id, agent_id: n.agent_id}) } \
+            RETURN max(n.subgraph) }[0] AS main_subgraph, \
+  coalesce(COLLECT { MATCH (r:Request {session_id: $session_id}) \
                      RETURN max(r.order) }[0], -1) AS last_request \
-WITH last_order, agents, main_sequence, last_request, \
-  COLLECT { MATCH (n:ExecutionNode {session_id: $session_id, session_sequence: main_sequence}) \
-            WHERE n.type IN ['Message', 'Call'] AND NOT EXISTS { \
-              MATCH (:ExecutionNode {session_id: $session_id, type: 'SubagentStart', agent_id: n.agent_id}) } \
+WITH last_order, agents, main_subgraph, last_request, \
+  COLLECT { MATCH (n:Message|Call {session_id: $session_id, subgraph: main_subgraph}) \
+            WHERE NOT EXISTS { \
+              MATCH (:SubagentStart {session_id: $session_id, agent_id: n.agent_id}) } \
             RETURN max(n.order) }[0] AS last_opening, \
-  COLLECT { MATCH (n:ExecutionNode {session_id: $session_id, session_sequence: main_sequence}) \
-            WHERE n.type IN ['ToolBatch', 'Request'] AND NOT EXISTS { \
-              MATCH (:ExecutionNode {session_id: $session_id, type: 'SubagentStart', agent_id: n.agent_id}) } \
+  COLLECT { MATCH (n:ToolBatch|Request {session_id: $session_id, subgraph: main_subgraph}) \
+            WHERE NOT EXISTS { \
+              MATCH (:SubagentStart {session_id: $session_id, agent_id: n.agent_id}) } \
             RETURN max(n.order) }[0] AS last_closing \
 RETURN last_order, agents, \
   coalesce( \
     COLLECT { MATCH (c:EventCommit {session_id: $session_id}) WHERE c.cwd IS NOT NULL \
               RETURN c.cwd ORDER BY c.order DESC LIMIT 1 }[0], \
-    COLLECT { MATCH (n:ExecutionNode {session_id: $session_id}) WHERE n.cwd IS NOT NULL \
+    COLLECT { MATCH (n:",
+    withhuman_common::node_labels!(),
+    " {session_id: $session_id}) \
+              WHERE n.cwd IS NOT NULL \
               RETURN n.cwd ORDER BY n.order DESC LIMIT 1 }[0]) AS cwd, \
   coalesce( \
     COLLECT { MATCH (c:EventCommit {session_id: $session_id}) WHERE c.prompt_id IS NOT NULL \
               RETURN c.prompt_id ORDER BY c.order DESC LIMIT 1 }[0], \
-    COLLECT { MATCH (n:ExecutionNode {session_id: $session_id}) WHERE n.prompt_id IS NOT NULL \
+    COLLECT { MATCH (n:",
+    withhuman_common::node_labels!(),
+    " {session_id: $session_id}) \
+              WHERE n.prompt_id IS NOT NULL \
               RETURN n.prompt_id ORDER BY n.order DESC LIMIT 1 }[0]) AS prompt_id, \
-  COLLECT { MATCH (n:ExecutionNode {session_id: $session_id}) WHERE n.session_sequence IS NOT NULL \
-            RETURN max(n.session_sequence) }[0] AS last_sequence, \
-  COLLECT { MATCH (n:ExecutionNode {session_id: $session_id, type: 'Message'}) \
+  COLLECT { MATCH (n:",
+    withhuman_common::node_labels!(),
+    " {session_id: $session_id}) \
+            WHERE n.subgraph IS NOT NULL \
+            RETURN max(n.subgraph) }[0] AS last_subgraph, \
+  COLLECT { MATCH (n:Message {session_id: $session_id}) \
             WHERE n.intent IS NOT NULL AND n.order > last_request \
             RETURN n.intent ORDER BY n.order LIMIT 1 }[0] AS intent, \
-  main_sequence, \
+  main_subgraph, \
   last_opening IS NOT NULL AND coalesce(last_closing, -1) < last_opening AS open, \
-  EXISTS { MATCH (n:ExecutionNode {session_id: $session_id, session_sequence: main_sequence, type: 'Message'}) } \
+  EXISTS { MATCH (n:Message {session_id: $session_id, subgraph: main_subgraph}) } \
     AS has_message, \
-  EXISTS { MATCH (n:ExecutionNode {session_id: $session_id, session_sequence: main_sequence, type: 'Call'}) \
+  EXISTS { MATCH (n:Call {session_id: $session_id, subgraph: main_subgraph}) \
            WHERE NOT EXISTS { \
-              MATCH (:ExecutionNode {session_id: $session_id, type: 'SubagentStart', agent_id: n.agent_id}) } } AS has_call, \
-  EXISTS { MATCH (n:ExecutionNode {session_id: $session_id, session_sequence: 0, type: 'Request'}) } \
+              MATCH (:SubagentStart {session_id: $session_id, agent_id: n.agent_id}) } } AS has_call, \
+  EXISTS { MATCH (n:Request {session_id: $session_id, subgraph: 0}) } \
     AS zero_has_request, \
-  COLLECT { MATCH (call:ExecutionNode {session_id: $session_id, type: 'Call'}) \
-            WHERE call.order > last_request AND call.session_sequence IS NOT NULL \
+  COLLECT { MATCH (call:Call {session_id: $session_id}) \
+            WHERE call.order > last_request AND call.subgraph IS NOT NULL \
               AND call.tool_use_id IS NOT NULL \
-            RETURN [call.tool_use_id, call.session_sequence] ORDER BY call.order DESC LIMIT 200 } AS calls";
+            RETURN [call.tool_use_id, call.subgraph] ORDER BY call.order DESC LIMIT 200 } AS calls"
+);
 
 const TOOL_CALL: &str = "\
-MATCH (call:ExecutionNode {session_id: $session_id, type: 'Call', tool_use_id: $tool_use_id}) \
+MATCH (call:Call {session_id: $session_id, tool_use_id: $tool_use_id}) \
 RETURN call.payload_json ORDER BY call.order DESC LIMIT 1";
 
 const DELETE_PARAGRAPHS: &str = "\
 MATCH (paragraph) WHERE paragraph:Paragraph OR paragraph:PendingParagraphEnrichment \
 DETACH DELETE paragraph";
 
+// InstructionsLoaded and FileChanged events are no longer received; commits of them that remain
+// from before are skipped.
 const LIST_NODE_COMMITS: &str = "\
-MATCH (commit:EventCommit) WHERE commit.has_node \
+MATCH (commit:EventCommit) \
+WHERE commit.has_node AND NOT commit.event_name IN ['InstructionsLoaded', 'FileChanged'] \
 RETURN commit.event_name, commit.event_json \
 ORDER BY commit.observed_at, commit.session_id, commit.order \
 SKIP $skip LIMIT $limit";
 
 const REINDEX_PARAGRAPHS: &str = "\
 UNWIND $rows AS row \
-MATCH (commit:EventCommit {session_id: row.session_id, order: row.order})-[:CREATED]->(node:ExecutionNode) \
+MATCH (commit:EventCommit {session_id: row.session_id, order: row.order})-[:CREATED]->(node) \
 CALL (node, row) { \
   UNWIND row.paragraphs AS paragraph \
-  MERGE (stored:Paragraph {hash: paragraph.hash}) \
-  ON CREATE SET stored.text = paragraph.text, stored.source = paragraph.source, \
-                stored.hidden = paragraph.hidden, stored.hidden_rules = paragraph.hidden_rules, \
+  MERGE (stored:Paragraph {session_id: row.session_id, seq: node.seq, index: paragraph.index}) \
+  ON CREATE SET stored.hash = paragraph.hash, stored.text = paragraph.text, \
+                stored.source = paragraph.source, stored.hidden = paragraph.hidden, \
+                stored.hidden_rules = paragraph.hidden_rules, \
                 stored.from_user_doc = paragraph.from_user_doc, \
-                stored.long_paragraph = paragraph.long_paragraph, stored.created_in_seq = node.seq \
-  ON MATCH SET stored.hidden = coalesce(stored.hidden, false) OR paragraph.hidden, \
-               stored.hidden_rules = coalesce(stored.hidden_rules, []) + \
-                 [rule IN paragraph.hidden_rules WHERE NOT rule IN coalesce(stored.hidden_rules, [])] \
-  MERGE (node)-[contains:CONTAINS_PARAGRAPH {index: paragraph.index}]->(stored) \
-  SET contains.hidden = paragraph.hidden, contains.hidden_rules = paragraph.hidden_rules \
+                stored.long_paragraph = paragraph.long_paragraph \
+  MERGE (node)-[:CONTAINS_PARAGRAPH]->(stored) \
 } \
 CALL (node, commit, row) { \
   UNWIND row.tokens AS token \
@@ -520,7 +585,7 @@ impl Neo4jRepository {
             "paragraphs": mutation.paragraphs,
             "tokens": mutation.tokens,
             "intent": mutation.intent,
-            "session_sequence": mutation.session_sequence,
+            "subgraph": mutation.subgraph,
             "is_tool_result": is_tool_result,
         });
         let data = self.execute(COMMIT_EVENT, parameters).await?;
@@ -694,9 +759,9 @@ impl GraphRepository for Neo4jRepository {
                 .collect::<Result<_, _>>()?,
             cwd: row.get(2).and_then(Value::as_str).map(str::to_owned),
             prompt_id: row.get(3).and_then(Value::as_str).map(str::to_owned),
-            last_sequence: row.get(4).and_then(Value::as_u64),
+            last_subgraph: row.get(4).and_then(Value::as_u64),
             intent: row.get(5).and_then(Value::as_str).map(str::to_owned),
-            sequences: SequenceCursor {
+            subgraphs: SubGraphCursor {
                 current: row.get(6).and_then(Value::as_u64),
                 open: row.get(7).and_then(Value::as_bool).unwrap_or_default(),
                 has_message: row.get(8).and_then(Value::as_bool).unwrap_or_default(),
