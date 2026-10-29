@@ -1,6 +1,6 @@
 //! Intent capture: every prompt asks the model to open its answer with the user intent it
-//! inferred. The MessageDisplay Hook hides that line from the user; the Generator stores it with
-//! the message, so only the engine keeps it.
+//! inferred. The MessageDisplay Hook hides that line from the user and sends it as an Intent event
+//! in the SubGraph of the prompt, apart from the message, so only the engine keeps it.
 
 /// Added to every prompt through the UserPromptSubmit Hook.
 /// The line must come before the first tool call so the Decision Module can judge the turn's

@@ -90,6 +90,8 @@ DROP INDEX file_changed_session_order IF EXISTS;
 // withhuman-common.
 CREATE CONSTRAINT request_seq_unique IF NOT EXISTS
 FOR (node:Request) REQUIRE (node.session_id, node.seq) IS UNIQUE;
+CREATE CONSTRAINT intent_seq_unique IF NOT EXISTS
+FOR (node:Intent) REQUIRE (node.session_id, node.seq) IS UNIQUE;
 CREATE CONSTRAINT message_seq_unique IF NOT EXISTS
 FOR (node:Message) REQUIRE (node.session_id, node.seq) IS UNIQUE;
 CREATE CONSTRAINT call_seq_unique IF NOT EXISTS
@@ -111,6 +113,8 @@ FOR (node:ToolDescriptions) REQUIRE (node.session_id, node.seq) IS UNIQUE;
 
 CREATE INDEX request_session_order IF NOT EXISTS
 FOR (node:Request) ON (node.session_id, node.order);
+CREATE INDEX intent_session_order IF NOT EXISTS
+FOR (node:Intent) ON (node.session_id, node.order);
 CREATE INDEX message_session_order IF NOT EXISTS
 FOR (node:Message) ON (node.session_id, node.order);
 CREATE INDEX call_session_order IF NOT EXISTS

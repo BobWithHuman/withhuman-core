@@ -194,7 +194,6 @@ async fn session_keys_expire_after_inactivity() {
                 message_id: "m-1".to_owned(),
                 index: Some(0),
                 delta: "partial".to_owned(),
-                intent: None,
             },
         )
         .await

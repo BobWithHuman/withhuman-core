@@ -11,6 +11,6 @@ pub mod tokens;
 #[macro_export]
 macro_rules! node_labels {
     () => {
-        "Request|Message|Call|Segment|Error|ToolBatch|SubagentStart|SubagentStop|ConfigChange|ToolDescriptions"
+        "Request|Intent|Message|Call|Segment|Error|ToolBatch|SubagentStart|SubagentStop|ConfigChange|ToolDescriptions"
     };
 }

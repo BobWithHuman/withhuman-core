@@ -129,6 +129,7 @@ fn event_body(event: &NormalizedEvent) -> Result<serde_json::Value, GeneratorErr
         NormalizedEvent::SubagentStop(value) => serde_json::to_value(value),
         NormalizedEvent::ConfigChange(value) => serde_json::to_value(value),
         NormalizedEvent::MessageDisplay(value) => serde_json::to_value(value),
+        NormalizedEvent::Intent(value) => serde_json::to_value(value),
         NormalizedEvent::PostToolBatch(value) => serde_json::to_value(value),
         NormalizedEvent::ToolDescriptions(value) => serde_json::to_value(value),
     };
