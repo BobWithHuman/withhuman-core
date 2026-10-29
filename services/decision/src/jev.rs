@@ -33,19 +33,19 @@ pub enum QuestionKind {
     Noul,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub struct JevResponse {
     #[serde(default)]
     pub answers: BTreeMap<String, JevAnswer>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub struct JevAnswer {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub choice: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub probabilities: BTreeMap<String, f64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub noul: Option<f64>,
 }
 
