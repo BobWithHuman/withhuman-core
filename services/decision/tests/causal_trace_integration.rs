@@ -520,6 +520,5 @@ async fn keeps_only_the_latest_mention_of_a_value() {
     assert_eq!(graph.tokens, BTreeSet::from([2]), "{graph:?}");
     assert_eq!(graph.shared_tokens, BTreeSet::from([2]));
     assert_eq!(graph.turns.len(), 1);
-    assert_eq!(graph.turns[0].prompt.as_deref(), Some("deploy"));
     assert_eq!(graph.turns[0].intent, None);
 }

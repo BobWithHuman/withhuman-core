@@ -21,7 +21,8 @@ struct Graph {
     unresolved: Mutex<Vec<String>>,
     /// SubGraph 1 holds hidden content.
     hidden: bool,
-    prompt: Option<&'static str>,
+    /// One user prompt came before the Call, with no intent stated for it.
+    unstated_turn: bool,
     no_subgraph: bool,
 }
 
@@ -65,14 +66,11 @@ impl DecisionRepository for Graph {
             tokens: BTreeSet::new(),
             shared_tokens: BTreeSet::new(),
             parents: BTreeMap::new(),
-            turns: self
-                .prompt
-                .map(|prompt| Turn {
-                    prompt: Some(prompt.to_owned()),
-                    intent: None,
-                })
-                .into_iter()
-                .collect(),
+            turns: if self.unstated_turn {
+                vec![Turn { intent: None }]
+            } else {
+                Vec::new()
+            },
         })
     }
 
@@ -243,24 +241,26 @@ async fn traces_without_judging_when_no_intent_was_stated() {
 }
 
 #[tokio::test]
-async fn judges_by_the_prompt_when_no_intent_was_stated() {
+async fn never_judges_by_the_prompt_when_no_intent_was_stated() {
     let (provider, graph, jev) = provider_on(
         Graph {
-            prompt: Some("빌드 폴더만 정리해 줘"),
+            unstated_turn: true,
             ..Graph::default()
         },
         0.1,
         false,
     );
     let response = provider.decide(&request(None, Some(4_000))).await.unwrap();
-    assert_eq!(response.decision, Decision::Deny);
+    assert_eq!(response.decision, Decision::Allow);
+    assert_eq!(response.rule, "intent::unknown");
     let requests = jev.requests.lock().unwrap();
-    assert_eq!(
-        requests[1].state["intents"],
-        "1. [의도 없음, 사용자 프롬프트] 빌드 폴더만 정리해 줘 (현재 턴)"
+    assert!(
+        requests
+            .iter()
+            .all(|request| !request.state.contains_key("intents"))
     );
     let traces = graph.traces.lock().unwrap();
-    assert_eq!(traces[0].trace["intent_source"], "prompt");
+    assert_eq!(traces[0].trace["intent_source"], "none");
 }
 
 #[tokio::test]

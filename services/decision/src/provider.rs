@@ -91,9 +91,9 @@ impl DecisionProvider for MockDecisionProvider {
 /// departs from the user's intents by more than the configured threshold.
 ///
 /// When tracing fails, the Call gets the Collector's failure policy (an error), or REVIEW when
-/// a candidate holds hidden content or a sensitive value. A turn without a stated intent is
-/// represented by its prompt; with no prompt or intent at all, the Call is allowed, or reviewed
-/// in that same risky case.
+/// a candidate holds hidden content or a sensitive value. Jev sees prompts only through the
+/// intents stated for them; when no prompt has one, the Call is allowed, or reviewed in that
+/// same risky case.
 #[derive(Clone)]
 pub struct JevDecisionProvider {
     repository: Arc<dyn DecisionRepository>,
@@ -200,7 +200,7 @@ impl DecisionProvider for JevDecisionProvider {
             .subgraph_members(&request.session_id, &shown, graph.call.order)
             .await
             .map_err(|error| ProviderError(error.to_string()))?;
-        // Every turn's stated intent, or its prompt where none was stated.
+        // Every turn's stated intent; a prompt's text is never shown.
         let intents = trace::intents(&graph, request.intent.as_deref(), &self.settings);
         let plan = trace::plan(&graph, &members, intents.text.as_deref(), &self.settings);
         let risky = plan.risky(&graph);

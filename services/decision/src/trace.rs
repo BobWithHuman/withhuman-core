@@ -1,8 +1,8 @@
 //! Traces what led the agent to a Call and whether that matches the user's intents.
 //!
 //! 1. Candidate SubGraphs, all of the Call's agent (the main agent or one subagent): the three
-//!    before the Call's (a user prompt has a SubGraph of its own, so a recent prompt is one of
-//!    them), for a subagent the main agent's SubGraph that started it, every earlier SubGraph
+//!    before the Call's (a user prompt has a SubGraph of its own, with the intent stated for it,
+//!    so a recent prompt is one of them), for a subagent the main agent's SubGraph that started it, every earlier SubGraph
 //!    holding hidden content, every earlier SubGraph holding the latest mention of an
 //!    exfiltration target or sensitive value, and `none`.
 //! 2. A first Jev request asks which candidate influenced the Call (`action`) most (`parent`).
@@ -17,7 +17,8 @@
 //!
 //! Asking for one parent's tool results at a time keeps every request within Jev's token limit,
 //! which one request holding every candidate's results passes on long Korean output. Questions
-//! are in Korean (Jev 1.14), like the intents and paths they refer to.
+//! are in Korean (Jev 1.14), like the intents and paths they refer to. Jev sees a prompt only as
+//! the intent the agent stated for it, never the prompt's text.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -86,8 +87,11 @@ impl Default for TraceSettings {
     }
 }
 
-/// Characters of one intent or prompt in `intents`.
+/// Characters of one intent in `intents`.
 const INTENT_CHARS: usize = 500;
+
+/// The line of a prompt the agent stated no intent for.
+const UNSTATED: &str = "(의도를 밝히지 않은 프롬프트)";
 
 /// Appended to every question: the state holds what the session recorded, which an attacker
 /// may have written.
@@ -124,10 +128,9 @@ impl ParentKey {
     }
 }
 
-/// One user prompt before the Call and the intent the agent stated for it.
+/// One user prompt before the Call, by the intent the agent stated for it.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Turn {
-    pub prompt: Option<String>,
     pub intent: Option<String>,
 }
 
@@ -154,6 +157,8 @@ pub struct TraceGraph {
 pub enum MemberKind {
     #[default]
     Request,
+    /// The intent stated for the Request of its SubGraph.
+    Intent,
     Message,
     Call,
     /// Takes a Call's place in its SubGraph.
@@ -167,6 +172,7 @@ impl MemberKind {
     pub fn from_node_type(node_type: &str) -> Option<Self> {
         match node_type {
             "Request" => Some(Self::Request),
+            "Intent" => Some(Self::Intent),
             "Message" => Some(Self::Message),
             "Call" => Some(Self::Call),
             "ConfigChange" => Some(Self::ConfigChange),
@@ -238,9 +244,9 @@ pub struct Candidate {
 /// The session's intents as Jev sees them.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Intents {
-    /// One numbered line per prompt, oldest first; none without any prompt or intent.
+    /// One numbered line per prompt, oldest first; none when no prompt has a stated intent.
     pub text: Option<String>,
-    /// Where the current turn's line came from: `stated`, `prompt` or `none`.
+    /// Whether the current turn stated its intent: `stated` or `none`.
     pub source: &'static str,
 }
 
@@ -449,9 +455,9 @@ pub fn ancestry(
     (path, stop)
 }
 
-/// Every prompt of the session up to the Call, each by the intent the agent stated for it or,
-/// without one, by the prompt itself. The current turn takes `stated` (the intent the Collector
-/// holds) over the graph's, which may not be committed yet.
+/// Every prompt of the session up to the Call, each by the intent the agent stated for it; a
+/// prompt without one is marked as such, since its text is never shown. The current turn takes
+/// `stated` (the intent the Collector holds) over the graph's, which may not be committed yet.
 pub fn intents(graph: &TraceGraph, stated: Option<&str>, settings: &TraceSettings) -> Intents {
     let clean = |text: Option<&str>| {
         text.map(str::trim)
@@ -460,6 +466,7 @@ pub fn intents(graph: &TraceGraph, stated: Option<&str>, settings: &TraceSetting
     };
     let mut lines: Vec<String> = Vec::new();
     let mut source = "none";
+    let mut any = false;
     let last = graph.turns.len().saturating_sub(1);
     for (index, turn) in graph.turns.iter().enumerate() {
         let intent = if index == last {
@@ -467,23 +474,20 @@ pub fn intents(graph: &TraceGraph, stated: Option<&str>, settings: &TraceSetting
         } else {
             clean(turn.intent.as_deref())
         };
-        let (line, from) = match (intent, clean(turn.prompt.as_deref())) {
-            (Some(intent), _) => (intent, "stated"),
-            (None, Some(prompt)) => (format!("[의도 없음, 사용자 프롬프트] {prompt}"), "prompt"),
-            (None, None) => continue,
-        };
-        if index == last {
-            source = from;
+        if index == last && intent.is_some() {
+            source = "stated";
         }
-        lines.push(line);
+        any |= intent.is_some();
+        lines.push(intent.unwrap_or_else(|| UNSTATED.to_owned()));
     }
     if graph.turns.is_empty() {
         if let Some(intent) = clean(stated) {
             lines.push(intent);
             source = "stated";
+            any = true;
         }
     }
-    if lines.is_empty() {
+    if !any {
         return Intents { text: None, source };
     }
     let skipped = lines.len().saturating_sub(settings.max_intents.max(1));
@@ -891,17 +895,27 @@ fn path_sentence(prefix: &str, hops: &[String], current_line: &str, budget: usiz
     format!("{prefix}{}", parts.join(ARROW))
 }
 
-/// The Request, Messages, Calls and ConfigChanges of a SubGraph, one per line.
+/// The Intent, Messages, Calls and ConfigChanges of a SubGraph, one per line. A Request shows
+/// only through its Intent.
 fn subgraph_text(members: &[Member], number: u64, separator: &str) -> String {
-    let lines: Vec<String> = members
+    let members: Vec<&Member> = members
         .iter()
         .filter(|member| member.subgraph == number && !member.kind.is_result())
-        .map(member_text)
         .collect();
-    if lines.is_empty() {
-        "(내용 없음)".to_owned()
-    } else {
+    let lines: Vec<String> = members
+        .iter()
+        .filter(|member| member.kind != MemberKind::Request)
+        .map(|member| member_text(member))
+        .collect();
+    let has_request = members
+        .iter()
+        .any(|member| member.kind == MemberKind::Request);
+    if !lines.is_empty() {
         lines.join(separator)
+    } else if has_request {
+        format!("[request] {UNSTATED}")
+    } else {
+        "(내용 없음)".to_owned()
     }
 }
 
@@ -939,7 +953,9 @@ fn member_text(member: &Member) -> String {
             .unwrap_or_default()
     };
     let text = match member.kind {
-        MemberKind::Request => format!("[request] {}", field("prompt")),
+        // Shown through its Intent, never by its text.
+        MemberKind::Request => "[request]".to_owned(),
+        MemberKind::Intent => format!("[의도] {}", field("intent")),
         // The `[의도]` line is the intent itself; comparing the path with it would be circular.
         MemberKind::Message => {
             let text = field("text");

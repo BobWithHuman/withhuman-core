@@ -37,7 +37,8 @@ RETURN true AS written";
 // Call's own SubGraph) of an exfiltration target or sensitive value — one per value whatever
 // slot mentioned it — and whether the Call mentions that value too; every parent earlier Calls
 // of a SubGraph chose; and every user prompt before the Call with the first intent the agent
-// stated after it (and before the next prompt).
+// stated after it (and before the next prompt): an Intent node, or a Message that stated it
+// before intents had nodes of their own. The prompt itself is not read.
 const TRACE_GRAPH: &str = concat!(
     "\
 MATCH (call:Call {session_id: $session_id, seq: $call_seq}) \
@@ -76,20 +77,21 @@ RETURN call.order, call.subgraph, call.payload_json, \
             WITH request, coalesce(COLLECT { MATCH (next:Request {session_id: $session_id}) \
                                              WHERE next.order > request.order \
                                              RETURN min(next.order) }[0], call.order) AS until \
-            RETURN [request.payload_json, \
-                    COLLECT { MATCH (message:Message {session_id: $session_id}) \
-                              WHERE message.intent IS NOT NULL AND message.order > request.order \
-                                AND message.order < until AND message.order < call.order \
-                              RETURN message.intent ORDER BY message.order LIMIT 1 }[0]] \
+            RETURN [request.order, \
+                    COLLECT { MATCH (stated:Intent|Message {session_id: $session_id}) \
+                              WHERE stated.intent IS NOT NULL AND stated.order > request.order \
+                                AND stated.order < until AND stated.order < call.order \
+                              RETURN stated.intent ORDER BY stated.order LIMIT 1 }[0]] \
             ORDER BY request.order } AS turns"
 );
 
 // Tool results also bring the paragraphs hidden where they appeared, and whether a later Call
-// was traced to them. ConfigChanges stand where Calls do, Errors where Segments do.
+// was traced to them. ConfigChanges stand where Calls do, Errors where Segments do. A prompt's
+// SubGraph holds its Request and the Intent stated for it.
 const SUBGRAPH_MEMBERS: &str = "\
 UNWIND $numbers AS number \
 MATCH (:SubGraph {session_id: $session_id, number: number}) \
-      -[:MEMBER]->(node:Request|Message|Call|ConfigChange|Segment|Error) \
+      -[:MEMBER]->(node:Request|Intent|Message|Call|ConfigChange|Segment|Error) \
 WHERE node.order < $call_order \
 RETURN number, node.seq, node.order, labels(node)[0], node.payload_json, \
   COLLECT { MATCH (node)-[:CONTAINS_PARAGRAPH]->(paragraph:Paragraph {hidden: true}) \
@@ -438,10 +440,6 @@ impl DecisionRepository for Neo4jDecisionRepository {
             parents,
             turns: pairs(row.get(8))
                 .map(|pair| Turn {
-                    prompt: payload(pair.first())
-                        .get("prompt")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
                     intent: pair.get(1).and_then(Value::as_str).map(str::to_owned),
                 })
                 .collect(),
