@@ -115,6 +115,7 @@ def summary(props):
         "tool_name": payload.get("tool_name") or props.get("tool_name"),
         "brief": brief,
         "prompt": payload.get("prompt"),
+        "intent": payload.get("intent"),
         "text": payload.get("text"),
         "error": payload.get("error"),
         "file_path": payload.get("file_path") or props.get("file_path"),

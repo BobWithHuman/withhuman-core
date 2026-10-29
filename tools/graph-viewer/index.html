@@ -9,7 +9,7 @@
   :root {
     --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #6b7280; --line: #d9dde4;
     --seq-bg: #eef1f6; --seq-border: #b9c2d0; --accent: #2f6fde;
-    --request: #4c7be0; --message: #8a63d2; --call: #e08a2e; --segment: #3aa57a; --error: #d24c4c;
+    --request: #4c7be0; --intent: #2bb3c0; --message: #8a63d2; --call: #e08a2e; --segment: #3aa57a; --error: #d24c4c;
     --other: #8b93a1; --allow: #2f9e5b; --deny: #d64545; --review: #d9a21b;
     --edge: #a3abb8; --cause: #e0433b; --result: #3d86e0; --parent: #f08c00; --agent: #9c5bd6;
   }
@@ -76,7 +76,7 @@
 <script>
 const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const KIND_COLOR = {
-  Request: '--request', Message: '--message', Call: '--call', Segment: '--segment', Error: '--error',
+  Request: '--request', Intent: '--intent', Message: '--message', Call: '--call', Segment: '--segment', Error: '--error',
 };
 const DECISION_COLOR = { ALLOW: '--allow', DENY: '--deny', REVIEW: '--review' };
 const $ = id => document.getElementById(id);
@@ -96,6 +96,7 @@ function caption(kind, summary) {
   const tool = summary.tool_name || '';
   switch (kind) {
     case 'Request': return clip(summary.prompt);
+    case 'Intent': return clip(summary.intent);
     case 'Message': return clip(summary.text);
     case 'Call': return clip(`${tool} ${summary.brief || ''}`);
     case 'Segment': return clip(`${tool} 결과`);
