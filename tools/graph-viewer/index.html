@@ -63,8 +63,8 @@
   <h1>WithHuman Graph</h1>
   <select id="session" aria-label="세션"></select>
   <span class="tabs" role="group" aria-label="보기">
-    <button type="button" data-view="flow" aria-pressed="true">그래프</button>
-    <button type="button" data-view="tree" aria-pressed="false">원인 트리</button>
+    <button type="button" data-view="tree" aria-pressed="true">원인 트리</button>
+    <button type="button" data-view="flow" aria-pressed="false">시간 흐름</button>
   </span>
   <button id="reload" type="button">새로고침</button>
   <button id="fit" type="button">전체 보기</button>
@@ -93,7 +93,7 @@ const LEAD = new Set(['Request', 'Intent', 'Message']);
 const RESULT = new Set(['Segment', 'Error']);
 const HIDDEN = new Set(['ToolBatch', 'ToolDescriptions']);
 const $ = id => document.getElementById(id);
-let cy, current = null, liveTimer = null, lastData = null, lastSignature = '', model = null, view = 'flow';
+let cy, current = null, liveTimer = null, lastData = null, lastSignature = '', model = null, view = 'tree';
 
 function parse(json) {
   if (typeof json !== 'string') return null;
@@ -246,17 +246,24 @@ function flowElements() {
 }
 
 // The cause tree: each SubGraph area under the SubGraph its Calls were traced to (its
-// `parent`), prompts on top. Cause edges run from each Call up to its cause in the parent area.
+// `parent`), prompts on top. A SubGraph that was not traced, such as a closing message, hangs
+// under the SubGraph the events came from, joined by that order edge. Cause edges run from each
+// Call up to its cause in the parent area.
 function treeElements() {
   const GAP_X = 60, GAP_Y = 110;
   const areas = areasOf();
   areas.delete('loose');
   const numbers = [...areas.keys()].sort((a, b) => a - b);
-  const parentOf = new Map();
+  const parentOf = new Map(), byOrder = new Set();
+  const areaOf = seq => model.groupOf.get(seq);
   for (const number of numbers) {
     const key = model.subgraphParent.get(number);
     const parent = /^s\d+$/.test(key || '') ? Number(key.slice(1)) : null;
-    if (parent !== null && parent < number && areas.has(parent)) parentOf.set(number, parent);
+    if (parent !== null && parent < number && areas.has(parent)) { parentOf.set(number, parent); continue; }
+    if (areas.get(number).items.some(item => item.node.kind === 'Request')) continue;
+    const before = model.flows.map(f => areaOf(f.from))
+      .filter((from, i) => areaOf(model.flows[i].to) === number && from < number && areas.has(from));
+    if (before.length) { parentOf.set(number, Math.max(...before)); byOrder.add(number); }
   }
   const children = new Map(numbers.map(n => [n, []]));
   for (const [child, parent] of parentOf) children.get(parent).push(child);
@@ -289,10 +296,10 @@ function treeElements() {
   for (const n of numbers) areaElements(n, areas.get(n), left.get(n), levelTop[depth.get(n)], elements);
   const onScreen = new Set(elements.filter(e => e.data.seq !== undefined).map(e => e.data.seq));
   for (const f of model.flows) {
-    const call = model.bySeq.get(f.from);
-    if (call?.kind === 'Call' && model.callOf.get(f.to) === f.from && onScreen.has(f.to)) {
-      elements.push({ group: 'edges', data: { id: `f${f.from}-${f.to}`, source: `n${f.from}`, target: `n${f.to}`, flow: true } });
-    }
+    if (!onScreen.has(f.from) || !onScreen.has(f.to)) continue;
+    const from = areaOf(f.from), to = areaOf(f.to);
+    const joins = from === to || (byOrder.has(to) && parentOf.get(to) === from);
+    if (joins) elements.push({ group: 'edges', data: { id: `f${f.from}-${f.to}`, source: `n${f.from}`, target: `n${f.to}`, flow: true } });
   }
   causeEdges(elements, onScreen);
   return { elements, layout: { name: 'preset' } };
