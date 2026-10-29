@@ -10,27 +10,24 @@ use withhuman_common::{
 use withhuman_contracts::{
     events::{
         ConfigChangeEventRequest, ConfigChangePayload, ContentOrigin, EventMetadata, EventRequest,
-        FileChangedEventRequest, FileChangedPayload, InstructionsLoadedEventRequest,
-        InstructionsLoadedPayload, MessageDisplayEventRequest, MessageDisplayPayload,
-        PostToolBatchEventRequest, PostToolBatchPayload, PostToolUseEventRequest,
-        PostToolUseFailureEventRequest, PostToolUseFailurePayload, PostToolUsePayload,
-        PreToolUseEventRequest, PreToolUsePayload, SessionCursor, SessionStartEventRequest,
-        SessionStartPayload, SubagentStartEventRequest, SubagentStartPayload,
-        SubagentStopEventRequest, SubagentStopPayload, ToolDescription,
+        MessageDisplayEventRequest, MessageDisplayPayload, PostToolBatchEventRequest,
+        PostToolBatchPayload, PostToolUseEventRequest, PostToolUseFailureEventRequest,
+        PostToolUseFailurePayload, PostToolUsePayload, PreToolUseEventRequest, PreToolUsePayload,
+        SessionCursor, SessionStartEventRequest, SessionStartPayload, SubagentStartEventRequest,
+        SubagentStartPayload, SubagentStopEventRequest, SubagentStopPayload, ToolDescription,
         ToolDescriptionsEventRequest, ToolDescriptionsPayload, UserPromptSubmitEventRequest,
         UserPromptSubmitPayload,
     },
     hooks::{
-        ConfigChangeRequest, FileChangedRequest, InstructionsLoadedRequest, MessageDisplayRequest,
-        PostToolBatchRequest, PostToolUseFailureRequest, PostToolUseRequest, PreToolUseRequest,
-        SessionStartRequest, SubagentLifecycleRequest, ToolDescriptionsRequest,
-        UserPromptSubmitRequest,
+        ConfigChangeRequest, MessageDisplayRequest, PostToolBatchRequest,
+        PostToolUseFailureRequest, PostToolUseRequest, PreToolUseRequest, SessionStartRequest,
+        SubagentLifecycleRequest, ToolDescriptionsRequest, UserPromptSubmitRequest,
     },
 };
 
 use crate::{
-    GeneratorError, GeneratorTransport, InMemorySessionStore, MessageFragment, SequenceStep,
-    SessionSnapshot, SessionStore, SessionUpdate, StoreError, TrustedHookContext,
+    GeneratorError, GeneratorTransport, InMemorySessionStore, MessageFragment, SessionSnapshot,
+    SessionStore, SessionUpdate, StoreError, SubGraphStep, TrustedHookContext,
 };
 
 /// Orders skipped when a session resumes without Collector state, so events that were still on
@@ -50,9 +47,7 @@ pub enum NormalizedEvent {
     PostToolUseFailure(PostToolUseFailureEventRequest),
     SubagentStart(SubagentStartEventRequest),
     SubagentStop(SubagentStopEventRequest),
-    InstructionsLoaded(InstructionsLoadedEventRequest),
     ConfigChange(ConfigChangeEventRequest),
-    FileChanged(FileChangedEventRequest),
     MessageDisplay(MessageDisplayEventRequest),
     PostToolBatch(PostToolBatchEventRequest),
     ToolDescriptions(ToolDescriptionsEventRequest),
@@ -68,9 +63,7 @@ impl NormalizedEvent {
             Self::PostToolUseFailure(_) => "PostToolUseFailure",
             Self::SubagentStart(_) => "SubagentStart",
             Self::SubagentStop(_) => "SubagentStop",
-            Self::InstructionsLoaded(_) => "InstructionsLoaded",
             Self::ConfigChange(_) => "ConfigChange",
-            Self::FileChanged(_) => "FileChanged",
             Self::MessageDisplay(_) => "MessageDisplay",
             Self::PostToolBatch(_) => "PostToolBatch",
             Self::ToolDescriptions(_) => "ToolDescriptions",
@@ -86,9 +79,7 @@ impl NormalizedEvent {
             Self::PostToolUseFailure(event) => event.order,
             Self::SubagentStart(event) => event.order,
             Self::SubagentStop(event) => event.order,
-            Self::InstructionsLoaded(event) => event.order,
             Self::ConfigChange(event) => event.order,
-            Self::FileChanged(event) => event.order,
             Self::MessageDisplay(event) => event.order,
             Self::PostToolBatch(event) => event.order,
             Self::ToolDescriptions(event) => event.order,
@@ -251,7 +242,7 @@ impl Normalizer {
                 SessionUpdate {
                     cwd: request.cwd,
                     prompt_id: request.prompt_id,
-                    sequence_step: SequenceStep::Request,
+                    subgraph_step: SubGraphStep::Request,
                     clear_intent: true,
                     ..Default::default()
                 },
@@ -304,7 +295,7 @@ impl Normalizer {
                     )),
                     agent_id: request.agent_id.clone(),
                     record_downloads,
-                    sequence_step: SequenceStep::Call {
+                    subgraph_step: SubGraphStep::Call {
                         tool_use_id: request.tool_use_id.clone(),
                         agent_id: request.agent_id.clone(),
                     },
@@ -354,7 +345,7 @@ impl Normalizer {
                     prompt_id: request.prompt_id,
                     take_tool_input: Some(request.tool_use_id.clone()),
                     agent_id: request.agent_id.clone(),
-                    sequence_step: SequenceStep::Result {
+                    subgraph_step: SubGraphStep::Result {
                         tool_use_id: request.tool_use_id.clone(),
                         agent_id: request.agent_id.clone(),
                     },
@@ -421,7 +412,7 @@ impl Normalizer {
                     prompt_id: request.prompt_id,
                     take_tool_input: Some(request.tool_use_id.clone()),
                     agent_id: request.agent_id.clone(),
-                    sequence_step: SequenceStep::Result {
+                    subgraph_step: SubGraphStep::Result {
                         tool_use_id: request.tool_use_id.clone(),
                         agent_id: request.agent_id.clone(),
                     },
@@ -472,7 +463,7 @@ impl Normalizer {
                 &request.session_id,
                 SessionUpdate {
                     agent_id: Some(request.agent_id.clone()),
-                    sequence_step: SequenceStep::SubagentStart(request.agent_id.clone()),
+                    subgraph_step: SubGraphStep::SubagentStart(request.agent_id.clone()),
                     ..Default::default()
                 },
             )
@@ -537,34 +528,6 @@ impl Normalizer {
         )))
     }
 
-    pub async fn instructions_loaded(
-        &self,
-        context: &TrustedHookContext,
-        request: InstructionsLoadedRequest,
-        observed_at: u64,
-    ) -> Result<NormalizedEvent, NormalizeError> {
-        let state = self
-            .apply(&request.session_id, SessionUpdate::default())
-            .await?;
-        let meta = metadata(&state, context, None, None, None, None);
-        Ok(NormalizedEvent::InstructionsLoaded(envelope(
-            &state,
-            context,
-            request.session_id,
-            observed_at,
-            None,
-            meta,
-            InstructionsLoadedPayload {
-                file_path: request.file_path,
-                memory_type: request.memory_type,
-                load_reason: request.load_reason,
-                trigger_file_path: request.trigger_file_path,
-                parent_file_path: request.parent_file_path,
-                additional_fields: Default::default(),
-            },
-        )))
-    }
-
     pub async fn config_change(
         &self,
         context: &TrustedHookContext,
@@ -586,34 +549,6 @@ impl Normalizer {
                 file_path: request.file_path,
                 source: request.source,
                 additional_fields: Default::default(),
-            },
-        )))
-    }
-
-    pub async fn file_changed(
-        &self,
-        context: &TrustedHookContext,
-        request: FileChangedRequest,
-        observed_at: u64,
-    ) -> Result<NormalizedEvent, NormalizeError> {
-        let state = self
-            .apply(&request.session_id, SessionUpdate::default())
-            .await?;
-        let meta = metadata(&state, context, None, None, None, None);
-        let mut additional_fields = withhuman_contracts::events::AdditionalFields::new();
-        if let Some(event) = request.event {
-            additional_fields.insert("event".to_owned(), event.into());
-        }
-        Ok(NormalizedEvent::FileChanged(envelope(
-            &state,
-            context,
-            request.session_id,
-            observed_at,
-            None,
-            meta,
-            FileChangedPayload {
-                file_path: request.file_path,
-                additional_fields,
             },
         )))
     }
@@ -648,7 +583,7 @@ impl Normalizer {
                 &request.session_id,
                 SessionUpdate {
                     finish_message: Some(fragment),
-                    sequence_step: SequenceStep::Message(request.message_id.clone()),
+                    subgraph_step: SubGraphStep::Message(request.message_id.clone()),
                     ..Default::default()
                 },
             )
@@ -687,7 +622,7 @@ impl Normalizer {
             .apply(
                 &request.session_id,
                 SessionUpdate {
-                    sequence_step: SequenceStep::Batch {
+                    subgraph_step: SubGraphStep::Batch {
                         agent_id: request.agent_id.clone(),
                         tool_use_ids: request
                             .tool_calls
@@ -772,7 +707,7 @@ fn envelope<T>(
         observed_at,
         client_id: context.client_id.clone(),
         sequence,
-        session_sequence: Some(state.session_sequence),
+        subgraph: Some(state.subgraph),
         meta,
         side_pending: Some(state.side_pending.clone()),
         payload,

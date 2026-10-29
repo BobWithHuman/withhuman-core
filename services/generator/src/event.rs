@@ -8,8 +8,7 @@ use withhuman_common::{
     tokens,
 };
 use withhuman_contracts::events::{
-    ConfigChangeEventRequest, ContentOrigin, FileChangedEventRequest,
-    InstructionsLoadedEventRequest, MessageDisplayEventRequest, PostToolBatchEventRequest,
+    ConfigChangeEventRequest, ContentOrigin, MessageDisplayEventRequest, PostToolBatchEventRequest,
     PostToolUseEventRequest, PostToolUseFailureEventRequest, PreToolUseEventRequest,
     SessionStartEventRequest, SubagentStartEventRequest, SubagentStopEventRequest,
     ToolDescriptionsEventRequest, UserPromptSubmitEventRequest,
@@ -26,9 +25,7 @@ pub enum GeneratorEvent {
     PostToolUseFailure(PostToolUseFailureEventRequest),
     SubagentStart(SubagentStartEventRequest),
     SubagentStop(SubagentStopEventRequest),
-    InstructionsLoaded(InstructionsLoadedEventRequest),
     ConfigChange(ConfigChangeEventRequest),
-    FileChanged(FileChangedEventRequest),
     MessageDisplay(MessageDisplayEventRequest),
     PostToolBatch(PostToolBatchEventRequest),
     ToolDescriptions(ToolDescriptionsEventRequest),
@@ -44,9 +41,7 @@ impl GeneratorEvent {
             Self::PostToolUseFailure(_) => "PostToolUseFailure",
             Self::SubagentStart(_) => "SubagentStart",
             Self::SubagentStop(_) => "SubagentStop",
-            Self::InstructionsLoaded(_) => "InstructionsLoaded",
             Self::ConfigChange(_) => "ConfigChange",
-            Self::FileChanged(_) => "FileChanged",
             Self::MessageDisplay(_) => "MessageDisplay",
             Self::PostToolBatch(_) => "PostToolBatch",
             Self::ToolDescriptions(_) => "ToolDescriptions",
@@ -62,9 +57,7 @@ impl GeneratorEvent {
             Self::PostToolUseFailure(event) => &event.session_id,
             Self::SubagentStart(event) => &event.session_id,
             Self::SubagentStop(event) => &event.session_id,
-            Self::InstructionsLoaded(event) => &event.session_id,
             Self::ConfigChange(event) => &event.session_id,
-            Self::FileChanged(event) => &event.session_id,
             Self::MessageDisplay(event) => &event.session_id,
             Self::PostToolBatch(event) => &event.session_id,
             Self::ToolDescriptions(event) => &event.session_id,
@@ -80,9 +73,7 @@ impl GeneratorEvent {
             Self::PostToolUseFailure(event) => event.order,
             Self::SubagentStart(event) => event.order,
             Self::SubagentStop(event) => event.order,
-            Self::InstructionsLoaded(event) => event.order,
             Self::ConfigChange(event) => event.order,
-            Self::FileChanged(event) => event.order,
             Self::MessageDisplay(event) => event.order,
             Self::PostToolBatch(event) => event.order,
             Self::ToolDescriptions(event) => event.order,
@@ -104,9 +95,7 @@ impl GeneratorEvent {
             "PostToolUseFailure" => Self::PostToolUseFailure(parse(event_json)?),
             "SubagentStart" => Self::SubagentStart(parse(event_json)?),
             "SubagentStop" => Self::SubagentStop(parse(event_json)?),
-            "InstructionsLoaded" => Self::InstructionsLoaded(parse(event_json)?),
             "ConfigChange" => Self::ConfigChange(parse(event_json)?),
-            "FileChanged" => Self::FileChanged(parse(event_json)?),
             "MessageDisplay" => Self::MessageDisplay(parse(event_json)?),
             "PostToolBatch" => Self::PostToolBatch(parse(event_json)?),
             "ToolDescriptions" => Self::ToolDescriptions(parse(event_json)?),
@@ -186,33 +175,11 @@ impl GeneratorEvent {
                 event,
                 |event| event,
             ),
-            Self::InstructionsLoaded(event) => {
-                let file_path = Some(event.payload.file_path.clone());
-                mutation(
-                    "InstructionsLoaded",
-                    Some("Instructions"),
-                    None,
-                    file_path,
-                    event,
-                    |event| event,
-                )
-            }
             Self::ConfigChange(event) => {
                 let file_path = Some(event.payload.file_path.clone());
                 mutation(
                     "ConfigChange",
                     Some("ConfigChange"),
-                    None,
-                    file_path,
-                    event,
-                    |event| event,
-                )
-            }
-            Self::FileChanged(event) => {
-                let file_path = Some(event.payload.file_path.clone());
-                mutation(
-                    "FileChanged",
-                    Some("FileChanged"),
                     None,
                     file_path,
                     event,
@@ -276,8 +243,8 @@ pub(crate) struct GraphMutation {
     pub(crate) tokens: Vec<TokenMutation>,
     /// The user intent a message states on its first line.
     pub(crate) intent: Option<String>,
-    /// The session-wide sequence the event belongs to.
-    pub(crate) session_sequence: Option<i64>,
+    /// The session-wide SubGraph the event belongs to.
+    pub(crate) subgraph: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -337,7 +304,9 @@ where
     let original_payload_json = serde_json::to_string(&envelope.payload)
         .map_err(|error| RepositoryError::InvalidEvent(error.to_string()))?;
     let payload_json = redacted_json(&envelope.payload)?;
+    // Only tool results are chunked into paragraphs; other text keeps to its node.
     let paragraphs = match &envelope.chunks {
+        _ if event_name != "PostToolUse" => Vec::new(),
         Some(chunks) => chunks
             .iter()
             .map(|chunk| {
@@ -416,9 +385,9 @@ where
         paragraphs,
         tokens: tokens.into_iter().collect(),
         intent: None,
-        session_sequence: envelope
-            .session_sequence
-            .map(|value| signed(value, "session_sequence"))
+        subgraph: envelope
+            .subgraph
+            .map(|value| signed(value, "subgraph"))
             .transpose()?,
     })
 }

@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 use withhuman_contracts::events::{
-    EventResponse, InstructionsLoadedEventRequest, ParagraphClassificationRequest,
-    PreToolUseEventRequest, RequestContinuationRequest, UserPromptSubmitEventRequest,
+    EventResponse, ParagraphClassificationRequest, PreToolUseEventRequest,
+    RequestContinuationRequest, UserPromptSubmitEventRequest,
 };
 
 #[test]
@@ -87,27 +87,6 @@ fn carries_pre_tool_use_decision_response() {
     assert_eq!(
         response.decision_response.expect("decision should exist")["decision"],
         "DENY"
-    );
-}
-
-#[test]
-fn preserves_instruction_relationship_paths() {
-    let request: InstructionsLoadedEventRequest = serde_json::from_value(json!({
-        "session_id": "8e78",
-        "order": 2,
-        "observed_at": 1760925500100_u64,
-        "meta": {},
-        "payload": {
-            "file_path": "/app/.claude/rules/security.md",
-            "trigger_file_path": "/app/CLAUDE.md",
-            "parent_file_path": "/app/.claude/rules"
-        }
-    }))
-    .expect("instruction paths should survive normalization");
-
-    assert_eq!(
-        request.payload.trigger_file_path.as_deref(),
-        Some("/app/CLAUDE.md")
     );
 }
 

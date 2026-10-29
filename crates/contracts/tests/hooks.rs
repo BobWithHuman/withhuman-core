@@ -1,8 +1,8 @@
 use serde_json::json;
 use withhuman_contracts::hooks::{
-    HookEventName, HookSpecificResponse, InstructionsLoadedRequest, MessageDisplayOutput,
-    PermissionDecision, PostToolUseRequest, PreToolUseOutput, PreToolUseRequest,
-    SessionStartOutput, UserPromptSubmitOutput,
+    HookEventName, HookSpecificResponse, MessageDisplayOutput, PermissionDecision,
+    PostToolUseRequest, PreToolUseOutput, PreToolUseRequest, SessionStartOutput,
+    UserPromptSubmitOutput,
 };
 
 #[test]
@@ -47,24 +47,6 @@ fn accepts_nullable_post_tool_input() {
 
     assert_eq!(request.tool_input, None);
     assert_eq!(request.hook_event_name, None);
-}
-
-#[test]
-fn preserves_instruction_relationship_paths() {
-    let request: InstructionsLoadedRequest = serde_json::from_value(json!({
-        "session_id": "8e789b84",
-        "hook_event_name": "InstructionsLoaded",
-        "file_path": "/app/.claude/rules/security.md",
-        "trigger_file_path": "/app/CLAUDE.md",
-        "parent_file_path": "/app/.claude/rules"
-    }))
-    .expect("instruction relationship paths should deserialize");
-
-    assert_eq!(request.trigger_file_path.as_deref(), Some("/app/CLAUDE.md"));
-    assert_eq!(
-        request.parent_file_path.as_deref(),
-        Some("/app/.claude/rules")
-    );
 }
 
 #[test]

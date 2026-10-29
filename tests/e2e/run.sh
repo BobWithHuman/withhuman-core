@@ -119,7 +119,7 @@ verdict_count() {
     "$neo4j_url/db/neo4j/query/v2" \
     --header 'content-type: application/json' \
     --data "$(jq -cn --arg session "$session_id" \
-      '{statement:"MATCH (:ExecutionNode {session_id: $session_id, type: \"Call\"})-[:HAS_VERDICT]->(v:Verdict {session_id: $session_id}) RETURN count(v) AS count",parameters:{session_id:$session}}')" \
+      '{statement:"MATCH (c:Call {session_id: $session_id}) WHERE c.decision IS NOT NULL RETURN count(c) AS count",parameters:{session_id:$session}}')" \
     | jq -r '.data.values[0][0]'
 }
 

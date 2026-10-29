@@ -16,8 +16,8 @@ pub use normalize::{
     MESSAGE_INCOMPLETE_FLAG, NormalizeError, NormalizedEvent, Normalizer, RESUME_ORDER_GAP,
 };
 pub use state::{
-    InMemorySessionStore, MessageFragment, RedisSessionStore, SequenceStep, SessionSnapshot,
-    SessionStore, SessionUpdate,
+    InMemorySessionStore, MessageFragment, RedisSessionStore, SessionSnapshot, SessionStore,
+    SessionUpdate, SubGraphStep,
 };
 pub use store::{StoreError, redis_connection};
 pub use transport::{GeneratorError, GeneratorHttpClient, GeneratorTransport};

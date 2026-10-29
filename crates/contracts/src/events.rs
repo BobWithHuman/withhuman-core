@@ -21,9 +21,7 @@ pub enum EventName {
     PostToolUseFailure,
     SubagentStart,
     SubagentStop,
-    InstructionsLoaded,
     ConfigChange,
-    FileChanged,
     MessageDisplay,
     PostToolBatch,
     ToolDescriptions,
@@ -92,11 +90,10 @@ pub struct EventRequest<T> {
     /// Per-agent counter of the agent's events.
     #[serde(default)]
     pub sequence: Option<u64>,
-    /// Session-wide sequence: a Request, or a Message with the Calls and results that follow
-    /// it until PostToolBatch. Sequence 0 holds the first Request and the Instructions loaded
-    /// before the first Message.
+    /// Session-wide SubGraph number: a Request, or a Message with the Calls and results that
+    /// follow it until PostToolBatch. SubGraph 0 holds the first Request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_sequence: Option<u64>,
+    pub subgraph: Option<u64>,
     pub meta: EventMetadata,
     #[serde(default)]
     pub side_pending: Option<SidePending>,
@@ -208,34 +205,10 @@ pub struct SubagentStopPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
-pub struct InstructionsLoadedPayload {
-    pub file_path: String,
-    #[serde(default)]
-    pub memory_type: Option<String>,
-    #[serde(default)]
-    pub load_reason: Option<String>,
-    #[serde(default)]
-    pub trigger_file_path: Option<String>,
-    #[serde(default)]
-    pub parent_file_path: Option<String>,
-    #[serde(flatten)]
-    #[schema(ignore)]
-    pub additional_fields: AdditionalFields,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct ConfigChangePayload {
     pub file_path: String,
     #[serde(default)]
     pub source: Option<String>,
-    #[serde(flatten)]
-    #[schema(ignore)]
-    pub additional_fields: AdditionalFields,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
-pub struct FileChangedPayload {
-    pub file_path: String,
     #[serde(flatten)]
     #[schema(ignore)]
     pub additional_fields: AdditionalFields,
@@ -277,9 +250,7 @@ pub type PostToolUseEventRequest = EventRequest<PostToolUsePayload>;
 pub type PostToolUseFailureEventRequest = EventRequest<PostToolUseFailurePayload>;
 pub type SubagentStartEventRequest = EventRequest<SubagentStartPayload>;
 pub type SubagentStopEventRequest = EventRequest<SubagentStopPayload>;
-pub type InstructionsLoadedEventRequest = EventRequest<InstructionsLoadedPayload>;
 pub type ConfigChangeEventRequest = EventRequest<ConfigChangePayload>;
-pub type FileChangedEventRequest = EventRequest<FileChangedPayload>;
 pub type MessageDisplayEventRequest = EventRequest<MessageDisplayPayload>;
 pub type PostToolBatchEventRequest = EventRequest<PostToolBatchPayload>;
 pub type ToolDescriptionsEventRequest = EventRequest<ToolDescriptionsPayload>;
@@ -319,21 +290,21 @@ pub struct SessionCursor {
     pub cwd: Option<String>,
     #[serde(default)]
     pub prompt_id: Option<String>,
-    /// The highest session sequence committed.
+    /// The highest SubGraph number committed.
     #[serde(default)]
-    pub last_sequence: Option<u64>,
-    /// Where the main agent's sequences stood.
+    pub last_subgraph: Option<u64>,
+    /// Where the main agent's SubGraphs stood.
     #[serde(default)]
-    pub sequences: SequenceCursor,
+    pub subgraphs: SubGraphCursor,
     /// The intent the current turn stated (none once a later prompt started a new turn).
     #[serde(default)]
     pub intent: Option<String>,
 }
 
-/// The main agent's latest sequence as committed, so numbering resumes inside it.
+/// The main agent's latest SubGraph as committed, so numbering resumes inside it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
-pub struct SequenceCursor {
-    /// The main agent's latest sequence.
+pub struct SubGraphCursor {
+    /// The main agent's latest SubGraph.
     #[serde(default)]
     pub current: Option<u64>,
     /// It holds a Message or Call and no ToolBatch closed it.
@@ -343,10 +314,10 @@ pub struct SequenceCursor {
     pub has_message: bool,
     #[serde(default)]
     pub has_call: bool,
-    /// Sequence 0 holds the first user prompt.
+    /// SubGraph 0 holds the first user prompt.
     #[serde(default)]
     pub zero_has_request: bool,
-    /// Sequences of Calls still waiting for their batch, by tool_use_id.
+    /// SubGraphs of Calls still waiting for their batch, by tool_use_id.
     #[serde(default)]
     pub calls: BTreeMap<String, u64>,
 }

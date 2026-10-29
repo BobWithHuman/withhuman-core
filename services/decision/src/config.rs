@@ -94,7 +94,7 @@ impl DecisionConfig {
         let defaults = TraceSettings::default();
         let trace = TraceSettings {
             model: env::var("JEV_MODEL").unwrap_or(defaults.model),
-            window: parse_range("WITHHUMAN_PARENT_SEQ_WINDOW", defaults.window, 1, 64)?,
+            window: parse_range("WITHHUMAN_PARENT_SUBGRAPH_WINDOW", defaults.window, 1, 64)?,
             max_extra_candidates: parse_range(
                 "WITHHUMAN_TRACE_MAX_CANDIDATES",
                 defaults.max_extra_candidates,
@@ -114,6 +114,7 @@ impl DecisionConfig {
                 20_000,
             )?,
             max_hops: parse_range("WITHHUMAN_PARENT_MAX_HOPS", defaults.max_hops, 1, 1_000)?,
+            max_intents: parse_range("WITHHUMAN_TRACE_MAX_INTENTS", defaults.max_intents, 1, 200)?,
         };
         let mock_decision = match env::var("MOCK_DECISION")
             .unwrap_or_else(|_| "ALLOW".into())

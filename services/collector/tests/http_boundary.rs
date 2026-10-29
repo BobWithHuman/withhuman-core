@@ -12,7 +12,7 @@ use withhuman_collector::{
 };
 use withhuman_contracts::events::EventResponse;
 
-const HOOK_REQUESTS: [(&str, &str); 13] = [
+const HOOK_REQUESTS: [(&str, &str); 11] = [
     ("SessionStart", r#"{"session_id":"s","cwd":"/repo"}"#),
     ("UserPromptSubmit", r#"{"session_id":"s","prompt":"hello"}"#),
     (
@@ -30,16 +30,8 @@ const HOOK_REQUESTS: [(&str, &str); 13] = [
     ("SubagentStart", r#"{"session_id":"s","agent_id":"a1"}"#),
     ("SubagentStop", r#"{"session_id":"s","agent_id":"a1"}"#),
     (
-        "InstructionsLoaded",
-        r#"{"session_id":"s","file_path":"/repo/AGENTS.md"}"#,
-    ),
-    (
         "ConfigChange",
         r#"{"session_id":"s","file_path":"/repo/config.json"}"#,
-    ),
-    (
-        "FileChanged",
-        r#"{"session_id":"s","file_path":"/repo/src/lib.rs"}"#,
     ),
     (
         "MessageDisplay",
@@ -58,6 +50,21 @@ async fn exposes_every_versioned_hook_route() {
             .expect("router should respond");
 
         assert_eq!(response.status(), StatusCode::OK, "route {event}");
+    }
+}
+
+#[tokio::test]
+async fn no_longer_takes_instructions_or_file_change_hooks() {
+    for event in ["InstructionsLoaded", "FileChanged"] {
+        let response = test_app()
+            .oneshot(json_request(
+                &format!("/v1/hooks/{event}"),
+                r#"{"session_id":"s","file_path":"/repo/CLAUDE.md"}"#,
+            ))
+            .await
+            .expect("router should respond");
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "route {event}");
     }
 }
 

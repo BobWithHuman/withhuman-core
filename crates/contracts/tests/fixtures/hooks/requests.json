@@ -49,26 +49,11 @@
     "agent_id": "a1",
     "agent_type": "Explore"
   },
-  "instructions_loaded": {
-    "session_id": "8e789b84",
-    "hook_event_name": "InstructionsLoaded",
-    "file_path": "/app/CLAUDE.md",
-    "memory_type": "Project",
-    "load_reason": "session_start",
-    "trigger_file_path": "/app/.claude/settings.json",
-    "parent_file_path": null
-  },
   "config_change": {
     "session_id": "8e789b84",
     "hook_event_name": "ConfigChange",
     "file_path": "/app/.claude/settings.json",
     "source": "project_settings"
-  },
-  "file_changed": {
-    "session_id": "8e789b84",
-    "hook_event_name": "FileChanged",
-    "file_path": "/app/CLAUDE.md",
-    "event": "change"
   },
   "message_display": {
     "session_id": "8e789b84",

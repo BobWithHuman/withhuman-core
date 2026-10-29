@@ -31,45 +31,44 @@ pub struct SessionUpdate {
     /// Remembers paths a command saves downloaded content to, so later reads of them count as
     /// external content.
     pub record_downloads: Vec<String>,
-    /// How the event takes part in the session-wide sequences.
-    pub sequence_step: SequenceStep,
+    /// How the event takes part in the session-wide SubGraphs.
+    pub subgraph_step: SubGraphStep,
     /// Forgets the stated intent of the previous turn (a new prompt).
     pub clear_intent: bool,
 }
 
-/// How an event moves the session-wide sequence numbering (see
-/// [`SessionSnapshot::session_sequence`]). Numbers are shared by the whole session, but the main
-/// agent and each subagent keep their own open sequence, so a subagent's calls never join the
-/// main agent's sequence or the other way round.
+/// How an event moves the session-wide SubGraph numbering (see
+/// [`SessionSnapshot::subgraph`]). Numbers are shared by the whole session, but the main
+/// agent and each subagent keep their own open SubGraph, so a subagent's calls never join the
+/// main agent's SubGraph or the other way round.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum SequenceStep {
-    /// Stays in the main agent's current sequence (sequence 0 before any other): session start,
-    /// config and file changes, subagent lifecycle, tool descriptions, and Instructions — before
-    /// the first Message they belong to sequence 0, later to the sequence that is open.
+pub enum SubGraphStep {
+    /// Stays in the main agent's current SubGraph (SubGraph 0 before any other): session start,
+    /// config changes, subagent lifecycle and tool descriptions.
     #[default]
     Join,
-    /// SubagentStart: joins like [`SequenceStep::Join`] and makes the agent's later calls a
+    /// SubagentStart: joins like [`SubGraphStep::Join`] and makes the agent's later calls a
     /// subagent's. Calls of an agent_id that never started (the main agent's) stay in the main
-    /// agent's sequences.
+    /// agent's SubGraphs.
     SubagentStart(String),
-    /// A user prompt: sequence 0 for the first one, otherwise a sequence of its own. It ends the
-    /// turn's calls, messages and subagent sequences.
+    /// A user prompt: SubGraph 0 for the first one, otherwise a SubGraph of its own. It ends the
+    /// turn's calls, messages and subagent SubGraphs.
     Request,
-    /// A completed assistant message, by message_id: opens a sequence, or joins one a Call opened
-    /// before the message arrived. A repeated message_id gets the sequence it got the first time.
+    /// A completed assistant message, by message_id: opens a SubGraph, or joins one a Call opened
+    /// before the message arrived. A repeated message_id gets the SubGraph it got the first time.
     Message(String),
-    /// A tool call: joins its agent's open sequence or opens one; remembered for its result.
+    /// A tool call: joins its agent's open SubGraph or opens one; remembered for its result.
     Call {
         tool_use_id: String,
         agent_id: Option<String>,
     },
-    /// A tool result: the sequence of its Call.
+    /// A tool result: the SubGraph of its Call.
     Result {
         tool_use_id: String,
         agent_id: Option<String>,
     },
-    /// PostToolBatch: the sequence of its calls, which it closes if it is still its agent's open
-    /// sequence (a repeated or late batch closes nothing).
+    /// PostToolBatch: the SubGraph of its calls, which it closes if it is still its agent's open
+    /// SubGraph (a repeated or late batch closes nothing).
     Batch {
         agent_id: Option<String>,
         tool_use_ids: Vec<String>,
@@ -101,8 +100,8 @@ pub struct SessionSnapshot {
     pub message_incomplete: bool,
     /// Every path the session downloaded content to, sorted.
     pub downloads: Vec<String>,
-    /// The session-wide sequence the event belongs to.
-    pub session_sequence: u64,
+    /// The session-wide SubGraph the event belongs to.
+    pub subgraph: u64,
     /// The user intent stated in the current turn.
     pub intent: Option<String>,
 }
@@ -120,8 +119,8 @@ pub trait SessionStore: Send + Sync {
     ) -> Result<SessionSnapshot, StoreError>;
 
     /// Starts a session this store holds no state for from `cursor`: the next order is
-    /// `cursor.last_order + 1`, each agent continues after its sequence, sequences continue
-    /// after the last one in a new sequence, and the cwd, prompt id and intent are restored. A
+    /// `cursor.last_order + 1`, each agent continues after its sequence, SubGraphs continue
+    /// inside the main agent's latest one, and the cwd, prompt id and intent are restored. A
     /// session that is already seeded, possibly by another replica, keeps its state.
     async fn seed(&self, session_id: &str, cursor: &SessionCursor) -> Result<(), StoreError>;
 
@@ -205,7 +204,7 @@ impl SessionStore for InMemorySessionStore {
         if state.intent.is_none() {
             state.intent = stated_intent;
         }
-        let session_sequence = state.sequences.step(&update.sequence_step);
+        let subgraph = state.subgraphs.step(&update.subgraph_step);
         let order = state.last_order.unwrap_or_default() + 1;
         state.last_order = Some(order);
         Ok(SessionSnapshot {
@@ -218,7 +217,7 @@ impl SessionStore for InMemorySessionStore {
             message_incomplete: message.as_ref().is_some_and(|(_, incomplete)| *incomplete),
             message: message.map(|(text, _)| text),
             downloads: state.downloads.iter().cloned().collect(),
-            session_sequence,
+            subgraph,
             intent: state.intent.clone(),
         })
     }
@@ -234,7 +233,7 @@ impl SessionStore for InMemorySessionStore {
             if state.intent.is_none() {
                 state.intent.clone_from(&cursor.intent);
             }
-            state.sequences = Sequences::resume(cursor);
+            state.subgraphs = SubGraphs::resume(cursor);
             for (agent_id, sequence) in &cursor.agent_sequences {
                 state
                     .agent_sequences
@@ -283,30 +282,30 @@ struct SessionState {
     agent_sequences: HashMap<String, u64>,
     side_pending: SidePending,
     downloads: BTreeSet<String>,
-    sequences: Sequences,
+    subgraphs: SubGraphs,
     intent: Option<String>,
 }
 
-/// Session-wide sequence numbering for the in-memory store; the Redis script mirrors it.
+/// Session-wide SubGraph numbering for the in-memory store; the Redis script mirrors it.
 #[derive(Debug, Default)]
-struct Sequences {
-    /// The latest sequence number handed out.
+struct SubGraphs {
+    /// The latest SubGraph number handed out.
     last: Option<u64>,
-    /// Sequence 0 is still collecting the first Request and Instructions.
+    /// SubGraph 0 is still collecting the first Request.
     zero: bool,
     zero_has_request: bool,
     main: Lane,
-    /// Subagents' sequences, by agent_id.
+    /// Subagents' SubGraphs, by agent_id.
     agents: HashMap<String, Lane>,
-    /// Sequences of the turn's calls, by tool_use_id, until their batch.
+    /// SubGraphs of the turn's calls, by tool_use_id, until their batch.
     calls: HashMap<String, u64>,
-    /// Sequences of the turn's messages, by message_id.
+    /// SubGraphs of the turn's messages, by message_id.
     messages: HashMap<String, u64>,
     /// Agents a SubagentStart announced.
     subagents: BTreeSet<String>,
 }
 
-/// One agent's latest sequence.
+/// One agent's latest SubGraph.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct Lane {
     current: Option<u64>,
@@ -316,12 +315,12 @@ struct Lane {
     has_call: bool,
 }
 
-impl Sequences {
-    /// Continues the committed numbering inside the main agent's latest sequence. A session
-    /// with history but no numbered sequence (committed before sequences existed) starts after
-    /// sequence 0, which belongs to a session's first prompt.
+impl SubGraphs {
+    /// Continues the committed numbering inside the main agent's latest SubGraph. A session
+    /// with history but no numbered SubGraph (committed before SubGraphs existed) starts after
+    /// SubGraph 0, which belongs to a session's first prompt.
     fn resume(cursor: &SessionCursor) -> Self {
-        let (last, sequences) = (cursor.last_sequence, &cursor.sequences);
+        let (last, subgraphs) = (cursor.last_subgraph, &cursor.subgraphs);
         if last.is_none() && cursor.last_order > 0 {
             return Self {
                 last: Some(0),
@@ -333,7 +332,7 @@ impl Sequences {
                 ..Default::default()
             };
         }
-        let cursor = sequences;
+        let cursor = subgraphs;
         Self {
             last,
             zero: last == Some(0),
@@ -349,14 +348,14 @@ impl Sequences {
         }
     }
 
-    fn step(&mut self, step: &SequenceStep) -> u64 {
+    fn step(&mut self, step: &SubGraphStep) -> u64 {
         match step {
-            SequenceStep::Join => self.current(),
-            SequenceStep::SubagentStart(agent_id) => {
+            SubGraphStep::Join => self.current(),
+            SubGraphStep::SubagentStart(agent_id) => {
                 self.subagents.insert(agent_id.clone());
                 self.current()
             }
-            SequenceStep::Request => match self.last {
+            SubGraphStep::Request => match self.last {
                 None => {
                     self.start_zero();
                     self.zero_has_request = true;
@@ -378,7 +377,7 @@ impl Sequences {
                     number
                 }
             },
-            SequenceStep::Message(message_id) => {
+            SubGraphStep::Message(message_id) => {
                 if let Some(number) = self.messages.get(message_id) {
                     return *number;
                 }
@@ -391,7 +390,7 @@ impl Sequences {
                 self.messages.insert(message_id.clone(), number);
                 number
             }
-            SequenceStep::Call {
+            SubGraphStep::Call {
                 tool_use_id,
                 agent_id,
             } => {
@@ -404,14 +403,14 @@ impl Sequences {
                 self.calls.insert(tool_use_id.clone(), number);
                 number
             }
-            SequenceStep::Result {
+            SubGraphStep::Result {
                 tool_use_id,
                 agent_id,
             } => match self.calls.get(tool_use_id) {
                 Some(number) => *number,
                 None => self.lane_current(agent_id),
             },
-            SequenceStep::Batch {
+            SubGraphStep::Batch {
                 agent_id,
                 tool_use_ids,
             } => {
@@ -427,7 +426,7 @@ impl Sequences {
                     Some(number) => (number, current == number),
                     // A batch naming only calls already batched is a repeat or arrived late.
                     None if !tool_use_ids.is_empty() => (current, false),
-                    // A batch that names no calls closes a sequence that has calls.
+                    // A batch that names no calls closes a SubGraph that has calls.
                     None => (current, lane.has_call),
                 };
                 if lane.open && closes {
@@ -447,7 +446,7 @@ impl Sequences {
         }
     }
 
-    /// The agent's latest sequence, or the main agent's before the agent has one.
+    /// The agent's latest SubGraph, or the main agent's before the agent has one.
     fn lane_current(&mut self, agent_id: &Option<String>) -> u64 {
         match self.lane(agent_id).current {
             Some(number) => number,
@@ -455,7 +454,7 @@ impl Sequences {
         }
     }
 
-    /// Opens a new sequence for the agent.
+    /// Opens a new SubGraph for the agent.
     fn open(&mut self, agent_id: &Option<String>, has_message: bool) -> u64 {
         let number = self.next();
         *self.lane(agent_id) = Lane {
@@ -476,7 +475,7 @@ impl Sequences {
         };
     }
 
-    /// The main agent's current sequence.
+    /// The main agent's current SubGraph.
     fn current(&mut self) -> u64 {
         match self.main.current.or(self.last) {
             Some(number) => number,
@@ -487,7 +486,7 @@ impl Sequences {
         }
     }
 
-    /// A new number after the latest one; it ends sequence 0's collection.
+    /// A new number after the latest one; it ends SubGraph 0's collection.
     fn next(&mut self) -> u64 {
         let number = self.last.map_or(0, |last| last + 1);
         self.last = Some(number);
@@ -514,7 +513,7 @@ impl SessionState {
 ///
 /// KEYS: session hash, tool input to store, tool input to take, message buffer, download set.
 /// ARGV: ttl, then presence flag and value for cwd, prompt_id, stored tool input, taken tool
-/// input (flag only), agent id, the final fragment (flag, index flag, index, delta), the sequence
+/// input (flag only), agent id, the final fragment (flag, index flag, index, delta), the SubGraph
 /// step (name, tool_use_id, message_id or newline-separated batch ids, and the lane's agent id),
 /// the intent (clear flag, set flag, value), and the downloaded paths to record. Flags keep `Some("")` distinct from `None`. An unseeded session
 /// returns order 0 and writes nothing.
@@ -556,34 +555,34 @@ if ARGV[11] == '1' then
   message = table.concat(parts)
   redis.call('DEL', KEYS[4])
 end
--- Session-wide sequences, mirroring `Sequences` of the in-memory store. The main agent's
--- sequence lives in `seq_cur/open/msg/call`, a subagent's in `seqa:<agent_id>:cur/open/msg/call`;
+-- Session-wide SubGraphs, mirroring `SubGraphs` of the in-memory store. The main agent's
+-- SubGraph lives in `sg_cur/open/msg/call`, a subagent's in `sga:<agent_id>:cur/open/msg/call`;
 -- `subagent:<agent_id>` marks the agents a SubagentStart announced.
 local function hget(field) return redis.call('HGET', session, field) end
 local function set(field, value) redis.call('HSET', session, field, value) end
 local function start_zero()
-  set('seq_last', 0); set('seq_zero', '1'); set('seq_cur', 0)
-  set('seq_open', '0'); set('seq_msg', '0'); set('seq_call', '0')
+  set('sg_last', 0); set('sg_zero', '1'); set('sg_cur', 0)
+  set('sg_open', '0'); set('sg_msg', '0'); set('sg_call', '0')
 end
 local function current()
-  local cur = hget('seq_cur') or hget('seq_last')
+  local cur = hget('sg_cur') or hget('sg_last')
   if not cur then start_zero(); return 0 end
   return tonumber(cur)
 end
 local function next_number()
-  local last = hget('seq_last')
+  local last = hget('sg_last')
   local number = 0
   if last then number = tonumber(last) + 1 end
-  set('seq_last', number); set('seq_zero', '0')
+  set('sg_last', number); set('sg_zero', '0')
   return number
 end
--- Seeded before sequences were numbered: continue after sequence 0, like a resumed session.
-if not hget('seq_last') and tonumber(redis.call('HGET', session, 'next_order')) > 0 then
-  set('seq_last', 0); set('seq_zero', '0'); set('seq_zero_req', '1'); set('seq_cur', 0)
+-- Seeded before SubGraphs were numbered: continue after SubGraph 0, like a resumed session.
+if not hget('sg_last') and tonumber(redis.call('HGET', session, 'next_order')) > 0 then
+  set('sg_last', 0); set('sg_zero', '0'); set('sg_zero_req', '1'); set('sg_cur', 0)
 end
 local step, step_id, agent = ARGV[15], ARGV[16], ARGV[17]
-local lane = 'seq_'
-if agent ~= '' and hget('subagent:' .. agent) then lane = 'seqa:' .. agent .. ':' end
+local lane = 'sg_'
+if agent ~= '' and hget('subagent:' .. agent) then lane = 'sga:' .. agent .. ':' end
 local function lane_current()
   local cur = hget(lane .. 'cur')
   if cur then return tonumber(cur) end
@@ -595,67 +594,67 @@ local function open(has_message)
   set(lane .. 'msg', has_message); set(lane .. 'call', '0')
   return number
 end
-local session_sequence
+local subgraph
 if step == 'request' then
-  local last = hget('seq_last')
+  local last = hget('sg_last')
   if not last then
-    start_zero(); set('seq_zero_req', '1'); session_sequence = 0
-  elseif last == '0' and hget('seq_zero') == '1' and hget('seq_zero_req') ~= '1' then
-    set('seq_zero_req', '1'); session_sequence = 0
+    start_zero(); set('sg_zero_req', '1'); subgraph = 0
+  elseif last == '0' and hget('sg_zero') == '1' and hget('sg_zero_req') ~= '1' then
+    set('sg_zero_req', '1'); subgraph = 0
   else
-    session_sequence = next_number()
-    set('seq_cur', session_sequence); set('seq_open', '0'); set('seq_msg', '0'); set('seq_call', '0')
+    subgraph = next_number()
+    set('sg_cur', subgraph); set('sg_open', '0'); set('sg_msg', '0'); set('sg_call', '0')
     for _, field in ipairs(redis.call('HKEYS', session)) do
-      if string.sub(field, 1, 8) == 'seqcall:' or string.sub(field, 1, 7) == 'seqmsg:'
-          or string.sub(field, 1, 5) == 'seqa:' then
+      if string.sub(field, 1, 7) == 'sgcall:' or string.sub(field, 1, 6) == 'sgmsg:'
+          or string.sub(field, 1, 4) == 'sga:' then
         redis.call('HDEL', session, field)
       end
     end
   end
 elseif step == 'message' then
-  local seen = hget('seqmsg:' .. step_id)
+  local seen = hget('sgmsg:' .. step_id)
   if seen then
-    session_sequence = tonumber(seen)
+    subgraph = tonumber(seen)
   else
-    if hget('seq_open') == '1' and hget('seq_msg') ~= '1' then
-      set('seq_msg', '1'); session_sequence = current()
+    if hget('sg_open') == '1' and hget('sg_msg') ~= '1' then
+      set('sg_msg', '1'); subgraph = current()
     else
-      session_sequence = open('1')
+      subgraph = open('1')
     end
-    set('seqmsg:' .. step_id, session_sequence)
+    set('sgmsg:' .. step_id, subgraph)
   end
 elseif step == 'call' then
   if hget(lane .. 'open') == '1' then
-    session_sequence = lane_current()
+    subgraph = lane_current()
   else
-    session_sequence = open('0')
+    subgraph = open('0')
   end
   set(lane .. 'call', '1')
-  set('seqcall:' .. step_id, session_sequence)
+  set('sgcall:' .. step_id, subgraph)
 elseif step == 'result' then
-  local mapped = hget('seqcall:' .. step_id)
-  if mapped then session_sequence = tonumber(mapped) else session_sequence = lane_current() end
+  local mapped = hget('sgcall:' .. step_id)
+  if mapped then subgraph = tonumber(mapped) else subgraph = lane_current() end
 elseif step == 'subagent' then
-  set('subagent:' .. step_id, '1'); session_sequence = current()
+  set('subagent:' .. step_id, '1'); subgraph = current()
 elseif step == 'batch' then
   local mapped = false
   for id in string.gmatch(step_id, '[^\n]+') do
-    local value = hget('seqcall:' .. id)
+    local value = hget('sgcall:' .. id)
     if value and not mapped then mapped = tonumber(value) end
-    redis.call('HDEL', session, 'seqcall:' .. id)
+    redis.call('HDEL', session, 'sgcall:' .. id)
   end
   local closes
   if mapped then
-    session_sequence = mapped
+    subgraph = mapped
     closes = lane_current() == mapped
   else
     -- Naming only calls already batched: a repeat or late batch closes nothing.
-    session_sequence = lane_current()
+    subgraph = lane_current()
     closes = step_id == '' and hget(lane .. 'call') == '1'
   end
   if hget(lane .. 'open') == '1' and closes then set(lane .. 'open', '0') end
 else
-  session_sequence = current()
+  subgraph = current()
 end
 if ARGV[18] == '1' then redis.call('HDEL', session, 'intent') end
 -- The first intent the turn states is kept.
@@ -667,36 +666,36 @@ local order = redis.call('HINCRBY', session, 'next_order', 1)
 redis.call('EXPIRE', session, ttl)
 local fields = redis.call('HMGET', session, 'cwd', 'prompt_id', 'side_pending', 'intent')
 return {order, fields[1], fields[2], fields[3], sequence, tool_input, message, incomplete, downloads,
-  session_sequence, fields[4]}
+  subgraph, fields[4]}
 ";
 
 /// KEYS: session hash. ARGV: ttl, last order, presence flag and value for cwd, prompt_id, the
-/// last sequence and the intent; the main agent's sequence (presence flag and number, open,
-/// has message, has call, sequence 0 has its request); the count of pending calls and their
-/// tool_use_id and sequence pairs; then agent id and sequence pairs. Only the first replica to
+/// last SubGraph and the intent; the main agent's SubGraph (presence flag and number, open,
+/// has message, has call, SubGraph 0 has its request); the count of pending calls and their
+/// tool_use_id and SubGraph pairs; then agent id and sequence pairs. Only the first replica to
 /// seed a session sets its state.
 const SEED_SESSION: &str = r"
 if redis.call('HSETNX', KEYS[1], 'next_order', ARGV[2]) == 1 then
   if ARGV[3] == '1' then redis.call('HSETNX', KEYS[1], 'cwd', ARGV[4]) end
   if ARGV[5] == '1' then redis.call('HSETNX', KEYS[1], 'prompt_id', ARGV[6]) end
   if ARGV[7] == '1' then
-    redis.call('HSETNX', KEYS[1], 'seq_last', ARGV[8])
-    if ARGV[8] == '0' then redis.call('HSETNX', KEYS[1], 'seq_zero', '1') end
+    redis.call('HSETNX', KEYS[1], 'sg_last', ARGV[8])
+    if ARGV[8] == '0' then redis.call('HSETNX', KEYS[1], 'sg_zero', '1') end
   elseif tonumber(ARGV[2]) > 0 then
-    -- History without numbered sequences: continue after sequence 0.
-    redis.call('HSETNX', KEYS[1], 'seq_last', 0)
-    redis.call('HSETNX', KEYS[1], 'seq_cur', 0)
-    redis.call('HSETNX', KEYS[1], 'seq_zero_req', '1')
+    -- History without numbered SubGraphs: continue after SubGraph 0.
+    redis.call('HSETNX', KEYS[1], 'sg_last', 0)
+    redis.call('HSETNX', KEYS[1], 'sg_cur', 0)
+    redis.call('HSETNX', KEYS[1], 'sg_zero_req', '1')
   end
   if ARGV[9] == '1' then redis.call('HSETNX', KEYS[1], 'intent', ARGV[10]) end
-  if ARGV[11] == '1' then redis.call('HSETNX', KEYS[1], 'seq_cur', ARGV[12]) end
-  redis.call('HSETNX', KEYS[1], 'seq_open', ARGV[13])
-  redis.call('HSETNX', KEYS[1], 'seq_msg', ARGV[14])
-  redis.call('HSETNX', KEYS[1], 'seq_call', ARGV[15])
-  redis.call('HSETNX', KEYS[1], 'seq_zero_req', ARGV[16])
+  if ARGV[11] == '1' then redis.call('HSETNX', KEYS[1], 'sg_cur', ARGV[12]) end
+  redis.call('HSETNX', KEYS[1], 'sg_open', ARGV[13])
+  redis.call('HSETNX', KEYS[1], 'sg_msg', ARGV[14])
+  redis.call('HSETNX', KEYS[1], 'sg_call', ARGV[15])
+  redis.call('HSETNX', KEYS[1], 'sg_zero_req', ARGV[16])
   local calls = tonumber(ARGV[17])
   for i = 18, 17 + calls * 2, 2 do
-    redis.call('HSETNX', KEYS[1], 'seqcall:' .. ARGV[i], ARGV[i + 1])
+    redis.call('HSETNX', KEYS[1], 'sgcall:' .. ARGV[i], ARGV[i + 1])
   end
   for i = 18 + calls * 2, #ARGV, 2 do
     redis.call('HSETNX', KEYS[1], 'agent:' .. ARGV[i], ARGV[i + 1])
@@ -777,25 +776,25 @@ type ApplyEventReply = (
     Option<String>,
 );
 
-/// The step name, its id and the lane's agent id the script reads for a [`SequenceStep`].
-fn sequence_arguments(step: &SequenceStep) -> (&'static str, String, &str) {
+/// The step name, its id and the lane's agent id the script reads for a [`SubGraphStep`].
+fn subgraph_arguments(step: &SubGraphStep) -> (&'static str, String, &str) {
     fn lane(agent_id: &Option<String>) -> &str {
         agent_id.as_deref().unwrap_or_default()
     }
     match step {
-        SequenceStep::Join => ("join", String::new(), ""),
-        SequenceStep::SubagentStart(agent_id) => ("subagent", agent_id.clone(), ""),
-        SequenceStep::Request => ("request", String::new(), ""),
-        SequenceStep::Message(message_id) => ("message", message_id.clone(), ""),
-        SequenceStep::Call {
+        SubGraphStep::Join => ("join", String::new(), ""),
+        SubGraphStep::SubagentStart(agent_id) => ("subagent", agent_id.clone(), ""),
+        SubGraphStep::Request => ("request", String::new(), ""),
+        SubGraphStep::Message(message_id) => ("message", message_id.clone(), ""),
+        SubGraphStep::Call {
             tool_use_id,
             agent_id,
         } => ("call", tool_use_id.clone(), lane(agent_id)),
-        SequenceStep::Result {
+        SubGraphStep::Result {
             tool_use_id,
             agent_id,
         } => ("result", tool_use_id.clone(), lane(agent_id)),
-        SequenceStep::Batch {
+        SubGraphStep::Batch {
             agent_id,
             tool_use_ids,
         } => ("batch", tool_use_ids.join("\n"), lane(agent_id)),
@@ -842,7 +841,7 @@ impl SessionStore for RedisSessionStore {
             .arg(flag(&fragment.index))
             .arg(fragment.index.unwrap_or_default())
             .arg(&fragment.delta);
-        let (step, step_id, lane) = sequence_arguments(&update.sequence_step);
+        let (step, step_id, lane) = subgraph_arguments(&update.subgraph_step);
         invocation
             .arg(step)
             .arg(step_id)
@@ -863,7 +862,7 @@ impl SessionStore for RedisSessionStore {
             message,
             incomplete,
             mut downloads,
-            session_sequence,
+            subgraph,
             intent,
         ): ApplyEventReply = invocation
             .invoke_async(&mut self.connection.clone())
@@ -888,7 +887,7 @@ impl SessionStore for RedisSessionStore {
             message,
             message_incomplete: incomplete == 1,
             downloads,
-            session_sequence,
+            subgraph,
             intent,
         })
     }
@@ -902,22 +901,22 @@ impl SessionStore for RedisSessionStore {
             .arg(cursor.cwd.as_deref().unwrap_or_default())
             .arg(flag(&cursor.prompt_id))
             .arg(cursor.prompt_id.as_deref().unwrap_or_default())
-            .arg(flag(&cursor.last_sequence))
-            .arg(cursor.last_sequence.unwrap_or_default())
+            .arg(flag(&cursor.last_subgraph))
+            .arg(cursor.last_subgraph.unwrap_or_default())
             .arg(flag(&cursor.intent))
             .arg(cursor.intent.as_deref().unwrap_or_default());
-        let sequences = &cursor.sequences;
+        let subgraphs = &cursor.subgraphs;
         let bit = |value: bool| if value { "1" } else { "0" };
         invocation
-            .arg(flag(&sequences.current))
-            .arg(sequences.current.unwrap_or_default())
-            .arg(bit(sequences.open))
-            .arg(bit(sequences.has_message))
-            .arg(bit(sequences.has_call))
-            .arg(bit(sequences.zero_has_request))
-            .arg(sequences.calls.len());
-        for (tool_use_id, sequence) in &sequences.calls {
-            invocation.arg(tool_use_id).arg(sequence);
+            .arg(flag(&subgraphs.current))
+            .arg(subgraphs.current.unwrap_or_default())
+            .arg(bit(subgraphs.open))
+            .arg(bit(subgraphs.has_message))
+            .arg(bit(subgraphs.has_call))
+            .arg(bit(subgraphs.zero_has_request))
+            .arg(subgraphs.calls.len());
+        for (tool_use_id, subgraph) in &subgraphs.calls {
+            invocation.arg(tool_use_id).arg(subgraph);
         }
         for (agent_id, sequence) in &cursor.agent_sequences {
             invocation.arg(agent_id).arg(sequence);

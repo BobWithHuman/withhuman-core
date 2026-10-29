@@ -1,5 +1,5 @@
 [
-  ["InstructionsLoaded", {"file_path": "/repo/CLAUDE.md", "load_reason": "session_start"}],
+  ["ConfigChange", {"file_path": "/repo/.claude/settings.json", "source": "project_settings"}],
   ["UserPromptSubmit", {"prompt": "fix the login bug"}],
   ["MessageDisplay", {"message_id": "m1", "index": 0, "delta": "[의도] 로그인 버그 수정 (확신도: 높음)\n", "final": false}],
   ["MessageDisplay", {"message_id": "m1", "index": 1, "delta": "Reading the code.", "final": true}],
@@ -17,7 +17,7 @@
   ["PostToolBatch", {}],
   ["UserPromptSubmit", {"prompt": "now deploy it"}],
   ["PreToolUse", {"tool_name": "Bash", "tool_input": {"command": "make deploy"}, "tool_use_id": "t5"}],
-  ["InstructionsLoaded", {"file_path": "/repo/deploy/CLAUDE.md", "load_reason": "nested_traversal"}],
+  ["ConfigChange", {"file_path": "/repo/.claude/settings.local.json", "source": "local_settings"}],
   ["SubagentStart", {"agent_id": "sub-1", "agent_type": "explore"}],
   ["MessageDisplay", {"message_id": "m3", "index": 0, "delta": "[의도] 배포 (확신도: 중간)\nDeploying.", "final": true}],
   ["PreToolUse", {"tool_name": "Grep", "tool_input": {"pattern": "deploy"}, "tool_use_id": "t6", "agent_id": "sub-1"}],
