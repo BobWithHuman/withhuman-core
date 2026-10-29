@@ -12,8 +12,8 @@ use serde_json::{Value, json};
 use withhuman_contracts::decisions::{DecisionRequest, EnforcementMode};
 use withhuman_decision::{
     DecisionConfig, DecisionRepository, DecisionService, JevDecisionProvider,
-    Neo4jDecisionRepository, RuntimeEnvironment, app as decision_app, jev::HttpJevClient,
-    trace::TraceSettings,
+    Neo4jDecisionRepository, RuntimeEnvironment, TraceRecord, TracedParent, app as decision_app,
+    jev::HttpJevClient, trace::TraceSettings,
 };
 use withhuman_generator::{
     GeneratorConfig, GeneratorService, HttpDecisionClient, Neo4jRepository, app as generator_app,
@@ -337,8 +337,10 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
         .json(&json!({
             "statement": "MATCH (call:Call {session_id:$s, order:7}) \
                 OPTIONAL MATCH (:SubGraph {session_id:$s, number:2})-[parent:PARENT]->(target:SubGraph) \
-                OPTIONAL MATCH (cause)-[next:NEXT {kind:'cause'}]->(call) \
-                RETURN call.parent, target.number, cause.order, labels(cause)[0], next.rank, call.intent_score",
+                OPTIONAL MATCH (call)-[next:NEXT {kind:'cause'}]->(cause) \
+                OPTIONAL MATCH (cause)-[:RESULT_OF]->(origin:Call) \
+                RETURN call.parent, target.number, cause.order, labels(cause)[0], next.rank, \
+                       call.intent_score, origin.order",
             "parameters": {"s": session_id}
         }))
         .send()
@@ -349,7 +351,7 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
         .unwrap();
     assert_eq!(
         rows["data"]["values"],
-        json!([["s1", 1, 4, "Segment", 1, 0.05]]),
+        json!([["s1", 1, 4, "Segment", 1, 0.05, 3]]),
         "{rows}"
     );
 
@@ -359,8 +361,10 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
     let again: Value = cypher(
         "MATCH (call:Call {session_id:$s, order:7}) \
          OPTIONAL MATCH (:SubGraph {session_id:$s, number:2})-[parent:PARENT]->(target:SubGraph) \
-         OPTIONAL MATCH (cause)-[next:NEXT {kind:'cause'}]->(call) \
-         RETURN call.parent, target.number, cause.order, labels(cause)[0], next.rank, call.intent_score",
+         OPTIONAL MATCH (call)-[next:NEXT {kind:'cause'}]->(cause) \
+         OPTIONAL MATCH (cause)-[:RESULT_OF]->(origin:Call) \
+         RETURN call.parent, target.number, cause.order, labels(cause)[0], next.rank, \
+                call.intent_score, origin.order",
         json!({"s": session_id}),
     )
     .await;
@@ -521,4 +525,114 @@ async fn keeps_only_the_latest_mention_of_a_value() {
     assert_eq!(graph.shared_tokens, BTreeSet::from([2]));
     assert_eq!(graph.turns.len(), 1);
     assert_eq!(graph.turns[0].intent, None);
+}
+
+/// A Call traced to a prompt's SubGraph, which holds no tool result, points its cause at the
+/// prompt's Request, so the chain of causes ends at what the user asked.
+#[tokio::test]
+async fn ends_the_cause_chain_at_the_prompt() {
+    let Some((neo4j_url, neo4j_user, neo4j_password)) = neo4j() else {
+        eprintln!("skipping Neo4j integration test; NEO4J_INTEGRATION_URL is unset");
+        return;
+    };
+    let session_id = format!(
+        "trace-prompt-it-{}-{}",
+        process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let history = spawn(generator_app(GeneratorService::new(
+        Neo4jRepository::connect(&GeneratorConfig {
+            bind_address: "127.0.0.1:0".parse().unwrap(),
+            neo4j_url: neo4j_url.clone(),
+            neo4j_user: neo4j_user.clone(),
+            neo4j_password: neo4j_password.clone(),
+            neo4j_database: "neo4j".into(),
+            decision_url: "http://127.0.0.1:9".into(),
+        })
+        .await
+        .unwrap(),
+    )))
+    .await;
+    let client = reqwest::Client::new();
+    let event = |order: u64, subgraph: u64, meta: Value, payload: Value| {
+        json!({
+            "session_id": session_id, "order": order, "observed_at": order,
+            "subgraph": subgraph, "meta": meta, "payload": payload
+        })
+    };
+    send(
+        &client,
+        &history,
+        "UserPromptSubmit",
+        event(
+            1,
+            0,
+            json!({}),
+            json!({"prompt": "list files", "kind": "user"}),
+        ),
+    )
+    .await;
+    let mut call = event(
+        2,
+        1,
+        json!({"tool_use_id": "t1"}),
+        json!({"tool_name": "Bash", "tool_input": {"command": "ls"}}),
+    );
+    call["mode"] = json!("record");
+    let call = send(&client, &history, "PreToolUse", call).await;
+
+    let repository = Neo4jDecisionRepository::connect(&DecisionConfig {
+        bind_address: "127.0.0.1:0".parse().unwrap(),
+        environment: RuntimeEnvironment::Test,
+        provider: "jev".into(),
+        mock_decision: withhuman_contracts::decisions::Decision::Allow,
+        mock_reason: None,
+        mock_delay: Duration::ZERO,
+        neo4j_url,
+        neo4j_user,
+        neo4j_password,
+        neo4j_database: "neo4j".into(),
+        jev: None,
+        intent_block_threshold: 0.5,
+        trace: TraceSettings::default(),
+    })
+    .await
+    .unwrap();
+    repository
+        .persist_trace(
+            &DecisionRequest {
+                session_id: session_id.clone(),
+                call_seq: call["nodes"][0]["seq"].as_u64().unwrap(),
+                graph_version: call["version"].as_u64().unwrap(),
+                mode: EnforcementMode::Enforce,
+                deadline_ms: None,
+                intent: None,
+            },
+            &TraceRecord {
+                subgraph: 1,
+                parent: "s0".into(),
+                parents: vec![TracedParent {
+                    key: "s0".into(),
+                    number: Some(0),
+                    probability: 0.9,
+                }],
+                candidates: vec!["s0".into()],
+                segments: vec![],
+                intent_score: Some(0.9),
+                trace: json!({}),
+            },
+        )
+        .await
+        .unwrap();
+
+    let cause = cypher(
+        "MATCH (call:Call {session_id:$s})-[next:NEXT {kind:'cause'}]->(cause) \
+         RETURN labels(cause)[0], cause.order, next.probability, next.parent",
+        json!({"s": session_id}),
+    )
+    .await;
+    assert_eq!(cause, json!([["Request", 1, 0.9, "s0"]]));
 }

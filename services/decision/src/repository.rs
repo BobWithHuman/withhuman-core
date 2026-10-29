@@ -96,14 +96,16 @@ WHERE node.order < $call_order \
 RETURN number, node.seq, node.order, labels(node)[0], node.payload_json, \
   COLLECT { MATCH (node)-[:CONTAINS_PARAGRAPH]->(paragraph:Paragraph {hidden: true}) \
             RETURN paragraph.text ORDER BY paragraph.index } AS hidden, \
-  EXISTS { MATCH (node)-[:NEXT {kind: 'cause'}]->(effect) \
+  EXISTS { MATCH (effect)-[:NEXT {kind: 'cause'}]->(node) \
            WHERE effect.order < $call_order } AS caused \
 ORDER BY number, node.order";
 
 // Takes the Session lock first like Generator commits, so the two never deadlock. The Call's
-// SubGraph gets a PARENT edge to every SubGraph the Call was traced to, and the activated tool
-// results of each get NEXT edges to the Call (marked `kind: 'cause'`, apart from the order
-// chain). A repeated decision of the same Call replaces its edges, and the SubGraph keeps the
+// SubGraph gets a PARENT edge to every SubGraph the Call was traced to. The Call gets a NEXT
+// edge (marked `kind: 'cause'`, apart from the order chain) to each activated tool result of
+// them, and to the Request of a parent that is a prompt's SubGraph. Pointing from the Call up
+// to its causes, and each result up to its Call (`RESULT_OF`), they lead from a Call back to the
+// prompt. A repeated decision of the same Call replaces its edges, and the SubGraph keeps the
 // parents of its latest Call.
 const PERSIST_TRACE: &str = "\
 MATCH (session:Session {session_id: $session_id}) \
@@ -114,7 +116,7 @@ SET call.parent = $parent, call.parents = $parent_keys, call.trace_json = $trace
     call.intent_score = $intent_score \
 WITH call \
 CALL (call) { \
-  OPTIONAL MATCH ()-[old:NEXT {kind: 'cause', call_seq: $call_seq}]->(call) \
+  OPTIONAL MATCH (call)-[old:NEXT {kind: 'cause', call_seq: $call_seq}]->() \
   DELETE old \
 } \
 CALL (call) { \
@@ -138,9 +140,17 @@ CALL (call, current) { \
 } \
 WITH call \
 CALL (call) { \
+  UNWIND $parents AS chosen \
+  MATCH (:SubGraph {session_id: $session_id, number: chosen.number})-[:MEMBER]->(request:Request) \
+  MERGE (call)-[edge:NEXT {kind: 'cause', call_seq: $call_seq}]->(request) \
+  SET edge.probability = chosen.probability, edge.rank = chosen.rank, \
+      edge.parent = 's' + toString(chosen.number) \
+  RETURN count(edge) AS prompted \
+} \
+CALL (call) { \
   UNWIND $segments AS segment \
   MATCH (source:Segment|Error {session_id: $session_id, seq: segment.seq}) \
-  MERGE (source)-[edge:NEXT {kind: 'cause', call_seq: $call_seq}]->(call) \
+  MERGE (call)-[edge:NEXT {kind: 'cause', call_seq: $call_seq}]->(source) \
   SET edge.probability = segment.probability, edge.rank = segment.rank, \
       edge.parent = segment.parent \
   RETURN count(edge) AS linked \
