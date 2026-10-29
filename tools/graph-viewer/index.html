@@ -246,9 +246,9 @@ function flowElements() {
 }
 
 // The cause tree: each SubGraph area under the SubGraph its Calls were traced to (its
-// `parent`), prompts on top. A SubGraph that was not traced, such as a closing message, hangs
-// under the SubGraph the events came from, joined by that order edge. Cause edges run from each
-// Call up to its cause in the parent area.
+// `parent`), the session's first prompt on top. A SubGraph that was not traced, such as a
+// closing message or a later prompt, hangs under the SubGraph the events came from, joined by
+// that order edge. Cause edges run from each Call up to its cause in the parent area.
 function treeElements() {
   const GAP_X = 60, GAP_Y = 110;
   const areas = areasOf();
@@ -260,7 +260,6 @@ function treeElements() {
     const key = model.subgraphParent.get(number);
     const parent = /^s\d+$/.test(key || '') ? Number(key.slice(1)) : null;
     if (parent !== null && parent < number && areas.has(parent)) { parentOf.set(number, parent); continue; }
-    if (areas.get(number).items.some(item => item.node.kind === 'Request')) continue;
     const before = model.flows.map(f => areaOf(f.from))
       .filter((from, i) => areaOf(model.flows[i].to) === number && from < number && areas.has(from));
     if (before.length) { parentOf.set(number, Math.max(...before)); byOrder.add(number); }
