@@ -401,11 +401,11 @@ async fn links_a_subgraph_as_its_message_calls_and_results() {
     delete_session(&query, &session_id).await;
 }
 
-/// A Call of a SubGraph without a Message hangs off the latest Message or Intent before its
-/// SubGraph rather than the previous Call's result, and an Intent that arrives after the first
-/// Call still follows its Request and leads that Call.
+/// In a SubGraph without a Message each Call hangs off the last node of the SubGraph before it
+/// rather than the previous Call's result, and an Intent that arrives after the first Call still
+/// follows its Request and ends its SubGraph.
 #[tokio::test]
-async fn hangs_calls_without_a_message_off_the_previous_message_or_intent() {
+async fn branches_each_call_of_a_subgraph_without_a_message() {
     let Some((query, generator_url)) = start_without_decision().await else {
         return;
     };
@@ -464,17 +464,17 @@ async fn hangs_calls_without_a_message_off_the_previous_message_or_intent() {
     assert_eq!(
         shape(&query, &session_id).await,
         json!([
-            [3, 2, "intent"],
+            [3, 2, "order"],
             [1, 3, "request"],
             [2, 4, "call"],
-            [3, 5, "intent"],
+            [3, 5, "order"],
             [5, 6, "call"],
             [6, 7, "order"],
             [9, 8, "message"],
             [7, 9, "order"],
             [8, 10, "call"],
             [10, 11, "order"],
-            [9, 12, "message"],
+            [11, 12, "order"],
             [12, 13, "call"],
             [13, 14, "order"]
         ])
