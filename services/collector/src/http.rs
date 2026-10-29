@@ -34,6 +34,9 @@ use crate::{
 
 const CLIENT_HEADER: &str = "x-withhuman-client";
 const REPOSITORY_HEADER: &str = "x-withhuman-repo";
+/// Display content for a flush that is all intent line: a zero-width space, since Claude Code
+/// shows the original text for an empty one.
+const HIDDEN_LINE: &str = "\u{200B}";
 const SWAGGER_UI_HTML: &str = r##"<!doctype html>
 <html lang="en">
 <head>
@@ -390,10 +393,16 @@ async fn message_display(
     headers: HeaderMap,
     StrictJson(request): StrictJson<MessageDisplayRequest>,
 ) -> Response {
-    // The first flush shows everything but the intent line, which only the engine keeps.
+    // The first flush shows everything but the intent line, which only the engine keeps. Claude
+    // Code shows the original for an empty replacement, so a flush of the intent line alone is
+    // replaced by an invisible character.
     let display = (service.config.intent_capture && request.index.unwrap_or(0) == 0)
-        .then(|| split_intent(&request.delta).map(|line| line.rest.to_owned()))
-        .flatten();
+        .then(|| split_intent(&request.delta))
+        .flatten()
+        .map(|line| match line.rest {
+            "" => HIDDEN_LINE.to_owned(),
+            rest => rest.to_owned(),
+        });
     let response = match service
         .normalizer
         .message_display(&trusted(&headers), request, now())

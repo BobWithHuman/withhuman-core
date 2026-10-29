@@ -399,14 +399,15 @@ async fn hides_the_intent_line_from_the_user_but_records_it() {
             .clone()
     };
 
-    // A first flush holding only the intent line shows nothing.
+    // A first flush holding only the intent line shows an invisible character: Claude Code
+    // would show the original for an empty one.
     assert_eq!(
         display(
             app.clone(),
             flush("m1", 0, "[의도] 로그인 버그 수정 (확신도: 높음)\n", false)
         )
         .await,
-        ""
+        "\u{200B}"
     );
     assert_eq!(
         display(app.clone(), flush("m1", 1, "[의도] 이건 본문\n", true)).await,
