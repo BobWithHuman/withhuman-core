@@ -62,7 +62,7 @@
   <label><input id="live" type="checkbox"> 자동 갱신(3초)</label>
   <button id="fit" type="button">전체 보기</button>
   <label><input class="edge-toggle" data-edge="order" type="checkbox" checked> NEXT</label>
-  <label><input class="edge-toggle" data-edge="result" type="checkbox" checked> RESULTED_IN</label>
+  <label><input class="edge-toggle" data-edge="result" type="checkbox" checked> RESULT_OF</label>
   <label><input class="edge-toggle" data-edge="cause" type="checkbox" checked> cause</label>
   <label><input class="edge-toggle" data-edge="parent" type="checkbox" checked> PARENT</label>
   <label><input id="all-parents" type="checkbox"> PARENT 전부</label>
@@ -153,7 +153,7 @@ function toElements(data) {
   loose.forEach((node, row) => place(node, numbers.length, row, undefined));
 
   for (const e of data.edges) {
-    const kind = e.type === 'RESULTED_IN' ? 'result' : e.type === 'AGENT_SEQUENCE' ? 'agent'
+    const kind = e.type === 'RESULT_OF' ? 'result' : e.type === 'AGENT_SEQUENCE' ? 'agent'
       : e.props.kind === 'cause' ? 'cause' : 'order';
     elements.push({ group: 'edges', data: {
       id: `e${e.source}-${e.target}-${e.type}-${e.props.call_seq ?? ''}`,
