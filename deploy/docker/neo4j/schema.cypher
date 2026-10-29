@@ -84,7 +84,9 @@ CALL (session, node) {
   MERGE (session)-[:CONTAINS]->(node)
 } IN TRANSACTIONS OF 5000 ROWS;
 
-// A tool result points up to its Call. Results pointed down from their Call (`RESULTED_IN`).
+// Edges lead from a Call up to its causes and from a tool result up to its Call, so a chain of
+// causes can be followed to the prompt. Results pointed down from their Call (`RESULTED_IN`),
+// and the activated ones pointed down at the Call they caused.
 MATCH (result:Segment|Error) WHERE result.tool_use_id IS NOT NULL
   AND NOT EXISTS { MATCH (result)-[:RESULT_OF]->() }
 MATCH (call:Call {session_id: result.session_id, tool_use_id: result.tool_use_id})
@@ -95,6 +97,22 @@ CALL (result, call) {
 MATCH ()-[old:RESULTED_IN]->()
 CALL (old) {
   DELETE old
+} IN TRANSACTIONS OF 5000 ROWS;
+
+MATCH (source:Segment|Error)-[old:NEXT {kind: 'cause'}]->(call:Call)
+CALL (source, old, call) {
+  MERGE (call)-[cause:NEXT {kind: 'cause', call_seq: old.call_seq}]->(source)
+  SET cause += properties(old)
+  DELETE old
+} IN TRANSACTIONS OF 5000 ROWS;
+
+// A Call traced to a prompt's SubGraph points its cause at the prompt's Request.
+MATCH (current:SubGraph)-[parent:PARENT]->(:SubGraph)-[:MEMBER]->(request:Request)
+MATCH (call:Call {session_id: current.session_id, seq: parent.call_seq})
+CALL (parent, request, call) {
+  MERGE (call)-[cause:NEXT {kind: 'cause', call_seq: parent.call_seq}]->(request)
+  SET cause.probability = parent.probability, cause.rank = parent.rank,
+      cause.parent = 's' + toString(parent.number)
 } IN TRANSACTIONS OF 5000 ROWS;
 
 CREATE CONSTRAINT subgraph_number_unique IF NOT EXISTS
