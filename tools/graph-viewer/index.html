@@ -4,18 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WithHuman Graph</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.30.2/cytoscape.min.js"></script>
 <style>
   :root {
-    --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #6b7280; --line: #d9dde4;
-    --card: #ffffff; --card-border: #dde2ea; --row-hover: #f1f4f9; --accent: #2f6fde;
-    --request: #4c7be0; --intent: #2bb3c0; --message: #8a63d2; --other: #8b93a1;
-    --allow: #2f9e5b; --deny: #d64545; --review: #d9a21b; --pending: #b6bcc6;
-    --cause: #e0433b;
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #6b7280; --line: #d9dde4; --accent: #2f6fde;
+    --group-bg: #eceff4; --group-border: #d3d9e2; --node-bg: #ffffff;
+    --request: #4c7be0; --intent: #2bb3c0; --message: #8a63d2; --call: #9aa3b1; --other: #8b93a1;
+    --allow: #2f9e5b; --deny: #d64545; --review: #d9a21b;
+    --flow: #aab2bf; --cause: #e0433b;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #14171c; --panel: #1c2027; --text: #e4e7ec; --muted: #9aa3b1; --line: #2e343e;
-      --card: #1f242c; --card-border: #333a45; --row-hover: #272d37; --pending: #5d6675;
+      --group-bg: #1d2129; --group-border: #313844; --node-bg: #252a33; --flow: #5d6675; --call: #6b7484;
     }
   }
   * { box-sizing: border-box; }
@@ -26,58 +27,19 @@
   header h1 { font-size: 14px; margin: 0 6px 0 0; }
   select, button { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line);
                    border-radius: 6px; padding: 4px 8px; }
-  select { max-width: 420px; }
+  select { max-width: 380px; }
   button { cursor: pointer; }
+  .tabs { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .tabs button { border: 0; border-radius: 0; background: var(--panel); padding: 5px 12px; }
+  .tabs button[aria-pressed="true"] { background: var(--accent); color: #fff; }
   label { display: inline-flex; gap: 4px; align-items: center; color: var(--muted); white-space: nowrap; }
   .legend { display: flex; gap: 12px; flex-wrap: wrap; color: var(--muted); }
   .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; }
   .status { color: var(--muted); margin-left: auto; }
   .error { color: var(--deny); }
   main { flex: 1; display: flex; min-height: 0; }
-
-  #timeline { flex: 1; min-width: 0; overflow: auto; }
-  #canvas { position: relative; display: flex; align-items: flex-start; gap: 56px; padding: 28px 40px 60px; width: max-content; }
-  #arrows { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
-  .card { position: relative; width: 300px; background: var(--card); border: 1px solid var(--card-border);
-          border-radius: 12px; box-shadow: 0 1px 2px rgba(0,0,0,.05); }
-  .card + .card::before { content: '→'; position: absolute; left: -42px; top: 14px; color: var(--muted); font-size: 18px; }
-  .card h2 { margin: 0; padding: 9px 12px; font-size: 12px; font-weight: 700; color: var(--muted);
-             border-bottom: 1px solid var(--card-border); display: flex; gap: 8px; }
-  .card h2 span { font-weight: 400; }
-  .rows { padding: 6px; display: flex; flex-direction: column; gap: 4px; }
-  .row { display: flex; gap: 8px; align-items: flex-start; padding: 7px 8px; border-radius: 8px; cursor: pointer;
-         border-left: 4px solid transparent; }
-  .row:hover { background: var(--row-hover); }
-  .row.selected { background: var(--row-hover); outline: 2px solid var(--accent); outline-offset: -2px; }
-  .row .icon { flex: none; width: 18px; text-align: center; }
-  .row .body { flex: 1; min-width: 0; }
-  .row .kind { font-size: 11px; color: var(--muted); }
-  .row .text { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
-  .row.lead .text { -webkit-line-clamp: 4; }
-  .row.request { border-left-color: var(--request); }
-  .row.intent { border-left-color: var(--intent); }
-  .row.message { border-left-color: var(--message); }
-  .row.call { border-left-color: var(--pending); }
-  .row.call.ALLOW { border-left-color: var(--allow); }
-  .row.call.DENY { border-left-color: var(--deny); }
-  .row.call.REVIEW { border-left-color: var(--review); }
-  .row.other { color: var(--muted); }
-  .row .tool { font-weight: 600; }
-  .row .verdict { font-size: 11px; font-weight: 700; }
-  .ALLOW .verdict { color: var(--allow); } .DENY .verdict { color: var(--deny); } .REVIEW .verdict { color: var(--review); }
-  .result { flex: none; border: 1px solid var(--card-border); border-radius: 10px; padding: 0 7px; font-size: 12px; line-height: 20px; }
-  .result.ok { color: var(--allow); } .result.failed { color: var(--deny); } .result.waiting { color: var(--muted); }
-  .result.ok:hover, .result.failed:hover { background: var(--bg); }
-  .empty-card { color: var(--muted); padding: 8px; }
-
-  .cause path { fill: none; stroke: var(--cause); stroke-width: 1.8; stroke-dasharray: 6 4; opacity: .75; }
-  .cause text { font-size: 11px; font-weight: 700; fill: var(--cause); paint-order: stroke; stroke: var(--bg); stroke-width: 4px; }
-  #arrows.focused .cause { opacity: .15; }
-  #arrows.focused .cause.on { opacity: 1; }
-  #arrows.focused .cause.on path { stroke-width: 2.6; opacity: 1; }
-  #arrows.hidden { display: none; }
-
-  aside { width: 420px; max-width: 45vw; overflow: auto; background: var(--panel); border-left: 1px solid var(--line); padding: 14px; }
+  #graph { flex: 1; min-width: 0; }
+  aside { width: 400px; max-width: 42vw; overflow: auto; background: var(--panel); border-left: 1px solid var(--line); padding: 14px; }
   aside h2 { font-size: 15px; margin: 0 0 8px; }
   aside h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 16px 0 6px; }
   .empty { color: var(--muted); }
@@ -99,160 +61,214 @@
 <header>
   <h1>WithHuman Graph</h1>
   <select id="session" aria-label="세션"></select>
+  <span class="tabs" role="group" aria-label="보기">
+    <button type="button" data-view="flow" aria-pressed="true">그래프</button>
+    <button type="button" data-view="tree" aria-pressed="false">원인 트리</button>
+  </span>
   <button id="reload" type="button">새로고침</button>
+  <button id="fit" type="button">전체 보기</button>
   <label><input id="live" type="checkbox"> 자동 갱신(3초)</label>
-  <label><input id="show-causes" type="checkbox" checked> 원인선</label>
   <span class="legend">
+    <span><i style="background:var(--request)"></i>요청</span>
+    <span><i style="background:var(--intent)"></i>의도</span>
+    <span><i style="background:var(--message)"></i>메시지</span>
     <span><i style="background:var(--allow)"></i>ALLOW</span>
     <span><i style="background:var(--deny)"></i>DENY</span>
-    <span><i style="background:var(--review)"></i>REVIEW</span>
-    <span><i style="background:var(--cause)"></i>원인 (확률)</span>
+    <span><i style="background:var(--cause)"></i>원인</span>
   </span>
   <span class="status" id="status"></span>
 </header>
 <main>
-  <div id="timeline"><div id="canvas"></div></div>
-  <aside id="panel"><p class="empty">줄을 누르면 여기에 속성이 나옵니다. Call을 누르면 그 Call의 원인선이 강조됩니다.</p></aside>
+  <div id="graph"></div>
+  <aside id="panel"><p class="empty">노드를 누르면 여기에 속성이 나옵니다. Call을 누르면 그 Call의 원인선이 강조됩니다.</p></aside>
 </main>
 <script>
 const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const KIND_COLOR = { Request: '--request', Intent: '--intent', Message: '--message', Call: '--call' };
 const DECISION_COLOR = { ALLOW: '--allow', DENY: '--deny', REVIEW: '--review' };
-const ICON = { Request: '👤', Intent: '🎯', Message: '💬', Call: '▸', ConfigChange: '⚙', SubagentStart: '⤵', SubagentStop: '⤴' };
-const LEAD = { Request: 0, Intent: 1, Message: 2 };
+const ICON = { Request: '👤', Intent: '🎯', Message: '💬', ConfigChange: '⚙', SubagentStart: '⤵', SubagentStop: '⤴' };
+const LEAD = new Set(['Request', 'Intent', 'Message']);
 const RESULT = new Set(['Segment', 'Error']);
 const HIDDEN = new Set(['ToolBatch', 'ToolDescriptions']);
 const $ = id => document.getElementById(id);
-let current = null, liveTimer = null, lastSignature = '', model = null, selected = null;
+let cy, current = null, liveTimer = null, lastData = null, lastSignature = '', model = null, view = 'flow';
 
 function parse(json) {
   if (typeof json !== 'string') return null;
   try { return JSON.parse(json); } catch { return null; }
 }
 const flat = text => String(text ?? '').replace(/\s+/g, ' ').trim();
+const clip = (text, n) => { const f = flat(text); return f.length > n ? f.slice(0, n) + '…' : f; };
 const time = ms => ms ? new Date(ms).toLocaleString() : '';
 const percent = p => typeof p === 'number' ? p.toFixed(2).replace(/\.?0+$/, '') : '';
 function escape(text) {
   return String(text).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 
-// Rows of each SubGraph card: its prompt, intent and message first, then each Call with its
-// result folded in. A tool result's arrows land on its Call's row.
+// A tool result is drawn as its Call and a ToolBatch as what came before it, so every edge
+// lands on a node that is on screen.
 function build(data) {
   const bySeq = new Map(data.nodes.map(node => [node.props.seq, node]));
-  const callOf = new Map();
-  for (const e of data.edges) if (e.type === 'RESULT_OF') callOf.set(e.source, e.target);
-  const resultOf = new Map();
+  const callOf = new Map(), resultOf = new Map(), previous = new Map();
+  for (const e of data.edges) {
+    if (e.type === 'RESULT_OF' && bySeq.has(e.target)) callOf.set(e.source, e.target);
+    if (e.type === 'NEXT' && e.props.kind !== 'cause') previous.set(e.target, e.source);
+  }
   for (const [result, call] of callOf) if (!resultOf.has(call)) resultOf.set(call, bySeq.get(result));
-
+  const shown = node => !HIDDEN.has(node.kind) && !(RESULT.has(node.kind) && callOf.has(node.props.seq));
+  const rep = (seq, depth = 0) => {
+    const node = bySeq.get(seq);
+    if (!node || depth > 50) return null;
+    if (callOf.has(seq)) return callOf.get(seq);
+    if (shown(node)) return seq;
+    return previous.has(seq) ? rep(previous.get(seq), depth + 1) : null;
+  };
+  const flows = new Map();
+  for (const e of data.edges) {
+    if (e.type !== 'NEXT' || e.props.kind === 'cause') continue;
+    const a = rep(e.source), b = rep(e.target);
+    if (a != null && b != null && a !== b) flows.set(`${a}-${b}`, { from: a, to: b });
+  }
+  const causes = data.edges.filter(e => e.props.kind === 'cause')
+    .map(e => ({ from: rep(e.source), to: rep(e.target), via: e.target, props: e.props }))
+    .filter(c => c.from != null && c.to != null && c.from !== c.to);
   const groupOf = new Map();
   data.subgraphs.forEach(s => s.members.forEach(seq => groupOf.set(seq, s.props.number)));
-  const cards = new Map(data.subgraphs.map(s => [s.props.number, { number: s.props.number, props: s.props, nodes: [] }]));
-  const loose = { number: null, props: {}, nodes: [] };
-  for (const node of data.nodes) {
-    if (HIDDEN.has(node.kind)) continue;
-    if (RESULT.has(node.kind) && callOf.has(node.props.seq) && bySeq.has(callOf.get(node.props.seq))) continue;
-    const number = groupOf.get(node.props.seq);
-    (number === undefined ? loose : cards.get(number)).nodes.push(node);
-  }
-  const ordered = [...cards.values()].sort((a, b) => a.number - b.number);
-  if (loose.nodes.length) ordered.push(loose);
-  for (const card of ordered) {
-    card.nodes.sort((a, b) => (LEAD[a.kind] ?? 3) - (LEAD[b.kind] ?? 3) || a.props.order - b.props.order);
-  }
-
-  const rowOf = seq => bySeq.has(callOf.get(seq)) ? callOf.get(seq) : seq;
-  const causes = data.edges
-    .filter(e => e.props.kind === 'cause')
-    .map(e => ({ from: rowOf(e.source), to: rowOf(e.target), props: e.props }));
-  return { bySeq, resultOf, cards: ordered, causes };
+  const nodes = data.nodes.filter(shown);
+  return { bySeq, resultOf, groupOf, nodes, flows: [...flows.values()], causes };
 }
 
-function rowHtml(node, result) {
-  const { seq, decision } = node.props;
+function label(node) {
   const s = node.summary || {};
-  const kind = node.kind;
-  let cls = 'other', label = kind, text = '';
-  switch (kind) {
-    case 'Request': cls = 'request lead'; label = '사용자 요청'; text = s.prompt; break;
-    case 'Intent': cls = 'intent lead'; label = '의도'; text = s.intent; break;
-    case 'Message': cls = 'message lead'; label = '메시지'; text = s.text; break;
-    case 'Call': cls = `call ${decision || ''}`; label = ''; break;
-    case 'Segment': case 'Error': cls = 'other'; label = `${kind} (Call 없음)`; text = `${s.tool_name || ''} ${s.error || ''}`; break;
-    case 'ConfigChange': text = s.file_path; break;
-    case 'SubagentStart': case 'SubagentStop': text = s.agent_type; break;
+  switch (node.kind) {
+    case 'Request': return `${ICON.Request} ${clip(s.prompt, 26)}`;
+    case 'Intent': return `${ICON.Intent} ${clip(s.intent, 26)}`;
+    case 'Message': return `${ICON.Message} ${clip(s.text, 26)}`;
+    case 'Call': {
+      const result = model.resultOf.get(node.props.seq);
+      const mark = !result ? ' …' : result.kind === 'Error' ? ' ✗' : ' ✓';
+      return `${clip(`${s.tool_name || 'Call'} ${s.brief || ''}`, 26)}${mark}`;
+    }
+    case 'ConfigChange': return `${ICON.ConfigChange} ${clip(s.file_path, 24)}`;
+    default: return `${ICON[node.kind] || ''} ${node.kind}`;
   }
-  if (kind === 'Call') {
-    const status = !result ? '<span class="result waiting" title="결과 없음">…</span>'
-      : `<span class="result ${result.kind === 'Error' ? 'failed' : 'ok'}" data-seq="${result.props.seq}" title="#${result.props.seq} ${result.kind}">${result.kind === 'Error' ? '✗ 오류' : '✓ 결과'}</span>`;
-    return `<div class="row ${cls}" data-seq="${seq}">
-      <span class="icon">${ICON.Call}</span>
-      <div class="body"><div class="text"><span class="tool">${escape(s.tool_name || 'Call')}</span> ${escape(flat(s.brief))}</div>
-        <div class="kind">#${seq}${decision ? ` · <span class="verdict">${escape(decision)}</span>` : ''}</div></div>
-      ${status}</div>`;
+}
+
+function nodeData(node, parent) {
+  const decision = node.props.decision;
+  const color = css(KIND_COLOR[node.kind] || '--other');
+  return {
+    id: `n${node.props.seq}`, parent, seq: node.props.seq, kind: node.kind, label: label(node),
+    fill: LEAD.has(node.kind) ? color : css('--node-bg'),
+    border: decision ? css(DECISION_COLOR[decision] || '--other') : color,
+    borderWidth: decision ? 3 : 1.5, lead: LEAD.has(node.kind),
+  };
+}
+
+// The flow view: each SubGraph a shaded area, its prompt, intent or message on the left and its
+// Calls fanned out to the right; areas run left to right.
+function flowElements() {
+  const elements = [], groups = new Map();
+  for (const node of model.nodes) {
+    const number = model.groupOf.get(node.props.seq);
+    const key = number === undefined ? 'loose' : number;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(node);
   }
-  return `<div class="row ${cls}" data-seq="${seq}">
-    <span class="icon">${ICON[kind] || '·'}</span>
-    <div class="body"><div class="kind">${escape(label)} · #${seq}</div><div class="text">${escape(flat(text))}</div></div></div>`;
+  const keys = [...groups.keys()].sort((a, b) => (a === 'loose') - (b === 'loose') || a - b);
+  const W = 190, H = 54, GAP = 90;
+  let x = 0;
+  for (const key of keys) {
+    const members = groups.get(key).sort((a, b) => a.props.order - b.props.order);
+    const leads = members.filter(n => LEAD.has(n.kind));
+    const rest = members.filter(n => !LEAD.has(n.kind));
+    const parent = `g${key}`;
+    elements.push({ group: 'nodes', data: { id: parent, area: true, label: key === 'loose' ? '서브그래프 없음' : `S${key}` } });
+    const leadHeight = leads.length * H, restHeight = rest.length * H;
+    const top = -Math.max(leadHeight, restHeight) / 2;
+    leads.forEach((node, i) => elements.push({ group: 'nodes', data: nodeData(node, parent),
+      position: { x, y: top + (Math.max(restHeight, leadHeight) - leadHeight) / 2 + i * H } }));
+    const restX = leads.length ? x + W + 40 : x;
+    rest.forEach((node, i) => elements.push({ group: 'nodes', data: nodeData(node, parent),
+      position: { x: restX, y: top + (Math.max(restHeight, leadHeight) - restHeight) / 2 + i * H } }));
+    x = (rest.length ? restX : x) + W + GAP;
+  }
+  for (const f of model.flows) elements.push({ group: 'edges', data: { id: `f${f.from}-${f.to}`, source: `n${f.from}`, target: `n${f.to}`, flow: true } });
+  for (const c of model.causes) elements.push({ group: 'edges', data: {
+    id: `c${c.from}-${c.via}`, source: `n${c.from}`, target: `n${c.to}`, cause: true, label: percent(c.props.probability), props: c.props } });
+  return { elements, layout: { name: 'preset' } };
+}
+
+// The cause tree: prompts on top, each Call under what caused it, its edge pointing up at it.
+function treeElements() {
+  const inTree = new Set();
+  for (const c of model.causes) { inTree.add(c.from); inTree.add(c.to); }
+  for (const node of model.nodes) if (node.kind === 'Request' || node.kind === 'Call') inTree.add(node.props.seq);
+  const elements = [];
+  for (const seq of inTree) {
+    const node = model.bySeq.get(seq);
+    if (node) elements.push({ group: 'nodes', data: nodeData(node, undefined) });
+  }
+  for (const c of model.causes) elements.push({ group: 'edges', data: {
+    id: `c${c.from}-${c.via}`, source: `n${c.from}`, target: `n${c.to}`, cause: true, label: percent(c.props.probability), props: c.props } });
+  const caused = new Set(model.causes.map(c => c.from));
+  const roots = [...inTree].filter(seq => !caused.has(seq)).map(seq => `#n${seq}`).join(', ');
+  return { elements, layout: { name: 'breadthfirst', directed: false, roots, spacingFactor: 1.1, padding: 30 } };
+}
+
+function style() {
+  return [
+    { selector: 'node', style: {
+      shape: 'round-rectangle', width: 172, height: 36, 'background-color': 'data(fill)', 'background-opacity': 1,
+      'border-color': 'data(border)', 'border-width': 'data(borderWidth)', label: 'data(label)',
+      'text-valign': 'center', 'text-halign': 'center', 'text-wrap': 'ellipsis', 'text-max-width': 160,
+      'font-size': 11, color: css('--text'),
+    }},
+    { selector: 'node[?lead]', style: { 'background-opacity': 0.14, shape: 'round-rectangle', 'corner-radius': 18 } },
+    { selector: 'node[?area]', style: {
+      shape: 'round-rectangle', 'background-color': css('--group-bg'), 'background-opacity': 1,
+      'border-color': css('--group-border'), 'border-width': 1, label: 'data(label)', 'text-valign': 'top',
+      'text-halign': 'center', 'font-size': 12, 'font-weight': 700, color: css('--muted'), padding: 18, 'text-margin-y': -6,
+    }},
+    { selector: 'edge', style: {
+      width: 1.3, 'line-color': css('--flow'), 'target-arrow-color': css('--flow'), 'target-arrow-shape': 'triangle',
+      'arrow-scale': 0.7, 'curve-style': 'bezier',
+    }},
+    { selector: 'edge[?cause]', style: {
+      width: 2, 'line-style': 'dashed', 'line-color': css('--cause'), 'target-arrow-color': css('--cause'),
+      'curve-style': 'unbundled-bezier', 'control-point-distances': 40, label: 'data(label)', 'font-size': 10,
+      'font-weight': 700, color: css('--cause'), 'text-background-color': css('--bg'), 'text-background-opacity': 1,
+      'text-background-padding': 2, 'text-background-shape': 'round-rectangle',
+    }},
+    { selector: '.faded', style: { opacity: 0.12 } },
+    { selector: 'edge.focus', style: { width: 3, opacity: 1 } },
+    { selector: 'node:selected', style: { 'overlay-color': css('--accent'), 'overlay-opacity': 0.18, 'overlay-padding': 5 } },
+  ];
 }
 
 function render(data, keepView) {
-  const timeline = $('timeline');
-  const view = keepView ? { left: timeline.scrollLeft, top: timeline.scrollTop } : null;
   model = build(data);
-  $('canvas').innerHTML = model.cards.map(card => `
-    <section class="card">
-      <h2>${card.number === null ? '서브그래프 없음' : 'S' + card.number}${card.number === 0 ? ' <span>대화 시작</span>' : ''}</h2>
-      <div class="rows">${card.nodes.length
-        ? card.nodes.map(node => rowHtml(node, model.resultOf.get(node.props.seq))).join('')
-        : '<div class="empty-card">(비어 있음)</div>'}</div>
-    </section>`).join('') + '<svg id="arrows" aria-hidden="true"></svg>';
-  if (view) { timeline.scrollLeft = view.left; timeline.scrollTop = view.top; }
-  if (selected && !$('canvas').querySelector(`.row[data-seq="${selected}"]`)) selected = null;
-  markSelected();
-  drawArrows();
+  const saved = keepView && cy ? { zoom: cy.zoom(), pan: cy.pan(), selected: cy.$('node:selected').id() } : null;
+  cy?.destroy();
+  const { elements, layout } = view === 'flow' ? flowElements() : treeElements();
+  cy = cytoscape({ container: $('graph'), elements, style: style(), layout,
+    wheelSensitivity: 0.25, minZoom: 0.05, maxZoom: 3, autoungrabify: false });
+  if (saved) { cy.zoom(saved.zoom); cy.pan(saved.pan); if (saved.selected) select(cy.$id(saved.selected)); }
+  else cy.fit(undefined, 40);
+  cy.on('tap', 'node[seq]', event => { select(event.target); show(event.target.data('seq')); });
+  cy.on('tap', event => { if (event.target === cy) select(null); });
 }
 
-// Each cause runs from the Call's row to the row of what caused it, which sits earlier: in a card
-// to the left, or above it in the same card.
-function drawArrows() {
-  const canvas = $('canvas'), svg = $('arrows');
-  if (!svg || !model) return;
-  svg.setAttribute('width', canvas.scrollWidth);
-  svg.setAttribute('height', canvas.scrollHeight);
-  svg.classList.toggle('hidden', !$('show-causes').checked);
-  svg.classList.toggle('focused', selected !== null && model.causes.some(c => c.from === selected));
-  const box = canvas.getBoundingClientRect();
-  const rect = seq => {
-    const row = canvas.querySelector(`.row[data-seq="${seq}"]`);
-    if (!row) return null;
-    const r = row.getBoundingClientRect();
-    return { left: r.left - box.left, right: r.right - box.left, y: r.top - box.top + r.height / 2 };
-  };
-  const marker = `<defs><marker id="head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-    <path d="M0,0 L10,5 L0,10 z" fill="${css('--cause')}"></path></marker></defs>`;
-  const paths = model.causes.map(cause => {
-    const a = rect(cause.from), b = rect(cause.to);
-    if (!a || !b || cause.from === cause.to) return '';
-    let d, lx, ly;
-    if (b.right < a.left - 10) {
-      const x1 = a.left, x2 = b.right, bend = Math.max(40, (x1 - x2) / 2);
-      d = `M${x1},${a.y} C${x1 - bend},${a.y} ${x2 + bend},${b.y} ${x2},${b.y}`;
-      lx = (x1 + x2) / 2; ly = (a.y + b.y) / 2;
-    } else {
-      const x = Math.max(a.right, b.right), out = 34;
-      d = `M${a.right},${a.y} C${x + out},${a.y} ${x + out},${b.y} ${b.right},${b.y}`;
-      lx = x + out * 0.75; ly = (a.y + b.y) / 2;
-    }
-    const on = cause.from === selected ? ' on' : '';
-    return `<g class="cause${on}"><path d="${d}" marker-end="url(#head)"></path>
-      <text x="${lx}" y="${ly}" text-anchor="middle" dy="4">${percent(cause.props.probability)}</text></g>`;
-  });
-  svg.innerHTML = marker + paths.join('');
-}
-
-function markSelected() {
-  $('canvas').querySelectorAll('.row.selected').forEach(row => row.classList.remove('selected'));
-  if (selected !== null) $('canvas').querySelector(`.row[data-seq="${selected}"]`)?.classList.add('selected');
+// Selecting a Call fades everything but it, its causes and their edges.
+function select(node) {
+  cy.elements().removeClass('faded focus');
+  cy.$(':selected').unselect();
+  if (!node || !node.length) return;
+  node.select();
+  const causes = node.outgoers('edge[?cause]');
+  if (!causes.length) return;
+  cy.elements().not(node).not(causes).not(causes.targets()).not('node[?area]').addClass('faded');
+  causes.addClass('focus');
 }
 
 const row = (key, value) => {
@@ -269,28 +285,34 @@ function causesHtml(seq) {
   const causes = model.causes.filter(c => c.from === seq);
   if (!causes.length) return '';
   const rows = causes.map(c => {
-    const target = model.bySeq.get(c.to);
+    const target = model.bySeq.get(c.via);
     const s = target?.summary || {};
-    const what = target ? `#${c.to} ${target.kind} ${flat(s.tool_name || s.prompt || s.text || '')}` : `#${c.to}`;
+    const what = target ? `#${c.via} ${target.kind} ${flat(s.tool_name || s.prompt || s.text || '')}` : `#${c.via}`;
     return `<tr><td>p=${percent(c.props.probability)}</td><td>${escape(what.slice(0, 120))}</td></tr>`;
   }).join('');
   return `<h3>원인</h3><table>${rows}</table>`;
 }
 
+let shownSeq = null;
 async function show(seq) {
   const node = model.bySeq.get(seq);
   if (!node) return;
+  shownSeq = seq;
   const props = node.props;
   const trace = parse(props.trace_json);
-  const panel = $('panel');
+  const result = model.resultOf.get(seq);
   const decision = props.decision
     ? `<p><span class="badge" style="background:${css(DECISION_COLOR[props.decision] || '--other')}">${escape(props.decision)}</span> ${escape(props.decision_rule || '')} ${props.intent_score != null ? '· score ' + percent(props.intent_score) : ''}</p>
        ${props.decision_reason ? `<p>${escape(props.decision_reason)}</p>` : ''}
        ${causesHtml(seq)}
        ${trace?.intents ? `<h3>의도 (${escape(trace.intent_source || '')})</h3><p>${escape(trace.intents)}</p>` : ''}`
     : props.trace_error ? `<p class="error">판정 실패: ${escape(props.trace_error)}</p>` : '';
-  const head = `<h2>#${props.seq} ${escape(node.kind)}</h2>${decision}`;
+  const resultLink = result ? `<p><button type="button" id="open-result">결과 #${result.props.seq} ${escape(result.kind)} 보기</button></p>` : '';
+  const head = `<h2>#${props.seq} ${escape(node.kind)}</h2>${decision}${resultLink}`;
+  const panel = $('panel');
   panel.innerHTML = `${head}<h3>속성</h3>${table(props)}<h3>문단 · 토큰</h3><p class="empty">불러오는 중…</p>`;
+  const bind = () => $('open-result')?.addEventListener('click', () => show(result.props.seq));
+  bind();
   try {
     const detail = await api(`/api/node?session=${encodeURIComponent(current)}&seq=${props.seq}`);
     if (shownSeq !== seq) return;
@@ -301,22 +323,11 @@ async function show(seq) {
     panel.innerHTML = `${head}<h3>속성</h3>${table(detail?.props || props)}
       <h3>토큰 (${detail?.tokens?.length || 0})</h3>${tokens ? `<table>${tokens}</table>` : '<p class="empty">없음</p>'}
       <h3>문단 (${detail?.paragraphs?.length || 0})</h3>${paragraphs || '<p class="empty">없음</p>'}`;
+    bind();
   } catch (error) {
     panel.insertAdjacentHTML('beforeend', `<p class="error">${escape(error.message)}</p>`);
   }
 }
-let shownSeq = null;
-
-$('canvas').addEventListener('click', event => {
-  const result = event.target.closest('.result[data-seq]');
-  const target = event.target.closest('.row[data-seq]');
-  if (!target) return;
-  selected = Number(target.dataset.seq);
-  shownSeq = result ? Number(result.dataset.seq) : selected;
-  markSelected();
-  drawArrows();
-  show(shownSeq);
-});
 
 async function api(path) {
   const response = await fetch(path);
@@ -341,6 +352,7 @@ async function loadGraph(keepView) {
     const data = await api(`/api/graph?session=${encodeURIComponent(current)}`);
     const signature = JSON.stringify(data);
     if (!keepView || signature !== lastSignature) render(data, keepView);
+    lastData = data;
     lastSignature = signature;
     $('status').textContent = `노드 ${data.nodes.length} · 서브그래프 ${data.subgraphs.length} · ${new Date().toLocaleTimeString()}`;
   } catch (error) {
@@ -348,19 +360,23 @@ async function loadGraph(keepView) {
   }
 }
 
+document.querySelectorAll('.tabs button').forEach(button => button.addEventListener('click', () => {
+  view = button.dataset.view;
+  document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-pressed', String(b === button)));
+  if (lastData) render(lastData, false);
+}));
 $('session').addEventListener('change', () => {
-  current = $('session').value; location.hash = encodeURIComponent(current); lastSignature = ''; selected = null;
-  $('panel').innerHTML = '<p class="empty">줄을 누르면 여기에 속성이 나옵니다. Call을 누르면 그 Call의 원인선이 강조됩니다.</p>';
+  current = $('session').value; location.hash = encodeURIComponent(current); lastSignature = '';
+  $('panel').innerHTML = '<p class="empty">노드를 누르면 여기에 속성이 나옵니다. Call을 누르면 그 Call의 원인선이 강조됩니다.</p>';
   loadGraph(false);
 });
 $('reload').addEventListener('click', async () => { await loadSessions(); loadGraph(true); });
-$('show-causes').addEventListener('change', drawArrows);
+$('fit').addEventListener('click', () => cy?.fit(undefined, 40));
 $('live').addEventListener('change', () => {
   clearInterval(liveTimer);
   if ($('live').checked) liveTimer = setInterval(() => loadGraph(true), 3000);
 });
-window.addEventListener('resize', drawArrows);
-matchMedia('(prefers-color-scheme: dark)').addEventListener('change', drawArrows);
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => lastData && render(lastData, true));
 
 loadSessions().then(session => { current = session; loadGraph(false); })
   .catch(error => { $('status').innerHTML = `<span class="error">${escape(error.message)}</span>`; });
