@@ -10,6 +10,7 @@
     --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #6b7280; --line: #d9dde4; --accent: #2f6fde;
     --group-bg: #eceff4; --group-border: #d3d9e2; --node-bg: #ffffff;
     --request: #4c7be0; --intent: #2bb3c0; --message: #8a63d2; --call: #9aa3b1; --other: #8b93a1;
+    --segment: #3aa57a; --error: #d24c4c;
     --allow: #2f9e5b; --deny: #d64545; --review: #d9a21b;
     --flow: #aab2bf; --cause: #e0433b;
   }
@@ -72,6 +73,7 @@
     <span><i style="background:var(--request)"></i>요청</span>
     <span><i style="background:var(--intent)"></i>의도</span>
     <span><i style="background:var(--message)"></i>메시지</span>
+    <span><i style="background:var(--segment)"></i>결과</span>
     <span><i style="background:var(--allow)"></i>ALLOW</span>
     <span><i style="background:var(--deny)"></i>DENY</span>
     <span><i style="background:var(--cause)"></i>원인</span>
@@ -84,9 +86,9 @@
 </main>
 <script>
 const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-const KIND_COLOR = { Request: '--request', Intent: '--intent', Message: '--message', Call: '--call' };
+const KIND_COLOR = { Request: '--request', Intent: '--intent', Message: '--message', Call: '--call', Segment: '--segment', Error: '--error' };
 const DECISION_COLOR = { ALLOW: '--allow', DENY: '--deny', REVIEW: '--review' };
-const ICON = { Request: '👤', Intent: '🎯', Message: '💬', ConfigChange: '⚙', SubagentStart: '⤵', SubagentStop: '⤴' };
+const ICON = { Request: '👤', Intent: '🎯', Message: '💬', Segment: '📄', Error: '⚠', ConfigChange: '⚙', SubagentStart: '⤵', SubagentStop: '⤴' };
 const LEAD = new Set(['Request', 'Intent', 'Message']);
 const RESULT = new Set(['Segment', 'Error']);
 const HIDDEN = new Set(['ToolBatch', 'ToolDescriptions']);
@@ -105,21 +107,22 @@ function escape(text) {
   return String(text).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 
-// A tool result is drawn as its Call and a ToolBatch as what came before it, so every edge
-// lands on a node that is on screen.
+// A ToolBatch is drawn as what came before it, so every edge lands on a node that is on screen.
 function build(data) {
   const bySeq = new Map(data.nodes.map(node => [node.props.seq, node]));
-  const callOf = new Map(), resultOf = new Map(), previous = new Map();
+  const callOf = new Map(), resultsOf = new Map(), previous = new Map();
   for (const e of data.edges) {
     if (e.type === 'RESULT_OF' && bySeq.has(e.target)) callOf.set(e.source, e.target);
     if (e.type === 'NEXT' && e.props.kind !== 'cause') previous.set(e.target, e.source);
   }
-  for (const [result, call] of callOf) if (!resultOf.has(call)) resultOf.set(call, bySeq.get(result));
-  const shown = node => !HIDDEN.has(node.kind) && !(RESULT.has(node.kind) && callOf.has(node.props.seq));
+  for (const [result, call] of callOf) {
+    if (!resultsOf.has(call)) resultsOf.set(call, []);
+    resultsOf.get(call).push(bySeq.get(result));
+  }
+  const shown = node => !HIDDEN.has(node.kind);
   const rep = (seq, depth = 0) => {
     const node = bySeq.get(seq);
     if (!node || depth > 50) return null;
-    if (callOf.has(seq)) return callOf.get(seq);
     if (shown(node)) return seq;
     return previous.has(seq) ? rep(previous.get(seq), depth + 1) : null;
   };
@@ -136,7 +139,7 @@ function build(data) {
   data.subgraphs.forEach(s => s.members.forEach(seq => groupOf.set(seq, s.props.number)));
   const nodes = data.nodes.filter(shown);
   const subgraphParent = new Map(data.subgraphs.map(s => [s.props.number, s.props.parent]));
-  return { bySeq, resultOf, groupOf, subgraphParent, nodes, flows: [...flows.values()], causes };
+  return { bySeq, callOf, resultsOf, groupOf, subgraphParent, nodes, flows: [...flows.values()], causes };
 }
 
 function label(node) {
@@ -145,11 +148,9 @@ function label(node) {
     case 'Request': return `${ICON.Request} ${clip(s.prompt, 26)}`;
     case 'Intent': return `${ICON.Intent} ${clip(s.intent, 26)}`;
     case 'Message': return `${ICON.Message} ${clip(s.text, 26)}`;
-    case 'Call': {
-      const result = model.resultOf.get(node.props.seq);
-      const mark = !result ? ' …' : result.kind === 'Error' ? ' ✗' : ' ✓';
-      return `${clip(`${s.tool_name || 'Call'} ${s.brief || ''}`, 26)}${mark}`;
-    }
+    case 'Call': return clip(`${s.tool_name || 'Call'} ${s.brief || ''}`, 28);
+    case 'Segment': return `${ICON.Segment} ${clip(`${s.tool_name || ''} 결과`, 26)}`;
+    case 'Error': return `${ICON.Error} ${clip(`${s.tool_name || ''} 오류 ${s.error || ''}`, 26)}`;
     case 'ConfigChange': return `${ICON.ConfigChange} ${clip(s.file_path, 24)}`;
     default: return `${ICON[node.kind] || ''} ${node.kind}`;
   }
@@ -158,115 +159,142 @@ function label(node) {
 function nodeData(node, parent) {
   const decision = node.props.decision;
   const color = css(KIND_COLOR[node.kind] || '--other');
+  const soft = LEAD.has(node.kind) || RESULT.has(node.kind);
   return {
     id: `n${node.props.seq}`, parent, seq: node.props.seq, kind: node.kind, label: label(node),
-    fill: LEAD.has(node.kind) ? color : css('--node-bg'),
+    fill: soft ? color : css('--node-bg'),
     border: decision ? css(DECISION_COLOR[decision] || '--other') : color,
-    borderWidth: decision ? 3 : 1.5, lead: LEAD.has(node.kind),
+    borderWidth: decision ? 3 : 1.5, soft,
   };
 }
 
-// The flow view: each SubGraph a shaded area, its prompt, intent or message on the left and its
-// Calls fanned out to the right; areas run left to right.
-function flowElements() {
-  const elements = [], groups = new Map();
+const W = 190, H = 48, COLUMN_GAP = 36;
+
+// A SubGraph's nodes in columns: its prompt, intent or message, then its Calls, each with its
+// results beside it. Positions are node centres relative to the area's top left.
+function arrange(list) {
+  const leads = list.filter(n => LEAD.has(n.kind)).sort((a, b) => a.props.order - b.props.order);
+  const inArea = new Set(list.map(n => n.props.seq));
+  const calls = list.filter(n => !LEAD.has(n.kind) && !(RESULT.has(n.kind) && inArea.has(model.callOf.get(n.props.seq))))
+    .sort((a, b) => a.props.order - b.props.order);
+  const callX = leads.length ? W + COLUMN_GAP : 0;
+  const resultX = callX + W + COLUMN_GAP;
+  const rows = [];
+  for (const call of calls) {
+    const results = (model.resultsOf.get(call.props.seq) || []).filter(r => inArea.has(r.props.seq));
+    rows.push({ call, results });
+  }
+  const callRows = rows.reduce((n, row) => n + Math.max(1, row.results.length), 0);
+  const height = Math.max(leads.length, callRows, 1) * H;
+  const items = [];
+  const leadTop = (height - leads.length * H) / 2;
+  leads.forEach((node, i) => items.push({ node, x: W / 2, y: leadTop + i * H + H / 2 }));
+  let y = (height - callRows * H) / 2;
+  for (const { call, results } of rows) {
+    const span = Math.max(1, results.length) * H;
+    items.push({ node: call, x: callX + W / 2, y: y + span / 2 });
+    results.forEach((result, i) => items.push({ node: result, x: resultX + W / 2, y: y + i * H + H / 2 }));
+    y += span;
+  }
+  const hasResults = rows.some(row => row.results.length);
+  const width = (hasResults ? resultX : calls.length ? callX : 0) + W;
+  return { items, width, height };
+}
+
+function areasOf() {
+  const areas = new Map();
   for (const node of model.nodes) {
     const number = model.groupOf.get(node.props.seq);
     const key = number === undefined ? 'loose' : number;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(node);
+    if (!areas.has(key)) areas.set(key, []);
+    areas.get(key).push(node);
   }
-  const keys = [...groups.keys()].sort((a, b) => (a === 'loose') - (b === 'loose') || a - b);
-  const W = 190, H = 54, GAP = 90;
-  let x = 0;
+  return new Map([...areas].map(([key, list]) => [key, arrange(list)]));
+}
+
+function areaElements(key, area, left, top, elements) {
+  const parent = `g${key}`;
+  elements.push({ group: 'nodes', data: { id: parent, area: true, label: key === 'loose' ? '서브그래프 없음' : `S${key}` } });
+  for (const item of area.items) {
+    elements.push({ group: 'nodes', data: nodeData(item.node, parent), position: { x: left + item.x, y: top + item.y } });
+  }
+}
+
+function causeEdges(elements, onScreen) {
+  for (const c of model.causes) {
+    if (!onScreen.has(c.from) || !onScreen.has(c.to)) continue;
+    elements.push({ group: 'edges', data: {
+      id: `c${c.from}-${c.via}`, source: `n${c.from}`, target: `n${c.to}`, cause: true,
+      label: percent(c.props.probability), props: c.props } });
+  }
+}
+
+// The flow view: SubGraph areas left to right, joined by the order of events.
+function flowElements() {
+  const areas = areasOf();
+  const keys = [...areas.keys()].sort((a, b) => (a === 'loose') - (b === 'loose') || a - b);
+  const elements = [];
+  let left = 0;
   for (const key of keys) {
-    const members = groups.get(key).sort((a, b) => a.props.order - b.props.order);
-    const leads = members.filter(n => LEAD.has(n.kind));
-    const rest = members.filter(n => !LEAD.has(n.kind));
-    const parent = `g${key}`;
-    elements.push({ group: 'nodes', data: { id: parent, area: true, label: key === 'loose' ? '서브그래프 없음' : `S${key}` } });
-    const leadHeight = leads.length * H, restHeight = rest.length * H;
-    const top = -Math.max(leadHeight, restHeight) / 2;
-    leads.forEach((node, i) => elements.push({ group: 'nodes', data: nodeData(node, parent),
-      position: { x, y: top + (Math.max(restHeight, leadHeight) - leadHeight) / 2 + i * H } }));
-    const restX = leads.length ? x + W + 40 : x;
-    rest.forEach((node, i) => elements.push({ group: 'nodes', data: nodeData(node, parent),
-      position: { x: restX, y: top + (Math.max(restHeight, leadHeight) - restHeight) / 2 + i * H } }));
-    x = (rest.length ? restX : x) + W + GAP;
+    const area = areas.get(key);
+    areaElements(key, area, left, -area.height / 2, elements);
+    left += area.width + 90;
   }
   for (const f of model.flows) elements.push({ group: 'edges', data: { id: `f${f.from}-${f.to}`, source: `n${f.from}`, target: `n${f.to}`, flow: true } });
-  for (const c of model.causes) elements.push({ group: 'edges', data: {
-    id: `c${c.from}-${c.via}`, source: `n${c.from}`, target: `n${c.to}`, cause: true, label: percent(c.props.probability), props: c.props } });
+  causeEdges(elements, new Set(model.nodes.map(n => n.props.seq)));
   return { elements, layout: { name: 'preset' } };
 }
 
-// The cause tree: SubGraphs as areas, each under the SubGraph its Calls were traced to (its
+// The cause tree: each SubGraph area under the SubGraph its Calls were traced to (its
 // `parent`), prompts on top. Cause edges run from each Call up to its cause in the parent area.
 function treeElements() {
-  const W = 190, H = 46, GAP_X = 50, GAP_Y = 90, PAD = 40;
-  const members = new Map();
-  for (const node of model.nodes) {
-    const number = model.groupOf.get(node.props.seq);
-    if (number === undefined) continue;
-    if (!members.has(number)) members.set(number, []);
-    members.get(number).push(node);
-  }
-  for (const list of members.values()) {
-    list.sort((a, b) => (LEAD.has(b.kind) - LEAD.has(a.kind)) || a.props.order - b.props.order);
-  }
-  const numbers = [...members.keys()].sort((a, b) => a - b);
+  const GAP_X = 60, GAP_Y = 110;
+  const areas = areasOf();
+  areas.delete('loose');
+  const numbers = [...areas.keys()].sort((a, b) => a - b);
   const parentOf = new Map();
   for (const number of numbers) {
     const key = model.subgraphParent.get(number);
     const parent = /^s\d+$/.test(key || '') ? Number(key.slice(1)) : null;
-    if (parent !== null && parent !== number && members.has(parent)) parentOf.set(number, parent);
+    if (parent !== null && parent < number && areas.has(parent)) parentOf.set(number, parent);
   }
   const children = new Map(numbers.map(n => [n, []]));
   for (const [child, parent] of parentOf) children.get(parent).push(child);
   const roots = numbers.filter(n => !parentOf.has(n));
 
-  // Each subtree is as wide as its children side by side, or its own area.
+  // A subtree is as wide as its children side by side, or its own area.
   const width = new Map();
-  const measure = (n, seen = new Set()) => {
-    if (seen.has(n)) return W;
-    seen.add(n);
-    const kids = children.get(n).reduce((sum, c) => sum + measure(c, seen) + GAP_X, -GAP_X);
-    width.set(n, Math.max(W, kids));
+  const measure = n => {
+    const kids = children.get(n).reduce((sum, c) => sum + measure(c) + GAP_X, -GAP_X);
+    width.set(n, Math.max(areas.get(n).width, kids));
     return width.get(n);
   };
-  roots.forEach(n => measure(n));
-  const depth = new Map(), center = new Map();
-  const place = (n, left, level, seen = new Set()) => {
-    if (seen.has(n)) return;
-    seen.add(n);
+  roots.forEach(measure);
+  const depth = new Map(), left = new Map();
+  const place = (n, start, level) => {
     depth.set(n, level);
-    center.set(n, left + width.get(n) / 2);
-    let x = left + (width.get(n) - children.get(n).reduce((s, c) => s + width.get(c) + GAP_X, -GAP_X)) / 2;
-    for (const c of children.get(n)) { place(c, x, level + 1, seen); x += width.get(c) + GAP_X; }
+    left.set(n, start + (width.get(n) - areas.get(n).width) / 2);
+    const kidsWidth = children.get(n).reduce((s, c) => s + width.get(c) + GAP_X, -GAP_X);
+    let x = start + (width.get(n) - kidsWidth) / 2;
+    for (const c of children.get(n)) { place(c, x, level + 1); x += width.get(c) + GAP_X; }
   };
   let x = 0;
   for (const root of roots) { place(root, x, 0); x += width.get(root) + GAP_X * 2; }
   const levelHeight = [];
-  for (const n of numbers) {
-    const d = depth.get(n) ?? 0;
-    levelHeight[d] = Math.max(levelHeight[d] || 0, members.get(n).length * H);
-  }
+  for (const n of numbers) levelHeight[depth.get(n)] = Math.max(levelHeight[depth.get(n)] || 0, areas.get(n).height);
   const levelTop = [];
-  levelHeight.forEach((h, d) => { levelTop[d] = d === 0 ? 0 : levelTop[d - 1] + levelHeight[d - 1] + GAP_Y + PAD; });
+  levelHeight.forEach((h, d) => { levelTop[d] = d === 0 ? 0 : levelTop[d - 1] + levelHeight[d - 1] + GAP_Y; });
 
   const elements = [];
-  for (const n of numbers) {
-    const parent = `g${n}`;
-    elements.push({ group: 'nodes', data: { id: parent, area: true, label: `S${n}` } });
-    members.get(n).forEach((node, i) => elements.push({ group: 'nodes', data: nodeData(node, parent),
-      position: { x: center.get(n) ?? 0, y: (levelTop[depth.get(n) ?? 0] || 0) + i * H } }));
+  for (const n of numbers) areaElements(n, areas.get(n), left.get(n), levelTop[depth.get(n)], elements);
+  const onScreen = new Set(elements.filter(e => e.data.seq !== undefined).map(e => e.data.seq));
+  for (const f of model.flows) {
+    const call = model.bySeq.get(f.from);
+    if (call?.kind === 'Call' && model.callOf.get(f.to) === f.from && onScreen.has(f.to)) {
+      elements.push({ group: 'edges', data: { id: `f${f.from}-${f.to}`, source: `n${f.from}`, target: `n${f.to}`, flow: true } });
+    }
   }
-  for (const c of model.causes) {
-    if (!model.groupOf.has(c.from) || !model.groupOf.has(c.to)) continue;
-    elements.push({ group: 'edges', data: {
-      id: `c${c.from}-${c.via}`, source: `n${c.from}`, target: `n${c.to}`, cause: true,
-      label: percent(c.props.probability), props: c.props } });
-  }
+  causeEdges(elements, onScreen);
   return { elements, layout: { name: 'preset' } };
 }
 
@@ -278,7 +306,7 @@ function style() {
       'text-valign': 'center', 'text-halign': 'center', 'text-wrap': 'ellipsis', 'text-max-width': 160,
       'font-size': 11, color: css('--text'),
     }},
-    { selector: 'node[?lead]', style: { 'background-opacity': 0.14, shape: 'round-rectangle', 'corner-radius': 18 } },
+    { selector: 'node[?soft]', style: { 'background-opacity': 0.14, shape: 'round-rectangle', 'corner-radius': 18 } },
     { selector: 'node[?area]', style: {
       shape: 'round-rectangle', 'background-color': css('--group-bg'), 'background-opacity': 1,
       'border-color': css('--group-border'), 'border-width': 1, label: 'data(label)', 'text-valign': 'top',
@@ -354,19 +382,15 @@ async function show(seq) {
   shownSeq = seq;
   const props = node.props;
   const trace = parse(props.trace_json);
-  const result = model.resultOf.get(seq);
   const decision = props.decision
     ? `<p><span class="badge" style="background:${css(DECISION_COLOR[props.decision] || '--other')}">${escape(props.decision)}</span> ${escape(props.decision_rule || '')} ${props.intent_score != null ? '· score ' + percent(props.intent_score) : ''}</p>
        ${props.decision_reason ? `<p>${escape(props.decision_reason)}</p>` : ''}
        ${causesHtml(seq)}
        ${trace?.intents ? `<h3>의도 (${escape(trace.intent_source || '')})</h3><p>${escape(trace.intents)}</p>` : ''}`
     : props.trace_error ? `<p class="error">판정 실패: ${escape(props.trace_error)}</p>` : '';
-  const resultLink = result ? `<p><button type="button" id="open-result">결과 #${result.props.seq} ${escape(result.kind)} 보기</button></p>` : '';
-  const head = `<h2>#${props.seq} ${escape(node.kind)}</h2>${decision}${resultLink}`;
+  const head = `<h2>#${props.seq} ${escape(node.kind)}</h2>${decision}`;
   const panel = $('panel');
   panel.innerHTML = `${head}<h3>속성</h3>${table(props)}<h3>문단 · 토큰</h3><p class="empty">불러오는 중…</p>`;
-  const bind = () => $('open-result')?.addEventListener('click', () => show(result.props.seq));
-  bind();
   try {
     const detail = await api(`/api/node?session=${encodeURIComponent(current)}&seq=${props.seq}`);
     if (shownSeq !== seq) return;
@@ -377,7 +401,6 @@ async function show(seq) {
     panel.innerHTML = `${head}<h3>속성</h3>${table(detail?.props || props)}
       <h3>토큰 (${detail?.tokens?.length || 0})</h3>${tokens ? `<table>${tokens}</table>` : '<p class="empty">없음</p>'}
       <h3>문단 (${detail?.paragraphs?.length || 0})</h3>${paragraphs || '<p class="empty">없음</p>'}`;
-    bind();
   } catch (error) {
     panel.insertAdjacentHTML('beforeend', `<p class="error">${escape(error.message)}</p>`);
   }
