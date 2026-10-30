@@ -52,6 +52,16 @@
   .para { border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; margin: 6px 0; }
   .para.hidden { border-color: var(--deny); }
   .para small { color: var(--muted); display: block; margin-bottom: 2px; }
+  .bars td:first-child { width: 42%; white-space: normal; }
+  .bar { display: flex; align-items: center; gap: 6px; }
+  .bar span { flex: none; height: 8px; border-radius: 4px; background: var(--muted); opacity: .45; }
+  .bar.chosen span { background: var(--accent); opacity: 1; }
+  .bar.this span { background: var(--cause); opacity: 1; }
+  .bar b { font-weight: 600; min-width: 34px; }
+  .tag { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 8px; background: var(--accent); color: #fff; margin-left: 4px; }
+  details { border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; margin: 6px 0; }
+  summary { cursor: pointer; font-weight: 600; }
+  details h4 { font-size: 11px; color: var(--muted); margin: 10px 0 4px; }
   @media (max-width: 760px) {
     main { flex-direction: column; }
     aside { width: auto; max-width: none; height: 45vh; border-left: 0; border-top: 1px solid var(--line); }
@@ -329,7 +339,9 @@ function style() {
       'text-background-padding': 2, 'text-background-shape': 'round-rectangle',
     }},
     { selector: '.faded', style: { opacity: 0.12 } },
-    { selector: 'edge.focus', style: { width: 3, opacity: 1 } },
+    { selector: 'node.chain', style: { 'border-color': css('--deny'), 'border-width': 4 } },
+    { selector: 'edge.chain', style: {
+      width: 3.2, 'line-style': 'solid', 'line-color': css('--deny'), 'target-arrow-color': css('--deny'), opacity: 1 } },
     { selector: 'node:selected', style: { 'overlay-color': css('--accent'), 'overlay-opacity': 0.18, 'overlay-padding': 5 } },
   ];
 }
@@ -344,19 +356,56 @@ function render(data, keepView) {
   if (saved) { cy.zoom(saved.zoom); cy.pan(saved.pan); if (saved.selected) select(cy.$id(saved.selected)); }
   else cy.fit(undefined, 40);
   cy.on('tap', 'node[seq]', event => { select(event.target); show(event.target.data('seq')); });
+  cy.on('tap', 'edge[?cause]', event => {
+    selectEdge(event.target);
+    showEdge(event.target.source().data('seq'), event.target.target().data('seq'));
+  });
   cy.on('tap', event => { if (event.target === cy) select(null); });
 }
 
-// Selecting a Call fades everything but it, its causes and their edges.
+// The chain a Call was traced along: the Call, the result that caused it, the Call that result
+// came from, and so on up to the prompt.
+function chainOf(seq) {
+  const nodes = new Set(), edges = new Set(), seen = new Set(), steps = [];
+  const walk = (call, depth) => {
+    if (seen.has(call)) return;
+    seen.add(call);
+    nodes.add(`n${call}`);
+    steps.push({ seq: call, depth });
+    for (const c of model.causes.filter(c => c.from === call)) {
+      edges.add(`c${c.from}-${c.via}`);
+      nodes.add(`n${c.to}`);
+      steps.push({ seq: c.to, depth: depth + 1, probability: c.props.probability });
+      const origin = model.callOf.get(c.to);
+      if (origin !== undefined) { edges.add(`f${origin}-${c.to}`); walk(origin, depth + 2); }
+    }
+  };
+  walk(seq, 0);
+  return { nodes, edges, steps };
+}
+
+// Selecting a Call paints its chain red and fades the rest.
 function select(node) {
-  cy.elements().removeClass('faded focus');
+  cy.elements().removeClass('faded chain');
   cy.$(':selected').unselect();
   if (!node || !node.length) return;
   node.select();
-  const causes = node.outgoers('edge[?cause]');
-  if (!causes.length) return;
-  cy.elements().not(node).not(causes).not(causes.targets()).not('node[?area]').addClass('faded');
-  causes.addClass('focus');
+  const { nodes, edges } = chainOf(node.data('seq'));
+  if (edges.size === 0) return;
+  const chain = cy.collection();
+  nodes.forEach(id => { chain.merge(cy.$id(id)); });
+  edges.forEach(id => { chain.merge(cy.$id(id)); });
+  chain.addClass('chain');
+  cy.elements().not(chain).not('node[?area]').addClass('faded');
+}
+
+// Selecting a cause edge picks out it and its two ends.
+function selectEdge(edge) {
+  cy.elements().removeClass('faded chain');
+  cy.$(':selected').unselect();
+  const picked = edge.union(edge.connectedNodes());
+  picked.addClass('chain');
+  cy.elements().not(picked).not('node[?area]').addClass('faded');
 }
 
 const row = (key, value) => {
@@ -369,20 +418,72 @@ const row = (key, value) => {
 };
 const table = props => `<table>${Object.keys(props).sort().map(k => row(k, props[k])).join('')}</table>`;
 
-function causesHtml(seq) {
-  const causes = model.causes.filter(c => c.from === seq);
-  if (!causes.length) return '';
-  const rows = causes.map(c => {
-    const target = model.bySeq.get(c.via);
-    const s = target?.summary || {};
-    const what = target ? `#${c.via} ${target.kind} ${flat(s.tool_name || s.prompt || s.text || '')}` : `#${c.via}`;
-    return `<tr><td>p=${percent(c.props.probability)}</td><td>${escape(what.slice(0, 120))}</td></tr>`;
+const subgraphName = key => key === 'none' ? '해당 없음 (none)' : /^s\d+$/.test(key) ? `S${key.slice(1)}` : key;
+const bar = (p, cls = '') => `<div class="bar ${cls}"><b>${percent(p)}</b><span style="width:${Math.round((p || 0) * 140)}px"></span></div>`;
+function nodeName(seq) {
+  const node = model.bySeq.get(seq);
+  if (!node) return `#${seq}`;
+  const s = node.summary || {};
+  return `#${seq} ${node.kind} ${clip(s.tool_name ? `${s.tool_name} ${s.brief || ''}` : s.prompt || s.text || s.intent || '', 40)}`;
+}
+
+// An answer's options by name, the chosen ones marked, and the result an edge points at.
+function resultHtml(question, answer, trace, highlight) {
+  if (answer?.noul != null) return `<table class="bars"><tr><td>참일 확률</td><td>${bar(answer.noul)}</td></tr></table>`;
+  const activated = new Set((trace.segments || []).map(x => x.seq));
+  const rows = Object.entries(answer?.probabilities || {}).sort((a, b) => b[1] - a[1]).map(([option, p]) => {
+    const seq = /^g\d+$/.test(option) ? Number(option.slice(1)) : null;
+    const name = question === 'parent' ? subgraphName(option) : seq !== null ? nodeName(seq) : option;
+    const chosen = question === 'parent' ? option === trace.parent : activated.has(seq);
+    const cls = seq !== null && seq === highlight ? 'this' : chosen ? 'chosen' : '';
+    const tag = chosen ? `<span class="tag">${question === 'parent' ? '선택' : '원인'}</span>` : '';
+    return `<tr><td>${escape(name)}${tag}</td><td>${bar(p, cls)}</td></tr>`;
   }).join('');
-  return `<h3>원인</h3><table>${rows}</table>`;
+  return rows ? `<table class="bars">${rows}</table>` : `<pre>${escape(JSON.stringify(answer, null, 2))}</pre>`;
+}
+
+// Each Jev request as it was sent, its state and questions, with its answers.
+function jevHtml(trace, highlight) {
+  if (!trace.jev?.length) {
+    return `<p class="empty">이 판정에는 Jev state·question이 저장되어 있지 않습니다 (기록을 남기기 전 판정).</p>
+      <h4>결과 · parent</h4>${resultHtml('parent', { probabilities: trace.influence }, trace, highlight)}`;
+  }
+  return trace.jev.map(exchange => {
+    const state = Object.entries(exchange.request?.state || {}).map(([key, value]) =>
+      `<details><summary>${escape(key)}</summary><pre>${escape(typeof value === 'string' ? value : JSON.stringify(value, null, 2))}</pre></details>`).join('');
+    const questions = Object.entries(exchange.request?.questions || {}).map(([key, q]) =>
+      `<details><summary>${escape(key)} <span class="empty">(${escape(q.type)})</span></summary><pre>${escape(q.instructions)}\n\n${escape(JSON.stringify(q.criteria, null, 2))}</pre></details>`).join('');
+    const results = Object.entries(exchange.response?.answers || {}).map(([key, answer]) =>
+      `<h4>${escape(key)}</h4>${resultHtml(key, answer, trace, highlight)}`).join('');
+    const output = `<details><summary>answers</summary><pre>${escape(JSON.stringify(exchange.response?.answers, null, 2))}</pre></details>`;
+    const title = exchange.stage === 'parent' ? 'parent 질문' : `${subgraphName(exchange.parent)} 질문`;
+    return `<h3>${escape(title)}</h3>
+      <h4>입력 · state</h4>${state}<h4>입력 · question</h4>${questions}
+      <h4>출력</h4>${output}
+      <h4>결과</h4>${results}`;
+  }).join('');
+}
+
+// The chain the Call was traced along, as the red path on the graph shows it.
+function pathHtml(seq) {
+  const { steps } = chainOf(seq);
+  if (steps.length < 2) return '';
+  const rows = steps.map(step => `<div style="padding-left:${step.depth * 12}px">${step.depth ? '↑ ' : ''}${escape(nodeName(step.seq))}${step.probability != null ? ` <span class="empty">원인 p=${percent(step.probability)}</span>` : ''}</div>`).join('');
+  return `<h3>경로</h3><div>${rows}</div>`;
+}
+
+// A cause edge: the Jev requests behind it, what Jev returned, and what was chosen.
+function showEdge(callSeq, targetSeq) {
+  shownSeq = null;
+  const trace = parse(model.bySeq.get(callSeq)?.props.trace_json);
+  const cause = model.causes.find(c => c.from === callSeq && c.to === targetSeq);
+  $('panel').innerHTML = `<h2>원인 엣지</h2>
+    <p>${escape(nodeName(callSeq))}<br>→ ${escape(nodeName(targetSeq))}${cause ? ` <span class="empty">p=${percent(cause.props.probability)}</span>` : ''}</p>
+    ${trace ? jevHtml(trace, targetSeq) : '<p class="empty">판정 기록이 없습니다.</p>'}`;
 }
 
 let shownSeq = null;
-async function show(seq) {
+async function show(seq, highlight = null) {
   const node = model.bySeq.get(seq);
   if (!node) return;
   shownSeq = seq;
@@ -391,8 +492,9 @@ async function show(seq) {
   const decision = props.decision
     ? `<p><span class="badge" style="background:${css(DECISION_COLOR[props.decision] || '--other')}">${escape(props.decision)}</span> ${escape(props.decision_rule || '')} ${props.intent_score != null ? '· score ' + percent(props.intent_score) : ''}</p>
        ${props.decision_reason ? `<p>${escape(props.decision_reason)}</p>` : ''}
-       ${causesHtml(seq)}
-       ${trace?.intents ? `<h3>의도 (${escape(trace.intent_source || '')})</h3><p>${escape(trace.intents)}</p>` : ''}`
+       ${pathHtml(seq)}
+       ${trace && !model.causes.some(c => c.from === seq)
+         ? `<p class="empty">이 Call에는 원인 엣지가 없어 Jev 내용을 여기에 보여 줍니다.</p>${jevHtml(trace, highlight)}` : ''}`
     : props.trace_error ? `<p class="error">판정 실패: ${escape(props.trace_error)}</p>` : '';
   const head = `<h2>#${props.seq} ${escape(node.kind)}</h2>${decision}`;
   const panel = $('panel');

@@ -67,7 +67,7 @@ impl DecisionRepository for Graph {
             shared_tokens: BTreeSet::new(),
             parents: BTreeMap::new(),
             turns: if self.unstated_turn {
-                vec![Turn { intent: None }]
+                vec![Turn::default()]
             } else {
                 Vec::new()
             },
@@ -385,4 +385,16 @@ async fn asks_for_the_parent_first_and_then_about_it_alone() {
     assert_eq!(parents, [("s1", Some(1))]);
     assert_eq!(traces[0].intent_score, Some(0.9));
     assert!(traces[0].trace["intent_scores"].get("none").is_none());
+    // What Jev was asked and answered stays with the trace.
+    let jev = &traces[0].trace["jev"];
+    assert_eq!(jev[0]["stage"], "parent");
+    assert!(jev[0]["request"]["questions"]["parent"].is_object());
+    assert_eq!(
+        jev[0]["response"]["answers"]["parent"]["probabilities"]["s1"],
+        0.6
+    );
+    assert_eq!(jev[1]["stage"], "judge");
+    assert_eq!(jev[1]["parent"], "s1");
+    assert!(jev[1]["request"]["questions"]["intent_s1"].is_object());
+    assert_eq!(jev.as_array().unwrap().len(), 2);
 }
