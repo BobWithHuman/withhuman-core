@@ -49,6 +49,9 @@ async fn verifies_graph_version_and_persists_mock_verdict_over_real_http() {
         neo4j_user,
         neo4j_password,
         neo4j_database: "neo4j".into(),
+        jev: None,
+        intent_block_threshold: 0.5,
+        trace: Default::default(),
     };
     let repository = Neo4jDecisionRepository::connect(&config).await.unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

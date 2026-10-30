@@ -21,6 +21,9 @@ pub struct DecisionRequest {
     pub mode: EnforcementMode,
     #[serde(default)]
     pub deadline_ms: Option<u64>,
+    /// The user intent the model stated for the current turn, compared with the Call's cause.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, ToSchema)]

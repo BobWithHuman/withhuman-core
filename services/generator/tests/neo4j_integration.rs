@@ -318,6 +318,7 @@ async fn reports_the_session_cursor_for_resuming_collectors() {
             "UserPromptSubmit",
             json!({
                 "session_id":session_id,"order":order,"observed_at":order,"sequence":sequence,
+                "session_sequence":order,
                 "meta":{"agent_id":agent_id,"cwd":cwd,"prompt_id":prompt_id},
                 "payload":{"prompt":format!("prompt {order}"),"kind":"user","user_docs":[]}
             }),
@@ -352,12 +353,20 @@ async fn reports_the_session_cursor_for_resuming_collectors() {
     assert_eq!(
         cursor(session_id.clone()).await,
         json!({
-            "last_order":4,"agent_sequences":{"main":2,"sub-1":5},"cwd":"/c","prompt_id":"p2"
+            "last_order":4,"agent_sequences":{"main":2,"sub-1":5},"cwd":"/c","prompt_id":"p2",
+            "last_sequence":4,"intent":null,
+            "sequences":{"current":4,"open":false,"has_message":false,"has_call":false,
+                         "zero_has_request":false,"calls":{}}
         })
     );
     assert_eq!(
         cursor(unique_session("generator-cursor-unknown")).await,
-        json!({"last_order":0,"agent_sequences":{},"cwd":null,"prompt_id":null})
+        json!({
+            "last_order":0,"agent_sequences":{},"cwd":null,"prompt_id":null,
+            "last_sequence":null,"intent":null,
+            "sequences":{"current":null,"open":false,"has_message":false,"has_call":false,
+                         "zero_has_request":false,"calls":{}}
+        })
     );
 
     let call = client
@@ -380,6 +389,98 @@ async fn reports_the_session_cursor_for_resuming_collectors() {
         .await
         .unwrap();
     assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+
+    delete_session(&query, &session_id).await;
+}
+
+/// The cursor tells a resuming Collector whether the main agent's latest sequence is still open,
+/// which calls wait in this turn, and the intent this turn stated first (none from an earlier
+/// turn).
+#[tokio::test]
+async fn reports_the_open_sequence_and_the_turns_intent() {
+    let Some((query, generator_url)) = start_without_decision().await else {
+        return;
+    };
+    let session_id = unique_session("generator-sequence-cursor-it");
+    let client = reqwest::Client::new();
+    let send = |order: u64, sequence: u64, event: &'static str, meta: Value, payload: Value| {
+        let (client, url, session_id) = (client.clone(), generator_url.clone(), session_id.clone());
+        async move {
+            let mut body = json!({
+                "session_id":session_id,"order":order,"observed_at":order,
+                "session_sequence":sequence,"meta":meta,"payload":payload
+            });
+            if event == "PreToolUse" {
+                body["mode"] = json!("record");
+            }
+            post_event(&client, &url, event, body).await;
+        }
+    };
+    let prompt = |text: &str| json!({"prompt":text,"kind":"user","user_docs":[]});
+    let message = |id: &str, text: &str| json!({"message_id":id,"text":text});
+    let call = |command: &str| json!({"tool_name":"Bash","tool_input":{"command":command}});
+    send(1, 0, "UserPromptSubmit", json!({}), prompt("first")).await;
+    send(
+        2,
+        1,
+        "MessageDisplay",
+        json!({}),
+        message("m1", "[의도] A\nhi"),
+    )
+    .await;
+    send(3, 1, "PreToolUse", json!({"tool_use_id":"t1"}), call("ls")).await;
+    send(5, 1, "PostToolBatch", json!({}), json!({})).await;
+    send(6, 2, "UserPromptSubmit", json!({}), prompt("second")).await;
+    send(7, 3, "MessageDisplay", json!({}), message("m2", "plain")).await;
+    send(8, 3, "PreToolUse", json!({"tool_use_id":"t2"}), call("pwd")).await;
+
+    let cursor = || {
+        let (client, url, session_id) = (client.clone(), generator_url.clone(), session_id.clone());
+        async move {
+            client
+                .get(format!("{url}/v1/sessions/{session_id}/cursor"))
+                .send()
+                .await
+                .unwrap()
+                .json::<Value>()
+                .await
+                .unwrap()
+        }
+    };
+    let resumed = cursor().await;
+    assert_eq!(resumed["last_sequence"], 3);
+    assert_eq!(
+        resumed["intent"],
+        Value::Null,
+        "A belongs to the first turn"
+    );
+    assert_eq!(
+        resumed["sequences"],
+        json!({"current":3,"open":true,"has_message":true,"has_call":true,
+               "zero_has_request":true,"calls":{"t2":3}})
+    );
+
+    send(
+        9,
+        4,
+        "MessageDisplay",
+        json!({}),
+        message("m3", "[의도] B\nnext"),
+    )
+    .await;
+    send(
+        10,
+        5,
+        "MessageDisplay",
+        json!({}),
+        message("m4", "[의도] C\nlater"),
+    )
+    .await;
+    send(11, 5, "PostToolBatch", json!({}), json!({})).await;
+    let resumed = cursor().await;
+    assert_eq!(resumed["intent"], "B", "the turn's first intent");
+    assert_eq!(resumed["sequences"]["current"], 5);
+    assert_eq!(resumed["sequences"]["open"], false);
 
     delete_session(&query, &session_id).await;
 }

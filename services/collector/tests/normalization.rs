@@ -236,7 +236,7 @@ async fn snapshots_pending_side_analysis_references() {
 }
 
 /// Every Hook must normalize to the exact bytes the Collector produced before its session state
-/// moved behind `SessionStore`.
+/// moved behind `SessionStore`, plus the `session_sequence` field added since.
 #[tokio::test]
 async fn normalizes_the_scenario_byte_for_byte_like_the_original_collector() {
     let emitted = support::run_scenario(Normalizer::default(), support::GOLDEN_SESSION_ID).await;
@@ -287,6 +287,57 @@ async fn resumes_numbering_after_the_generator_cursor() {
     );
     assert_eq!(first.event.sequence, Some(8));
     assert_eq!(second.order(), first.event.order + 1);
+}
+
+/// A lost session resumes inside its committed open sequence: the waiting call's result joins it,
+/// the next call too, and the intent a fragment stated before the seed is kept.
+#[tokio::test]
+async fn resumes_inside_the_committed_open_sequence() {
+    let normalizer =
+        Normalizer::default().with_history(Arc::new(support::Committed(support::resume_cursor())));
+    let emitted = support::run_steps(normalizer, "session-1", support::RESUME_SCENARIO).await;
+    let observed: Vec<(u64, Option<String>)> = emitted
+        .iter()
+        .map(|event| {
+            let event: serde_json::Value = serde_json::from_str(event).unwrap();
+            (
+                event["session_sequence"].as_u64().unwrap(),
+                event["intent"].as_str().map(str::to_owned),
+            )
+        })
+        .collect();
+    let intent = Some("새 의도".to_owned());
+    assert_eq!(
+        observed,
+        [(3, None), (3, intent.clone()), (4, None), (4, intent)]
+    );
+}
+
+/// A session committed before sequences were numbered continues after sequence 0, which
+/// belongs to a session's first prompt.
+#[tokio::test]
+async fn numbers_a_session_without_sequences_after_sequence_zero() {
+    let normalizer =
+        Normalizer::default().with_history(Arc::new(support::Committed(SessionCursor {
+            last_order: 12,
+            ..Default::default()
+        })));
+    let emitted = support::run_steps(
+        normalizer,
+        "session-1",
+        r#"[["MessageDisplay", {"message_id": "m1", "delta": "hi", "final": true}],
+            ["UserPromptSubmit", {"prompt": "next"}]]"#,
+    )
+    .await;
+    let sequences: Vec<u64> = emitted
+        .iter()
+        .map(|event| {
+            serde_json::from_str::<serde_json::Value>(event).unwrap()["session_sequence"]
+                .as_u64()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(sequences, [1, 2]);
 }
 
 #[tokio::test]
@@ -408,4 +459,82 @@ impl GeneratorTransport for History {
     ) -> Result<Option<serde_json::Value>, GeneratorError> {
         Ok(Some(json!({"restored": tool_use_id})))
     }
+}
+
+/// Session-wide sequences follow the conversation: sequence 0 holds the first prompt and the
+/// Instructions before the first message; each message opens a sequence its calls and results
+/// join (also when the message arrives after its first call); a later prompt stands alone.
+#[tokio::test]
+async fn numbers_session_wide_sequences_and_carries_the_stated_intent() {
+    let emitted = support::run_steps(
+        Normalizer::default(),
+        "session-1",
+        support::SEQUENCE_SCENARIO,
+    )
+    .await;
+    let observed: Vec<(String, u64, Option<String>)> = emitted
+        .iter()
+        .map(|event| {
+            let event: serde_json::Value = serde_json::from_str(event).unwrap();
+            let hook = match event["payload"].as_object().unwrap() {
+                payload if payload.contains_key("prompt") => "Request",
+                payload if payload.contains_key("agent_id") => "Subagent",
+                payload if payload.contains_key("text") => "Message",
+                payload if payload.contains_key("load_reason") => "Instructions",
+                payload if payload.contains_key("tool_response") => "Result",
+                payload if payload.contains_key("tool_input") => "Call",
+                _ => "Batch",
+            };
+            (
+                hook.to_owned(),
+                event["session_sequence"].as_u64().unwrap(),
+                event["intent"].as_str().map(str::to_owned),
+            )
+        })
+        .collect();
+    let intent = Some("로그인 버그 수정 (확신도: 높음)".to_owned());
+    let deploy = Some("배포 (확신도: 중간)".to_owned());
+    let expected: Vec<(String, u64, Option<String>)> = [
+        ("Instructions", 0, None),
+        ("Request", 0, None),
+        ("Message", 1, None),
+        ("Call", 1, intent.clone()),
+        ("Call", 1, intent.clone()),
+        ("Result", 1, None),
+        ("Result", 1, None),
+        ("Batch", 1, None),
+        ("Call", 2, intent.clone()),
+        ("Message", 2, None),
+        ("Result", 2, None),
+        ("Batch", 2, None),
+        ("Call", 3, intent),
+        ("Result", 3, None),
+        ("Batch", 3, None),
+        ("Request", 4, None),
+        ("Call", 5, None),
+        ("Instructions", 5, None),
+        // A subagent's calls get sequences of their own; the main agent's sequence stays open.
+        ("Subagent", 5, None),
+        ("Message", 5, None),
+        ("Call", 6, deploy.clone()),
+        ("Call", 5, deploy.clone()),
+        // A repeated message keeps its sequence; a later intent line does not replace the
+        // turn's first.
+        ("Message", 5, None),
+        ("Message", 7, None),
+        ("Result", 6, None),
+        ("Batch", 6, None),
+        ("Result", 5, None),
+        // A batch closes the sequence of its calls only.
+        ("Batch", 5, None),
+        ("Call", 7, deploy.clone()),
+        // Naming only batched calls, a late repeat closes nothing.
+        ("Batch", 7, None),
+        ("Result", 7, None),
+        ("Batch", 7, None),
+    ]
+    .into_iter()
+    .map(|(hook, sequence, intent)| (hook.to_owned(), sequence, intent))
+    .collect();
+    assert_eq!(observed, expected);
 }

@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use withhuman_contracts::events::{
     CreatedNode, EventResponse, ParagraphClassificationRequest, ParagraphClassificationResponse,
-    ParagraphReference, RequestContinuationRequest, RequestContinuationResponse, SessionCursor,
-    ToolCall,
+    ParagraphReference, RequestContinuationRequest, RequestContinuationResponse, SequenceCursor,
+    SessionCursor, ToolCall,
 };
 
 use crate::{GeneratorConfig, GeneratorEvent, event::GraphMutation};
@@ -46,10 +46,17 @@ FOREACH (_ IN CASE WHEN created AND $has_node THEN [1] ELSE [] END | \
     client_id: $client_id, sequence: $sequence, prompt_id: $prompt_id, \
     agent_id: $agent_id, agent_type: $agent_type, cwd: $cwd, \
     tool_use_id: $tool_use_id, turn_id: $turn_id, repository: $repository, \
-    intent: $intent, payload_json: $payload_json \
+    intent: $intent, session_sequence: $session_sequence, payload_json: $payload_json \
   }) \
   CREATE (commit)-[:CREATED]->(node) \
   CREATE (session)-[:CONTAINS]->(node) \
+) \
+WITH session, commit, created \
+OPTIONAL MATCH (member:ExecutionNode {session_id: $session_id, seq: commit.version}) \
+FOREACH (_ IN CASE WHEN created AND member IS NOT NULL AND $session_sequence IS NOT NULL \
+                   THEN [1] ELSE [] END | \
+  MERGE (group:Sequence {session_id: $session_id, number: $session_sequence}) \
+  MERGE (group)-[:MEMBER]->(member) \
 ) \
 WITH session, commit, created \
 OPTIONAL MATCH (node:ExecutionNode {session_id: $session_id, seq: commit.version}) \
@@ -59,7 +66,7 @@ CALL (node, created) { \
   WITH node, before ORDER BY before.order DESC LIMIT 1 \
   OPTIONAL MATCH (after:ExecutionNode {session_id: $session_id}) WHERE after.order > node.order \
   WITH node, before, after ORDER BY after.order LIMIT 1 \
-  OPTIONAL MATCH (before)-[stale:NEXT]->(after) \
+  OPTIONAL MATCH (before)-[stale:NEXT]->(after) WHERE stale.kind IS NULL \
   DELETE stale \
   FOREACH (_ IN CASE WHEN before IS NULL THEN [] ELSE [1] END | \
     MERGE (before)-[edge:NEXT]->(node) \
@@ -111,7 +118,8 @@ CALL (node) { \
   ON MATCH SET stored.hidden = coalesce(stored.hidden, false) OR paragraph.hidden, \
                stored.hidden_rules = coalesce(stored.hidden_rules, []) + \
                  [rule IN paragraph.hidden_rules WHERE NOT rule IN coalesce(stored.hidden_rules, [])] \
-  MERGE (node)-[:CONTAINS_PARAGRAPH {index: paragraph.index}]->(stored) \
+  MERGE (node)-[contains:CONTAINS_PARAGRAPH {index: paragraph.index}]->(stored) \
+  SET contains.hidden = paragraph.hidden, contains.hidden_rules = paragraph.hidden_rules \
   WITH node, stored, paragraph \
   OPTIONAL MATCH (pending:PendingParagraphEnrichment {session_id: $session_id, hash: paragraph.hash}) \
   SET stored.instructs = coalesce(pending.instructs, stored.instructs), \
@@ -202,7 +210,9 @@ RETURN applied, request_seq";
 
 // Every event carries the session cwd and prompt id as they were after it, so the values of the
 // highest order are the current ones. Commits made before they were recorded on EventCommit fall
-// back to their ExecutionNode.
+// back to their ExecutionNode. The main agent's nodes carry no agent_id that a SubagentStart
+// announced; its latest sequence is open when a Message or Call came after the last ToolBatch or Request in it. The intent is the
+// first one stated after the last prompt.
 const SESSION_CURSOR: &str = "\
 OPTIONAL MATCH (commit:EventCommit {session_id: $session_id}) \
 WITH coalesce(max(commit.order), 0) AS last_order \
@@ -211,6 +221,22 @@ WHERE node.agent_id IS NOT NULL AND node.sequence IS NOT NULL \
 WITH last_order, node.agent_id AS agent_id, max(node.sequence) AS sequence \
 WITH last_order, \
      collect(CASE WHEN agent_id IS NULL THEN NULL ELSE [agent_id, sequence] END) AS agents \
+WITH last_order, agents, \
+  COLLECT { MATCH (n:ExecutionNode {session_id: $session_id}) \
+            WHERE n.session_sequence IS NOT NULL AND NOT EXISTS { \
+              MATCH (:ExecutionNode {session_id: $session_id, type: 'SubagentStart', agent_id: n.agent_id}) } \
+            RETURN max(n.session_sequence) }[0] AS main_sequence, \
+  coalesce(COLLECT { MATCH (r:ExecutionNode {session_id: $session_id, type: 'Request'}) \
+                     RETURN max(r.order) }[0], -1) AS last_request \
+WITH last_order, agents, main_sequence, last_request, \
+  COLLECT { MATCH (n:ExecutionNode {session_id: $session_id, session_sequence: main_sequence}) \
+            WHERE n.type IN ['Message', 'Call'] AND NOT EXISTS { \
+              MATCH (:ExecutionNode {session_id: $session_id, type: 'SubagentStart', agent_id: n.agent_id}) } \
+            RETURN max(n.order) }[0] AS last_opening, \
+  COLLECT { MATCH (n:ExecutionNode {session_id: $session_id, session_sequence: main_sequence}) \
+            WHERE n.type IN ['ToolBatch', 'Request'] AND NOT EXISTS { \
+              MATCH (:ExecutionNode {session_id: $session_id, type: 'SubagentStart', agent_id: n.agent_id}) } \
+            RETURN max(n.order) }[0] AS last_closing \
 RETURN last_order, agents, \
   coalesce( \
     COLLECT { MATCH (c:EventCommit {session_id: $session_id}) WHERE c.cwd IS NOT NULL \
@@ -221,7 +247,25 @@ RETURN last_order, agents, \
     COLLECT { MATCH (c:EventCommit {session_id: $session_id}) WHERE c.prompt_id IS NOT NULL \
               RETURN c.prompt_id ORDER BY c.order DESC LIMIT 1 }[0], \
     COLLECT { MATCH (n:ExecutionNode {session_id: $session_id}) WHERE n.prompt_id IS NOT NULL \
-              RETURN n.prompt_id ORDER BY n.order DESC LIMIT 1 }[0]) AS prompt_id";
+              RETURN n.prompt_id ORDER BY n.order DESC LIMIT 1 }[0]) AS prompt_id, \
+  COLLECT { MATCH (n:ExecutionNode {session_id: $session_id}) WHERE n.session_sequence IS NOT NULL \
+            RETURN max(n.session_sequence) }[0] AS last_sequence, \
+  COLLECT { MATCH (n:ExecutionNode {session_id: $session_id, type: 'Message'}) \
+            WHERE n.intent IS NOT NULL AND n.order > last_request \
+            RETURN n.intent ORDER BY n.order LIMIT 1 }[0] AS intent, \
+  main_sequence, \
+  last_opening IS NOT NULL AND coalesce(last_closing, -1) < last_opening AS open, \
+  EXISTS { MATCH (n:ExecutionNode {session_id: $session_id, session_sequence: main_sequence, type: 'Message'}) } \
+    AS has_message, \
+  EXISTS { MATCH (n:ExecutionNode {session_id: $session_id, session_sequence: main_sequence, type: 'Call'}) \
+           WHERE NOT EXISTS { \
+              MATCH (:ExecutionNode {session_id: $session_id, type: 'SubagentStart', agent_id: n.agent_id}) } } AS has_call, \
+  EXISTS { MATCH (n:ExecutionNode {session_id: $session_id, session_sequence: 0, type: 'Request'}) } \
+    AS zero_has_request, \
+  COLLECT { MATCH (call:ExecutionNode {session_id: $session_id, type: 'Call'}) \
+            WHERE call.order > last_request AND call.session_sequence IS NOT NULL \
+              AND call.tool_use_id IS NOT NULL \
+            RETURN [call.tool_use_id, call.session_sequence] ORDER BY call.order DESC LIMIT 200 } AS calls";
 
 const TOOL_CALL: &str = "\
 MATCH (call:ExecutionNode {session_id: $session_id, type: 'Call', tool_use_id: $tool_use_id}) \
@@ -250,7 +294,8 @@ CALL (node, row) { \
   ON MATCH SET stored.hidden = coalesce(stored.hidden, false) OR paragraph.hidden, \
                stored.hidden_rules = coalesce(stored.hidden_rules, []) + \
                  [rule IN paragraph.hidden_rules WHERE NOT rule IN coalesce(stored.hidden_rules, [])] \
-  MERGE (node)-[:CONTAINS_PARAGRAPH {index: paragraph.index}]->(stored) \
+  MERGE (node)-[contains:CONTAINS_PARAGRAPH {index: paragraph.index}]->(stored) \
+  SET contains.hidden = paragraph.hidden, contains.hidden_rules = paragraph.hidden_rules \
 } \
 CALL (node, commit, row) { \
   UNWIND row.tokens AS token \
@@ -448,7 +493,7 @@ impl Neo4jRepository {
         mutation: GraphMutation,
     ) -> Result<EventResponse, RepositoryError> {
         let has_node = mutation.node_type.is_some();
-        let is_tool_result = matches!(mutation.node_type, Some("Sequence" | "Error"));
+        let is_tool_result = matches!(mutation.node_type, Some("Segment" | "Error"));
         let previous_sequence = mutation.sequence.map(|sequence| sequence - 1);
         let next_sequence = mutation.sequence.map(|sequence| sequence + 1);
         let parameters = json!({
@@ -475,6 +520,7 @@ impl Neo4jRepository {
             "paragraphs": mutation.paragraphs,
             "tokens": mutation.tokens,
             "intent": mutation.intent,
+            "session_sequence": mutation.session_sequence,
             "is_tool_result": is_tool_result,
         });
         let data = self.execute(COMMIT_EVENT, parameters).await?;
@@ -648,6 +694,24 @@ impl GraphRepository for Neo4jRepository {
                 .collect::<Result<_, _>>()?,
             cwd: row.get(2).and_then(Value::as_str).map(str::to_owned),
             prompt_id: row.get(3).and_then(Value::as_str).map(str::to_owned),
+            last_sequence: row.get(4).and_then(Value::as_u64),
+            intent: row.get(5).and_then(Value::as_str).map(str::to_owned),
+            sequences: SequenceCursor {
+                current: row.get(6).and_then(Value::as_u64),
+                open: row.get(7).and_then(Value::as_bool).unwrap_or_default(),
+                has_message: row.get(8).and_then(Value::as_bool).unwrap_or_default(),
+                has_call: row.get(9).and_then(Value::as_bool).unwrap_or_default(),
+                zero_has_request: row.get(10).and_then(Value::as_bool).unwrap_or_default(),
+                calls: row
+                    .get(11)
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|pair| {
+                        Some((pair.get(0)?.as_str()?.to_owned(), pair.get(1)?.as_u64()?))
+                    })
+                    .collect(),
+            },
         })
     }
 

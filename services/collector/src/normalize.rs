@@ -2,6 +2,7 @@ use std::{error::Error, fmt, sync::Arc};
 
 use serde_json::Value;
 use withhuman_common::{
+    intent::split_intent,
     origin::{self, Origin, OriginContext},
     tokens,
 };
@@ -28,8 +29,8 @@ use withhuman_contracts::{
 };
 
 use crate::{
-    GeneratorError, GeneratorTransport, InMemorySessionStore, MessageFragment, SessionSnapshot,
-    SessionStore, SessionUpdate, StoreError, TrustedHookContext,
+    GeneratorError, GeneratorTransport, InMemorySessionStore, MessageFragment, SequenceStep,
+    SessionSnapshot, SessionStore, SessionUpdate, StoreError, TrustedHookContext,
 };
 
 /// Orders skipped when a session resumes without Collector state, so events that were still on
@@ -101,6 +102,8 @@ pub struct Normalizer {
     history: Option<Arc<dyn GeneratorTransport>>,
     /// Commands, besides the built-in list, whose output comes from the network.
     network_commands: Arc<[String]>,
+    /// Reads the `[의도]` line of messages as the turn's intent.
+    intent_capture: bool,
 }
 
 impl Default for Normalizer {
@@ -121,7 +124,14 @@ impl Normalizer {
             sessions: Arc::new(sessions),
             history: None,
             network_commands: Arc::from([]),
+            intent_capture: true,
         }
+    }
+
+    /// Whether messages' `[의도]` lines are kept as the turn's intent.
+    pub fn with_intent_capture(mut self, enabled: bool) -> Self {
+        self.intent_capture = enabled;
+        self
     }
 
     /// Treats the output of these commands as fetched from the network.
@@ -241,6 +251,8 @@ impl Normalizer {
                 SessionUpdate {
                     cwd: request.cwd,
                     prompt_id: request.prompt_id,
+                    sequence_step: SequenceStep::Request,
+                    clear_intent: true,
                     ..Default::default()
                 },
             )
@@ -292,6 +304,10 @@ impl Normalizer {
                     )),
                     agent_id: request.agent_id.clone(),
                     record_downloads,
+                    sequence_step: SequenceStep::Call {
+                        tool_use_id: request.tool_use_id.clone(),
+                        agent_id: request.agent_id.clone(),
+                    },
                     ..Default::default()
                 },
             )
@@ -320,6 +336,7 @@ impl Normalizer {
             ),
             mode,
             deadline_ms,
+            intent: state.intent.clone(),
         }))
     }
 
@@ -337,6 +354,10 @@ impl Normalizer {
                     prompt_id: request.prompt_id,
                     take_tool_input: Some(request.tool_use_id.clone()),
                     agent_id: request.agent_id.clone(),
+                    sequence_step: SequenceStep::Result {
+                        tool_use_id: request.tool_use_id.clone(),
+                        agent_id: request.agent_id.clone(),
+                    },
                     ..Default::default()
                 },
             )
@@ -400,6 +421,10 @@ impl Normalizer {
                     prompt_id: request.prompt_id,
                     take_tool_input: Some(request.tool_use_id.clone()),
                     agent_id: request.agent_id.clone(),
+                    sequence_step: SequenceStep::Result {
+                        tool_use_id: request.tool_use_id.clone(),
+                        agent_id: request.agent_id.clone(),
+                    },
                     ..Default::default()
                 },
             )
@@ -447,6 +472,7 @@ impl Normalizer {
                 &request.session_id,
                 SessionUpdate {
                     agent_id: Some(request.agent_id.clone()),
+                    sequence_step: SequenceStep::SubagentStart(request.agent_id.clone()),
                     ..Default::default()
                 },
             )
@@ -599,10 +625,16 @@ impl Normalizer {
         observed_at: u64,
     ) -> Result<Option<NormalizedEvent>, NormalizeError> {
         // Buffered fragments wait in shared state, so they are kept redacted.
+        // The `[의도]` line opens a message's first flush; it becomes the turn's intent.
+        let intent = (self.intent_capture && request.index.unwrap_or(0) == 0)
+            .then(|| split_intent(&request.delta))
+            .flatten()
+            .map(|line| tokens::redact(line.intent).into_owned());
         let fragment = MessageFragment {
             message_id: request.message_id.clone(),
             index: request.index,
             delta: tokens::redact(&request.delta).into_owned(),
+            intent,
         };
         if !request.final_ {
             self.sessions
@@ -616,6 +648,7 @@ impl Normalizer {
                 &request.session_id,
                 SessionUpdate {
                     finish_message: Some(fragment),
+                    sequence_step: SequenceStep::Message(request.message_id.clone()),
                     ..Default::default()
                 },
             )
@@ -651,9 +684,29 @@ impl Normalizer {
         observed_at: u64,
     ) -> Result<NormalizedEvent, NormalizeError> {
         let state = self
-            .apply(&request.session_id, SessionUpdate::default())
+            .apply(
+                &request.session_id,
+                SessionUpdate {
+                    sequence_step: SequenceStep::Batch {
+                        agent_id: request.agent_id.clone(),
+                        tool_use_ids: request
+                            .tool_calls
+                            .into_iter()
+                            .map(|call| call.tool_use_id)
+                            .collect(),
+                    },
+                    ..Default::default()
+                },
+            )
             .await?;
-        let meta = metadata(&state, context, None, None, None, None);
+        let meta = metadata(
+            &state,
+            context,
+            None,
+            request.agent_id,
+            request.agent_type,
+            None,
+        );
         Ok(NormalizedEvent::PostToolBatch(envelope(
             &state,
             context,
@@ -719,6 +772,7 @@ fn envelope<T>(
         observed_at,
         client_id: context.client_id.clone(),
         sequence,
+        session_sequence: Some(state.session_sequence),
         meta,
         side_pending: Some(state.side_pending.clone()),
         payload,
