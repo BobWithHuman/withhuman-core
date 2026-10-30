@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeSet,
     error::Error,
     fmt,
     sync::Arc,
@@ -91,7 +90,7 @@ impl DecisionProvider for MockDecisionProvider {
 /// departs from the user's intents by more than the configured threshold.
 ///
 /// When tracing fails, the Call gets the Collector's failure policy (an error), or REVIEW when
-/// a candidate holds hidden content or a sensitive value. Jev sees prompts only through the
+/// an earlier SubGraph of the Call's agent holds hidden content or a sensitive value. Jev sees prompts only through the
 /// intents stated for them; when no prompt has one, the Call is allowed, or reviewed in that
 /// same risky case.
 #[derive(Clone)]
@@ -187,14 +186,11 @@ impl DecisionProvider for JevDecisionProvider {
             Err(error) => return Err(ProviderError(error.to_string())),
         };
 
-        // Candidates and the SubGraphs their paths pass through, whose content Jev sees.
-        let (candidates, _) = trace::candidate_subgraphs(&graph, &self.settings);
-        let mut shown: BTreeSet<u64> = BTreeSet::new();
-        for candidate in candidates {
-            let (path, _) = trace::ancestry(&graph, candidate, |_| false, self.settings.max_hops);
-            shown.extend(path);
-        }
-        let shown: Vec<u64> = shown.into_iter().collect();
+        // The parent and the SubGraphs its path passes through, whose content Jev sees.
+        let mut shown: Vec<u64> = trace::parent_subgraph(&graph)
+            .map(|parent| trace::ancestry(&graph, parent, |_| false, self.settings.max_hops).0)
+            .unwrap_or_default();
+        shown.sort_unstable();
         let members = self
             .repository
             .subgraph_members(&request.session_id, &shown, graph.call.order)
@@ -203,7 +199,7 @@ impl DecisionProvider for JevDecisionProvider {
         // Every turn's stated intent; a prompt's text is never shown.
         let intents = trace::intents(&graph, request.intent.as_deref(), &self.settings);
         let plan = trace::plan(&graph, &members, intents.text.as_deref(), &self.settings);
-        let risky = plan.risky(&graph);
+        let risky = graph.risky();
 
         let remaining = |reserve: Duration| {
             request.deadline_ms.map(|deadline| {
@@ -216,32 +212,13 @@ impl DecisionProvider for JevDecisionProvider {
             remaining(PERSIST_RESERVE).map_or(self.jev_timeout, |left| left.min(self.jev_timeout))
         };
 
-        // Step 1: which candidates the Call came from.
-        let asked = Instant::now();
-        let first = timeout();
-        if first.is_zero() {
-            return self
-                .unresolved(request, "no time left to ask Jev", risky)
-                .await;
-        }
-        let answers = match self.jev.ask(&plan.request, first).await {
-            Ok(answers) => answers,
-            Err(error) => return self.unresolved(request, error, risky).await,
-        };
-        let parents = match trace::parents(&plan, &answers) {
-            Ok(parents) => parents,
-            Err(error) => return self.unresolved(request, error, risky).await,
-        };
-        let parent_ms = elapsed_ms(asked);
+        // The parent is found without Jev; Jev is asked only about it.
+        let parents = trace::parents(&plan);
         // What Jev was asked and answered, kept with the trace so it can be inspected.
-        let mut exchanges = vec![serde_json::json!({
-            "stage": "parent", "request": &plan.request, "response": &answers,
-        })];
-
-        // Step 2: one request per parent, all at once, each holding only that parent's results.
+        let mut exchanges = Vec::new();
         let judged = Instant::now();
-        let second = timeout();
-        if second.is_zero() {
+        let budget = timeout();
+        if budget.is_zero() {
             return self
                 .unresolved(request, "no time left to ask Jev", risky)
                 .await;
@@ -253,7 +230,7 @@ impl DecisionProvider for JevDecisionProvider {
                 trace::judge_request(&plan, &parent.candidate).map(|jev_request| {
                     let jev = self.jev.clone();
                     let sent = jev_request.clone();
-                    let task = tokio::spawn(async move { jev.ask(&jev_request, second).await });
+                    let task = tokio::spawn(async move { jev.ask(&jev_request, budget).await });
                     (sent, task)
                 })
             })
@@ -284,7 +261,7 @@ impl DecisionProvider for JevDecisionProvider {
 
         let mut trace_json = trace::record(&plan, &outcome);
         trace_json["intent_source"] = intents.source.into();
-        trace_json["jev_ms"] = serde_json::json!({"parent": parent_ms, "judge": judge_ms});
+        trace_json["jev_ms"] = serde_json::json!({"judge": judge_ms});
         trace_json["jev"] = exchanges.into();
         let record = TraceRecord {
             subgraph: graph.call.subgraph,
@@ -335,7 +312,7 @@ impl DecisionProvider for JevDecisionProvider {
         };
         let jev = Some(JevActivity {
             asked: true,
-            ms: Some(parent_ms + judge_ms),
+            ms: Some(judge_ms),
             reused_from: None,
             error: stored
                 .err()

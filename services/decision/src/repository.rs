@@ -83,7 +83,10 @@ RETURN call.order, call.subgraph, call.payload_json, \
                                 AND stated.order < until AND stated.order < call.order \
                               RETURN stated.intent ORDER BY stated.order LIMIT 1 }[0], \
                     request.subgraph] \
-            ORDER BY request.order } AS turns"
+            ORDER BY request.order } AS turns, \
+  COLLECT { MATCH (result:Segment|Error {session_id: $session_id}) \
+            WHERE result.subgraph < call.subgraph AND result.order < call.order \
+            RETURN DISTINCT result.subgraph } AS results"
 );
 
 // Tool results also bring the paragraphs hidden where they appeared, and whether a later Call
@@ -434,6 +437,7 @@ impl DecisionRepository for Neo4jDecisionRepository {
             hidden: numbers(row.get(4)),
             tokens,
             shared_tokens,
+            results: numbers(row.get(9)),
             parents,
             turns: pairs(row.get(8))
                 .map(|pair| Turn {
