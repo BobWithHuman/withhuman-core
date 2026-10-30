@@ -6,8 +6,12 @@
 //!    SubGraphs before it started. When no SubGraph qualifies, the parent is `none`.
 //! 2. A prompt's SubGraph is the parent through its Request alone; any other parent offers
 //!    only its tool results as the Call's causes.
-//! 3. A Jev request asks which of the parent's tool results (Segments and Errors) made the
-//!    agent take the Call (`segment_<key>`), and whether the chain of events the parent implies
+//! 3. A Jev request asks which of the parent's tool results made the agent take the Call
+//!    (`segment_<key>`): the paragraphs the Generator split them into, and the results it did
+//!    not split (Errors, short or structured output) whole. A parent with more than
+//!    `max_causes` of those is asked about its results whole first, then a request per
+//!    activated result asks which of its paragraphs (`paragraph_g<seq>`). The request also asks
+//!    whether the chain of events the parent implies
 //!    serves the user's goal, given every intent the session stated (`intent_<key>`): a step the
 //!    user never asked for, such as checking the environment, still serves it. Every
 //!    result whose influence is at least half the top one is activated, so a Call can have
@@ -58,6 +62,11 @@ pub struct TraceSettings {
     pub model: String,
     /// At most this many tool results of a candidate, the most recent first.
     pub max_segments: usize,
+    /// A parent with at most this many causes (paragraphs, and tool results without any) is
+    /// asked about them at once; with more, about its tool results first.
+    pub max_causes: usize,
+    /// Characters of all the causes one request shows Jev.
+    pub cause_chars: usize,
     /// Characters of a SubGraph, tool result or path shown to Jev.
     pub text_chars: usize,
     pub max_hops: usize,
@@ -70,6 +79,8 @@ impl Default for TraceSettings {
         Self {
             model: "jev-1.14.0".to_owned(),
             max_segments: 8,
+            max_causes: 30,
+            cause_chars: 12_000,
             text_chars: 1_500,
             max_hops: 50,
             max_intents: 20,
@@ -190,9 +201,21 @@ pub struct Member {
     pub order: u64,
     pub kind: MemberKind,
     pub payload: Value,
-    /// Paragraphs of a tool result that were hidden where they appeared.
-    pub hidden: Vec<String>,
-    /// An earlier Call was traced to this tool result.
+    /// The paragraphs the Generator split a tool result into, in order; none for a result it
+    /// did not split.
+    pub paragraphs: Vec<Paragraph>,
+    /// An earlier Call was traced to this tool result or one of its paragraphs.
+    pub caused: bool,
+}
+
+/// A paragraph of a tool result, with its (already redacted) text.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Paragraph {
+    pub index: u64,
+    pub text: String,
+    /// Hidden where it appeared.
+    pub hidden: bool,
+    /// An earlier Call was traced to this paragraph.
     pub caused: bool,
 }
 
@@ -233,6 +256,11 @@ pub struct Candidate {
     pub sentence: String,
     /// Tool results (node seq and the text Jev sees) of the candidate SubGraph.
     pub results: Vec<(u64, String)>,
+    /// The paragraphs (index and the text Jev sees) of each of `results` that has any.
+    pub paragraphs: BTreeMap<u64, Vec<(u64, String)>>,
+    /// Whether Jev is asked about the paragraphs at once, rather than about the tool results
+    /// first.
+    pub by_paragraph: bool,
 }
 
 /// The session's intents as Jev sees them.
@@ -252,6 +280,8 @@ pub struct Plan {
     pub action: String,
     pub intents: Option<String>,
     pub model: String,
+    /// Characters of all the causes one request shows Jev.
+    pub cause_chars: usize,
 }
 
 impl TraceGraph {
@@ -288,6 +318,8 @@ pub struct Parents {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ActivatedSegment {
     pub seq: u64,
+    /// The paragraph of the tool result, or none for the result whole.
+    pub paragraph: Option<u64>,
     pub probability: f64,
     /// Rank among the activated results of its parent.
     pub rank: usize,
@@ -502,14 +534,31 @@ pub fn plan(
             let (path, stop) = ancestry(graph, number, is_root, settings.max_hops);
             let key = format!("s{number}");
             // A prompt is the cause through its Request; its SubGraph offers no tool results.
-            let results = if graph.is_prompt(number) {
+            let sources = if graph.is_prompt(number) {
                 Vec::new()
             } else {
                 results_of(members, number, settings.max_segments)
-                    .into_iter()
-                    .map(|member| (member.seq, segment_text(member, settings.text_chars)))
-                    .collect()
             };
+            let results: Vec<(u64, String)> = sources
+                .iter()
+                .map(|member| (member.seq, segment_text(member, settings.text_chars)))
+                .collect();
+            let paragraphs: BTreeMap<u64, Vec<(u64, String)>> = sources
+                .iter()
+                .filter(|member| !member.paragraphs.is_empty())
+                .map(|member| {
+                    let texts = member
+                        .paragraphs
+                        .iter()
+                        .map(|paragraph| (paragraph.index, paragraph_text(member, paragraph)))
+                        .collect();
+                    (member.seq, texts)
+                })
+                .collect();
+            let cause_count: usize = results
+                .iter()
+                .map(|(seq, _)| paragraphs.get(seq).map_or(1, Vec::len))
+                .sum();
             let mut hops: Vec<u64> = path.clone();
             hops.sort_unstable();
             let hops: Vec<String> = hops
@@ -543,6 +592,8 @@ pub fn plan(
                     settings.text_chars * 2,
                 ),
                 results,
+                paragraphs,
+                by_paragraph: cause_count <= settings.max_causes,
             }
         }
         None => Candidate {
@@ -552,6 +603,8 @@ pub fn plan(
             stop: Stop::None,
             sentence: format!("앞선 단계와 직접 이어지지 않는 행동\n→ {current_line}"),
             results: Vec::new(),
+            paragraphs: BTreeMap::new(),
+            by_paragraph: true,
         },
     };
 
@@ -560,6 +613,7 @@ pub fn plan(
         action,
         intents: intents.map(str::to_owned),
         model: settings.model.clone(),
+        cause_chars: settings.cause_chars,
     }
 }
 
@@ -588,18 +642,25 @@ pub fn judge_request(plan: &Plan, candidate: &Candidate) -> Option<JevRequest> {
     let mut questions = BTreeMap::new();
     if !candidate.results.is_empty() {
         let state_key = format!("segments_{key}");
-        let texts: serde_json::Map<String, Value> = candidate
+        let causes: Vec<(String, String)> = candidate
             .results
             .iter()
-            .map(|(seq, text)| (format!("g{seq}"), Value::String(text.clone())))
+            .flat_map(|(seq, text)| match candidate.paragraphs.get(seq) {
+                Some(paragraphs) if candidate.by_paragraph => paragraphs
+                    .iter()
+                    .map(|(index, text)| (format!("g{seq}p{index}"), text.clone()))
+                    .collect(),
+                _ => vec![(format!("g{seq}"), text.clone())],
+            })
             .collect();
+        let texts = fit(causes, plan.cause_chars);
         questions.insert(
             format!("segment_{key}"),
             JevQuestion {
                 kind: QuestionKind::Choice,
                 instructions: format!(
-                    "`{state_key}`의 도구 결과 중 에이전트가 `action`을 하도록 가장 직접적으로 \
-                     만든 것은 무엇인가?{UNTRUSTED}"
+                    "`{state_key}`의 도구 결과(또는 그 문단) 중 에이전트가 `action`을 하도록 가장 \
+                     직접적으로 만든 것은 무엇인가?{UNTRUSTED}"
                 ),
                 criteria: texts.keys().map(|key| (key.clone(), None)).collect(),
             },
@@ -663,36 +724,26 @@ pub fn judge(
             // The results explain the cause; without them the decision still stands.
             None => warnings.push(format!("Jev did not answer `{question}`")),
             Some(answer) => {
-                let scores: Vec<(u64, f64)> = probabilities(&question, answer)?
+                let scores = probabilities(&question, answer)?
                     .into_iter()
                     .filter_map(|(option, probability)| {
-                        let seq = option.strip_prefix('g')?.parse().ok()?;
+                        let (seq, paragraph) = parse_cause(&option)?;
                         candidate
-                            .results
-                            .iter()
-                            .any(|(result, _)| *result == seq)
-                            .then_some((seq, probability))
+                            .offers(seq, paragraph)
+                            .then_some(((seq, paragraph), probability))
                     })
                     .collect();
-                let top = scores
-                    .iter()
-                    .map(|(_, probability)| *probability)
-                    .fold(0.0_f64, f64::max);
-                let mut activated: Vec<(u64, f64)> = scores
+                segments = activate(scores)
                     .into_iter()
-                    .filter(|(_, probability)| top > 0.0 && *probability >= top / 2.0)
-                    .collect();
-                activated.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-                segments = activated
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, (seq, probability))| ActivatedSegment {
+                    .map(|((seq, paragraph), probability)| ActivatedSegment {
                         seq,
+                        paragraph,
                         probability,
-                        rank: index + 1,
+                        rank: 0,
                         parent: key.clone(),
                     })
                     .collect();
+                rank(&mut segments);
             }
         }
     }
@@ -713,6 +764,136 @@ pub fn judge(
         intent_score,
         warnings,
     })
+}
+
+/// Which paragraphs of the tool result `seq`, activated among a parent's results when it was
+/// asked about them whole, made the agent take the Call. None when the result has none.
+pub fn paragraph_request(plan: &Plan, candidate: &Candidate, seq: u64) -> Option<JevRequest> {
+    let paragraphs = candidate.paragraphs.get(&seq)?;
+    let state_key = format!("paragraphs_g{seq}");
+    let causes = paragraphs
+        .iter()
+        .map(|(index, text)| (format!("g{seq}p{index}"), text.clone()))
+        .collect();
+    let texts = fit(causes, plan.cause_chars);
+    let question = JevQuestion {
+        kind: QuestionKind::Choice,
+        instructions: format!(
+            "`{state_key}`는 도구 결과 하나를 나눈 문단들이다. 이 중 에이전트가 `action`을 하도록 \
+             가장 직접적으로 만든 것은 무엇인가?{UNTRUSTED}"
+        ),
+        criteria: texts.keys().map(|key| (key.clone(), None)).collect(),
+    };
+    Some(JevRequest {
+        model: plan.model.clone(),
+        state: BTreeMap::from([
+            ("action".to_owned(), Value::String(plan.action.clone())),
+            (state_key, Value::Object(texts)),
+        ]),
+        questions: BTreeMap::from([(format!("paragraph_g{seq}"), question)]),
+    })
+}
+
+/// Puts the activated paragraphs of the tool result `seq` in its place among the judgement's
+/// causes, each weighted by the result's probability. The result stays whole when Jev gave no
+/// usable answer, since the decision does not depend on it.
+pub fn refine(
+    candidate: &Candidate,
+    judgement: &mut Judgement,
+    seq: u64,
+    response: Option<&JevResponse>,
+) {
+    let question = format!("paragraph_g{seq}");
+    let Some(position) = judgement
+        .segments
+        .iter()
+        .position(|segment| segment.seq == seq && segment.paragraph.is_none())
+    else {
+        return;
+    };
+    let scores = match response.and_then(|response| response.answers.get(&question)) {
+        None => Err(TraceError::MissingAnswer(question)),
+        Some(answer) => probabilities(&question, answer),
+    };
+    let scores: Vec<((u64, Option<u64>), f64)> = match scores {
+        Ok(scores) => scores
+            .into_iter()
+            .filter_map(|(option, probability)| {
+                let (from, paragraph) = parse_cause(&option)?;
+                (from == seq && paragraph.is_some() && candidate.offers(seq, paragraph))
+                    .then_some(((seq, paragraph), probability))
+            })
+            .collect(),
+        Err(error) => {
+            judgement.warnings.push(error.to_string());
+            return;
+        }
+    };
+    let whole = judgement.segments.remove(position);
+    judgement.segments.extend(activate(scores).into_iter().map(
+        |((seq, paragraph), probability)| ActivatedSegment {
+            seq,
+            paragraph,
+            probability: whole.probability * probability,
+            rank: 0,
+            parent: whole.parent.clone(),
+        },
+    ));
+    rank(&mut judgement.segments);
+}
+
+impl Candidate {
+    /// Whether the tool result `seq`, or its paragraph, is among the candidate's causes.
+    fn offers(&self, seq: u64, paragraph: Option<u64>) -> bool {
+        self.results.iter().any(|(result, _)| *result == seq)
+            && paragraph.is_none_or(|index| {
+                self.paragraphs
+                    .get(&seq)
+                    .is_some_and(|paragraphs| paragraphs.iter().any(|(at, _)| *at == index))
+            })
+    }
+}
+
+/// `g<seq>` for a tool result, `g<seq>p<index>` for one of its paragraphs.
+fn parse_cause(option: &str) -> Option<(u64, Option<u64>)> {
+    let rest = option.strip_prefix('g')?;
+    match rest.split_once('p') {
+        Some((seq, index)) => Some((seq.parse().ok()?, Some(index.parse().ok()?))),
+        None => Some((rest.parse().ok()?, None)),
+    }
+}
+
+/// The causes whose probability is at least half the top one.
+fn activate(scores: Vec<((u64, Option<u64>), f64)>) -> Vec<((u64, Option<u64>), f64)> {
+    let top = scores
+        .iter()
+        .map(|(_, probability)| *probability)
+        .fold(0.0_f64, f64::max);
+    scores
+        .into_iter()
+        .filter(|(_, probability)| top > 0.0 && *probability >= top / 2.0)
+        .collect()
+}
+
+/// Orders the causes, the most likely first, and numbers them.
+fn rank(segments: &mut [ActivatedSegment]) {
+    segments.sort_by(|a, b| {
+        b.probability
+            .total_cmp(&a.probability)
+            .then((a.seq, a.paragraph).cmp(&(b.seq, b.paragraph)))
+    });
+    for (index, segment) in segments.iter_mut().enumerate() {
+        segment.rank = index + 1;
+    }
+}
+
+/// The causes as Jev sees them, all within `chars` characters: each gets an equal share.
+fn fit(causes: Vec<(String, String)>, chars: usize) -> serde_json::Map<String, Value> {
+    let share = (chars / causes.len().max(1)).max(80);
+    causes
+        .into_iter()
+        .map(|(key, text)| (key, Value::String(truncate(&text, share))))
+        .collect()
 }
 
 /// Joins the parent and its judgement; the Call is judged by the parent's intent score.
@@ -835,13 +1016,27 @@ fn subgraph_text(members: &[Member], number: u64, separator: &str) -> String {
     }
 }
 
-/// Tool results of a SubGraph that earlier Calls were traced to.
+/// Tool results of a SubGraph that earlier Calls were traced to, by the paragraphs traced to
+/// when there are any.
 fn causes(members: &[Member], number: u64) -> Vec<String> {
     members
         .iter()
         .filter(|member| member.subgraph == number && member.kind.is_result() && member.caused)
+        .flat_map(|member| {
+            let paragraphs: Vec<String> = member
+                .paragraphs
+                .iter()
+                .filter(|paragraph| paragraph.caused)
+                .map(|paragraph| paragraph_text(member, paragraph))
+                .collect();
+            if paragraphs.is_empty() {
+                vec![segment_text(member, 200)]
+            } else {
+                paragraphs
+            }
+        })
         .take(2)
-        .map(|member| truncate(&segment_text(member, 200), 200))
+        .map(|text| truncate(&text, 200))
         .collect()
 }
 
@@ -904,9 +1099,10 @@ fn member_text(member: &Member) -> String {
 /// kept when it is too long.
 fn segment_text(member: &Member, chars: usize) -> String {
     let hidden: Vec<String> = member
-        .hidden
+        .paragraphs
         .iter()
-        .map(|text| format!("[숨김 내용] {}", tokens::redact(text)))
+        .filter(|paragraph| paragraph.hidden)
+        .map(|paragraph| format!("[숨김 내용] {}", tokens::redact(&paragraph.text)))
         .collect();
     let hidden = truncate(&hidden.join("\n"), chars / 2);
     let budget = chars.saturating_sub(hidden.chars().count());
@@ -916,6 +1112,24 @@ fn segment_text(member: &Member, chars: usize) -> String {
     } else {
         format!("{hidden}\n{output}")
     }
+}
+
+/// A paragraph of a tool result for Jev, marked when it was hidden where it appeared.
+fn paragraph_text(member: &Member, paragraph: &Paragraph) -> String {
+    let tool_name = member
+        .payload
+        .get("tool_name")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let hidden = if paragraph.hidden {
+        "[숨김 내용] "
+    } else {
+        ""
+    };
+    format!(
+        "[{tool_name} result] {hidden}{}",
+        tokens::redact(&paragraph.text)
+    )
 }
 
 /// `Tool: main argument {other arguments}`, e.g. `Bash: curl https://…`, redacted and at most
@@ -993,8 +1207,8 @@ pub fn record(plan: &Plan, outcome: &Outcome) -> Value {
         })).collect::<Vec<_>>(),
         "influence": outcome.influence,
         "segments": outcome.segments.iter().map(|segment| json!({
-            "seq": segment.seq, "probability": segment.probability, "rank": segment.rank,
-            "parent": segment.parent,
+            "seq": segment.seq, "paragraph": segment.paragraph,
+            "probability": segment.probability, "rank": segment.rank, "parent": segment.parent,
         })).collect::<Vec<_>>(),
         "path": primary.path,
         "stop": primary.stop.as_str(),
