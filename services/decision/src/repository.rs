@@ -81,7 +81,8 @@ RETURN call.order, call.subgraph, call.payload_json, \
                     COLLECT { MATCH (stated:Intent|Message {session_id: $session_id}) \
                               WHERE stated.intent IS NOT NULL AND stated.order > request.order \
                                 AND stated.order < until AND stated.order < call.order \
-                              RETURN stated.intent ORDER BY stated.order LIMIT 1 }[0]] \
+                              RETURN stated.intent ORDER BY stated.order LIMIT 1 }[0], \
+                    request.subgraph] \
             ORDER BY request.order } AS turns"
 );
 
@@ -437,6 +438,7 @@ impl DecisionRepository for Neo4jDecisionRepository {
             turns: pairs(row.get(8))
                 .map(|pair| Turn {
                     intent: pair.get(1).and_then(Value::as_str).map(str::to_owned),
+                    subgraph: pair.get(2).and_then(Value::as_u64),
                 })
                 .collect(),
         })
