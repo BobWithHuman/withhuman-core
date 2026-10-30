@@ -27,8 +27,8 @@ use withhuman_contracts::{
 };
 
 use crate::{
-    GeneratorError, GeneratorTransport, InMemorySessionStore, MessageFragment, SessionSnapshot,
-    SessionStore, SessionUpdate, StoreError, SubGraphStep, TrustedHookContext,
+    GeneratorError, GeneratorTransport, InMemorySessionStore, IntentAsk, MessageFragment,
+    SessionSnapshot, SessionStore, SessionUpdate, StoreError, SubGraphStep, TrustedHookContext,
 };
 
 /// Orders skipped when a session resumes without Collector state, so events that were still on
@@ -297,7 +297,23 @@ impl Normalizer {
             tokio::time::sleep(POLL.min(deadline - now)).await;
         }
         self.sessions
-            .ask_for_intent(&request.session_id)
+            .ask_for_intent(&request.session_id, IntentAsk::Deny)
+            .await
+            .map_err(NormalizeError::Store)
+    }
+
+    /// Whether a tool result's Hook response should ask the model, once per turn, to state the
+    /// turn's intent: the main agent's turn has stated none so far.
+    pub async fn reminds_of_intent(
+        &self,
+        session_id: &str,
+        agent_id: Option<&str>,
+    ) -> Result<bool, NormalizeError> {
+        if !self.intent_capture || agent_id.is_some() {
+            return Ok(false);
+        }
+        self.sessions
+            .ask_for_intent(session_id, IntentAsk::Remind)
             .await
             .map_err(NormalizeError::Store)
     }

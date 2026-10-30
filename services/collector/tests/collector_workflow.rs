@@ -13,9 +13,9 @@ use tokio::sync::Notify;
 use tower::ServiceExt as _;
 use withhuman_collector::{
     CollectorConfig, CollectorService, ExtAuthzService, FailurePolicy, GeneratorError,
-    GeneratorTransport, InMemoryVerdictStore, MessageFragment, NormalizedEvent, Normalizer,
-    ReviewPolicy, SessionSnapshot, SessionStore, SessionUpdate, StoreError, StoredVerdict,
-    VerdictStore, app_with_transport,
+    GeneratorTransport, InMemoryVerdictStore, IntentAsk, MessageFragment, NormalizedEvent,
+    Normalizer, ReviewPolicy, SessionSnapshot, SessionStore, SessionUpdate, StoreError,
+    StoredVerdict, VerdictStore, app_with_transport,
 };
 use withhuman_contracts::{
     decisions::{CausalStart, Decision, DecisionResponse, EnforcementMode},
@@ -556,6 +556,65 @@ async fn waits_for_an_intent_line_that_arrives_after_the_call() {
     );
 }
 
+/// A tool result of a turn that states no intent asks the model for it through Hook context, once
+/// per turn, which reaches the model only; a turn with an intent and a subagent are not asked.
+#[tokio::test]
+async fn reminds_a_turn_without_an_intent_through_a_tool_result() {
+    let generator = Arc::new(RecordingGenerator::allow());
+    let config = CollectorConfig {
+        enforcement_mode: EnforcementMode::Record,
+        ..CollectorConfig::default()
+    };
+    let app = test_app(config, generator);
+    let send = |request| {
+        let app = app.clone();
+        async move { response_json(app.oneshot(request).await.unwrap()).await.1 }
+    };
+    let result = |tool_use_id: &str, agent_id: Option<&str>| {
+        json_request(
+            "/v1/hooks/PostToolUse",
+            json!({"session_id":"s1","tool_name":"Read","tool_input":{},"tool_response":{},
+                   "tool_use_id":tool_use_id,"agent_id":agent_id}),
+        )
+    };
+    let reminder = json!({"hookSpecificOutput":{
+        "hookEventName":"PostToolUse","additionalContext":withhuman_collector::INTENT_REMINDER
+    }});
+
+    send(json_request(
+        "/v1/hooks/UserPromptSubmit",
+        json!({"session_id":"s1","prompt":"계속해"}),
+    ))
+    .await;
+    assert_eq!(
+        send(result("t0", Some("a1"))).await,
+        Value::Null,
+        "subagent"
+    );
+    assert_eq!(send(result("t1", None)).await, reminder);
+    assert_eq!(send(result("t2", None)).await, Value::Null, "once per turn");
+    let failure = send(json_request(
+        "/v1/hooks/PostToolUseFailure",
+        json!({"session_id":"s1","tool_name":"WebFetch","tool_input":{},"error":"blocked",
+               "tool_use_id":"t3"}),
+    ))
+    .await;
+    assert_eq!(failure, Value::Null, "once per turn, whatever the result");
+
+    send(json_request(
+        "/v1/hooks/UserPromptSubmit",
+        json!({"session_id":"s1","prompt":"이제 정리해"}),
+    ))
+    .await;
+    send(json_request(
+        "/v1/hooks/MessageDisplay",
+        json!({"session_id":"s1","message_id":"m1","index":0,
+               "delta":"[의도] 결과 정리 (확신도: 높음)\n","final":true}),
+    ))
+    .await;
+    assert_eq!(send(result("t4", None)).await, Value::Null, "stated");
+}
+
 #[tokio::test]
 async fn marks_tool_results_from_downloads_and_fetches_as_external() {
     let generator = Arc::new(RecordingGenerator::allow());
@@ -799,7 +858,7 @@ impl SessionStore for UnavailableSessions {
         Err(StoreError::Unavailable("down".to_owned()))
     }
 
-    async fn ask_for_intent(&self, _: &str) -> Result<bool, StoreError> {
+    async fn ask_for_intent(&self, _: &str, _: IntentAsk) -> Result<bool, StoreError> {
         Err(StoreError::Unavailable("down".to_owned()))
     }
 

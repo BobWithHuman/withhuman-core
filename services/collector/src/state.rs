@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     sync::{Arc, LazyLock, Mutex, MutexGuard},
     time::Duration,
 };
@@ -143,13 +143,31 @@ pub trait SessionStore: Send + Sync {
         pending: SidePending,
     ) -> Result<(), StoreError>;
 
-    /// Whether to ask the turn for its intent: true, once per turn, while the turn has stated
-    /// none. A new prompt starts a new turn. A session that is not seeded is never asked, since
-    /// its intent may only be in the graph.
-    async fn ask_for_intent(&self, session_id: &str) -> Result<bool, StoreError>;
+    /// Whether to ask the turn for its intent in this `way`: true, once per turn and way, while
+    /// the turn has stated none. A new prompt starts a new turn. A session that is not seeded is
+    /// never asked, since its intent may only be in the graph.
+    async fn ask_for_intent(&self, session_id: &str, way: IntentAsk) -> Result<bool, StoreError>;
 
     /// Whether the turn stated its intent; `None` for a session that is not seeded.
     async fn intent_stated(&self, session_id: &str) -> Result<Option<bool>, StoreError>;
+}
+
+/// How a turn that stated no intent is asked for one; each at most once per turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum IntentAsk {
+    /// Its Call is turned back with the request.
+    Deny,
+    /// A tool result's Hook response carries the request to the model.
+    Remind,
+}
+
+impl IntentAsk {
+    fn field(self) -> &'static str {
+        match self {
+            Self::Deny => "intent_asked",
+            Self::Remind => "intent_reminded",
+        }
+    }
 }
 
 /// Single-instance store holding every session in process memory.
@@ -210,7 +228,7 @@ impl SessionStore for InMemorySessionStore {
         state.downloads.extend(update.record_downloads);
         if update.clear_intent {
             state.intent = None;
-            state.intent_asked = false;
+            state.intent_asks.clear();
         }
         let intent_stated = state.intent.is_none() && update.state_intent.is_some();
         if intent_stated {
@@ -284,7 +302,7 @@ impl SessionStore for InMemorySessionStore {
         Ok(())
     }
 
-    async fn ask_for_intent(&self, session_id: &str) -> Result<bool, StoreError> {
+    async fn ask_for_intent(&self, session_id: &str, way: IntentAsk) -> Result<bool, StoreError> {
         let mut sessions = self.lock();
         let Some(state) = sessions
             .get_mut(session_id)
@@ -292,9 +310,7 @@ impl SessionStore for InMemorySessionStore {
         else {
             return Ok(false);
         };
-        let ask = state.intent.is_none() && !state.intent_asked;
-        state.intent_asked |= ask;
-        Ok(ask)
+        Ok(state.intent.is_none() && state.intent_asks.insert(way))
     }
 
     async fn intent_stated(&self, session_id: &str) -> Result<Option<bool>, StoreError> {
@@ -319,8 +335,8 @@ struct SessionState {
     downloads: BTreeSet<String>,
     subgraphs: SubGraphs,
     intent: Option<String>,
-    /// The turn was asked for its intent.
-    intent_asked: bool,
+    /// The ways the turn was asked for its intent.
+    intent_asks: HashSet<IntentAsk>,
 }
 
 /// Session-wide SubGraph numbering for the in-memory store; the Redis script mirrors it.
@@ -711,7 +727,7 @@ elseif step == 'batch' then
 else
   subgraph = current()
 end
-if ARGV[18] == '1' then redis.call('HDEL', session, 'intent', 'intent_asked') end
+if ARGV[18] == '1' then redis.call('HDEL', session, 'intent', 'intent_asked', 'intent_reminded') end
 -- The first intent the turn states is kept.
 local stated = 0
 if ARGV[19] == '1' then stated = redis.call('HSETNX', session, 'intent', ARGV[20]) end
@@ -773,12 +789,13 @@ redis.call('EXPIRE', KEYS[1], ARGV[1])
 return 1
 ";
 
-// Marks the turn asked for its intent and returns 1, unless the session is not seeded, the turn
-// stated an intent or was asked already. Mirrors `InMemorySessionStore::ask_for_intent`.
+// Marks the turn asked for its intent in one way (the field ARGV[1]) and returns 1, unless the
+// session is not seeded, the turn stated an intent or was asked that way already. Mirrors
+// `InMemorySessionStore::ask_for_intent`.
 const ASK_FOR_INTENT: &str = r"
 if redis.call('HEXISTS', KEYS[1], 'next_order') == 0 then return 0 end
 if redis.call('HEXISTS', KEYS[1], 'intent') == 1 then return 0 end
-return redis.call('HSETNX', KEYS[1], 'intent_asked', '1')
+return redis.call('HSETNX', KEYS[1], ARGV[1], '1')
 ";
 
 static APPLY_EVENT_SCRIPT: LazyLock<Script> = LazyLock::new(|| Script::new(APPLY_EVENT));
@@ -1035,9 +1052,10 @@ impl SessionStore for RedisSessionStore {
         Ok(())
     }
 
-    async fn ask_for_intent(&self, session_id: &str) -> Result<bool, StoreError> {
+    async fn ask_for_intent(&self, session_id: &str, way: IntentAsk) -> Result<bool, StoreError> {
         let asked: u8 = ASK_FOR_INTENT_SCRIPT
             .key(session_key(session_id))
+            .arg(way.field())
             .invoke_async(&mut self.connection.clone())
             .await?;
         Ok(asked == 1)

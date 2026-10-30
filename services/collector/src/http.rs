@@ -20,8 +20,8 @@ use withhuman_contracts::{
     hooks::{
         ConfigChangeRequest, HookEventName, HookSpecificResponse, MessageDisplayOutput,
         MessageDisplayRequest, PermissionDecision, PostToolBatchRequest, PostToolUseFailureRequest,
-        PostToolUseRequest, PreToolUseOutput, PreToolUseRequest, SessionStartOutput,
-        SessionStartRequest, SubagentLifecycleRequest, ToolDescriptionsRequest,
+        PostToolUseOutput, PostToolUseRequest, PreToolUseOutput, PreToolUseRequest,
+        SessionStartOutput, SessionStartRequest, SubagentLifecycleRequest, ToolDescriptionsRequest,
         UserPromptSubmitOutput, UserPromptSubmitRequest,
     },
 };
@@ -249,18 +249,92 @@ macro_rules! regular_handler {
     };
 }
 
-regular_handler!(
+macro_rules! result_handler {
+    ($name:ident, $request:ty, $normalize:ident, $event:ident, $path:literal) => {
+        #[utoipa::path(
+            post,
+            path = $path,
+            tag = "Collector",
+            params(
+                ("X-WithHuman-Repo" = Option<String>, Header, description = "Repository identity"),
+                ("X-WithHuman-Client" = Option<String>, Header, description = "Client identity")
+            ),
+            request_body = $request,
+            responses(
+                (status = 200, description = "Event accepted; empty, or the request for the turn's intent as additional context", body = HookSpecificResponse<PostToolUseOutput>),
+                (status = 400, description = "Invalid JSON", body = ErrorResponse),
+                (status = 415, description = "Content-Type is not application/json", body = ErrorResponse),
+                (status = 502, description = "Generator or session store unavailable", body = ErrorResponse)
+            )
+        )]
+        async fn $name(
+            State(service): State<CollectorService>,
+            headers: HeaderMap,
+            StrictJson(request): StrictJson<$request>,
+        ) -> Response {
+            let session_id = request.session_id.clone();
+            let agent_id = request.agent_id.clone();
+            let response = match service
+                .normalizer
+                .$normalize(&trusted(&headers), request, now())
+                .await
+            {
+                Ok(event) => send_regular(&service, event).await,
+                Err(error) => return normalize_failure(error),
+            };
+            remind_of_intent(
+                &service,
+                response,
+                HookEventName::$event,
+                &session_id,
+                agent_id.as_deref(),
+            )
+            .await
+        }
+    };
+}
+
+result_handler!(
     post_tool_use,
     PostToolUseRequest,
     post_tool_use,
+    PostToolUse,
     "/v1/hooks/PostToolUse"
 );
-regular_handler!(
+result_handler!(
     post_tool_use_failure,
     PostToolUseFailureRequest,
     post_tool_use_failure,
+    PostToolUseFailure,
     "/v1/hooks/PostToolUseFailure"
 );
+
+/// A recorded tool result of a turn that states no intent yet carries a request for it to the
+/// model, once per turn. Unlike a denied Call, nothing shows on the user's screen.
+async fn remind_of_intent(
+    service: &CollectorService,
+    response: Response,
+    event: HookEventName,
+    session_id: &str,
+    agent_id: Option<&str>,
+) -> Response {
+    if response.status() != StatusCode::OK
+        || service
+            .normalizer
+            .reminds_of_intent(session_id, agent_id)
+            .await
+            != Ok(true)
+    {
+        return response;
+    }
+    Json(HookSpecificResponse {
+        hook_specific_output: PostToolUseOutput {
+            hook_event_name: event,
+            additional_context: crate::INTENT_REMINDER.to_owned(),
+        },
+    })
+    .into_response()
+}
 regular_handler!(
     config_change,
     ConfigChangeRequest,

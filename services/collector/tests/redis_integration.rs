@@ -16,9 +16,9 @@ mod support;
 use support::{context, run_scenario};
 use withhuman_collector::{
     CollectorConfig, CollectorService, ExtAuthzService, GeneratorError, GeneratorTransport,
-    InMemorySessionStore, MessageFragment, NormalizedEvent, Normalizer, RedisSessionStore,
-    RedisVerdictStore, SessionStore, SessionUpdate, VerdictStore, app_with_transport,
-    redis_connection,
+    InMemorySessionStore, IntentAsk, MessageFragment, NormalizedEvent, Normalizer,
+    RedisSessionStore, RedisVerdictStore, SessionStore, SessionUpdate, VerdictStore,
+    app_with_transport, redis_connection,
 };
 use withhuman_contracts::{
     decisions::{CausalStart, Decision, DecisionResponse, EnforcementMode},
@@ -577,7 +577,10 @@ async fn redis_asks_for_the_intent_like_in_memory() {
             ..SessionUpdate::default()
         };
         assert!(
-            !store.ask_for_intent(&session).await.unwrap(),
+            !store
+                .ask_for_intent(&session, IntentAsk::Deny)
+                .await
+                .unwrap(),
             "{name}: unseeded"
         );
         assert_eq!(store.intent_stated(&session).await.unwrap(), None, "{name}");
@@ -592,10 +595,28 @@ async fn redis_asks_for_the_intent_like_in_memory() {
             "{name}"
         );
         let asks = [
-            store.ask_for_intent(&session).await.unwrap(),
-            store.ask_for_intent(&session).await.unwrap(),
+            store
+                .ask_for_intent(&session, IntentAsk::Deny)
+                .await
+                .unwrap(),
+            store
+                .ask_for_intent(&session, IntentAsk::Deny)
+                .await
+                .unwrap(),
         ];
         assert_eq!(asks, [true, false], "{name}: once per turn");
+        // A reminder is a way of its own, also once per turn.
+        let reminds = [
+            store
+                .ask_for_intent(&session, IntentAsk::Remind)
+                .await
+                .unwrap(),
+            store
+                .ask_for_intent(&session, IntentAsk::Remind)
+                .await
+                .unwrap(),
+        ];
+        assert_eq!(reminds, [true, false], "{name}: reminded once");
         store.apply_event(&session, prompt.clone()).await.unwrap();
         store.apply_event(&session, stated).await.unwrap();
         assert_eq!(
@@ -604,12 +625,18 @@ async fn redis_asks_for_the_intent_like_in_memory() {
             "{name}"
         );
         assert!(
-            !store.ask_for_intent(&session).await.unwrap(),
+            !store
+                .ask_for_intent(&session, IntentAsk::Deny)
+                .await
+                .unwrap(),
             "{name}: stated"
         );
         store.apply_event(&session, prompt).await.unwrap();
         assert!(
-            store.ask_for_intent(&session).await.unwrap(),
+            store
+                .ask_for_intent(&session, IntentAsk::Deny)
+                .await
+                .unwrap(),
             "{name}: new prompt"
         );
     }
