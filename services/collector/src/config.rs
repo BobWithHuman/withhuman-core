@@ -67,7 +67,7 @@ impl Default for CollectorConfig {
             verdict_ttl: Duration::from_secs(3_600),
             session_ttl: Duration::from_secs(604_800),
             intent_capture: true,
-            intent_wait: Duration::from_millis(1_500),
+            intent_wait: Duration::from_millis(3_000),
             network_commands: Vec::new(),
         }
     }
@@ -113,7 +113,7 @@ impl CollectorConfig {
             ));
         }
 
-        let intent_wait = Duration::from_millis(parse_env("WITHHUMAN_INTENT_WAIT_MS", 1_500)?);
+        let intent_wait = Duration::from_millis(parse_env("WITHHUMAN_INTENT_WAIT_MS", 3_000)?);
 
         Ok(Self {
             bind_address,
