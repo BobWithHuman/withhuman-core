@@ -425,6 +425,13 @@ async fn pre_tool_use(
     headers: HeaderMap,
     StrictJson(request): StrictJson<PreToolUseRequest>,
 ) -> Response {
+    // A turn that stated no intent is asked for one before its first Call is judged. The ask is
+    // best effort: when the session store cannot answer, the Call is judged as usual.
+    if service.config.enforcement_mode == EnforcementMode::Enforce
+        && service.normalizer.asks_for_intent(&request).await == Ok(true)
+    {
+        return blocking_response(PermissionDecision::Deny, crate::INTENT_REQUIRED.to_owned());
+    }
     let tool_use_id = request.tool_use_id.clone();
     let is_mcp = request.tool_name.starts_with("mcp__");
     let tool_name = request.tool_name.clone();

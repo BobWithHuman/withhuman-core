@@ -447,6 +447,71 @@ async fn hides_the_intent_line_from_the_user_but_records_it() {
     assert_eq!(intents, [("m1", "로그인 버그 수정 (확신도: 높음)")]);
 }
 
+/// A turn's first Call made before the `[의도]` line is turned back once, unjudged and unrecorded,
+/// so the agent states the intent; the turn is not asked again, and a new prompt asks anew.
+#[tokio::test]
+async fn asks_a_turn_for_its_intent_before_its_first_call() {
+    let generator = Arc::new(RecordingGenerator::allow());
+    let app = test_app(CollectorConfig::default(), generator.clone());
+    let send = |request| {
+        let app = app.clone();
+        async move { response_json(app.oneshot(request).await.unwrap()).await }
+    };
+    let prompt = |text: &str| {
+        json_request(
+            "/v1/hooks/UserPromptSubmit",
+            json!({"session_id":"s1","prompt":text}),
+        )
+    };
+    let decision = |body: &Value| body["hookSpecificOutput"]["permissionDecision"].clone();
+
+    send(prompt("계속해")).await;
+    let (status, asked) = send(pre_tool_request("Read", "t1")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(decision(&asked), "deny");
+    assert_eq!(
+        asked["hookSpecificOutput"]["permissionDecisionReason"],
+        withhuman_collector::INTENT_REQUIRED
+    );
+    // Asked once: an agent that still states no intent is judged as usual.
+    let (_, judged) = send(pre_tool_request("Read", "t2")).await;
+    assert_eq!(judged, Value::Null);
+
+    // A turn that states its intent first is never asked.
+    send(prompt("이제 테스트 추가해")).await;
+    send(json_request(
+        "/v1/hooks/MessageDisplay",
+        json!({"session_id":"s1","message_id":"m1","index":0,
+               "delta":"[의도] 테스트 추가 (확신도: 높음)\n추가할게요.","final":true}),
+    ))
+    .await;
+    let (_, judged) = send(pre_tool_request("Edit", "t3")).await;
+    assert_eq!(judged, Value::Null);
+
+    // Subagents state no intent of their own.
+    send(prompt("정리해")).await;
+    let (_, subagent) = send(json_request(
+        "/v1/hooks/PreToolUse",
+        json!({"session_id":"s1","tool_name":"Read","tool_input":{},"tool_use_id":"t4",
+               "agent_id":"a1","agent_type":"Explore"}),
+    ))
+    .await;
+    assert_eq!(subagent, Value::Null);
+
+    // The turned-back Call was neither judged nor recorded.
+    let events = generator.events.lock().unwrap();
+    let calls: Vec<&str> = events
+        .iter()
+        .filter_map(|event| match event {
+            NormalizedEvent::PreToolUse(event) => {
+                Some(event.event.meta.tool_use_id.as_deref().unwrap())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(calls, ["t2", "t3", "t4"]);
+}
+
 #[tokio::test]
 async fn marks_tool_results_from_downloads_and_fetches_as_external() {
     let generator = Arc::new(RecordingGenerator::allow());
@@ -687,6 +752,10 @@ impl SessionStore for UnavailableSessions {
     }
 
     async fn set_side_pending(&self, _: &str, _: SidePending) -> Result<(), StoreError> {
+        Err(StoreError::Unavailable("down".to_owned()))
+    }
+
+    async fn ask_for_intent(&self, _: &str) -> Result<bool, StoreError> {
         Err(StoreError::Unavailable("down".to_owned()))
     }
 }
