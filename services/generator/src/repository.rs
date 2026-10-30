@@ -105,8 +105,12 @@ CALL (node) { \
   UNWIND $paragraphs AS paragraph \
   MERGE (stored:Paragraph {hash: paragraph.hash}) \
   ON CREATE SET stored.text = paragraph.text, stored.source = paragraph.source, \
-                stored.hidden = paragraph.hidden, stored.from_user_doc = paragraph.from_user_doc, \
+                stored.hidden = paragraph.hidden, stored.hidden_rules = paragraph.hidden_rules, \
+                stored.from_user_doc = paragraph.from_user_doc, \
                 stored.long_paragraph = paragraph.long_paragraph, stored.created_in_seq = node.seq \
+  ON MATCH SET stored.hidden = coalesce(stored.hidden, false) OR paragraph.hidden, \
+               stored.hidden_rules = coalesce(stored.hidden_rules, []) + \
+                 [rule IN paragraph.hidden_rules WHERE NOT rule IN coalesce(stored.hidden_rules, [])] \
   MERGE (node)-[:CONTAINS_PARAGRAPH {index: paragraph.index}]->(stored) \
   WITH node, stored, paragraph \
   OPTIONAL MATCH (pending:PendingParagraphEnrichment {session_id: $session_id, hash: paragraph.hash}) \
@@ -240,8 +244,12 @@ CALL (node, row) { \
   UNWIND row.paragraphs AS paragraph \
   MERGE (stored:Paragraph {hash: paragraph.hash}) \
   ON CREATE SET stored.text = paragraph.text, stored.source = paragraph.source, \
-                stored.hidden = paragraph.hidden, stored.from_user_doc = paragraph.from_user_doc, \
+                stored.hidden = paragraph.hidden, stored.hidden_rules = paragraph.hidden_rules, \
+                stored.from_user_doc = paragraph.from_user_doc, \
                 stored.long_paragraph = paragraph.long_paragraph, stored.created_in_seq = node.seq \
+  ON MATCH SET stored.hidden = coalesce(stored.hidden, false) OR paragraph.hidden, \
+               stored.hidden_rules = coalesce(stored.hidden_rules, []) + \
+                 [rule IN paragraph.hidden_rules WHERE NOT rule IN coalesce(stored.hidden_rules, [])] \
   MERGE (node)-[:CONTAINS_PARAGRAPH {index: paragraph.index}]->(stored) \
 } \
 CALL (node, commit, row) { \

@@ -1,17 +1,18 @@
 use std::collections::BTreeSet;
 
 use serde::{Serialize, de::DeserializeOwned};
-use serde_json::Value;
 use withhuman_common::{
     chunking::{self, Profile},
-    intent, tokens,
+    intent,
+    origin::{self, Origin, OriginContext},
+    tokens,
 };
 use withhuman_contracts::events::{
-    ConfigChangeEventRequest, FileChangedEventRequest, InstructionsLoadedEventRequest,
-    MessageDisplayEventRequest, PostToolBatchEventRequest, PostToolUseEventRequest,
-    PostToolUseFailureEventRequest, PreToolUseEventRequest, SessionStartEventRequest,
-    SubagentStartEventRequest, SubagentStopEventRequest, ToolDescriptionsEventRequest,
-    UserPromptSubmitEventRequest,
+    ConfigChangeEventRequest, ContentOrigin, FileChangedEventRequest,
+    InstructionsLoadedEventRequest, MessageDisplayEventRequest, PostToolBatchEventRequest,
+    PostToolUseEventRequest, PostToolUseFailureEventRequest, PreToolUseEventRequest,
+    SessionStartEventRequest, SubagentStartEventRequest, SubagentStopEventRequest,
+    ToolDescriptionsEventRequest, UserPromptSubmitEventRequest,
 };
 
 use crate::RepositoryError;
@@ -123,7 +124,7 @@ impl GeneratorEvent {
                 mutation("SessionStart", None, None, None, event, |event| event)
             }
             Self::UserPromptSubmit(event) => {
-                let text = Some(event.payload.prompt.clone());
+                let text = Some(Text::local(event.payload.prompt.clone()));
                 mutation(
                     "UserPromptSubmit",
                     Some("Request"),
@@ -139,7 +140,24 @@ impl GeneratorEvent {
                 })
             }
             Self::PostToolUse(event) => {
-                let text = text_content(&event.payload.tool_response);
+                let text = origin::tool_output(&event.payload.tool_response).map(|body| {
+                    // The Collector knows the session's downloads and configured commands; events
+                    // it did not judge external fall back to what the event itself shows.
+                    let origin = if event.meta.content_origin == Some(ContentOrigin::External) {
+                        Origin::External
+                    } else {
+                        origin::tool_origin(
+                            &event.payload.tool_name,
+                            event.payload.tool_input.as_ref(),
+                            Some(&body),
+                            &OriginContext {
+                                cwd: event.meta.cwd.as_deref(),
+                                ..Default::default()
+                            },
+                        )
+                    };
+                    Text { body, origin }
+                });
                 mutation(
                     "PostToolUse",
                     Some("Sequence"),
@@ -213,7 +231,7 @@ impl GeneratorEvent {
                 let mut mutation = mutation(
                     "MessageDisplay",
                     Some("Message"),
-                    Some(text),
+                    Some(Text::local(text)),
                     None,
                     event,
                     |event| event,
@@ -272,6 +290,8 @@ pub(crate) struct ParagraphMutation {
     pub(crate) hash: String,
     pub(crate) source: String,
     pub(crate) hidden: bool,
+    /// Why the paragraph is hidden (`withhuman_common::hidden` rules).
+    pub(crate) hidden_rules: Vec<&'static str>,
     pub(crate) from_user_doc: Option<bool>,
     pub(crate) long_paragraph: bool,
 }
@@ -286,10 +306,25 @@ pub(crate) struct TokenMutation {
     pub(crate) category: String,
 }
 
+/// Text an event adds to the graph and where it came from.
+struct Text {
+    body: String,
+    origin: Origin,
+}
+
+impl Text {
+    fn local(body: String) -> Self {
+        Self {
+            body,
+            origin: Origin::Local,
+        }
+    }
+}
+
 fn mutation<T, E>(
     event_name: &'static str,
     node_type: Option<&'static str>,
-    text: Option<String>,
+    text: Option<Text>,
     file_path: Option<String>,
     event: T,
     envelope: impl FnOnce(&T) -> &withhuman_contracts::events::EventRequest<E>,
@@ -315,14 +350,15 @@ where
                     hash: chunk.hash.clone(),
                     source: chunk.source.clone(),
                     hidden: chunk.hidden,
+                    hidden_rules: Vec::new(),
                     from_user_doc: chunk.from_user_doc,
                     long_paragraph: false,
                 })
             })
             .collect::<Result<Vec<_>, RepositoryError>>()?,
         None => text
-            .as_deref()
-            .map(|text| chunk_text(&tokens::redact(text), event_name))
+            .as_ref()
+            .map(|text| chunk_text(&tokens::redact(&text.body), event_name, text.origin))
             .unwrap_or_default(),
     };
 
@@ -341,7 +377,7 @@ where
         }
         None => {
             if let Some(text) = &text {
-                extract_tokens(text, paragraph_slot(event_name), &mut tokens);
+                extract_tokens(&text.body, paragraph_slot(event_name), &mut tokens);
             }
         }
     }
@@ -405,28 +441,20 @@ fn extract_tokens(value: &str, slot: &str, tokens: &mut BTreeSet<TokenMutation>)
     }
 }
 
-fn text_content(value: &Value) -> Option<String> {
-    value.as_str().map(str::to_owned).or_else(|| {
-        value
-            .get("content")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-    })
-}
-
-fn chunk_text(text: &str, source: &str) -> Vec<ParagraphMutation> {
+fn chunk_text(text: &str, source: &str, origin: Origin) -> Vec<ParagraphMutation> {
     let profile = match source {
         "PostToolUse" => Profile::ToolOutput,
         _ => Profile::Prose,
     };
-    chunking::chunk_text(text, profile)
+    chunking::chunk_text_from(text, profile, origin)
         .into_iter()
         .map(|chunk| ParagraphMutation {
             index: i64::try_from(chunk.index).unwrap_or(i64::MAX),
             text: chunk.text,
             hash: chunk.hash,
             source: source.to_owned(),
-            hidden: false,
+            hidden: chunk.hidden,
+            hidden_rules: chunk.hidden_rules,
             from_user_doc: Some(false),
             long_paragraph: chunk.long_paragraph,
         })

@@ -45,9 +45,19 @@ pub struct EventMetadata {
     pub turn_id: Option<String>,
     #[serde(default)]
     pub repo: Option<String>,
+    /// Set by the Collector when a tool result came from outside the workspace (web, MCP,
+    /// network commands, downloaded or vendored files). Absent means local or not judged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_origin: Option<ContentOrigin>,
     #[serde(flatten)]
     #[schema(ignore)]
     pub additional_fields: AdditionalFields,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ContentOrigin {
+    External,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
