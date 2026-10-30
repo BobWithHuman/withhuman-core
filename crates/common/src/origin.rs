@@ -177,9 +177,37 @@ pub fn tool_output(response: &Value) -> Option<String> {
                         .and_then(Value::as_array)
                         .and_then(|blocks| block_texts(blocks))
                 })
+                .or_else(|| {
+                    response
+                        .get("results")
+                        .and_then(Value::as_array)
+                        .and_then(|results| search_results(results))
+                })
         }
         _ => None,
     }
+}
+
+/// WebSearch results: the summaries the search wrote and the title and address of each hit, a
+/// paragraph each.
+fn search_results(results: &[Value]) -> Option<String> {
+    let mut parts = Vec::new();
+    for result in results {
+        if let Some(summary) = non_empty(Some(result)) {
+            parts.push(summary.to_owned());
+        }
+        let hits = result.get("content").and_then(Value::as_array);
+        for hit in hits.into_iter().flatten() {
+            let fields: Vec<&str> = ["title", "url"]
+                .into_iter()
+                .filter_map(|field| non_empty(hit.get(field)))
+                .collect();
+            if !fields.is_empty() {
+                parts.push(fields.join("\n"));
+            }
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("\n\n"))
 }
 
 fn non_empty(value: Option<&Value>) -> Option<&str> {
