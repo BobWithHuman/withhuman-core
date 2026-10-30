@@ -523,6 +523,7 @@ async fn keeps_only_the_latest_mention_of_a_value() {
     assert_eq!(graph.shared_tokens, BTreeSet::from([2]));
     assert_eq!(graph.turns.len(), 1);
     assert_eq!(graph.turns[0].intent, None);
+    assert_eq!(graph.turns[0].subgraph, Some(0));
 }
 
 /// A Call traced to a prompt's SubGraph, which holds no tool result, points its cause at the

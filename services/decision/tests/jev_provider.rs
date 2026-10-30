@@ -67,7 +67,7 @@ impl DecisionRepository for Graph {
             shared_tokens: BTreeSet::new(),
             parents: BTreeMap::new(),
             turns: if self.unstated_turn {
-                vec![Turn { intent: None }]
+                vec![Turn::default()]
             } else {
                 Vec::new()
             },
