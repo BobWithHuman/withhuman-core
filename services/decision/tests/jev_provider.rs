@@ -65,6 +65,8 @@ impl DecisionRepository for Graph {
             },
             tokens: BTreeSet::new(),
             shared_tokens: BTreeSet::new(),
+            // SubGraph 1 holds a tool result, so the Call is traced to it.
+            results: BTreeSet::from([1]),
             parents: BTreeMap::new(),
             turns: if self.unstated_turn {
                 vec![Turn::default()]
@@ -102,12 +104,9 @@ impl DecisionRepository for Graph {
     }
 }
 
-/// Answers every question: `parent` by `parent` (s1 alone unless set), intent questions with
-/// `intent_score`, or with the per-parent score in `scores`.
+/// Answers every intent question with `intent_score`.
 struct Jev {
     intent_score: f64,
-    parent: BTreeMap<String, f64>,
-    scores: BTreeMap<String, f64>,
     fail: bool,
     asked: Mutex<Vec<Duration>>,
     requests: Mutex<Vec<JevRequest>>,
@@ -125,17 +124,9 @@ impl JevClient for Jev {
             .questions
             .keys()
             .map(|id| {
-                let answer = if id == "parent" {
-                    JevAnswer {
-                        probabilities: self.parent.clone(),
-                        ..Default::default()
-                    }
-                } else {
-                    let key = id.strip_prefix("intent_").unwrap_or_default();
-                    JevAnswer {
-                        noul: Some(self.scores.get(key).copied().unwrap_or(self.intent_score)),
-                        ..Default::default()
-                    }
+                let answer = JevAnswer {
+                    noul: Some(self.intent_score),
+                    ..Default::default()
                 };
                 (id.clone(), answer)
             })
@@ -156,8 +147,6 @@ fn provider_on(
     let graph = Arc::new(graph);
     let jev = Arc::new(Jev {
         intent_score,
-        parent: BTreeMap::from([("s1".to_owned(), 0.9), ("none".to_owned(), 0.1)]),
-        scores: BTreeMap::new(),
         fail,
         asked: Mutex::default(),
         requests: Mutex::default(),
@@ -322,12 +311,11 @@ async fn bounds_the_jev_call_by_the_decision_deadline() {
         .await
         .unwrap();
     provider.decide(&request(Some("x"), None)).await.unwrap();
-    // Each decision asks twice: for the parent, then about it.
+    // Each decision asks once, about the parent.
     let asked = jev.asked.lock().unwrap().clone();
-    assert_eq!(asked.len(), 4, "{asked:?}");
+    assert_eq!(asked.len(), 2, "{asked:?}");
     assert!(asked[0] <= Duration::from_millis(700), "{asked:?}");
-    assert!(asked[1] <= asked[0], "{asked:?}");
-    assert_eq!(asked[2..], [Duration::from_secs(3); 2]);
+    assert_eq!(asked[1], Duration::from_secs(3));
 
     let (provider, graph, jev) = self::provider(0.8, false);
     assert!(
@@ -341,60 +329,35 @@ async fn bounds_the_jev_call_by_the_decision_deadline() {
 }
 
 #[tokio::test]
-async fn asks_for_the_parent_first_and_then_about_it_alone() {
-    let graph = Arc::new(Graph::default());
-    let jev = Arc::new(Jev {
-        intent_score: 0.9,
-        // none comes close to s1 but is not the most influential.
-        parent: BTreeMap::from([("s1".to_owned(), 0.6), ("none".to_owned(), 0.4)]),
-        scores: BTreeMap::from([("none".to_owned(), 0.1)]),
-        fail: false,
-        asked: Mutex::default(),
-        requests: Mutex::default(),
-    });
-    let provider = JevDecisionProvider::new(
-        graph.clone(),
-        jev.clone(),
-        TraceSettings::default(),
-        Duration::from_secs(3),
-        0.5,
-    );
+async fn finds_the_parent_without_asking_jev() {
+    let (provider, graph, jev) = provider(0.9, false);
     let response = provider
         .decide(&request(Some("빌드 고치기"), Some(4_000)))
         .await
         .unwrap();
 
     let requests = jev.requests.lock().unwrap();
-    assert_eq!(requests.len(), 2);
-    assert_eq!(requests[0].questions.keys().collect::<Vec<_>>(), ["parent"]);
-    assert!(!requests[0].state.contains_key("intents"));
+    assert_eq!(requests.len(), 1);
     assert_eq!(
-        requests[1].questions.keys().collect::<Vec<_>>(),
+        requests[0].questions.keys().collect::<Vec<_>>(),
         ["intent_s1"]
     );
 
-    // The Call is traced to s1 alone and judged by it.
+    // The Call is traced to s1, the nearest SubGraph with a tool result, and judged by it.
     assert_eq!(response.decision, Decision::Allow);
     let traces = graph.traces.lock().unwrap();
     assert_eq!(traces[0].parent, "s1");
-    let parents: Vec<(&str, Option<u64>)> = traces[0]
+    let parents: Vec<(&str, Option<u64>, f64)> = traces[0]
         .parents
         .iter()
-        .map(|parent| (parent.key.as_str(), parent.number))
+        .map(|parent| (parent.key.as_str(), parent.number, parent.probability))
         .collect();
-    assert_eq!(parents, [("s1", Some(1))]);
+    assert_eq!(parents, [("s1", Some(1), 1.0)]);
     assert_eq!(traces[0].intent_score, Some(0.9));
-    assert!(traces[0].trace["intent_scores"].get("none").is_none());
     // What Jev was asked and answered stays with the trace.
     let jev = &traces[0].trace["jev"];
-    assert_eq!(jev[0]["stage"], "parent");
-    assert!(jev[0]["request"]["questions"]["parent"].is_object());
-    assert_eq!(
-        jev[0]["response"]["answers"]["parent"]["probabilities"]["s1"],
-        0.6
-    );
-    assert_eq!(jev[1]["stage"], "judge");
-    assert_eq!(jev[1]["parent"], "s1");
-    assert!(jev[1]["request"]["questions"]["intent_s1"].is_object());
-    assert_eq!(jev.as_array().unwrap().len(), 2);
+    assert_eq!(jev.as_array().unwrap().len(), 1);
+    assert_eq!(jev[0]["stage"], "judge");
+    assert_eq!(jev[0]["parent"], "s1");
+    assert!(jev[0]["request"]["questions"]["intent_s1"].is_object());
 }
