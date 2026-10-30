@@ -12,7 +12,7 @@ use withhuman_contracts::decisions::{DecisionRequest, DecisionResponse};
 
 use crate::{
     DecisionConfig,
-    trace::{CallInfo, Member, MemberKind, ParentKey, TOKEN_KINDS, TraceGraph, Turn},
+    trace::{CallInfo, Member, MemberKind, Paragraph, ParentKey, TOKEN_KINDS, TraceGraph, Turn},
 };
 
 const VERIFY_GRAPH: &str = "\
@@ -89,8 +89,8 @@ RETURN call.order, call.subgraph, call.payload_json, \
             RETURN DISTINCT result.subgraph } AS results"
 );
 
-// Tool results also bring the paragraphs hidden where they appeared, and whether a later Call
-// was traced to them. ConfigChanges stand where Calls do, Errors where Segments do. A prompt's
+// Tool results also bring their paragraphs, whether each was hidden where it appeared, and
+// whether a later Call was traced to the result or a paragraph. ConfigChanges stand where Calls do, Errors where Segments do. A prompt's
 // SubGraph holds its Request and the Intent stated for it.
 const SUBGRAPH_MEMBERS: &str = "\
 UNWIND $numbers AS number \
@@ -98,15 +98,19 @@ MATCH (:SubGraph {session_id: $session_id, number: number}) \
       -[:MEMBER]->(node:Request|Intent|Message|Call|ConfigChange|Segment|Error) \
 WHERE node.order < $call_order \
 RETURN number, node.seq, node.order, labels(node)[0], node.payload_json, \
-  COLLECT { MATCH (node)-[:CONTAINS_PARAGRAPH]->(paragraph:Paragraph {hidden: true}) \
-            RETURN paragraph.text ORDER BY paragraph.index } AS hidden, \
+  COLLECT { MATCH (node)-[:CONTAINS_PARAGRAPH]->(paragraph:Paragraph) \
+            RETURN [paragraph.index, paragraph.text, coalesce(paragraph.hidden, false), \
+                    EXISTS { MATCH (effect)-[:NEXT {kind: 'cause'}]->(paragraph) \
+                             WHERE effect.order < $call_order }] \
+            ORDER BY paragraph.index } AS paragraphs, \
   EXISTS { MATCH (effect)-[:NEXT {kind: 'cause'}]->(node) \
            WHERE effect.order < $call_order } AS caused \
 ORDER BY number, node.order";
 
 // Takes the Session lock first like Generator commits, so the two never deadlock. The Call gets
-// a NEXT edge (marked `kind: 'cause'`, apart from the order chain) to each activated tool result
-// of the SubGraph it was traced to, or to the Request when that is a prompt's SubGraph. Pointing from the Call up
+// a NEXT edge (marked `kind: 'cause'`, apart from the order chain) to each activated paragraph
+// or tool result of the SubGraph it was traced to, or to the Request when that is a prompt's
+// SubGraph. A paragraph leads to its result through `CONTAINS_PARAGRAPH`. Pointing from the Call up
 // to its causes, and each result up to its Call (`RESULT_OF`), they lead from a Call back to the
 // prompt. A repeated decision of the same Call replaces its edges, and the SubGraph keeps the
 // parents of its latest Call.
@@ -139,7 +143,9 @@ CALL (call) { \
 } \
 CALL (call) { \
   UNWIND $segments AS segment \
-  MATCH (source:Segment|Error {session_id: $session_id, seq: segment.seq}) \
+  MATCH (result:Segment|Error {session_id: $session_id, seq: segment.seq}) \
+  OPTIONAL MATCH (result)-[:CONTAINS_PARAGRAPH]->(paragraph:Paragraph {index: segment.paragraph}) \
+  WITH call, segment, coalesce(paragraph, result) AS source \
   MERGE (call)-[edge:NEXT {kind: 'cause', call_seq: $call_seq}]->(source) \
   SET edge.probability = segment.probability, edge.rank = segment.rank, \
       edge.parent = segment.parent \
@@ -187,6 +193,8 @@ pub struct TracedParent {
 pub struct TracedSegment {
     /// The tool result's node seq.
     pub seq: u64,
+    /// The paragraph of the tool result, or none for the result whole.
+    pub paragraph: Option<u64>,
     pub probability: f64,
     pub rank: usize,
     /// The parent whose result it is.
@@ -473,13 +481,15 @@ impl DecisionRepository for Neo4jDecisionRepository {
                     order: row.get(2)?.as_u64()?,
                     kind: MemberKind::from_node_type(row.get(3)?.as_str()?)?,
                     payload: payload(row.get(4)),
-                    hidden: row
-                        .get(5)
-                        .and_then(Value::as_array)
-                        .into_iter()
-                        .flatten()
-                        .filter_map(Value::as_str)
-                        .map(str::to_owned)
+                    paragraphs: pairs(row.get(5))
+                        .filter_map(|values| {
+                            Some(Paragraph {
+                                index: values.first()?.as_u64()?,
+                                text: values.get(1)?.as_str()?.to_owned(),
+                                hidden: values.get(2).and_then(Value::as_bool).unwrap_or_default(),
+                                caused: values.get(3).and_then(Value::as_bool).unwrap_or_default(),
+                            })
+                        })
                         .collect(),
                     caused: row.get(6).and_then(Value::as_bool).unwrap_or_default(),
                 })
@@ -498,6 +508,7 @@ impl DecisionRepository for Neo4jDecisionRepository {
             .map(|segment| {
                 json!({
                     "seq": segment.seq,
+                    "paragraph": segment.paragraph,
                     "probability": segment.probability,
                     "rank": segment.rank,
                     "parent": segment.parent,
