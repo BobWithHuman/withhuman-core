@@ -51,6 +51,8 @@
   pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
   .para { border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; margin: 6px 0; }
   .para.hidden { border-color: var(--deny); }
+  .para.cause { border: 2px solid var(--cause); }
+  .para .tag { margin-left: 0; margin-right: 4px; }
   .para small { color: var(--muted); display: block; margin-bottom: 2px; }
   .bars td:first-child { width: 42%; white-space: normal; }
   .bar { display: flex; align-items: center; gap: 6px; }
@@ -477,21 +479,59 @@ function pathHtml(seq) {
   return `<h3>경로</h3><div>${rows}</div>`;
 }
 
-// A cause edge: the Jev requests behind it, what Jev returned, and what was chosen.
-function showEdge(callSeq, targetSeq) {
+// The Calls traced to each paragraph of the tool result `seq`, by paragraph index.
+function paragraphCauses(seq) {
+  const byIndex = new Map();
+  for (const c of model.causes) {
+    if (c.via !== seq || c.paragraph == null) continue;
+    if (!byIndex.has(c.paragraph)) byIndex.set(c.paragraph, []);
+    byIndex.get(c.paragraph).push(c);
+  }
+  return byIndex;
+}
+
+// A paragraph of a tool result, outlined in red with the Calls traced to it when it is a cause.
+function paragraphHtml(p, causes = []) {
+  const tags = causes.map(c =>
+    `<span class="tag">원인 ← ${escape(nodeName(c.from))} ${percent(c.props.probability)}</span>`).join('');
+  return `<div class="para${p.hidden ? ' hidden' : ''}${causes.length ? ' cause' : ''}">${tags}<small>#${p.index} · ${escape(p.source || '')}${p.hidden ? ' · hidden ' + escape(JSON.stringify(p.hidden_rules)) : ''}${p.instructs != null ? ' · instructs ' + p.instructs : ''}</small><pre>${escape(p.text || '')}</pre></div>`;
+}
+
+// A cause edge: the paragraphs it points at, the Jev requests behind it, what Jev returned, and
+// what was chosen.
+async function showEdge(callSeq, targetSeq) {
   shownSeq = null;
   const trace = parse(model.bySeq.get(callSeq)?.props.trace_json);
-  const cause = model.causes.find(c => c.from === callSeq && c.to === targetSeq);
+  const causes = model.causes.filter(c => c.from === callSeq && c.to === targetSeq);
+  const cause = causes[0];
+  const indexes = causes.filter(c => c.paragraph != null).map(c => c.paragraph);
   $('panel').innerHTML = `<h2>원인 엣지</h2>
-    <p>${escape(nodeName(callSeq))}<br>→ ${escape(nodeName(targetSeq))}${cause ? ` <span class="empty">p=${percent(cause.props.probability)}</span>` : ''}</p>
+    <p>${escape(nodeName(callSeq))}<br>→ ${escape(nodeName(targetSeq))}${indexes.length ? ` ¶${indexes.join(', ¶')}` : ''}${cause && !indexes.length ? ` <span class="empty">p=${percent(cause.props.probability)}</span>` : ''}</p>
+    ${indexes.length ? '<h3>원인 문단</h3><div id="edge-paragraphs"><p class="empty">불러오는 중…</p></div>' : ''}
     ${trace ? jevHtml(trace, targetSeq) : '<p class="empty">판정 기록이 없습니다.</p>'}`;
+  if (!indexes.length) return;
+  const edge = `${callSeq}-${targetSeq}`;
+  shownEdge = edge;
+  try {
+    const detail = await api(`/api/node?session=${encodeURIComponent(current)}&seq=${cause.via}`);
+    if (shownEdge !== edge) return;
+    $('edge-paragraphs').innerHTML = (detail?.paragraphs || [])
+      .filter(p => indexes.includes(p.index))
+      .map(p => paragraphHtml(p, causes.filter(c => c.paragraph === p.index)))
+      .join('') || '<p class="empty">문단을 찾지 못했습니다.</p>';
+  } catch (error) {
+    $('edge-paragraphs').innerHTML = `<p class="error">${escape(error.message)}</p>`;
+  }
 }
+
+let shownEdge = null;
 
 let shownSeq = null;
 async function show(seq, highlight = null) {
   const node = model.bySeq.get(seq);
   if (!node) return;
   shownSeq = seq;
+  shownEdge = null;
   const props = node.props;
   const trace = parse(props.trace_json);
   const decision = props.decision
@@ -507,13 +547,13 @@ async function show(seq, highlight = null) {
   try {
     const detail = await api(`/api/node?session=${encodeURIComponent(current)}&seq=${props.seq}`);
     if (shownSeq !== seq) return;
-    const paragraphs = (detail?.paragraphs || []).map(p =>
-      `<div class="para${p.hidden ? ' hidden' : ''}"><small>#${p.index} · ${escape(p.source || '')}${p.hidden ? ' · hidden ' + escape(JSON.stringify(p.hidden_rules)) : ''}${p.instructs != null ? ' · instructs ' + p.instructs : ''}</small><pre>${escape(p.text || '')}</pre></div>`).join('');
+    const traced = paragraphCauses(props.seq);
+    const paragraphs = (detail?.paragraphs || []).map(p => paragraphHtml(p, traced.get(p.index))).join('');
     const tokens = (detail?.tokens || []).map(t =>
       `<tr><td>${escape(t.kind)} · ${escape(t.slot)}</td><td>${escape(String(t.decoded ?? ''))} <span class="empty">${escape(t.category || '')}</span></td></tr>`).join('');
     panel.innerHTML = `${head}<h3>속성</h3>${table(detail?.props || props)}
       <h3>토큰 (${detail?.tokens?.length || 0})</h3>${tokens ? `<table>${tokens}</table>` : '<p class="empty">없음</p>'}
-      <h3>문단 (${detail?.paragraphs?.length || 0})</h3>${paragraphs || '<p class="empty">없음</p>'}`;
+      <h3>문단 (${detail?.paragraphs?.length || 0})${traced.size ? ` <span class="empty">· 원인 ${traced.size}개, 빨간 테두리</span>` : ''}</h3>${paragraphs || '<p class="empty">없음</p>'}`;
   } catch (error) {
     panel.insertAdjacentHTML('beforeend', `<p class="error">${escape(error.message)}</p>`);
   }
