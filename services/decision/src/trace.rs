@@ -589,7 +589,7 @@ pub fn plan(
         subgraph: None,
         path: Vec::new(),
         stop: Stop::None,
-        sentence: format!("앞선 계획 없이 에이전트가 스스로 정한 행동\n→ {current_line}"),
+        sentence: format!("앞선 단계와 직접 이어지지 않는 행동\n→ {current_line}"),
         results: Vec::new(),
     });
 
@@ -626,9 +626,7 @@ pub fn plan(
                 .iter()
                 .map(|candidate| {
                     let meaning = candidate.subgraph.is_none().then(|| {
-                        "나열된 어떤 서브그래프도 `action`으로 이어지지 않았다. 에이전트가 스스로 \
-                         정해서 한 행동이다."
-                            .to_owned()
+                        "나열된 어떤 서브그래프도 `action`과 직접 이어지지 않는다.".to_owned()
                     });
                     (candidate.key.clone(), meaning)
                 })
@@ -865,7 +863,7 @@ fn valid(probability: f64) -> bool {
 fn stop_prefix(stop: Stop) -> &'static str {
     match stop {
         Stop::ReachedRoot => "",
-        Stop::None => "(그 앞은 에이전트가 스스로 정한 계획)\n→ ",
+        Stop::None => "(그 앞은 앞선 단계와 직접 이어지지 않음)\n→ ",
         Stop::Undecided => "(그 앞은 추적되지 않음)\n→ ",
         Stop::LoopGuard => "(추적 중단)\n→ ",
     }
