@@ -1,6 +1,7 @@
 use std::{error::Error, fmt, sync::Arc};
 
 use serde_json::Value;
+use withhuman_common::tokens;
 
 use withhuman_contracts::{
     events::{
@@ -265,7 +266,7 @@ impl Normalizer {
                     prompt_id: request.prompt_id,
                     store_tool_input: Some((
                         request.tool_use_id.clone(),
-                        request.tool_input.clone(),
+                        redacted(&request.tool_input),
                     )),
                     agent_id: request.agent_id.clone(),
                     ..Default::default()
@@ -561,10 +562,11 @@ impl Normalizer {
         request: MessageDisplayRequest,
         observed_at: u64,
     ) -> Result<Option<NormalizedEvent>, NormalizeError> {
+        // Buffered fragments wait in shared state, so they are kept redacted.
         let fragment = MessageFragment {
             message_id: request.message_id.clone(),
             index: request.index,
-            delta: request.delta,
+            delta: tokens::redact(&request.delta).into_owned(),
         };
         if !request.final_ {
             self.sessions
@@ -657,6 +659,13 @@ impl Normalizer {
             },
         )))
     }
+}
+
+/// A copy of `value` with sensitive values masked, for state the Collector keeps between Hooks.
+fn redacted(value: &Value) -> Value {
+    let mut value = value.clone();
+    tokens::redact_json(&mut value);
+    value
 }
 
 fn envelope<T>(

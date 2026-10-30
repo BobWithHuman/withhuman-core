@@ -125,7 +125,8 @@ CALL (node, commit) { \
   UNWIND $tokens AS token \
   MERGE (stored_token:Token {session_id: $session_id, key_kind: token.key_kind, key: token.key, slot: token.slot}) \
   ON CREATE SET stored_token.node_seq = node.seq, stored_token.node_order = node.order, \
-                stored_token.decoded = token.decoded, stored_token.version = commit.version \
+                stored_token.decoded = token.decoded, stored_token.category = token.category, \
+                stored_token.version = commit.version \
   ON MATCH SET stored_token.node_seq = CASE WHEN node.order < stored_token.node_order \
                  THEN node.seq ELSE stored_token.node_seq END, \
                stored_token.version = CASE WHEN node.order < stored_token.node_order \
@@ -247,7 +248,8 @@ CALL (node, commit, row) { \
   UNWIND row.tokens AS token \
   MERGE (stored_token:Token {session_id: row.session_id, key_kind: token.key_kind, key: token.key, slot: token.slot}) \
   ON CREATE SET stored_token.node_seq = node.seq, stored_token.node_order = node.order, \
-                stored_token.decoded = token.decoded, stored_token.version = commit.version \
+                stored_token.decoded = token.decoded, stored_token.category = token.category, \
+                stored_token.version = commit.version \
   MERGE (node)-[:MENTIONS_TOKEN {slot: token.slot}]->(stored_token) \
 } \
 RETURN count(node) AS reindexed";

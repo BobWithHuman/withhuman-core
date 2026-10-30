@@ -1,9 +1,11 @@
-use std::{collections::BTreeSet, net::IpAddr, sync::LazyLock};
+use std::collections::BTreeSet;
 
-use regex::Regex;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
-use withhuman_common::chunking::{self, Profile};
+use withhuman_common::{
+    chunking::{self, Profile},
+    tokens,
+};
 use withhuman_contracts::events::{
     ConfigChangeEventRequest, FileChangedEventRequest, InstructionsLoadedEventRequest,
     MessageDisplayEventRequest, PostToolBatchEventRequest, PostToolUseEventRequest,
@@ -274,6 +276,8 @@ pub(crate) struct TokenMutation {
     pub(crate) key: String,
     pub(crate) slot: String,
     pub(crate) decoded: String,
+    /// Detector category (`address`, `credential`, `pii`, `financial`, `device`).
+    pub(crate) category: String,
 }
 
 fn mutation<T, E>(
@@ -288,18 +292,20 @@ where
     T: Serialize,
     E: Serialize,
 {
-    let event_json = serde_json::to_string(&event)
-        .map_err(|error| RepositoryError::InvalidEvent(error.to_string()))?;
+    // Tokens come from the original values so sensitive ones are keyed by their real hash;
+    // everything stored (event, payload, paragraphs) is redacted.
+    let event_json = redacted_json(&event)?;
     let envelope = envelope(&event);
-    let payload_json = serde_json::to_string(&envelope.payload)
+    let original_payload_json = serde_json::to_string(&envelope.payload)
         .map_err(|error| RepositoryError::InvalidEvent(error.to_string()))?;
+    let payload_json = redacted_json(&envelope.payload)?;
     let paragraphs = match &envelope.chunks {
         Some(chunks) => chunks
             .iter()
             .map(|chunk| {
                 Ok(ParagraphMutation {
                     index: signed(chunk.index, "chunk.index")?,
-                    text: chunk.text.clone(),
+                    text: tokens::redact(&chunk.text).into_owned(),
                     hash: chunk.hash.clone(),
                     source: chunk.source.clone(),
                     hidden: chunk.hidden,
@@ -310,7 +316,7 @@ where
             .collect::<Result<Vec<_>, RepositoryError>>()?,
         None => text
             .as_deref()
-            .map(|text| chunk_text(text, event_name))
+            .map(|text| chunk_text(&tokens::redact(text), event_name))
             .unwrap_or_default(),
     };
 
@@ -320,14 +326,18 @@ where
         "UserPromptSubmit" => "user",
         _ => "external",
     };
-    extract_tokens(&payload_json, payload_slot, &mut tokens);
-    for paragraph in &paragraphs {
-        let slot = match paragraph.source.as_str() {
-            "user" | "UserPromptSubmit" => "user",
-            "MessageDisplay" => "agent",
-            _ => "external",
-        };
-        extract_tokens(&paragraph.text, slot, &mut tokens);
+    extract_tokens(&original_payload_json, payload_slot, &mut tokens);
+    match &envelope.chunks {
+        Some(chunks) => {
+            for chunk in chunks {
+                extract_tokens(&chunk.text, paragraph_slot(&chunk.source), &mut tokens);
+            }
+        }
+        None => {
+            if let Some(text) = &text {
+                extract_tokens(text, paragraph_slot(event_name), &mut tokens);
+            }
+        }
     }
 
     Ok(GraphMutation {
@@ -356,43 +366,36 @@ where
     })
 }
 
-fn extract_tokens(value: &str, slot: &str, tokens: &mut BTreeSet<TokenMutation>) {
-    static URL: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r#"https?://[^\s\"'<>\\]+"#).unwrap());
-    static EMAIL: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}").unwrap());
-    static IP: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b").unwrap());
-    static PATH: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#"(?:^|[\s\"'=])((?:/|\./|\.\./)[A-Za-z0-9._~/-]+)"#).unwrap()
-    });
-
-    for found in URL.find_iter(value) {
-        insert_token(tokens, "url", found.as_str(), slot);
-    }
-    for found in EMAIL.find_iter(value) {
-        insert_token(tokens, "email", found.as_str(), slot);
-    }
-    for found in IP.find_iter(value) {
-        if found.as_str().parse::<IpAddr>().is_ok() {
-            insert_token(tokens, "ip", found.as_str(), slot);
-        }
-    }
-    for captures in PATH.captures_iter(value) {
-        if let Some(found) = captures.get(1) {
-            insert_token(tokens, "path", found.as_str(), slot);
-        }
+fn paragraph_slot(source: &str) -> &'static str {
+    match source {
+        "user" | "UserPromptSubmit" => "user",
+        "MessageDisplay" => "agent",
+        _ => "external",
     }
 }
 
-fn insert_token(tokens: &mut BTreeSet<TokenMutation>, kind: &str, value: &str, slot: &str) {
-    let decoded = value.trim_end_matches([',', '.', ')', ']', '}']);
-    tokens.insert(TokenMutation {
-        key_kind: kind.to_owned(),
-        key: decoded.to_owned(),
-        slot: slot.to_owned(),
-        decoded: decoded.to_owned(),
-    });
+/// `value` as JSON with sensitive strings masked. It is re-serialized only when something was
+/// masked, so events without secrets keep their exact bytes.
+fn redacted_json<T: Serialize>(value: &T) -> Result<String, RepositoryError> {
+    let invalid = |error: serde_json::Error| RepositoryError::InvalidEvent(error.to_string());
+    let mut tree = serde_json::to_value(value).map_err(invalid)?;
+    if tokens::redact_json(&mut tree) {
+        serde_json::to_string(&tree).map_err(invalid)
+    } else {
+        serde_json::to_string(value).map_err(invalid)
+    }
+}
+
+fn extract_tokens(value: &str, slot: &str, tokens: &mut BTreeSet<TokenMutation>) {
+    for token in tokens::extract_tokens(value) {
+        tokens.insert(TokenMutation {
+            key_kind: token.kind.to_owned(),
+            key: token.key,
+            slot: slot.to_owned(),
+            decoded: token.decoded,
+            category: token.category.as_str().to_owned(),
+        });
+    }
 }
 
 fn text_content(value: &Value) -> Option<String> {
