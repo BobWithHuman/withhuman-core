@@ -11,12 +11,10 @@ use withhuman_contracts::decisions::{
     CausalStart, Decision, DecisionRequest, DecisionResponse, JevActivity,
 };
 
-use withhuman_common::tokens;
-
 use crate::{
     DecisionConfig, DecisionRepository, RepositoryError,
     jev::JevClient,
-    repository::TraceRecord,
+    repository::{TraceRecord, TracedParent, TracedSegment},
     trace::{self, Stop, TraceSettings},
 };
 
@@ -89,12 +87,13 @@ impl DecisionProvider for MockDecisionProvider {
     }
 }
 
-/// Traces the Call's cause through Jev and denies it when the traced chain of events departs
-/// from the user's stated intent by more than the configured threshold.
+/// Traces the Call's cause through Jev and denies it when one of the traced chains of events
+/// departs from the user's intents by more than the configured threshold.
 ///
 /// When tracing fails, the Call gets the Collector's failure policy (an error), or REVIEW when
-/// a candidate holds hidden content or a sensitive value. Without a stated intent the turn's
-/// prompt stands in; with neither, the Call is allowed, or reviewed in that same risky case.
+/// a candidate holds hidden content or a sensitive value. Jev sees prompts only through the
+/// intents stated for them; when no prompt has one, the Call is allowed, or reviewed in that
+/// same risky case.
 #[derive(Clone)]
 pub struct JevDecisionProvider {
     repository: Arc<dyn DecisionRepository>,
@@ -174,12 +173,12 @@ impl DecisionProvider for JevDecisionProvider {
         let started = Instant::now();
         let graph = match self.repository.trace_graph(request).await {
             Ok(graph) => graph,
-            // Committed before sequences were numbered: nothing to trace it through.
-            Err(RepositoryError::Unsequenced) => {
+            // Committed before SubGraphs were numbered: nothing to trace it through.
+            Err(RepositoryError::NoSubGraph) => {
                 return Ok(DecisionResponse {
                     decision: Decision::Allow,
                     reason: String::new(),
-                    rule: "trace::unsequenced".to_owned(),
+                    rule: "trace::no_subgraph".to_owned(),
                     start: CausalStart::Unresolved,
                     written: false,
                     jev: None,
@@ -188,8 +187,8 @@ impl DecisionProvider for JevDecisionProvider {
             Err(error) => return Err(ProviderError(error.to_string())),
         };
 
-        // Candidates and the sequences their paths pass through, whose content Jev sees.
-        let (candidates, _) = trace::candidate_sequences(&graph, &self.settings);
+        // Candidates and the SubGraphs their paths pass through, whose content Jev sees.
+        let (candidates, _) = trace::candidate_subgraphs(&graph, &self.settings);
         let mut shown: BTreeSet<u64> = BTreeSet::new();
         for candidate in candidates {
             let (path, _) = trace::ancestry(&graph, candidate, |_| false, self.settings.max_hops);
@@ -198,27 +197,12 @@ impl DecisionProvider for JevDecisionProvider {
         let shown: Vec<u64> = shown.into_iter().collect();
         let members = self
             .repository
-            .sequence_members(&request.session_id, &shown, graph.call.order)
+            .subgraph_members(&request.session_id, &shown, graph.call.order)
             .await
             .map_err(|error| ProviderError(error.to_string()))?;
-        let stated = request
-            .intent
-            .as_deref()
-            .map(str::trim)
-            .filter(|intent| !intent.is_empty());
-        // Without a stated intent, what the user asked for this turn stands in.
-        let prompt = graph
-            .request
-            .as_deref()
-            .map(str::trim)
-            .filter(|prompt| !prompt.is_empty())
-            .map(|prompt| truncate(&tokens::redact(prompt), 500));
-        let (intent, intent_source) = match (stated, prompt.as_deref()) {
-            (Some(intent), _) => (Some(intent), "stated"),
-            (None, Some(prompt)) => (Some(prompt), "prompt"),
-            (None, None) => (None, "none"),
-        };
-        let plan = trace::plan(&graph, &members, intent, &self.settings);
+        // Every turn's stated intent; a prompt's text is never shown.
+        let intents = trace::intents(&graph, request.intent.as_deref(), &self.settings);
+        let plan = trace::plan(&graph, &members, intents.text.as_deref(), &self.settings);
         let risky = plan.risky(&graph);
 
         let remaining = |reserve: Duration| {
@@ -228,35 +212,79 @@ impl DecisionProvider for JevDecisionProvider {
                     .saturating_sub(reserve)
             })
         };
-        let timeout =
-            remaining(PERSIST_RESERVE).map_or(self.jev_timeout, |left| left.min(self.jev_timeout));
-        if timeout.is_zero() {
+        let timeout = || {
+            remaining(PERSIST_RESERVE).map_or(self.jev_timeout, |left| left.min(self.jev_timeout))
+        };
+
+        // Step 1: which candidates the Call came from.
+        let asked = Instant::now();
+        let first = timeout();
+        if first.is_zero() {
             return self
                 .unresolved(request, "no time left to ask Jev", risky)
                 .await;
         }
-        let asked = Instant::now();
-        let answers = match self.jev.ask(&plan.request, timeout).await {
+        let answers = match self.jev.ask(&plan.request, first).await {
             Ok(answers) => answers,
             Err(error) => return self.unresolved(request, error, risky).await,
         };
-        let jev_ms = u64::try_from(asked.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let outcome = match trace::interpret(&plan, &answers) {
-            Ok(outcome) => outcome,
+        let parents = match trace::parents(&plan, &answers) {
+            Ok(parents) => parents,
             Err(error) => return self.unresolved(request, error, risky).await,
         };
+        let parent_ms = elapsed_ms(asked);
+
+        // Step 2: one request per parent, all at once, each holding only that parent's results.
+        let judged = Instant::now();
+        let second = timeout();
+        if second.is_zero() {
+            return self
+                .unresolved(request, "no time left to ask Jev", risky)
+                .await;
+        }
+        let pending: Vec<_> = parents
+            .chosen
+            .iter()
+            .map(|parent| {
+                trace::judge_request(&plan, &parent.candidate).map(|jev_request| {
+                    let jev = self.jev.clone();
+                    tokio::spawn(async move { jev.ask(&jev_request, second).await })
+                })
+            })
+            .collect();
+        let mut judgements = Vec::new();
+        for (parent, task) in parents.chosen.iter().zip(pending) {
+            let response = match task {
+                None => None,
+                Some(task) => match task.await {
+                    Ok(Ok(response)) => Some(response),
+                    Ok(Err(error)) => return self.unresolved(request, error, risky).await,
+                    Err(error) => return self.unresolved(request, error, risky).await,
+                },
+            };
+            match trace::judge(&plan, &parent.candidate, response.as_ref()) {
+                Ok(judgement) => judgements.push(judgement),
+                Err(error) => return self.unresolved(request, error, risky).await,
+            }
+        }
+        let judge_ms = elapsed_ms(judged);
+        let outcome = trace::outcome(parents, judgements);
 
         let mut trace_json = trace::record(&plan, &outcome);
-        trace_json["intent_source"] = intent_source.into();
+        trace_json["intent_source"] = intents.source.into();
+        trace_json["jev_ms"] = serde_json::json!({"parent": parent_ms, "judge": judge_ms});
         let record = TraceRecord {
-            sequence: graph.call.sequence,
-            parent: outcome.chosen.key.clone(),
-            parent_number: outcome.chosen.sequence,
-            parent_probability: outcome
-                .influence
-                .get(&outcome.chosen.key)
-                .copied()
-                .unwrap_or_default(),
+            subgraph: graph.call.subgraph,
+            parent: outcome.primary().key.clone(),
+            parents: outcome
+                .parents
+                .iter()
+                .map(|parent| TracedParent {
+                    key: parent.candidate.key.clone(),
+                    number: parent.candidate.subgraph,
+                    probability: parent.influence,
+                })
+                .collect(),
             candidates: plan
                 .candidates
                 .iter()
@@ -265,7 +293,12 @@ impl DecisionProvider for JevDecisionProvider {
             segments: outcome
                 .segments
                 .iter()
-                .map(|segment| (segment.seq, segment.probability, segment.rank))
+                .map(|segment| TracedSegment {
+                    seq: segment.seq,
+                    probability: segment.probability,
+                    rank: segment.rank,
+                    parent: segment.parent.clone(),
+                })
                 .collect(),
             intent_score: outcome.judged_score,
             trace: trace_json,
@@ -280,15 +313,16 @@ impl DecisionProvider for JevDecisionProvider {
         )
         .await;
 
-        let start = match outcome.chosen.stop {
-            _ if outcome.chosen.sequence.is_none() => CausalStart::Self_,
+        let primary = outcome.primary();
+        let start = match primary.stop {
+            _ if primary.subgraph.is_none() => CausalStart::Self_,
             Stop::ReachedRoot => CausalStart::User,
             Stop::None => CausalStart::Self_,
             Stop::Undecided | Stop::LoopGuard => CausalStart::Unresolved,
         };
         let jev = Some(JevActivity {
             asked: true,
-            ms: Some(jev_ms),
+            ms: Some(parent_ms + judge_ms),
             reused_from: None,
             error: stored
                 .err()
@@ -324,6 +358,10 @@ impl DecisionProvider for JevDecisionProvider {
     }
 }
 
+fn elapsed_ms(since: Instant) -> u64 {
+    u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
 /// Waits up to `wait` for a spawned write; past that it finishes on its own.
 async fn settle(
     write: tokio::task::JoinHandle<Result<(), RepositoryError>>,
@@ -333,12 +371,5 @@ async fn settle(
         Ok(Ok(result)) => result.map_err(|error| error.to_string()),
         Ok(Err(error)) => Err(error.to_string()),
         Err(_) => Err("still writing".to_owned()),
-    }
-}
-
-fn truncate(text: &str, chars: usize) -> String {
-    match text.char_indices().nth(chars) {
-        Some((end, _)) => format!("{}…", &text[..end]),
-        None => text.to_owned(),
     }
 }

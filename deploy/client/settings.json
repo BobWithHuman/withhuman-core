@@ -112,44 +112,12 @@
         ]
       }
     ],
-    "InstructionsLoaded": [
-      {
-        "hooks": [
-          {
-            "type": "http",
-            "url": "https://54.252.92.35/v1/hooks/InstructionsLoaded",
-            "headers": {
-              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID"
-            },
-            "allowedEnvVars": [
-              "WITHHUMAN_CLIENT_ID"
-            ]
-          }
-        ]
-      }
-    ],
     "ConfigChange": [
       {
         "hooks": [
           {
             "type": "http",
             "url": "https://54.252.92.35/v1/hooks/ConfigChange",
-            "headers": {
-              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID"
-            },
-            "allowedEnvVars": [
-              "WITHHUMAN_CLIENT_ID"
-            ]
-          }
-        ]
-      }
-    ],
-    "FileChanged": [
-      {
-        "hooks": [
-          {
-            "type": "http",
-            "url": "https://54.252.92.35/v1/hooks/FileChanged",
             "headers": {
               "x-withhuman-client": "$WITHHUMAN_CLIENT_ID"
             },

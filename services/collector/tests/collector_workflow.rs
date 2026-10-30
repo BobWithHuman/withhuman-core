@@ -399,14 +399,15 @@ async fn hides_the_intent_line_from_the_user_but_records_it() {
             .clone()
     };
 
-    // A first flush holding only the intent line shows nothing.
+    // A first flush holding only the intent line shows an invisible character: Claude Code
+    // would show the original for an empty one.
     assert_eq!(
         display(
             app.clone(),
             flush("m1", 0, "[의도] 로그인 버그 수정 (확신도: 높음)\n", false)
         )
         .await,
-        ""
+        "\u{200B}"
     );
     assert_eq!(
         display(app.clone(), flush("m1", 1, "[의도] 이건 본문\n", true)).await,
@@ -422,7 +423,8 @@ async fn hides_the_intent_line_from_the_user_but_records_it() {
         "추가했습니다."
     );
 
-    // The recorded message keeps the intent line for the Generator to store.
+    // The message is recorded without its intent line; the turn's first intent is recorded on its
+    // own, and a later one does not replace it.
     let events = generator.events.lock().unwrap();
     let texts: Vec<&str> = events
         .iter()
@@ -431,13 +433,18 @@ async fn hides_the_intent_line_from_the_user_but_records_it() {
             _ => None,
         })
         .collect();
-    assert_eq!(
-        texts,
-        [
-            "[의도] 로그인 버그 수정 (확신도: 높음)\n[의도] 이건 본문\n",
-            "[의도] 테스트 추가\n추가했습니다."
-        ]
-    );
+    assert_eq!(texts, ["[의도] 이건 본문\n", "추가했습니다."]);
+    let intents: Vec<(&str, &str)> = events
+        .iter()
+        .filter_map(|event| match event {
+            NormalizedEvent::Intent(event) => Some((
+                event.payload.message_id.as_str(),
+                event.payload.intent.as_str(),
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(intents, [("m1", "로그인 버그 수정 (확신도: 높음)")]);
 }
 
 #[tokio::test]

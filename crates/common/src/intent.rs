@@ -1,6 +1,6 @@
 //! The `[의도] ...` line the Collector asks the model to open every reply with: the user intent
-//! it inferred from the session. The Collector hides the line on screen and the Generator stores
-//! it with the message.
+//! it inferred from the prompt. The Collector hides the line on screen and records it as the
+//! prompt's Intent node, apart from the message.
 
 const MARKER: &str = "[의도]";
 

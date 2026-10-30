@@ -118,7 +118,7 @@ async fn redis_sessions_normalize_like_in_memory_sessions() {
     )
     .await;
 
-    assert_eq!(in_memory.len(), 16);
+    assert_eq!(in_memory.len(), 14);
     assert_eq!(in_memory, redis);
     let golden = support::GOLDEN.replace(support::GOLDEN_SESSION_ID, &session_id);
     assert_eq!(redis, golden.lines().collect::<Vec<_>>());
@@ -194,7 +194,6 @@ async fn session_keys_expire_after_inactivity() {
                 message_id: "m-1".to_owned(),
                 index: Some(0),
                 delta: "partial".to_owned(),
-                intent: None,
             },
         )
         .await
@@ -458,17 +457,17 @@ async fn shares_downloaded_paths_across_replicas() {
     assert!(ttl > 0);
 }
 
-/// Redis numbers session-wide sequences and keeps the stated intent like the in-memory store.
+/// Redis numbers session-wide SubGraphs and keeps the stated intent like the in-memory store.
 #[tokio::test]
-async fn redis_sequences_match_in_memory_sequences() {
+async fn redis_subgraphs_match_in_memory_subgraphs() {
     let Some(url) = redis_url() else {
         return;
     };
-    let session_id = unique("sequences");
+    let session_id = unique("subgraphs");
     let in_memory = support::run_steps(
         Normalizer::new(InMemorySessionStore::default()),
         &session_id,
-        support::SEQUENCE_SCENARIO,
+        support::SUBGRAPH_SCENARIO,
     )
     .await;
     let redis = support::run_steps(
@@ -477,21 +476,21 @@ async fn redis_sequences_match_in_memory_sequences() {
             Duration::from_secs(60),
         )),
         &session_id,
-        support::SEQUENCE_SCENARIO,
+        support::SUBGRAPH_SCENARIO,
     )
     .await;
 
     assert_eq!(in_memory, redis);
 }
 
-/// Redis resumes a lost session inside its committed open sequence like the in-memory store, and
+/// Redis resumes a lost session inside its committed open SubGraph like the in-memory store, and
 /// keeps an intent a fragment stated before the seed.
 #[tokio::test]
-async fn redis_resumes_sequences_like_in_memory() {
+async fn redis_resumes_subgraphs_like_in_memory() {
     let Some(url) = redis_url() else {
         return;
     };
-    let session_id = unique("resume-sequences");
+    let session_id = unique("resume-subgraphs");
     let committed = || Arc::new(support::Committed(support::resume_cursor()));
     let in_memory = support::run_steps(
         Normalizer::new(InMemorySessionStore::default()).with_history(committed()),

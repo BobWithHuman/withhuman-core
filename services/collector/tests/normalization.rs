@@ -80,7 +80,7 @@ async fn assigns_gap_free_orders_only_when_an_event_is_emitted() {
     };
     assert_eq!(start.meta.cwd.as_deref(), Some("/workspace"));
     assert_eq!(start.meta.repo.as_deref(), Some("github.com/acme/service"));
-    assert!(pending_fragment.is_none());
+    assert!(pending_fragment.is_empty());
     assert_eq!(prompt.order(), 2);
 }
 
@@ -122,7 +122,7 @@ async fn aggregates_message_fragments_and_inherits_session_context() {
             .unwrap();
 
         if final_ {
-            let Some(NormalizedEvent::MessageDisplay(event)) = result else {
+            let [NormalizedEvent::MessageDisplay(event)] = result.as_slice() else {
                 panic!("final fragment should emit MessageDisplay");
             };
             assert_eq!(event.payload.text, "hello world");
@@ -130,7 +130,7 @@ async fn aggregates_message_fragments_and_inherits_session_context() {
             assert_eq!(event.meta.prompt_id.as_deref(), Some("prompt-7"));
             assert_eq!(event.meta.turn_id.as_deref(), Some("turn-2"));
         } else {
-            assert!(result.is_none());
+            assert!(result.is_empty());
         }
     }
 }
@@ -236,7 +236,7 @@ async fn snapshots_pending_side_analysis_references() {
 }
 
 /// Every Hook must normalize to the exact bytes the Collector produced before its session state
-/// moved behind `SessionStore`, plus the `session_sequence` field added since.
+/// moved behind `SessionStore`, plus the `subgraph` field added since.
 #[tokio::test]
 async fn normalizes_the_scenario_byte_for_byte_like_the_original_collector() {
     let emitted = support::run_scenario(Normalizer::default(), support::GOLDEN_SESSION_ID).await;
@@ -289,10 +289,10 @@ async fn resumes_numbering_after_the_generator_cursor() {
     assert_eq!(second.order(), first.event.order + 1);
 }
 
-/// A lost session resumes inside its committed open sequence: the waiting call's result joins it,
-/// the next call too, and the intent a fragment stated before the seed is kept.
+/// A lost session resumes inside its committed open SubGraph: the waiting call's result joins it,
+/// the next call too, and the turn keeps the intent it stated before the state was lost.
 #[tokio::test]
-async fn resumes_inside_the_committed_open_sequence() {
+async fn resumes_inside_the_committed_open_subgraph() {
     let normalizer =
         Normalizer::default().with_history(Arc::new(support::Committed(support::resume_cursor())));
     let emitted = support::run_steps(normalizer, "session-1", support::RESUME_SCENARIO).await;
@@ -301,22 +301,22 @@ async fn resumes_inside_the_committed_open_sequence() {
         .map(|event| {
             let event: serde_json::Value = serde_json::from_str(event).unwrap();
             (
-                event["session_sequence"].as_u64().unwrap(),
+                event["subgraph"].as_u64().unwrap(),
                 event["intent"].as_str().map(str::to_owned),
             )
         })
         .collect();
-    let intent = Some("새 의도".to_owned());
+    let intent = Some("이전 의도".to_owned());
     assert_eq!(
         observed,
         [(3, None), (3, intent.clone()), (4, None), (4, intent)]
     );
 }
 
-/// A session committed before sequences were numbered continues after sequence 0, which
+/// A session committed before SubGraphs were numbered continues after SubGraph 0, which
 /// belongs to a session's first prompt.
 #[tokio::test]
-async fn numbers_a_session_without_sequences_after_sequence_zero() {
+async fn numbers_a_session_without_subgraphs_after_subgraph_zero() {
     let normalizer =
         Normalizer::default().with_history(Arc::new(support::Committed(SessionCursor {
             last_order: 12,
@@ -329,15 +329,15 @@ async fn numbers_a_session_without_sequences_after_sequence_zero() {
             ["UserPromptSubmit", {"prompt": "next"}]]"#,
     )
     .await;
-    let sequences: Vec<u64> = emitted
+    let subgraphs: Vec<u64> = emitted
         .iter()
         .map(|event| {
-            serde_json::from_str::<serde_json::Value>(event).unwrap()["session_sequence"]
+            serde_json::from_str::<serde_json::Value>(event).unwrap()["subgraph"]
                 .as_u64()
                 .unwrap()
         })
         .collect();
-    assert_eq!(sequences, [1, 2]);
+    assert_eq!(subgraphs, [1, 2]);
 }
 
 #[tokio::test]
@@ -415,7 +415,7 @@ async fn assemble(
     normalizer: Normalizer,
     fragments: &[(u64, &str, bool)],
 ) -> withhuman_contracts::events::MessageDisplayEventRequest {
-    let mut emitted = None;
+    let mut emitted = Vec::new();
     for (index, delta, final_) in fragments {
         emitted = normalizer
             .message_display(
@@ -434,7 +434,7 @@ async fn assemble(
             .await
             .unwrap();
     }
-    let Some(NormalizedEvent::MessageDisplay(event)) = emitted else {
+    let Some(NormalizedEvent::MessageDisplay(event)) = emitted.pop() else {
         panic!("final fragment should emit MessageDisplay");
     };
     event
@@ -461,15 +461,16 @@ impl GeneratorTransport for History {
     }
 }
 
-/// Session-wide sequences follow the conversation: sequence 0 holds the first prompt and the
-/// Instructions before the first message; each message opens a sequence its calls and results
-/// join (also when the message arrives after its first call); a later prompt stands alone.
+/// Session-wide SubGraphs follow the conversation: SubGraph 0 holds the first prompt and what
+/// came before the first message; each message opens a SubGraph its calls and results join
+/// (also when the message arrives after its first call); a later prompt stands alone. A config
+/// change joins the SubGraph that is open.
 #[tokio::test]
-async fn numbers_session_wide_sequences_and_carries_the_stated_intent() {
+async fn numbers_session_wide_subgraphs_and_carries_the_stated_intent() {
     let emitted = support::run_steps(
         Normalizer::default(),
         "session-1",
-        support::SEQUENCE_SCENARIO,
+        support::SUBGRAPH_SCENARIO,
     )
     .await;
     let observed: Vec<(String, u64, Option<String>)> = emitted
@@ -478,25 +479,29 @@ async fn numbers_session_wide_sequences_and_carries_the_stated_intent() {
             let event: serde_json::Value = serde_json::from_str(event).unwrap();
             let hook = match event["payload"].as_object().unwrap() {
                 payload if payload.contains_key("prompt") => "Request",
+                payload if payload.contains_key("intent") => "Intent",
                 payload if payload.contains_key("agent_id") => "Subagent",
                 payload if payload.contains_key("text") => "Message",
-                payload if payload.contains_key("load_reason") => "Instructions",
+                payload if payload.contains_key("source") => "ConfigChange",
                 payload if payload.contains_key("tool_response") => "Result",
                 payload if payload.contains_key("tool_input") => "Call",
                 _ => "Batch",
             };
             (
                 hook.to_owned(),
-                event["session_sequence"].as_u64().unwrap(),
+                event["subgraph"].as_u64().unwrap(),
                 event["intent"].as_str().map(str::to_owned),
             )
         })
         .collect();
     let intent = Some("로그인 버그 수정 (확신도: 높음)".to_owned());
     let deploy = Some("배포 (확신도: 중간)".to_owned());
+    let clean = Some("빌드 폴더 정리".to_owned());
     let expected: Vec<(String, u64, Option<String>)> = [
-        ("Instructions", 0, None),
+        ("ConfigChange", 0, None),
         ("Request", 0, None),
+        // The intent a reply states joins its prompt's SubGraph.
+        ("Intent", 0, None),
         ("Message", 1, None),
         ("Call", 1, intent.clone()),
         ("Call", 1, intent.clone()),
@@ -512,29 +517,34 @@ async fn numbers_session_wide_sequences_and_carries_the_stated_intent() {
         ("Batch", 3, None),
         ("Request", 4, None),
         ("Call", 5, None),
-        ("Instructions", 5, None),
-        // A subagent's calls get sequences of their own; the main agent's sequence stays open.
+        ("ConfigChange", 5, None),
+        // A subagent's calls get SubGraphs of their own; the main agent's SubGraph stays open.
         ("Subagent", 5, None),
+        ("Intent", 4, None),
         ("Message", 5, None),
         ("Call", 6, deploy.clone()),
         ("Call", 5, deploy.clone()),
-        // A repeated message keeps its sequence; a later intent line does not replace the
+        // A repeated message keeps its SubGraph; a later intent line does not replace the
         // turn's first.
         ("Message", 5, None),
         ("Message", 7, None),
         ("Result", 6, None),
         ("Batch", 6, None),
         ("Result", 5, None),
-        // A batch closes the sequence of its calls only.
+        // A batch closes the SubGraph of its calls only.
         ("Batch", 5, None),
         ("Call", 7, deploy.clone()),
         // Naming only batched calls, a late repeat closes nothing.
         ("Batch", 7, None),
         ("Result", 7, None),
         ("Batch", 7, None),
+        ("Request", 8, None),
+        // A message that was only its intent line adds no Message and opens no SubGraph.
+        ("Intent", 8, None),
+        ("Call", 9, clean.clone()),
     ]
     .into_iter()
-    .map(|(hook, sequence, intent)| (hook.to_owned(), sequence, intent))
+    .map(|(hook, subgraph, intent)| (hook.to_owned(), subgraph, intent))
     .collect();
     assert_eq!(observed, expected);
 }

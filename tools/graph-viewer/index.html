@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WithHuman Graph</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.30.2/cytoscape.min.js"></script>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #6b7280; --line: #d9dde4;
+    --seq-bg: #eef1f6; --seq-border: #b9c2d0; --accent: #2f6fde;
+    --request: #4c7be0; --intent: #2bb3c0; --message: #8a63d2; --call: #e08a2e; --segment: #3aa57a; --error: #d24c4c;
+    --other: #8b93a1; --allow: #2f9e5b; --deny: #d64545; --review: #d9a21b;
+    --edge: #a3abb8; --cause: #e0433b; --result: #3d86e0; --parent: #f08c00; --agent: #9c5bd6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171c; --panel: #1c2027; --text: #e4e7ec; --muted: #9aa3b1; --line: #2e343e;
+      --seq-bg: #20252e; --seq-border: #3d4654; --edge: #5d6675;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; height: 100vh; display: flex; flex-direction: column; background: var(--bg);
+         color: var(--text); font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 8px 14px;
+           background: var(--panel); border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 14px; margin: 0 6px 0 0; }
+  select, button { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line);
+                   border-radius: 6px; padding: 4px 8px; }
+  select { max-width: 420px; }
+  button { cursor: pointer; }
+  label { display: inline-flex; gap: 4px; align-items: center; color: var(--muted); white-space: nowrap; }
+  .legend { display: flex; gap: 10px; flex-wrap: wrap; color: var(--muted); }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 4px; vertical-align: -1px; }
+  main { flex: 1; display: flex; min-height: 0; }
+  #graph { flex: 1; min-width: 0; }
+  aside { width: 420px; max-width: 45vw; overflow: auto; background: var(--panel); border-left: 1px solid var(--line); padding: 14px; }
+  aside h2 { font-size: 15px; margin: 0 0 8px; }
+  aside h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 16px 0 6px; }
+  .empty { color: var(--muted); }
+  .badge { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 12px; font-weight: 600; color: #fff; }
+  table { width: 100%; border-collapse: collapse; }
+  td { border-top: 1px solid var(--line); padding: 4px 6px; vertical-align: top; word-break: break-word; }
+  td:first-child { color: var(--muted); width: 34%; white-space: nowrap; }
+  pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .para { border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; margin: 6px 0; }
+  .para.hidden { border-color: var(--deny); }
+  .para small { color: var(--muted); display: block; margin-bottom: 2px; }
+  .status { color: var(--muted); margin-left: auto; }
+  .error { color: var(--deny); }
+  @media (max-width: 760px) {
+    main { flex-direction: column; }
+    aside { width: auto; max-width: none; height: 45vh; border-left: 0; border-top: 1px solid var(--line); }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>WithHuman Graph</h1>
+  <select id="session" aria-label="세션"></select>
+  <button id="reload" type="button">새로고침</button>
+  <label><input id="live" type="checkbox"> 자동 갱신(3초)</label>
+  <button id="fit" type="button">전체 보기</button>
+  <label><input class="edge-toggle" data-edge="order" type="checkbox" checked> NEXT</label>
+  <label><input class="edge-toggle" data-edge="result" type="checkbox" checked> RESULTED_IN</label>
+  <label><input class="edge-toggle" data-edge="cause" type="checkbox" checked> cause</label>
+  <label><input class="edge-toggle" data-edge="parent" type="checkbox" checked> PARENT</label>
+  <label><input id="all-parents" type="checkbox"> PARENT 전부</label>
+  <label><input class="edge-toggle" data-edge="agent" type="checkbox" checked> AGENT_SEQUENCE</label>
+  <span class="status" id="status"></span>
+</header>
+<main>
+  <div id="graph"></div>
+  <aside id="panel"><p class="empty">노드, 서브그래프 박스, 엣지를 클릭하면 여기에 속성이 나옵니다.</p></aside>
+</main>
+<script>
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const KIND_COLOR = {
+  Request: '--request', Intent: '--intent', Message: '--message', Call: '--call', Segment: '--segment', Error: '--error',
+};
+const DECISION_COLOR = { ALLOW: '--allow', DENY: '--deny', REVIEW: '--review' };
+const $ = id => document.getElementById(id);
+let cy, current = null, liveTimer = null, lastSignature = '';
+
+function parse(json) {
+  if (typeof json !== 'string') return null;
+  try { return JSON.parse(json); } catch { return null; }
+}
+const clip = (text, n = 42) => {
+  const flat = String(text ?? '').replace(/\s+/g, ' ').trim();
+  return flat.length > n ? flat.slice(0, n) + '…' : flat;
+};
+const time = ms => ms ? new Date(ms).toLocaleString() : '';
+
+function caption(kind, summary) {
+  const tool = summary.tool_name || '';
+  switch (kind) {
+    case 'Request': return clip(summary.prompt);
+    case 'Intent': return clip(summary.intent);
+    case 'Message': return clip(summary.text);
+    case 'Call': return clip(`${tool} ${summary.brief || ''}`);
+    case 'Segment': return clip(`${tool} 결과`);
+    case 'Error': return clip(`${tool} ${summary.error || ''}`);
+    case 'ConfigChange': return clip(summary.file_path);
+    case 'SubagentStart': case 'SubagentStop': return clip(summary.agent_type);
+    default: return '';
+  }
+}
+
+function toElements(data) {
+  const elements = [];
+  const placed = new Map();
+  const latestParent = new Map();
+  data.subgraphs.forEach(s => latestParent.set(s.props.number, s.props.parent_call_seq));
+  data.subgraphs.forEach(s => s.members.forEach(seq => placed.set(seq, s.props.number)));
+
+  const columns = new Map();
+  for (const s of data.subgraphs) columns.set(s.props.number, []);
+  const loose = [];
+  for (const node of data.nodes) {
+    const number = placed.get(node.props.seq);
+    (number === undefined ? loose : columns.get(number)).push(node);
+  }
+  const numbers = [...columns.keys()].sort((a, b) => a - b);
+  const columnOf = new Map(numbers.map((n, i) => [n, i]));
+
+  for (const s of data.subgraphs) {
+    const parent = data.parents.find(p => p.source === s.props.number && p.props.call_seq === s.props.parent_call_seq);
+    const parentText = s.props.parent
+      ? ` ← ${s.props.parent}${parent ? ` (p=${parent.props.probability})` : ''}` : '';
+    elements.push({ group: 'nodes', data: {
+      id: `s${s.props.number}`, label: `S${s.props.number}${parentText}`, subgraph: true,
+      props: s.props, members: s.members,
+    }});
+  }
+  const place = (node, column, row, parentId) => {
+    const { seq } = node.props;
+    const decision = node.props.decision;
+    elements.push({ group: 'nodes', data: {
+      id: `n${seq}`, parent: parentId, kind: node.kind, props: node.props,
+      label: `#${seq} ${node.kind}${decision ? ' · ' + decision : ''}\n${caption(node.kind, node.summary)}`,
+      color: css(KIND_COLOR[node.kind] || '--other'),
+      border: decision ? css(DECISION_COLOR[decision] || '--other') : css(KIND_COLOR[node.kind] || '--other'),
+      borderWidth: decision ? 4 : 1.5,
+    }, position: { x: column * 280, y: row * 84 }});
+  };
+  for (const number of numbers) {
+    columns.get(number).sort((a, b) => a.props.order - b.props.order)
+      .forEach((node, row) => place(node, columnOf.get(number), row, `s${number}`));
+  }
+  loose.forEach((node, row) => place(node, numbers.length, row, undefined));
+
+  for (const e of data.edges) {
+    const kind = e.type === 'RESULTED_IN' ? 'result' : e.type === 'AGENT_SEQUENCE' ? 'agent'
+      : e.props.kind === 'cause' ? 'cause' : 'order';
+    elements.push({ group: 'edges', data: {
+      id: `e${e.source}-${e.target}-${e.type}-${e.props.call_seq ?? ''}`,
+      source: `n${e.source}`, target: `n${e.target}`, kind, type: e.type, props: e.props,
+      label: kind === 'cause' ? `cause p=${e.props.probability}` : '',
+    }});
+  }
+  for (const p of data.parents) {
+    elements.push({ group: 'edges', data: {
+      id: `p${p.source}-${p.target}-${p.props.call_seq}`, source: `s${p.source}`, target: `s${p.target}`,
+      kind: 'parent', type: 'PARENT', props: p.props,
+      latest: latestParent.get(p.source) === p.props.call_seq,
+      label: `PARENT p=${p.props.probability} (#${p.props.call_seq})`,
+    }});
+  }
+  return elements;
+}
+
+function style() {
+  return [
+    { selector: 'node', style: {
+      shape: 'round-rectangle', width: 200, height: 52, 'background-color': 'data(color)',
+      'background-opacity': 0.16, 'border-color': 'data(border)', 'border-width': 'data(borderWidth)',
+      label: 'data(label)', 'text-wrap': 'wrap', 'text-max-width': 188, 'text-valign': 'center',
+      'font-size': 11, color: css('--text'),
+    }},
+    { selector: 'node[?subgraph]', style: {
+      shape: 'round-rectangle', 'background-color': css('--seq-bg'), 'background-opacity': 1,
+      'border-color': css('--seq-border'), 'border-width': 1.5, 'border-style': 'dashed',
+      label: 'data(label)', 'text-valign': 'top', 'text-halign': 'center', 'font-size': 13,
+      'font-weight': 700, padding: 16, color: css('--text'), 'text-margin-y': -4,
+    }},
+    { selector: 'edge', style: {
+      width: 1.4, 'line-color': css('--edge'), 'target-arrow-color': css('--edge'),
+      'target-arrow-shape': 'triangle', 'arrow-scale': 0.8, 'curve-style': 'bezier',
+      label: 'data(label)', 'font-size': 10, color: css('--muted'),
+      'text-background-color': css('--bg'), 'text-background-opacity': 0.9, 'text-background-padding': 2,
+    }},
+    { selector: 'edge[kind = "result"]', style: { 'line-color': css('--result'), 'target-arrow-color': css('--result') } },
+    { selector: 'edge[kind = "cause"]', style: {
+      width: 2.4, 'line-style': 'dashed', 'line-color': css('--cause'), 'target-arrow-color': css('--cause'), color: css('--cause'),
+    }},
+    { selector: 'edge[kind = "agent"]', style: { 'line-style': 'dotted', 'line-color': css('--agent'), 'target-arrow-color': css('--agent') } },
+    { selector: 'edge[kind = "parent"]', style: {
+      width: 3, 'line-color': css('--parent'), 'target-arrow-color': css('--parent'), color: css('--parent'),
+      'curve-style': 'unbundled-bezier', 'control-point-distances': -120, 'font-weight': 700,
+    }},
+    { selector: 'edge[kind = "parent"][!latest]', style: { width: 1.4, opacity: 0.55 } },
+    { selector: ':selected', style: { 'overlay-color': css('--accent'), 'overlay-opacity': 0.18, 'overlay-padding': 6 } },
+    { selector: '.off', style: { display: 'none' } },
+  ];
+}
+
+function applyToggles() {
+  if (!cy) return;
+  const on = new Set([...document.querySelectorAll('.edge-toggle')].filter(t => t.checked).map(t => t.dataset.edge));
+  const allParents = $('all-parents').checked;
+  cy.edges().forEach(edge => {
+    const kind = edge.data('kind');
+    const visible = on.has(kind) && (kind !== 'parent' || allParents || edge.data('latest'));
+    edge.toggleClass('off', !visible);
+  });
+}
+
+function render(data, keepView) {
+  const view = keepView && cy ? { zoom: cy.zoom(), pan: cy.pan() } : null;
+  const selected = cy?.$(':selected').id();
+  cy?.destroy();
+  cy = cytoscape({
+    container: $('graph'), elements: toElements(data), style: style(),
+    layout: { name: 'preset' }, wheelSensitivity: 0.25, minZoom: 0.05, maxZoom: 3,
+  });
+  applyToggles();
+  if (view) { cy.zoom(view.zoom); cy.pan(view.pan); } else { cy.fit(undefined, 40); }
+  if (selected) cy.$id(selected).select();
+  cy.on('tap', 'node, edge', event => show(event.target));
+}
+
+const row = (key, value) => {
+  const parsed = /_json$/.test(key) ? parse(value) : null;
+  const shown = parsed !== null ? `<pre>${escape(JSON.stringify(parsed, null, 2))}</pre>`
+    : /(_at|^observed_at)$/.test(key) && typeof value === 'number' ? `${value} <span class="empty">(${time(value)})</span>`
+    : typeof value === 'object' ? `<pre>${escape(JSON.stringify(value, null, 2))}</pre>`
+    : escape(String(value));
+  return `<tr><td>${escape(key)}</td><td>${shown}</td></tr>`;
+};
+const table = props => `<table>${Object.keys(props).sort().map(k => row(k, props[k])).join('')}</table>`;
+function escape(text) {
+  return text.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+async function show(element) {
+  const data = element.data();
+  const panel = $('panel');
+  if (element.isEdge()) {
+    panel.innerHTML = `<h2>${escape(data.type)}</h2><p>${escape(element.source().data('label').split('\n')[0])} → ${escape(element.target().data('label').split('\n')[0])}</p>${table(data.props)}`;
+    return;
+  }
+  if (data.subgraph) {
+    const parents = cy.edges(`[kind = "parent"][source = "${data.id}"]`).map(e =>
+      `<tr><td>#${e.data('props').call_seq}${e.data('latest') ? ' (최신)' : ''}</td><td>→ ${escape(e.target().id().toUpperCase())} · p=${e.data('props').probability}<br><span class="empty">후보 ${escape(JSON.stringify(e.data('props').candidates))}</span></td></tr>`).join('');
+    panel.innerHTML = `<h2>SubGraph ${data.props.number}</h2>${table(data.props)}<h3>멤버</h3><p>${data.members.slice().sort((a, b) => a - b).map(s => '#' + s).join(', ')}</p><h3>PARENT 판단 (Call별)</h3>${parents ? `<table>${parents}</table>` : '<p class="empty">없음</p>'}`;
+    return;
+  }
+  const props = data.props;
+  const trace = parse(props.trace_json);
+  const decision = props.decision
+    ? `<p><span class="badge" style="background:${css(DECISION_COLOR[props.decision] || '--other')}">${escape(props.decision)}</span> ${escape(props.decision_rule || '')} ${props.intent_score != null ? '· score ' + props.intent_score : ''}</p>
+       ${props.decision_reason ? `<p>${escape(props.decision_reason)}</p>` : ''}
+       ${trace?.path_sentence ? `<h3>경로</h3><pre>${escape(trace.path_sentence)}</pre>` : ''}
+       ${trace?.intent ? `<h3>의도 (${escape(trace.intent_source || '')})</h3><p>${escape(trace.intent)}</p>` : ''}`
+    : props.trace_error ? `<p class="error">판정 실패: ${escape(props.trace_error)}</p>` : '';
+  panel.innerHTML = `<h2>#${props.seq} ${escape(data.kind)}</h2>${decision}<h3>속성</h3>${table(props)}<h3>문단 · 토큰</h3><p class="empty">불러오는 중…</p>`;
+  try {
+    const detail = await api(`/api/node?session=${encodeURIComponent(current)}&seq=${props.seq}`);
+    if (cy.$(':selected').id() !== data.id && cy.$(':selected').length) return;
+    const full = detail?.props || props;
+    const paragraphs = (detail?.paragraphs || []).map(p =>
+      `<div class="para${p.hidden ? ' hidden' : ''}"><small>#${p.index} · ${escape(p.source || '')}${p.hidden ? ' · hidden ' + escape(JSON.stringify(p.hidden_rules)) : ''}${p.instructs != null ? ' · instructs ' + p.instructs : ''}</small><pre>${escape(p.text || '')}</pre></div>`).join('');
+    const tokens = (detail?.tokens || []).map(t =>
+      `<tr><td>${escape(t.kind)} · ${escape(t.slot)}</td><td>${escape(String(t.decoded ?? ''))} <span class="empty">${escape(t.category || '')}</span></td></tr>`).join('');
+    panel.innerHTML = `<h2>#${props.seq} ${escape(data.kind)}</h2>${decision}<h3>속성</h3>${table(full)}
+      <h3>토큰 (${detail?.tokens?.length || 0})</h3>${tokens ? `<table>${tokens}</table>` : '<p class="empty">없음</p>'}
+      <h3>문단 (${detail?.paragraphs?.length || 0})</h3>${paragraphs || '<p class="empty">없음</p>'}`;
+  } catch (error) {
+    panel.insertAdjacentHTML('beforeend', `<p class="error">${escape(error.message)}</p>`);
+  }
+}
+
+async function api(path) {
+  const response = await fetch(path);
+  const body = await response.json();
+  if (!response.ok) throw new Error(body?.error || response.statusText);
+  return body;
+}
+
+async function loadSessions() {
+  const sessions = await api('/api/sessions');
+  const wanted = decodeURIComponent(location.hash.slice(1)) || current;
+  $('session').innerHTML = sessions.map(s =>
+    `<option value="${escape(s.id)}">${escape(time(s.created_at))} · ${escape(s.id)} (${s.nodes})</option>`).join('');
+  if (wanted && sessions.some(s => s.id === wanted)) $('session').value = wanted;
+  return $('session').value;
+}
+
+async function loadGraph(keepView) {
+  if (!current) return;
+  $('status').textContent = '불러오는 중…';
+  try {
+    const data = await api(`/api/graph?session=${encodeURIComponent(current)}`);
+    const signature = JSON.stringify(data);
+    if (!keepView || signature !== lastSignature) render(data, keepView);
+    lastSignature = signature;
+    $('status').textContent = `노드 ${data.nodes.length} · 서브그래프 ${data.subgraphs.length} · ${new Date().toLocaleTimeString()}`;
+  } catch (error) {
+    $('status').innerHTML = `<span class="error">${escape(error.message)}</span>`;
+  }
+}
+
+$('session').addEventListener('change', () => {
+  current = $('session').value; location.hash = encodeURIComponent(current); lastSignature = '';
+  $('panel').innerHTML = '<p class="empty">노드, 서브그래프 박스, 엣지를 클릭하면 여기에 속성이 나옵니다.</p>';
+  loadGraph(false);
+});
+$('reload').addEventListener('click', async () => { await loadSessions(); loadGraph(true); });
+$('fit').addEventListener('click', () => cy?.fit(undefined, 40));
+document.querySelectorAll('.edge-toggle, #all-parents').forEach(t => t.addEventListener('change', applyToggles));
+$('live').addEventListener('change', () => {
+  clearInterval(liveTimer);
+  if ($('live').checked) liveTimer = setInterval(() => loadGraph(true), 3000);
+});
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => cy?.style(style()));
+
+loadSessions().then(session => { current = session; loadGraph(false); })
+  .catch(error => { $('status').innerHTML = `<span class="error">${escape(error.message)}</span>`; });
+</script>
+</body>
+</html>

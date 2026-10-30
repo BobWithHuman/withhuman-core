@@ -12,17 +12,18 @@ use withhuman_contracts::decisions::{
 use withhuman_decision::{
     DecisionProvider, DecisionRepository, JevDecisionProvider, RepositoryError, TraceRecord,
     jev::{JevAnswer, JevClient, JevError, JevRequest, JevResponse},
-    trace::{CallInfo, Member, TraceGraph, TraceSettings},
+    trace::{CallInfo, Member, TraceGraph, TraceSettings, Turn},
 };
 
 #[derive(Default)]
 struct Graph {
     traces: Mutex<Vec<TraceRecord>>,
     unresolved: Mutex<Vec<String>>,
-    /// Sequence 1 holds hidden content.
+    /// SubGraph 1 holds hidden content.
     hidden: bool,
-    prompt: Option<&'static str>,
-    unsequenced: bool,
+    /// One user prompt came before the Call, with no intent stated for it.
+    unstated_turn: bool,
+    no_subgraph: bool,
 }
 
 #[async_trait]
@@ -44,19 +45,19 @@ impl DecisionRepository for Graph {
     }
 
     async fn trace_graph(&self, request: &DecisionRequest) -> Result<TraceGraph, RepositoryError> {
-        if self.unsequenced {
-            return Err(RepositoryError::Unsequenced);
+        if self.no_subgraph {
+            return Err(RepositoryError::NoSubGraph);
         }
         Ok(TraceGraph {
             call: CallInfo {
                 seq: request.call_seq,
                 order: 10,
-                sequence: 2,
+                subgraph: 2,
                 agent_id: None,
                 tool_name: "Bash".to_owned(),
                 tool_input: json!({"command": "rm -rf build"}),
             },
-            sequences: BTreeMap::from([(0, None), (1, None)]),
+            subgraphs: BTreeMap::from([(0, None), (1, None)]),
             hidden: if self.hidden {
                 BTreeSet::from([1])
             } else {
@@ -65,11 +66,15 @@ impl DecisionRepository for Graph {
             tokens: BTreeSet::new(),
             shared_tokens: BTreeSet::new(),
             parents: BTreeMap::new(),
-            request: self.prompt.map(str::to_owned),
+            turns: if self.unstated_turn {
+                vec![Turn { intent: None }]
+            } else {
+                Vec::new()
+            },
         })
     }
 
-    async fn sequence_members(
+    async fn subgraph_members(
         &self,
         _: &str,
         _: &[u64],
@@ -97,9 +102,12 @@ impl DecisionRepository for Graph {
     }
 }
 
-/// Answers every question: `parent` picks s1, intent questions return `intent_score`.
+/// Answers every question: `parent` by `parent` (s1 alone unless set), intent questions with
+/// `intent_score`, or with the per-parent score in `scores`.
 struct Jev {
     intent_score: f64,
+    parent: BTreeMap<String, f64>,
+    scores: BTreeMap<String, f64>,
     fail: bool,
     asked: Mutex<Vec<Duration>>,
     requests: Mutex<Vec<JevRequest>>,
@@ -119,15 +127,13 @@ impl JevClient for Jev {
             .map(|id| {
                 let answer = if id == "parent" {
                     JevAnswer {
-                        probabilities: BTreeMap::from([
-                            ("s1".to_owned(), 0.9),
-                            ("none".to_owned(), 0.1),
-                        ]),
+                        probabilities: self.parent.clone(),
                         ..Default::default()
                     }
                 } else {
+                    let key = id.strip_prefix("intent_").unwrap_or_default();
                     JevAnswer {
-                        noul: Some(self.intent_score),
+                        noul: Some(self.scores.get(key).copied().unwrap_or(self.intent_score)),
                         ..Default::default()
                     }
                 };
@@ -150,6 +156,8 @@ fn provider_on(
     let graph = Arc::new(graph);
     let jev = Arc::new(Jev {
         intent_score,
+        parent: BTreeMap::from([("s1".to_owned(), 0.9), ("none".to_owned(), 0.1)]),
+        scores: BTreeMap::new(),
         fail,
         asked: Mutex::default(),
         requests: Mutex::default(),
@@ -233,21 +241,26 @@ async fn traces_without_judging_when_no_intent_was_stated() {
 }
 
 #[tokio::test]
-async fn judges_by_the_prompt_when_no_intent_was_stated() {
+async fn never_judges_by_the_prompt_when_no_intent_was_stated() {
     let (provider, graph, jev) = provider_on(
         Graph {
-            prompt: Some("빌드 폴더만 정리해 줘"),
+            unstated_turn: true,
             ..Graph::default()
         },
         0.1,
         false,
     );
     let response = provider.decide(&request(None, Some(4_000))).await.unwrap();
-    assert_eq!(response.decision, Decision::Deny);
+    assert_eq!(response.decision, Decision::Allow);
+    assert_eq!(response.rule, "intent::unknown");
     let requests = jev.requests.lock().unwrap();
-    assert_eq!(requests[0].state["intent"], "빌드 폴더만 정리해 줘");
+    assert!(
+        requests
+            .iter()
+            .all(|request| !request.state.contains_key("intents"))
+    );
     let traces = graph.traces.lock().unwrap();
-    assert_eq!(traces[0].trace["intent_source"], "prompt");
+    assert_eq!(traces[0].trace["intent_source"], "none");
 }
 
 #[tokio::test]
@@ -270,10 +283,10 @@ async fn reviews_when_tracing_fails_with_hidden_content_in_reach() {
 }
 
 #[tokio::test]
-async fn allows_calls_committed_before_sequences() {
+async fn allows_calls_committed_before_subgraphs() {
     let (provider, _, jev) = provider_on(
         Graph {
-            unsequenced: true,
+            no_subgraph: true,
             ..Graph::default()
         },
         0.0,
@@ -284,7 +297,7 @@ async fn allows_calls_committed_before_sequences() {
         .await
         .unwrap();
     assert_eq!(response.decision, Decision::Allow);
-    assert_eq!(response.rule, "trace::unsequenced");
+    assert_eq!(response.rule, "trace::no_subgraph");
     assert!(jev.asked.lock().unwrap().is_empty());
 }
 
@@ -309,9 +322,12 @@ async fn bounds_the_jev_call_by_the_decision_deadline() {
         .await
         .unwrap();
     provider.decide(&request(Some("x"), None)).await.unwrap();
+    // Each decision asks twice: for the parent, then about it.
     let asked = jev.asked.lock().unwrap().clone();
+    assert_eq!(asked.len(), 4, "{asked:?}");
     assert!(asked[0] <= Duration::from_millis(700), "{asked:?}");
-    assert_eq!(asked[1], Duration::from_secs(3));
+    assert!(asked[1] <= asked[0], "{asked:?}");
+    assert_eq!(asked[2..], [Duration::from_secs(3); 2]);
 
     let (provider, graph, jev) = self::provider(0.8, false);
     assert!(
@@ -322,4 +338,54 @@ async fn bounds_the_jev_call_by_the_decision_deadline() {
     );
     assert!(jev.asked.lock().unwrap().is_empty());
     assert_eq!(graph.unresolved.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn asks_for_the_parent_first_and_then_about_each_parent() {
+    let graph = Arc::new(Graph::default());
+    let jev = Arc::new(Jev {
+        intent_score: 0.9,
+        // s1 and none both reach half the top influence.
+        parent: BTreeMap::from([("s1".to_owned(), 0.6), ("none".to_owned(), 0.4)]),
+        scores: BTreeMap::from([("none".to_owned(), 0.1)]),
+        fail: false,
+        asked: Mutex::default(),
+        requests: Mutex::default(),
+    });
+    let provider = JevDecisionProvider::new(
+        graph.clone(),
+        jev.clone(),
+        TraceSettings::default(),
+        Duration::from_secs(3),
+        0.5,
+    );
+    let response = provider
+        .decide(&request(Some("빌드 고치기"), Some(4_000)))
+        .await
+        .unwrap();
+
+    let requests = jev.requests.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[0].questions.keys().collect::<Vec<_>>(), ["parent"]);
+    assert!(!requests[0].state.contains_key("intents"));
+    let mut judged: Vec<&str> = requests[1..]
+        .iter()
+        .flat_map(|request| request.questions.keys().map(String::as_str))
+        .collect();
+    judged.sort_unstable();
+    assert_eq!(judged, ["intent_none", "intent_s1"]);
+
+    // The parent acting on its own departs from the intent, so the Call is denied although
+    // the most influential parent serves it.
+    assert_eq!(response.decision, Decision::Deny);
+    let traces = graph.traces.lock().unwrap();
+    assert_eq!(traces[0].parent, "s1");
+    let parents: Vec<(&str, Option<u64>)> = traces[0]
+        .parents
+        .iter()
+        .map(|parent| (parent.key.as_str(), parent.number))
+        .collect();
+    assert_eq!(parents, [("s1", Some(1)), ("none", None)]);
+    assert_eq!(traces[0].intent_score, Some(0.1));
+    assert_eq!(traces[0].trace["intent_scores"]["s1"], 0.9);
 }

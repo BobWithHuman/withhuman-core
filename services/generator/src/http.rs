@@ -10,11 +10,11 @@ use axum::{
 use serde::{Serialize, de::DeserializeOwned};
 use utoipa::{OpenApi, ToSchema};
 use withhuman_contracts::events::{
-    ConfigChangeEventRequest, FileChangedEventRequest, InstructionsLoadedEventRequest,
-    MessageDisplayEventRequest, ParagraphClassificationRequest, PostToolBatchEventRequest,
-    PostToolUseEventRequest, PostToolUseFailureEventRequest, PreToolUseEventRequest,
-    RequestContinuationRequest, SessionStartEventRequest, SubagentStartEventRequest,
-    SubagentStopEventRequest, ToolDescriptionsEventRequest, UserPromptSubmitEventRequest,
+    ConfigChangeEventRequest, IntentEventRequest, MessageDisplayEventRequest,
+    ParagraphClassificationRequest, PostToolBatchEventRequest, PostToolUseEventRequest,
+    PostToolUseFailureEventRequest, PreToolUseEventRequest, RequestContinuationRequest,
+    SessionStartEventRequest, SubagentStartEventRequest, SubagentStopEventRequest,
+    ToolDescriptionsEventRequest, UserPromptSubmitEventRequest,
 };
 use withhuman_contracts::{
     decisions::{DecisionRequest, EnforcementMode},
@@ -87,10 +87,9 @@ pub fn app(service: GeneratorService) -> Router {
         .route("/v1/events/PostToolUseFailure", post(post_tool_use_failure))
         .route("/v1/events/SubagentStart", post(subagent_start))
         .route("/v1/events/SubagentStop", post(subagent_stop))
-        .route("/v1/events/InstructionsLoaded", post(instructions_loaded))
         .route("/v1/events/ConfigChange", post(config_change))
-        .route("/v1/events/FileChanged", post(file_changed))
         .route("/v1/events/MessageDisplay", post(message_display))
+        .route("/v1/events/Intent", post(intent))
         .route("/v1/events/PostToolBatch", post(post_tool_batch))
         .route("/v1/events/ToolDescriptions", post(tool_descriptions))
         .route(
@@ -123,10 +122,9 @@ pub fn app(service: GeneratorService) -> Router {
         post_tool_use_failure,
         subagent_start,
         subagent_stop,
-        instructions_loaded,
         config_change,
-        file_changed,
         message_display,
+        intent,
         post_tool_batch,
         tool_descriptions,
         classify_paragraph,
@@ -430,22 +428,10 @@ event_handler!(
     "/v1/events/SubagentStop"
 );
 event_handler!(
-    instructions_loaded,
-    InstructionsLoadedEventRequest,
-    InstructionsLoaded,
-    "/v1/events/InstructionsLoaded"
-);
-event_handler!(
     config_change,
     ConfigChangeEventRequest,
     ConfigChange,
     "/v1/events/ConfigChange"
-);
-event_handler!(
-    file_changed,
-    FileChangedEventRequest,
-    FileChanged,
-    "/v1/events/FileChanged"
 );
 event_handler!(
     message_display,
@@ -453,6 +439,7 @@ event_handler!(
     MessageDisplay,
     "/v1/events/MessageDisplay"
 );
+event_handler!(intent, IntentEventRequest, Intent, "/v1/events/Intent");
 event_handler!(
     post_tool_batch,
     PostToolBatchEventRequest,
