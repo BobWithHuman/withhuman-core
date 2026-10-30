@@ -341,6 +341,105 @@ async fn applies_failure_policies_when_the_generator_cursor_is_unreadable() {
     assert_eq!(body["error"], "generator_unavailable");
 }
 
+#[tokio::test]
+async fn adds_the_intent_instruction_to_prompts() {
+    let prompt = || {
+        json_request(
+            "/v1/hooks/UserPromptSubmit",
+            json!({"session_id":"s1","prompt":"fix login"}),
+        )
+    };
+    let (status, body) = response_json(
+        test_app(
+            CollectorConfig::default(),
+            Arc::new(RecordingGenerator::allow()),
+        )
+        .oneshot(prompt())
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body,
+        json!({"hookSpecificOutput":{
+            "hookEventName":"UserPromptSubmit",
+            "additionalContext":withhuman_collector::INTENT_INSTRUCTION
+        }})
+    );
+
+    let off = CollectorConfig {
+        intent_capture: false,
+        ..Default::default()
+    };
+    let (status, body) = response_json(
+        test_app(off, Arc::new(RecordingGenerator::allow()))
+            .oneshot(prompt())
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_null());
+}
+
+#[tokio::test]
+async fn hides_the_intent_line_from_the_user_but_records_it() {
+    let generator = Arc::new(RecordingGenerator::allow());
+    let app = test_app(CollectorConfig::default(), generator.clone());
+    let flush = |message: &str, index: u64, delta: &str, final_: bool| {
+        json_request(
+            "/v1/hooks/MessageDisplay",
+            json!({"session_id":"s1","message_id":message,"index":index,"delta":delta,"final":final_}),
+        )
+    };
+    let display = |app: axum::Router, request| async move {
+        response_json(app.oneshot(request).await.unwrap()).await.1
+            ["hookSpecificOutput"]["displayContent"]
+            .clone()
+    };
+
+    // A first flush holding only the intent line shows nothing.
+    assert_eq!(
+        display(
+            app.clone(),
+            flush("m1", 0, "[의도] 로그인 버그 수정 (확신도: 높음)\n", false)
+        )
+        .await,
+        ""
+    );
+    assert_eq!(
+        display(app.clone(), flush("m1", 1, "[의도] 이건 본문\n", true)).await,
+        Value::Null
+    );
+    // A message delivered whole arrives as one final flush with index 0.
+    assert_eq!(
+        display(
+            app,
+            flush("m2", 0, "[의도] 테스트 추가\n추가했습니다.", true)
+        )
+        .await,
+        "추가했습니다."
+    );
+
+    // The recorded message keeps the intent line for the Generator to store.
+    let events = generator.events.lock().unwrap();
+    let texts: Vec<&str> = events
+        .iter()
+        .filter_map(|event| match event {
+            NormalizedEvent::MessageDisplay(event) => Some(event.payload.text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            "[의도] 로그인 버그 수정 (확신도: 높음)\n[의도] 이건 본문\n",
+            "[의도] 테스트 추가\n추가했습니다."
+        ]
+    );
+}
+
 async fn pre_tool_response(
     config: CollectorConfig,
     verdict: Decision,

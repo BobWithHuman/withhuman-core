@@ -220,6 +220,23 @@ pub struct SessionStartOutput {
     pub watch_paths: Vec<String>,
 }
 
+/// Context Claude Code adds to the prompt it sends to the model.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UserPromptSubmitOutput {
+    pub hook_event_name: HookEventName,
+    pub additional_context: String,
+}
+
+/// Text Claude Code displays in place of a streamed delta. Display-only: the stored message and
+/// what the model sees are unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageDisplayOutput {
+    pub hook_event_name: HookEventName,
+    pub display_content: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct HookSpecificResponse<T> {

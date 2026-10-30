@@ -13,15 +13,16 @@ use axum::{
 };
 use serde::{Serialize, de::DeserializeOwned};
 use utoipa::{OpenApi, ToSchema};
+use withhuman_common::intent::split_intent;
 use withhuman_contracts::{
     decisions::{Decision, DecisionResponse},
     events::EventResponse,
     hooks::{
         ConfigChangeRequest, FileChangedRequest, HookEventName, HookSpecificResponse,
-        InstructionsLoadedRequest, MessageDisplayRequest, PermissionDecision, PostToolBatchRequest,
-        PostToolUseFailureRequest, PostToolUseRequest, PreToolUseOutput, PreToolUseRequest,
-        SessionStartOutput, SessionStartRequest, SubagentLifecycleRequest, ToolDescriptionsRequest,
-        UserPromptSubmitRequest,
+        InstructionsLoadedRequest, MessageDisplayOutput, MessageDisplayRequest, PermissionDecision,
+        PostToolBatchRequest, PostToolUseFailureRequest, PostToolUseRequest, PreToolUseOutput,
+        PreToolUseRequest, SessionStartOutput, SessionStartRequest, SubagentLifecycleRequest,
+        ToolDescriptionsRequest, UserPromptSubmitOutput, UserPromptSubmitRequest,
     },
 };
 
@@ -245,12 +246,6 @@ macro_rules! regular_handler {
 }
 
 regular_handler!(
-    user_prompt_submit,
-    UserPromptSubmitRequest,
-    user_prompt_submit,
-    "/v1/hooks/UserPromptSubmit"
-);
-regular_handler!(
     post_tool_use,
     PostToolUseRequest,
     post_tool_use,
@@ -292,6 +287,47 @@ regular_handler!(
     tool_descriptions,
     "/v1/hooks/ToolDescriptions"
 );
+
+#[utoipa::path(
+    post,
+    path = "/v1/hooks/UserPromptSubmit",
+    tag = "Collector",
+    params(
+        ("X-WithHuman-Repo" = Option<String>, Header, description = "Repository identity"),
+        ("X-WithHuman-Client" = Option<String>, Header, description = "Client identity")
+    ),
+    request_body = UserPromptSubmitRequest,
+    responses(
+        (status = 200, description = "Event accepted; with intent capture on, the intent instruction as additional context", body = HookSpecificResponse<UserPromptSubmitOutput>),
+        (status = 400, description = "Invalid JSON", body = ErrorResponse),
+        (status = 415, description = "Content-Type is not application/json", body = ErrorResponse),
+        (status = 502, description = "Generator or session store unavailable", body = ErrorResponse)
+    )
+)]
+async fn user_prompt_submit(
+    State(service): State<CollectorService>,
+    headers: HeaderMap,
+    StrictJson(request): StrictJson<UserPromptSubmitRequest>,
+) -> Response {
+    let response = match service
+        .normalizer
+        .user_prompt_submit(&trusted(&headers), request, now())
+        .await
+    {
+        Ok(event) => send_regular(&service, event).await,
+        Err(error) => normalize_failure(error),
+    };
+    if response.status() != StatusCode::OK || !service.config.intent_capture {
+        return response;
+    }
+    Json(HookSpecificResponse {
+        hook_specific_output: UserPromptSubmitOutput {
+            hook_event_name: HookEventName::UserPromptSubmit,
+            additional_context: crate::INTENT_INSTRUCTION.to_owned(),
+        },
+    })
+    .into_response()
+}
 
 #[utoipa::path(
     post,
@@ -342,14 +378,18 @@ async fn subagent_stop(
     path = "/v1/hooks/MessageDisplay",
     tag = "Collector",
     request_body = MessageDisplayRequest,
-    responses((status = 200, description = "Fragment accepted"), (status = 400, body = ErrorResponse), (status = 415, body = ErrorResponse), (status = 500, body = ErrorResponse), (status = 502, body = ErrorResponse))
+    responses((status = 200, description = "Fragment accepted; when the first flush opens with the intent line, the flush without it as display content", body = HookSpecificResponse<MessageDisplayOutput>), (status = 400, body = ErrorResponse), (status = 415, body = ErrorResponse), (status = 500, body = ErrorResponse), (status = 502, body = ErrorResponse))
 )]
 async fn message_display(
     State(service): State<CollectorService>,
     headers: HeaderMap,
     StrictJson(request): StrictJson<MessageDisplayRequest>,
 ) -> Response {
-    match service
+    // The first flush shows everything but the intent line, which only the engine keeps.
+    let display = (service.config.intent_capture && request.index.unwrap_or(0) == 0)
+        .then(|| split_intent(&request.delta).map(|line| line.rest.to_owned()))
+        .flatten();
+    let response = match service
         .normalizer
         .message_display(&trusted(&headers), request, now())
         .await
@@ -357,6 +397,18 @@ async fn message_display(
         Ok(Some(event)) => send_regular(&service, event).await,
         Ok(None) => StatusCode::OK.into_response(),
         Err(error) => normalize_failure(error),
+    };
+    match display {
+        Some(display_content) if response.status() == StatusCode::OK => {
+            Json(HookSpecificResponse {
+                hook_specific_output: MessageDisplayOutput {
+                    hook_event_name: HookEventName::MessageDisplay,
+                    display_content,
+                },
+            })
+            .into_response()
+        }
+        _ => response,
     }
 }
 
