@@ -39,6 +39,9 @@ pub struct CollectorConfig {
     /// Ask the model to state the inferred user intent first; the line is hidden from the user
     /// and stored by the Generator.
     pub intent_capture: bool,
+    /// How long a Call made before the turn's intent arrived waits for it. Claude Code delivers
+    /// a reply's text a moment after the tool calls that follow it.
+    pub intent_wait: Duration,
     /// Commands, besides the built-in list, whose output comes from the network.
     pub network_commands: Vec<String>,
 }
@@ -64,6 +67,7 @@ impl Default for CollectorConfig {
             verdict_ttl: Duration::from_secs(3_600),
             session_ttl: Duration::from_secs(604_800),
             intent_capture: true,
+            intent_wait: Duration::from_millis(1_500),
             network_commands: Vec::new(),
         }
     }
@@ -109,6 +113,8 @@ impl CollectorConfig {
             ));
         }
 
+        let intent_wait = Duration::from_millis(parse_env("WITHHUMAN_INTENT_WAIT_MS", 1_500)?);
+
         Ok(Self {
             bind_address,
             ext_authz_address,
@@ -150,6 +156,7 @@ impl CollectorConfig {
                 "off" => Some(false),
                 _ => None,
             })?,
+            intent_wait,
             network_commands: list_env("WITHHUMAN_EXTERNAL_COMMANDS"),
         })
     }

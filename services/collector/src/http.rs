@@ -425,10 +425,14 @@ async fn pre_tool_use(
     headers: HeaderMap,
     StrictJson(request): StrictJson<PreToolUseRequest>,
 ) -> Response {
-    // A turn that stated no intent is asked for one before its first Call is judged. The ask is
-    // best effort: when the session store cannot answer, the Call is judged as usual.
+    // A turn whose intent has not arrived is asked for one before its first Call is judged. The
+    // ask is best effort: when the session store cannot answer, the Call is judged as usual.
     if service.config.enforcement_mode == EnforcementMode::Enforce
-        && service.normalizer.asks_for_intent(&request).await == Ok(true)
+        && service
+            .normalizer
+            .asks_for_intent(&request, service.config.intent_wait)
+            .await
+            == Ok(true)
     {
         return blocking_response(PermissionDecision::Deny, crate::INTENT_REQUIRED.to_owned());
     }
