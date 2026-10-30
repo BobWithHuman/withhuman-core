@@ -269,6 +269,22 @@ impl Normalizer {
         )))
     }
 
+    /// Whether to turn this Call back until the turn states its intent: the main agent called a
+    /// tool before writing the `[의도]` line. Asked once per turn, so an agent that never states
+    /// one is not stopped for good.
+    pub async fn asks_for_intent(
+        &self,
+        request: &PreToolUseRequest,
+    ) -> Result<bool, NormalizeError> {
+        if !self.intent_capture || request.agent_id.is_some() {
+            return Ok(false);
+        }
+        self.sessions
+            .ask_for_intent(&request.session_id)
+            .await
+            .map_err(NormalizeError::Store)
+    }
+
     pub async fn pre_tool_use(
         &self,
         context: &TrustedHookContext,
