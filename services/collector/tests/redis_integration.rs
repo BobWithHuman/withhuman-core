@@ -16,8 +16,9 @@ mod support;
 use support::{context, run_scenario};
 use withhuman_collector::{
     CollectorConfig, CollectorService, ExtAuthzService, GeneratorError, GeneratorTransport,
-    InMemorySessionStore, MessageFragment, NormalizedEvent, Normalizer, RedisSessionStore,
-    RedisVerdictStore, SessionStore, VerdictStore, app_with_transport, redis_connection,
+    InMemorySessionStore, IntentAsk, MessageFragment, NormalizedEvent, Normalizer,
+    RedisSessionStore, RedisVerdictStore, SessionStore, SessionUpdate, VerdictStore,
+    app_with_transport, redis_connection,
 };
 use withhuman_contracts::{
     decisions::{CausalStart, Decision, DecisionResponse, EnforcementMode},
@@ -265,6 +266,12 @@ async fn restores_session_context_after_redis_state_is_lost() {
         json_request(
             "/v1/hooks/UserPromptSubmit",
             json!({"session_id":session_id,"prompt":"go","prompt_id":"p1","cwd":"/repo"}),
+        ),
+        // The turn states its intent first, or its first Call would be turned back.
+        json_request(
+            "/v1/hooks/MessageDisplay",
+            json!({"session_id":session_id,"message_id":"m1","index":0,
+                   "delta":"[의도] 파일 목록 보기\n","final":true}),
         ),
         json_request(
             "/v1/hooks/PreToolUse",
@@ -547,6 +554,94 @@ async fn replicas_seed_a_resumed_session_once() {
     assert_eq!(orders, (first..first + 20).collect::<Vec<_>>());
 }
 
+/// Redis asks a turn for its intent exactly when the in-memory store does: once per turn, never
+/// once the turn stated one, anew after a new prompt, and never for a session not seeded.
+#[tokio::test]
+async fn redis_asks_for_the_intent_like_in_memory() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    let redis = RedisSessionStore::new(redis_connection(&url).unwrap(), Duration::from_secs(60));
+    let stores: [(&str, Box<dyn SessionStore>); 2] = [
+        ("memory", Box::new(InMemorySessionStore::default())),
+        ("redis", Box::new(redis)),
+    ];
+    for (name, store) in stores {
+        let session = unique("ask-intent");
+        let prompt = SessionUpdate {
+            clear_intent: true,
+            ..SessionUpdate::default()
+        };
+        let stated = SessionUpdate {
+            state_intent: Some("테스트 추가".to_owned()),
+            ..SessionUpdate::default()
+        };
+        assert!(
+            !store
+                .ask_for_intent(&session, IntentAsk::Deny)
+                .await
+                .unwrap(),
+            "{name}: unseeded"
+        );
+        assert_eq!(store.intent_stated(&session).await.unwrap(), None, "{name}");
+        store
+            .seed(&session, &SessionCursor::default())
+            .await
+            .unwrap();
+        store.apply_event(&session, prompt.clone()).await.unwrap();
+        assert_eq!(
+            store.intent_stated(&session).await.unwrap(),
+            Some(false),
+            "{name}"
+        );
+        let asks = [
+            store
+                .ask_for_intent(&session, IntentAsk::Deny)
+                .await
+                .unwrap(),
+            store
+                .ask_for_intent(&session, IntentAsk::Deny)
+                .await
+                .unwrap(),
+        ];
+        assert_eq!(asks, [true, false], "{name}: once per turn");
+        // A reminder is a way of its own, also once per turn.
+        let reminds = [
+            store
+                .ask_for_intent(&session, IntentAsk::Remind)
+                .await
+                .unwrap(),
+            store
+                .ask_for_intent(&session, IntentAsk::Remind)
+                .await
+                .unwrap(),
+        ];
+        assert_eq!(reminds, [true, false], "{name}: reminded once");
+        store.apply_event(&session, prompt.clone()).await.unwrap();
+        store.apply_event(&session, stated).await.unwrap();
+        assert_eq!(
+            store.intent_stated(&session).await.unwrap(),
+            Some(true),
+            "{name}"
+        );
+        assert!(
+            !store
+                .ask_for_intent(&session, IntentAsk::Deny)
+                .await
+                .unwrap(),
+            "{name}: stated"
+        );
+        store.apply_event(&session, prompt).await.unwrap();
+        assert!(
+            store
+                .ask_for_intent(&session, IntentAsk::Deny)
+                .await
+                .unwrap(),
+            "{name}: new prompt"
+        );
+    }
+}
+
 /// Fragments of one message delivered out of order to different replicas assemble by index.
 #[tokio::test]
 async fn assembles_fragments_by_index_across_replicas() {
@@ -635,6 +730,7 @@ impl GeneratorTransport for RecordingGenerator {
                 self.results.lock().unwrap().push(event);
                 return Ok(acknowledged);
             }
+            NormalizedEvent::Intent(_) => return Ok(acknowledged),
             other => panic!("unexpected {}", other.event_name()),
         };
         self.orders.lock().unwrap().push(event.event.order);
