@@ -124,8 +124,8 @@ fn candidates_are_the_window_and_hidden_or_token_subgraphs() {
     graph.tokens = BTreeSet::from([2, 4, 9]);
     let (candidates, dropped) = candidate_subgraphs(&graph, &TraceSettings::default());
 
-    // 8, 7, 6 are the window; 2 and 4 the hidden/token ones (9 is the Call's own). The first
-    // prompt's SubGraph 0 is no candidate of its own: a prompt is one only inside the window.
+    // 8, 7, 6 are the window; 2 and 4 the hidden/token ones (9 is the Call's own). With no
+    // prompt recorded, SubGraph 0 is no candidate of its own.
     assert_eq!(candidates, [8, 7, 6, 2, 4]);
     assert_eq!(dropped, 0);
 
@@ -169,6 +169,45 @@ fn keeps_to_the_calls_agent() {
     );
 }
 
+/// A long turn pushes its prompt out of the window; the prompt's SubGraph stays a candidate for
+/// the main agent, so the Call can be traced to what the user asked.
+#[test]
+fn keeps_the_current_turns_prompt_a_candidate() {
+    let mut graph = graph(9);
+    graph.turns = vec![
+        Turn {
+            intent: Some("앱 만들기".to_owned()),
+            subgraph: Some(0),
+        },
+        Turn {
+            intent: Some("계속 개선".to_owned()),
+            subgraph: Some(2),
+        },
+    ];
+    assert_eq!(
+        candidate_subgraphs(&graph, &TraceSettings::default()).0,
+        [8, 7, 6, 2]
+    );
+
+    // Inside the window it is not listed twice.
+    graph.turns[1].subgraph = Some(7);
+    assert_eq!(
+        candidate_subgraphs(&graph, &TraceSettings::default()).0,
+        [8, 7, 6]
+    );
+
+    // A subagent's candidates keep to the main agent's SubGraph that started it.
+    graph.turns[1].subgraph = Some(2);
+    for number in [4, 6, 9] {
+        graph.subgraphs.insert(number, Some("a".to_owned()));
+    }
+    graph.call.agent_id = Some("a".to_owned());
+    assert_eq!(
+        candidate_subgraphs(&graph, &TraceSettings::default()).0,
+        [6, 4, 3]
+    );
+}
+
 #[test]
 fn follows_the_parents_earlier_calls_chose() {
     let mut graph = graph(9);
@@ -208,10 +247,15 @@ fn lists_every_turns_intent_and_never_a_prompt() {
     graph.turns = vec![
         Turn {
             intent: Some("README 요약".to_owned()),
+            subgraph: Some(0),
         },
-        Turn { intent: None },
+        Turn {
+            intent: None,
+            subgraph: Some(3),
+        },
         Turn {
             intent: Some("graph intent".to_owned()),
+            subgraph: Some(6),
         },
     ];
     let settings = TraceSettings::default();
@@ -357,7 +401,7 @@ fn asks_about_one_parent_at_a_time() {
 }
 
 #[test]
-fn takes_every_parent_reaching_half_the_top_influence() {
+fn takes_the_most_influential_candidate_alone() {
     let mut graph = graph(6);
     graph.tokens = BTreeSet::from([2]);
     let plan = plan(&graph, &members(), None, &TraceSettings::default());
@@ -370,21 +414,21 @@ fn takes_every_parent_reaching_half_the_top_influence() {
     assert_eq!(keys(&one.chosen), ["s2"]);
     assert_eq!(one.influence["s5"], 0.2);
 
-    // 0.3 reaches half of 0.5; none (0.2) does not.
+    // s2 comes close to s5 but is not chosen.
     let two = parents(
         &plan,
         &response(&[("parent", answer(&[("s2", 0.3), ("s5", 0.5), ("none", 0.2)]))]),
     )
     .unwrap();
-    assert_eq!(keys(&two.chosen), ["s5", "s2"]);
+    assert_eq!(keys(&two.chosen), ["s5"]);
 
-    // Among equals the more relevant candidate comes first.
+    // Among equals the more relevant candidate is chosen.
     let tie = parents(
         &plan,
         &response(&[("parent", answer(&[("s3", 0.5), ("s5", 0.5)]))]),
     )
     .unwrap();
-    assert_eq!(keys(&tie.chosen), ["s5", "s3"]);
+    assert_eq!(keys(&tie.chosen), ["s5"]);
 
     let none = parents(
         &plan,
@@ -483,7 +527,7 @@ fn reports_missing_answers() {
 }
 
 #[test]
-fn judges_by_the_least_serving_parent() {
+fn judges_by_the_parent_alone() {
     let mut graph = graph(6);
     graph.tokens = BTreeSet::from([2]);
     let plan = plan(
@@ -513,13 +557,12 @@ fn judges_by_the_least_serving_parent() {
     let outcome = outcome(chosen, judgements);
 
     assert_eq!(outcome.primary().key, "s5");
-    assert_eq!(keys(&outcome.parents), ["s5", "s2"]);
+    assert_eq!(keys(&outcome.parents), ["s5"]);
     assert_eq!(
         outcome.intent_scores,
-        BTreeMap::from([("s2".to_owned(), 0.1), ("s5".to_owned(), 0.9)])
+        BTreeMap::from([("s5".to_owned(), 0.9)])
     );
-    assert_eq!(outcome.judged_score, Some(0.1));
-    assert_eq!(outcome.segments.len(), 1);
+    assert_eq!(outcome.judged_score, Some(0.9));
 }
 
 #[test]

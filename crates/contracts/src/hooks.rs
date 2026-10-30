@@ -213,6 +213,14 @@ pub struct UserPromptSubmitOutput {
     pub additional_context: String,
 }
 
+/// Context Claude Code adds to a tool result it shows the model.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PostToolUseOutput {
+    pub hook_event_name: HookEventName,
+    pub additional_context: String,
+}
+
 /// Text Claude Code displays in place of a streamed delta. Display-only: the stored message and
 /// what the model sees are unchanged.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]

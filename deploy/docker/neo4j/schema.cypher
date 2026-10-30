@@ -115,6 +115,25 @@ CALL (parent, request, call) {
       cause.parent = 's' + toString(parent.number)
 } IN TRANSACTIONS OF 5000 ROWS;
 
+// A Call is traced to one SubGraph, its parent, and the cause edges show it. Calls once had
+// several parents, each with a PARENT edge between SubGraphs and cause edges of its own. Only the
+// causes in the Call's parent stay.
+MATCH (call:Call)-[cause:NEXT {kind: 'cause'}]->()
+WHERE call.parent IS NOT NULL AND cause.parent IS NOT NULL AND cause.parent <> call.parent
+CALL (cause) {
+  DELETE cause
+} IN TRANSACTIONS OF 5000 ROWS;
+
+MATCH (call:Call) WHERE size(call.parents) > 1
+CALL (call) {
+  SET call.parents = [call.parent]
+} IN TRANSACTIONS OF 5000 ROWS;
+
+MATCH ()-[old:PARENT]->()
+CALL (old) {
+  DELETE old
+} IN TRANSACTIONS OF 5000 ROWS;
+
 CREATE CONSTRAINT subgraph_number_unique IF NOT EXISTS
 FOR (subgraph:SubGraph)
 REQUIRE (subgraph.session_id, subgraph.number) IS UNIQUE;

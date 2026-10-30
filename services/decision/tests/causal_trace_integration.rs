@@ -276,7 +276,7 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
     // The agent learns neither the intent nor the path it was judged by.
     assert!(!decision["reason"].as_str().unwrap().contains("README 요약"));
 
-    // First the parent, then one request about it (s0 and none fall short of half of s1).
+    // First the parent, then one request about it, the most influential one (s1).
     let requests = jev.requests.lock().unwrap().clone();
     assert_eq!(requests.len(), 2, "{requests:?}");
     for (authorization, request) in &requests {
@@ -336,10 +336,9 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
         )
         .json(&json!({
             "statement": "MATCH (call:Call {session_id:$s, order:7}) \
-                OPTIONAL MATCH (:SubGraph {session_id:$s, number:2})-[parent:PARENT]->(target:SubGraph) \
                 OPTIONAL MATCH (call)-[next:NEXT {kind:'cause'}]->(cause) \
                 OPTIONAL MATCH (cause)-[:RESULT_OF]->(origin:Call) \
-                RETURN call.parent, target.number, cause.order, labels(cause)[0], next.rank, \
+                RETURN call.parent, cause.order, labels(cause)[0], next.rank, \
                        call.intent_score, origin.order",
             "parameters": {"s": session_id}
         }))
@@ -351,19 +350,18 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
         .unwrap();
     assert_eq!(
         rows["data"]["values"],
-        json!([["s1", 1, 4, "Segment", 1, 0.05, 3]]),
+        json!([["s1", 4, "Segment", 1, 0.05, 3]]),
         "{rows}"
     );
 
-    // Deciding the same Call again replaces its PARENT and cause edges instead of adding more.
+    // Deciding the same Call again replaces its cause edges instead of adding more.
     send(&client, &deciding, "PreToolUse", call).await;
     assert_eq!(jev.requests.lock().unwrap().len(), 4);
     let again: Value = cypher(
         "MATCH (call:Call {session_id:$s, order:7}) \
-         OPTIONAL MATCH (:SubGraph {session_id:$s, number:2})-[parent:PARENT]->(target:SubGraph) \
          OPTIONAL MATCH (call)-[next:NEXT {kind:'cause'}]->(cause) \
          OPTIONAL MATCH (cause)-[:RESULT_OF]->(origin:Call) \
-         RETURN call.parent, target.number, cause.order, labels(cause)[0], next.rank, \
+         RETURN call.parent, cause.order, labels(cause)[0], next.rank, \
                 call.intent_score, origin.order",
         json!({"s": session_id}),
     )
@@ -525,6 +523,7 @@ async fn keeps_only_the_latest_mention_of_a_value() {
     assert_eq!(graph.shared_tokens, BTreeSet::from([2]));
     assert_eq!(graph.turns.len(), 1);
     assert_eq!(graph.turns[0].intent, None);
+    assert_eq!(graph.turns[0].subgraph, Some(0));
 }
 
 /// A Call traced to a prompt's SubGraph, which holds no tool result, points its cause at the

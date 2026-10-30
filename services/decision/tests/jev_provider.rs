@@ -67,7 +67,7 @@ impl DecisionRepository for Graph {
             shared_tokens: BTreeSet::new(),
             parents: BTreeMap::new(),
             turns: if self.unstated_turn {
-                vec![Turn { intent: None }]
+                vec![Turn::default()]
             } else {
                 Vec::new()
             },
@@ -341,11 +341,11 @@ async fn bounds_the_jev_call_by_the_decision_deadline() {
 }
 
 #[tokio::test]
-async fn asks_for_the_parent_first_and_then_about_each_parent() {
+async fn asks_for_the_parent_first_and_then_about_it_alone() {
     let graph = Arc::new(Graph::default());
     let jev = Arc::new(Jev {
         intent_score: 0.9,
-        // s1 and none both reach half the top influence.
+        // none comes close to s1 but is not the most influential.
         parent: BTreeMap::from([("s1".to_owned(), 0.6), ("none".to_owned(), 0.4)]),
         scores: BTreeMap::from([("none".to_owned(), 0.1)]),
         fail: false,
@@ -365,19 +365,16 @@ async fn asks_for_the_parent_first_and_then_about_each_parent() {
         .unwrap();
 
     let requests = jev.requests.lock().unwrap();
-    assert_eq!(requests.len(), 3);
+    assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].questions.keys().collect::<Vec<_>>(), ["parent"]);
     assert!(!requests[0].state.contains_key("intents"));
-    let mut judged: Vec<&str> = requests[1..]
-        .iter()
-        .flat_map(|request| request.questions.keys().map(String::as_str))
-        .collect();
-    judged.sort_unstable();
-    assert_eq!(judged, ["intent_none", "intent_s1"]);
+    assert_eq!(
+        requests[1].questions.keys().collect::<Vec<_>>(),
+        ["intent_s1"]
+    );
 
-    // The parent acting on its own departs from the intent, so the Call is denied although
-    // the most influential parent serves it.
-    assert_eq!(response.decision, Decision::Deny);
+    // The Call is traced to s1 alone and judged by it.
+    assert_eq!(response.decision, Decision::Allow);
     let traces = graph.traces.lock().unwrap();
     assert_eq!(traces[0].parent, "s1");
     let parents: Vec<(&str, Option<u64>)> = traces[0]
@@ -385,7 +382,19 @@ async fn asks_for_the_parent_first_and_then_about_each_parent() {
         .iter()
         .map(|parent| (parent.key.as_str(), parent.number))
         .collect();
-    assert_eq!(parents, [("s1", Some(1)), ("none", None)]);
-    assert_eq!(traces[0].intent_score, Some(0.1));
-    assert_eq!(traces[0].trace["intent_scores"]["s1"], 0.9);
+    assert_eq!(parents, [("s1", Some(1))]);
+    assert_eq!(traces[0].intent_score, Some(0.9));
+    assert!(traces[0].trace["intent_scores"].get("none").is_none());
+    // What Jev was asked and answered stays with the trace.
+    let jev = &traces[0].trace["jev"];
+    assert_eq!(jev[0]["stage"], "parent");
+    assert!(jev[0]["request"]["questions"]["parent"].is_object());
+    assert_eq!(
+        jev[0]["response"]["answers"]["parent"]["probabilities"]["s1"],
+        0.6
+    );
+    assert_eq!(jev[1]["stage"], "judge");
+    assert_eq!(jev[1]["parent"], "s1");
+    assert!(jev[1]["request"]["questions"]["intent_s1"].is_object());
+    assert_eq!(jev.as_array().unwrap().len(), 2);
 }

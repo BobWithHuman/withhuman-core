@@ -233,6 +233,10 @@ impl DecisionProvider for JevDecisionProvider {
             Err(error) => return self.unresolved(request, error, risky).await,
         };
         let parent_ms = elapsed_ms(asked);
+        // What Jev was asked and answered, kept with the trace so it can be inspected.
+        let mut exchanges = vec![serde_json::json!({
+            "stage": "parent", "request": &plan.request, "response": &answers,
+        })];
 
         // Step 2: one request per parent, all at once, each holding only that parent's results.
         let judged = Instant::now();
@@ -248,16 +252,24 @@ impl DecisionProvider for JevDecisionProvider {
             .map(|parent| {
                 trace::judge_request(&plan, &parent.candidate).map(|jev_request| {
                     let jev = self.jev.clone();
-                    tokio::spawn(async move { jev.ask(&jev_request, second).await })
+                    let sent = jev_request.clone();
+                    let task = tokio::spawn(async move { jev.ask(&jev_request, second).await });
+                    (sent, task)
                 })
             })
             .collect();
         let mut judgements = Vec::new();
-        for (parent, task) in parents.chosen.iter().zip(pending) {
-            let response = match task {
+        for (parent, pending) in parents.chosen.iter().zip(pending) {
+            let response = match pending {
                 None => None,
-                Some(task) => match task.await {
-                    Ok(Ok(response)) => Some(response),
+                Some((sent, task)) => match task.await {
+                    Ok(Ok(response)) => {
+                        exchanges.push(serde_json::json!({
+                            "stage": "judge", "parent": &parent.candidate.key,
+                            "request": sent, "response": &response,
+                        }));
+                        Some(response)
+                    }
                     Ok(Err(error)) => return self.unresolved(request, error, risky).await,
                     Err(error) => return self.unresolved(request, error, risky).await,
                 },
@@ -273,6 +285,7 @@ impl DecisionProvider for JevDecisionProvider {
         let mut trace_json = trace::record(&plan, &outcome);
         trace_json["intent_source"] = intents.source.into();
         trace_json["jev_ms"] = serde_json::json!({"parent": parent_ms, "judge": judge_ms});
+        trace_json["jev"] = exchanges.into();
         let record = TraceRecord {
             subgraph: graph.call.subgraph,
             parent: outcome.primary().key.clone(),

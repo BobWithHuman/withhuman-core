@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""SubGraph-grouped viewer for the WithHuman execution graph.
+"""SubGraph timeline viewer for the WithHuman execution graph.
 
 Serves index.html and a read-only JSON API over Neo4j's HTTP query endpoint. It listens on
 127.0.0.1 only; forward the port to open it from another machine.
@@ -25,7 +25,9 @@ PORT = int(os.environ.get("VIEWER_PORT", "7480"))
 
 INDEX = Path(__file__).with_name("index.html")
 # Tool outputs can hold whole files; the graph carries a preview and the node panel the rest.
+# A decision trace stays whole: the page reads it as JSON for the Jev panels.
 PREVIEW_CHARS = 4000
+WHOLE = {"trace_json"}
 
 SESSIONS = """
 MATCH (s:Session) WHERE s.created_at IS NOT NULL
@@ -47,13 +49,8 @@ ORDER BY g.number
 """
 
 EDGES = """
-MATCH (:Session {session_id: $session})-[:CONTAINS]->(a)-[r:NEXT|RESULT_OF|AGENT_SEQUENCE]->(b)
+MATCH (:Session {session_id: $session})-[:CONTAINS]->(a)-[r:NEXT|RESULT_OF]->(b)
 RETURN a.seq AS source, b.seq AS target, type(r) AS type, properties(r) AS props
-"""
-
-PARENTS = """
-MATCH (a:SubGraph {session_id: $session})-[r:PARENT]->(b:SubGraph)
-RETURN a.number AS source, b.number AS target, properties(r) AS props
 """
 
 NODE = """
@@ -94,7 +91,9 @@ def cypher(statement, **parameters):
 
 def preview(props):
     return {
-        key: value[:PREVIEW_CHARS] + "…" if isinstance(value, str) and len(value) > PREVIEW_CHARS else value
+        key: value[:PREVIEW_CHARS] + "…"
+        if isinstance(value, str) and len(value) > PREVIEW_CHARS and key not in WHOLE
+        else value
         for key, value in props.items()
     }
 
@@ -132,7 +131,6 @@ def graph(session):
         ],
         "subgraphs": cypher(SUBGRAPHS, session=session),
         "edges": cypher(EDGES, session=session),
-        "parents": cypher(PARENTS, session=session),
     }
 
 

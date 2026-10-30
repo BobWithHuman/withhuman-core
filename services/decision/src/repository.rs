@@ -81,7 +81,8 @@ RETURN call.order, call.subgraph, call.payload_json, \
                     COLLECT { MATCH (stated:Intent|Message {session_id: $session_id}) \
                               WHERE stated.intent IS NOT NULL AND stated.order > request.order \
                                 AND stated.order < until AND stated.order < call.order \
-                              RETURN stated.intent ORDER BY stated.order LIMIT 1 }[0]] \
+                              RETURN stated.intent ORDER BY stated.order LIMIT 1 }[0], \
+                    request.subgraph] \
             ORDER BY request.order } AS turns"
 );
 
@@ -100,10 +101,9 @@ RETURN number, node.seq, node.order, labels(node)[0], node.payload_json, \
            WHERE effect.order < $call_order } AS caused \
 ORDER BY number, node.order";
 
-// Takes the Session lock first like Generator commits, so the two never deadlock. The Call's
-// SubGraph gets a PARENT edge to every SubGraph the Call was traced to. The Call gets a NEXT
-// edge (marked `kind: 'cause'`, apart from the order chain) to each activated tool result of
-// them, and to the Request of a parent that is a prompt's SubGraph. Pointing from the Call up
+// Takes the Session lock first like Generator commits, so the two never deadlock. The Call gets
+// a NEXT edge (marked `kind: 'cause'`, apart from the order chain) to each activated tool result
+// of the SubGraph it was traced to, or to the Request when that is a prompt's SubGraph. Pointing from the Call up
 // to its causes, and each result up to its Call (`RESULT_OF`), they lead from a Call back to the
 // prompt. A repeated decision of the same Call replaces its edges, and the SubGraph keeps the
 // parents of its latest Call.
@@ -119,25 +119,12 @@ CALL (call) { \
   OPTIONAL MATCH (call)-[old:NEXT {kind: 'cause', call_seq: $call_seq}]->() \
   DELETE old \
 } \
-CALL (call) { \
-  OPTIONAL MATCH (:SubGraph {session_id: $session_id})-[old:PARENT {call_seq: $call_seq}]->() \
-  DELETE old \
-} \
 MERGE (current:SubGraph {session_id: $session_id, number: $subgraph}) \
 WITH call, current, coalesce(current.parent_call_order, -1) <= call.order AS latest \
 SET current.parent = CASE WHEN latest THEN $parent ELSE current.parent END, \
     current.parents = CASE WHEN latest THEN $parent_keys ELSE current.parents END, \
     current.parent_call_seq = CASE WHEN latest THEN $call_seq ELSE current.parent_call_seq END, \
     current.parent_call_order = CASE WHEN latest THEN call.order ELSE current.parent_call_order END \
-WITH call, current \
-CALL (call, current) { \
-  UNWIND $parents AS chosen \
-  MATCH (parent:SubGraph {session_id: $session_id, number: chosen.number}) \
-  MERGE (current)-[edge:PARENT {call_seq: $call_seq, number: chosen.number}]->(parent) \
-  SET edge.probability = chosen.probability, edge.rank = chosen.rank, \
-      edge.candidates = $candidates, edge.decided_at = timestamp() \
-  RETURN count(edge) AS parented \
-} \
 WITH call \
 CALL (call) { \
   UNWIND $parents AS chosen \
@@ -451,6 +438,7 @@ impl DecisionRepository for Neo4jDecisionRepository {
             turns: pairs(row.get(8))
                 .map(|pair| Turn {
                     intent: pair.get(1).and_then(Value::as_str).map(str::to_owned),
+                    subgraph: pair.get(2).and_then(Value::as_u64),
                 })
                 .collect(),
         })
@@ -538,7 +526,6 @@ impl DecisionRepository for Neo4jDecisionRepository {
                 "parent": record.parent,
                 "parent_keys": parent_keys,
                 "parents": parents,
-                "candidates": record.candidates,
                 "segments": segments,
                 "intent_score": record.intent_score,
                 "trace_json": record.trace.to_string(),
