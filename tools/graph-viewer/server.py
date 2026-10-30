@@ -50,7 +50,8 @@ ORDER BY g.number
 
 EDGES = """
 MATCH (:Session {session_id: $session})-[:CONTAINS]->(a)-[r:NEXT|RESULT_OF]->(b)
-RETURN a.seq AS source, b.seq AS target, type(r) AS type, properties(r) AS props
+RETURN a.seq AS source, b.seq AS target, type(r) AS type, properties(r) AS props,
+       CASE WHEN b:Paragraph THEN b.index END AS paragraph
 """
 
 NODE = """

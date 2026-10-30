@@ -143,7 +143,7 @@ function build(data) {
     if (a != null && b != null && a !== b) flows.set(`${a}-${b}`, { from: a, to: b });
   }
   const causes = data.edges.filter(e => e.props.kind === 'cause')
-    .map(e => ({ from: rep(e.source), to: rep(e.target), via: e.target, props: e.props }))
+    .map(e => ({ from: rep(e.source), to: rep(e.target), via: e.target, paragraph: e.paragraph, props: e.props }))
     .filter(c => c.from != null && c.to != null && c.from !== c.to);
   const groupOf = new Map();
   data.subgraphs.forEach(s => s.members.forEach(seq => groupOf.set(seq, s.props.number)));
@@ -234,8 +234,8 @@ function causeEdges(elements, onScreen) {
   for (const c of model.causes) {
     if (!onScreen.has(c.from) || !onScreen.has(c.to)) continue;
     elements.push({ group: 'edges', data: {
-      id: `c${c.from}-${c.via}`, source: `n${c.from}`, target: `n${c.to}`, cause: true,
-      label: percent(c.props.probability), props: c.props } });
+      id: `c${c.from}-${c.via}-${c.paragraph ?? ''}`, source: `n${c.from}`, target: `n${c.to}`, cause: true,
+      label: `${c.paragraph != null ? `¶${c.paragraph} ` : ''}${percent(c.props.probability)}`, props: c.props } });
   }
 }
 
@@ -373,7 +373,7 @@ function chainOf(seq) {
     nodes.add(`n${call}`);
     steps.push({ seq: call, depth });
     for (const c of model.causes.filter(c => c.from === call)) {
-      edges.add(`c${c.from}-${c.via}`);
+      edges.add(`c${c.from}-${c.via}-${c.paragraph ?? ''}`);
       nodes.add(`n${c.to}`);
       steps.push({ seq: c.to, depth: depth + 1, probability: c.props.probability });
       const origin = model.callOf.get(c.to);
@@ -430,11 +430,15 @@ function nodeName(seq) {
 // An answer's options by name, the chosen ones marked, and the result an edge points at.
 function resultHtml(question, answer, trace, highlight) {
   if (answer?.noul != null) return `<table class="bars"><tr><td>참일 확률</td><td>${bar(answer.noul)}</td></tr></table>`;
-  const activated = new Set((trace.segments || []).map(x => x.seq));
+  // A tool result is `g<seq>`, one of its paragraphs `g<seq>p<index>`.
+  const activated = new Set((trace.segments || []).map(x => `${x.seq}:${x.paragraph ?? ''}`));
   const rows = Object.entries(answer?.probabilities || {}).sort((a, b) => b[1] - a[1]).map(([option, p]) => {
-    const seq = /^g\d+$/.test(option) ? Number(option.slice(1)) : null;
-    const name = question === 'parent' ? subgraphName(option) : seq !== null ? nodeName(seq) : option;
-    const chosen = question === 'parent' ? option === trace.parent : activated.has(seq);
+    const match = /^g(\d+)(?:p(\d+))?$/.exec(option);
+    const seq = match ? Number(match[1]) : null;
+    const paragraph = match?.[2] ?? '';
+    const name = question === 'parent' ? subgraphName(option)
+      : seq !== null ? `${nodeName(seq)}${paragraph !== '' ? ` ¶${paragraph}` : ''}` : option;
+    const chosen = question === 'parent' ? option === trace.parent : activated.has(`${seq}:${paragraph}`);
     const cls = seq !== null && seq === highlight ? 'this' : chosen ? 'chosen' : '';
     const tag = chosen ? `<span class="tag">${question === 'parent' ? '선택' : '원인'}</span>` : '';
     return `<tr><td>${escape(name)}${tag}</td><td>${bar(p, cls)}</td></tr>`;
@@ -456,7 +460,8 @@ function jevHtml(trace, highlight) {
     const results = Object.entries(exchange.response?.answers || {}).map(([key, answer]) =>
       `<h4>${escape(key)}</h4>${resultHtml(key, answer, trace, highlight)}`).join('');
     const output = `<details><summary>answers</summary><pre>${escape(JSON.stringify(exchange.response?.answers, null, 2))}</pre></details>`;
-    const title = exchange.stage === 'parent' ? 'parent 질문' : `${subgraphName(exchange.parent)} 질문`;
+    const title = exchange.stage === 'parent' ? 'parent 질문'
+      : exchange.stage === 'paragraph' ? `${nodeName(exchange.seq)} 문단 질문` : `${subgraphName(exchange.parent)} 질문`;
     return `<h3>${escape(title)}</h3>
       <h4>입력 · state</h4>${state}<h4>입력 · question</h4>${questions}
       <h4>출력</h4>${output}
