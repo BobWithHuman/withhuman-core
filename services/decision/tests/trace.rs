@@ -370,7 +370,7 @@ fn asks_about_one_parent_at_a_time() {
     assert!(
         request.questions["intent_s2"]
             .instructions
-            .contains("사용자가 요청한 행동인가?")
+            .contains("사용자 목표를 이루는 과정의 일부인가")
     );
     let state_keys: Vec<&str> = request.state.keys().map(String::as_str).collect();
     assert_eq!(state_keys, ["action", "intents", "path_s2", "segments_s2"]);
