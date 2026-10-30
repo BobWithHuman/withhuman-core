@@ -580,11 +580,17 @@ async fn redis_asks_for_the_intent_like_in_memory() {
             !store.ask_for_intent(&session).await.unwrap(),
             "{name}: unseeded"
         );
+        assert_eq!(store.intent_stated(&session).await.unwrap(), None, "{name}");
         store
             .seed(&session, &SessionCursor::default())
             .await
             .unwrap();
         store.apply_event(&session, prompt.clone()).await.unwrap();
+        assert_eq!(
+            store.intent_stated(&session).await.unwrap(),
+            Some(false),
+            "{name}"
+        );
         let asks = [
             store.ask_for_intent(&session).await.unwrap(),
             store.ask_for_intent(&session).await.unwrap(),
@@ -592,6 +598,11 @@ async fn redis_asks_for_the_intent_like_in_memory() {
         assert_eq!(asks, [true, false], "{name}: once per turn");
         store.apply_event(&session, prompt.clone()).await.unwrap();
         store.apply_event(&session, stated).await.unwrap();
+        assert_eq!(
+            store.intent_stated(&session).await.unwrap(),
+            Some(true),
+            "{name}"
+        );
         assert!(
             !store.ask_for_intent(&session).await.unwrap(),
             "{name}: stated"

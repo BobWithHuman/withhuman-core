@@ -1,4 +1,4 @@
-use std::{error::Error, fmt, sync::Arc};
+use std::{error::Error, fmt, sync::Arc, time::Duration};
 
 use serde_json::Value;
 use withhuman_common::{
@@ -270,14 +270,31 @@ impl Normalizer {
     }
 
     /// Whether to turn this Call back until the turn states its intent: the main agent called a
-    /// tool before writing the `[의도]` line. Asked once per turn, so an agent that never states
-    /// one is not stopped for good.
+    /// tool and the `[의도]` line has not arrived within `wait`. Claude Code delivers a reply's
+    /// text a moment after the tool calls that follow it, so a Call first waits for the line in
+    /// short polls. Asked once per turn, so an agent that never states one is not stopped for
+    /// good.
     pub async fn asks_for_intent(
         &self,
         request: &PreToolUseRequest,
+        wait: Duration,
     ) -> Result<bool, NormalizeError> {
+        const POLL: Duration = Duration::from_millis(100);
         if !self.intent_capture || request.agent_id.is_some() {
             return Ok(false);
+        }
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            match self.sessions.intent_stated(&request.session_id).await {
+                Ok(Some(false)) => {}
+                Ok(_) => return Ok(false),
+                Err(error) => return Err(NormalizeError::Store(error)),
+            }
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                break;
+            }
+            tokio::time::sleep(POLL.min(deadline - now)).await;
         }
         self.sessions
             .ask_for_intent(&request.session_id)

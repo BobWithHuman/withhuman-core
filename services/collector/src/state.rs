@@ -147,6 +147,9 @@ pub trait SessionStore: Send + Sync {
     /// none. A new prompt starts a new turn. A session that is not seeded is never asked, since
     /// its intent may only be in the graph.
     async fn ask_for_intent(&self, session_id: &str) -> Result<bool, StoreError>;
+
+    /// Whether the turn stated its intent; `None` for a session that is not seeded.
+    async fn intent_stated(&self, session_id: &str) -> Result<Option<bool>, StoreError>;
 }
 
 /// Single-instance store holding every session in process memory.
@@ -292,6 +295,14 @@ impl SessionStore for InMemorySessionStore {
         let ask = state.intent.is_none() && !state.intent_asked;
         state.intent_asked |= ask;
         Ok(ask)
+    }
+
+    async fn intent_stated(&self, session_id: &str) -> Result<Option<bool>, StoreError> {
+        Ok(self
+            .lock()
+            .get(session_id)
+            .filter(|state| state.last_order.is_some())
+            .map(|state| state.intent.is_some()))
     }
 }
 
@@ -1030,5 +1041,15 @@ impl SessionStore for RedisSessionStore {
             .invoke_async(&mut self.connection.clone())
             .await?;
         Ok(asked == 1)
+    }
+
+    async fn intent_stated(&self, session_id: &str) -> Result<Option<bool>, StoreError> {
+        let (seeded, intent): (Option<String>, Option<String>) = redis::cmd("HMGET")
+            .arg(session_key(session_id))
+            .arg("next_order")
+            .arg("intent")
+            .query_async(&mut self.connection.clone())
+            .await?;
+        Ok(seeded.map(|_| intent.is_some()))
     }
 }

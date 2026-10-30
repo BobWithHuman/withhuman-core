@@ -452,7 +452,11 @@ async fn hides_the_intent_line_from_the_user_but_records_it() {
 #[tokio::test]
 async fn asks_a_turn_for_its_intent_before_its_first_call() {
     let generator = Arc::new(RecordingGenerator::allow());
-    let app = test_app(CollectorConfig::default(), generator.clone());
+    let config = CollectorConfig {
+        intent_wait: Duration::from_millis(50),
+        ..CollectorConfig::default()
+    };
+    let app = test_app(config, generator.clone());
     let send = |request| {
         let app = app.clone();
         async move { response_json(app.oneshot(request).await.unwrap()).await }
@@ -510,6 +514,46 @@ async fn asks_a_turn_for_its_intent_before_its_first_call() {
         })
         .collect();
     assert_eq!(calls, ["t2", "t3", "t4"]);
+}
+
+/// Claude Code delivers a reply's text a moment after the tool calls that follow it: a Call that
+/// arrives before its turn's intent line waits for it and is judged, not turned back.
+#[tokio::test]
+async fn waits_for_an_intent_line_that_arrives_after_the_call() {
+    let generator = Arc::new(RecordingGenerator::allow());
+    let config = CollectorConfig {
+        intent_wait: Duration::from_secs(5),
+        ..CollectorConfig::default()
+    };
+    let app = test_app(config, generator.clone());
+    app.clone()
+        .oneshot(json_request(
+            "/v1/hooks/UserPromptSubmit",
+            json!({"session_id":"s1","prompt":"응 A로 가보자"}),
+        ))
+        .await
+        .unwrap();
+
+    let call = tokio::spawn(app.clone().oneshot(pre_tool_request("WebSearch", "t1")));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!call.is_finished(), "the Call waits for the intent");
+    app.oneshot(json_request(
+        "/v1/hooks/MessageDisplay",
+        json!({"session_id":"s1","message_id":"m1","index":0,
+               "delta":"[의도] 모델 A로 판매 (확신도: 높음)\n","final":true}),
+    ))
+    .await
+    .unwrap();
+
+    let (status, body) = response_json(call.await.unwrap().unwrap()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, Value::Null, "judged and allowed, not asked");
+    let events = generator.events.lock().unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, NormalizedEvent::PreToolUse(_)))
+    );
 }
 
 #[tokio::test]
@@ -756,6 +800,10 @@ impl SessionStore for UnavailableSessions {
     }
 
     async fn ask_for_intent(&self, _: &str) -> Result<bool, StoreError> {
+        Err(StoreError::Unavailable("down".to_owned()))
+    }
+
+    async fn intent_stated(&self, _: &str) -> Result<Option<bool>, StoreError> {
         Err(StoreError::Unavailable("down".to_owned()))
     }
 }
