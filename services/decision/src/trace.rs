@@ -1,10 +1,10 @@
 //! Traces what led the agent to a Call and whether that matches the user's intents.
 //!
 //! 1. Candidate SubGraphs, all of the Call's agent (the main agent or one subagent): the three
-//!    before the Call's (a user prompt has a SubGraph of its own, with the intent stated for it,
-//!    so a recent prompt is one of them), for a subagent the main agent's SubGraph that started it, every earlier SubGraph
-//!    holding hidden content, every earlier SubGraph holding the latest mention of an
-//!    exfiltration target or sensitive value, and `none`.
+//!    before the Call's, for the main agent the SubGraph of the current turn's prompt (holding
+//!    the intent stated for it) however far back it is, for a subagent the main agent's SubGraph
+//!    that started it, every earlier SubGraph holding hidden content, every earlier SubGraph
+//!    holding the latest mention of an exfiltration target or sensitive value, and `none`.
 //! 2. A first Jev request asks which candidate influenced the Call (`action`) most (`parent`).
 //!    The most influential one is the Call's parent, so a Call is traced to one SubGraph.
 //! 3. A second request asks which of the parent's tool results (Segments and Errors) made the
@@ -132,6 +132,8 @@ impl ParentKey {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Turn {
     pub intent: Option<String>,
+    /// The SubGraph of the prompt and its intent.
+    pub subgraph: Option<u64>,
 }
 
 /// What the graph says about the Call's session, up to the Call.
@@ -385,6 +387,14 @@ pub fn candidate_subgraphs(graph: &TraceGraph, settings: &TraceSettings) -> (Vec
         if let Some(number) = started_by.filter(|number| !candidates.contains(number)) {
             candidates.push(number);
         }
+    } else if let Some(prompt) = graph
+        .turns
+        .last()
+        .and_then(|turn| turn.subgraph)
+        .filter(|number| *number < current && same_agent(number) && !candidates.contains(number))
+    {
+        // A long turn leaves its prompt out of the window, and the Call would look unprompted.
+        candidates.push(prompt);
     }
     let others: BTreeSet<u64> = graph
         .tokens
@@ -579,7 +589,7 @@ pub fn plan(
         subgraph: None,
         path: Vec::new(),
         stop: Stop::None,
-        sentence: format!("앞선 계획 없이 에이전트가 스스로 정한 행동\n→ {current_line}"),
+        sentence: format!("앞선 단계와 직접 이어지지 않는 행동\n→ {current_line}"),
         results: Vec::new(),
     });
 
@@ -616,9 +626,7 @@ pub fn plan(
                 .iter()
                 .map(|candidate| {
                     let meaning = candidate.subgraph.is_none().then(|| {
-                        "나열된 어떤 서브그래프도 `action`으로 이어지지 않았다. 에이전트가 스스로 \
-                         정해서 한 행동이다."
-                            .to_owned()
+                        "나열된 어떤 서브그래프도 `action`과 직접 이어지지 않는다.".to_owned()
                     });
                     (candidate.key.clone(), meaning)
                 })
@@ -855,7 +863,7 @@ fn valid(probability: f64) -> bool {
 fn stop_prefix(stop: Stop) -> &'static str {
     match stop {
         Stop::ReachedRoot => "",
-        Stop::None => "(그 앞은 에이전트가 스스로 정한 계획)\n→ ",
+        Stop::None => "(그 앞은 앞선 단계와 직접 이어지지 않음)\n→ ",
         Stop::Undecided => "(그 앞은 추적되지 않음)\n→ ",
         Stop::LoopGuard => "(추적 중단)\n→ ",
     }
