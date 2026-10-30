@@ -287,6 +287,30 @@ pub struct EventResponse<D = DecisionResponse> {
     pub decision_response: Option<D>,
 }
 
+/// What the Generator committed for a session: the highest order and per-agent sequence, and
+/// the latest session cwd and prompt id. A Collector that holds no state for the session
+/// (restart, expired or lost shared state) continues from here instead of reusing committed
+/// orders and losing the session context.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+pub struct SessionCursor {
+    pub last_order: u64,
+    #[serde(default)]
+    pub agent_sequences: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub prompt_id: Option<String>,
+}
+
+/// A committed PreToolUse call, used to restore the tool input of a result whose Hook omits it
+/// after the Collector lost the input it remembered.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
+pub struct ToolCall {
+    pub tool_name: String,
+    #[schema(value_type = Object)]
+    pub tool_input: Value,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
 pub struct SentenceProbability {
     pub index: u64,

@@ -1,0 +1,196 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://localhost:3000/v1/hooks/SessionStart",
+            "headers": {
+              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID"
+            },
+            "allowedEnvVars": [
+              "WITHHUMAN_CLIENT_ID"
+            ]
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://localhost:3000/v1/hooks/UserPromptSubmit",
+            "headers": {
+              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID"
+            },
+            "allowedEnvVars": [
+              "WITHHUMAN_CLIENT_ID"
+            ]
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://localhost:3000/v1/hooks/PreToolUse",
+            "headers": {
+              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID"
+            },
+            "allowedEnvVars": [
+              "WITHHUMAN_CLIENT_ID"
+            ]
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://localhost:3000/v1/hooks/PostToolUse",
+            "headers": {
+              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID"
+            },
+            "allowedEnvVars": [
+              "WITHHUMAN_CLIENT_ID"
+            ]
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://localhost:3000/v1/hooks/PostToolUseFailure",
+            "headers": {
+              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID"
+            },
+            "allowedEnvVars": [
+              "WITHHUMAN_CLIENT_ID"
+            ]
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://localhost:3000/v1/hooks/SubagentStart",
+            "headers": {
+              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID"
+            },
+            "allowedEnvVars": [
+              "WITHHUMAN_CLIENT_ID"
+            ]
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://localhost:3000/v1/hooks/SubagentStop",
+            "headers": {
+              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID"
+            },
+            "allowedEnvVars": [
+              "WITHHUMAN_CLIENT_ID"
+            ]
+          }
+        ]
+      }
+    ],
+    "InstructionsLoaded": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://localhost:3000/v1/hooks/InstructionsLoaded",
+            "headers": {
+              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID"
+            },
+            "allowedEnvVars": [
+              "WITHHUMAN_CLIENT_ID"
+            ]
+          }
+        ]
+      }
+    ],
+    "ConfigChange": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://localhost:3000/v1/hooks/ConfigChange",
+            "headers": {
+              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID"
+            },
+            "allowedEnvVars": [
+              "WITHHUMAN_CLIENT_ID"
+            ]
+          }
+        ]
+      }
+    ],
+    "FileChanged": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://localhost:3000/v1/hooks/FileChanged",
+            "headers": {
+              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID"
+            },
+            "allowedEnvVars": [
+              "WITHHUMAN_CLIENT_ID"
+            ]
+          }
+        ]
+      }
+    ],
+    "MessageDisplay": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://localhost:3000/v1/hooks/MessageDisplay",
+            "headers": {
+              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID"
+            },
+            "allowedEnvVars": [
+              "WITHHUMAN_CLIENT_ID"
+            ]
+          }
+        ]
+      }
+    ],
+    "PostToolBatch": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://localhost:3000/v1/hooks/PostToolBatch",
+            "headers": {
+              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID"
+            },
+            "allowedEnvVars": [
+              "WITHHUMAN_CLIENT_ID"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

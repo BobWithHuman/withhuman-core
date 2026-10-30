@@ -21,3 +21,8 @@ allow = [
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+
+# xxhash-rust is a required dependency of the redis client (Collector shared state).
+[[licenses.exceptions]]
+name = "xxhash-rust"
+allow = ["BSL-1.0"]

@@ -189,6 +189,245 @@ async fn persists_and_replays_execution_graph_through_real_http() {
         .await;
 }
 
+#[tokio::test]
+async fn links_out_of_order_events_by_order() {
+    let Some((query, generator_url)) = start_without_decision().await else {
+        return;
+    };
+    let session_id = unique_session("generator-order-it");
+    let client = reqwest::Client::new();
+    let prompt = |order: u64, text: &str| {
+        json!({
+            "session_id":session_id,"order":order,"observed_at":order,"sequence":order,
+            "meta":{"agent_id":"main"},
+            "payload":{"prompt":text,"kind":"user","user_docs":[]}
+        })
+    };
+
+    post_event(
+        &client,
+        &generator_url,
+        "UserPromptSubmit",
+        prompt(1, "start"),
+    )
+    .await;
+    post_event(
+        &client,
+        &generator_url,
+        "UserPromptSubmit",
+        prompt(3, "fetch https://late.example.test/x"),
+    )
+    .await;
+    post_event(
+        &client,
+        &generator_url,
+        "UserPromptSubmit",
+        prompt(2, "first saw https://late.example.test/x"),
+    )
+    .await;
+
+    let next = query
+        .one(
+            "MATCH (a:ExecutionNode {session_id:$session_id})-[:NEXT]->(b:ExecutionNode) \
+             WITH a, b ORDER BY a.order RETURN collect([a.order, b.order])",
+            json!({"session_id":session_id}),
+        )
+        .await;
+    assert_eq!(next, vec![json!([[1, 2], [2, 3]])]);
+    let agent = query
+        .one(
+            "MATCH (a:ExecutionNode {session_id:$session_id})-[:AGENT_SEQUENCE]->(b:ExecutionNode) \
+             WITH a, b ORDER BY a.order RETURN collect([a.order, b.order])",
+            json!({"session_id":session_id}),
+        )
+        .await;
+    assert_eq!(agent, vec![json!([[1, 2], [2, 3]])]);
+    let token = query
+        .one(
+            "MATCH (t:Token {session_id:$session_id,key_kind:'url'}) \
+             MATCH (n:ExecutionNode {session_id:$session_id,seq:t.node_seq}) \
+             RETURN t.node_order, n.order",
+            json!({"session_id":session_id}),
+        )
+        .await;
+    assert_eq!(token, vec![json!(2), json!(2)]);
+
+    delete_session(&query, &session_id).await;
+}
+
+#[tokio::test]
+async fn concurrent_out_of_order_events_form_one_chain() {
+    let Some((query, generator_url)) = start_without_decision().await else {
+        return;
+    };
+    let session_id = unique_session("generator-concurrent-it");
+    let client = reqwest::Client::new();
+    let events = 20_u64;
+
+    let handles = (1..=events)
+        .rev()
+        .map(|order| {
+            let (client, url) = (client.clone(), generator_url.clone());
+            let body = json!({
+                "session_id":session_id,"order":order,"observed_at":order,"meta":{},
+                "payload":{"prompt":format!("prompt {order}"),"kind":"user","user_docs":[]}
+            });
+            tokio::spawn(async move {
+                post_event(&client, &url, "UserPromptSubmit", body).await;
+            })
+        })
+        .collect::<Vec<_>>();
+    for handle in handles {
+        handle.await.unwrap();
+    }
+
+    let next = query
+        .one(
+            "MATCH (a:ExecutionNode {session_id:$session_id})-[:NEXT]->(b:ExecutionNode) \
+             WITH a, b ORDER BY a.order RETURN collect([a.order, b.order])",
+            json!({"session_id":session_id}),
+        )
+        .await;
+    let expected = (1..events).map(|order| json!([order, order + 1])).collect();
+    assert_eq!(next, vec![Value::Array(expected)]);
+
+    delete_session(&query, &session_id).await;
+}
+
+#[tokio::test]
+async fn reports_the_session_cursor_for_resuming_collectors() {
+    let Some((query, generator_url)) = start_without_decision().await else {
+        return;
+    };
+    let session_id = unique_session("generator-cursor-it");
+    let client = reqwest::Client::new();
+    for (order, agent_id, sequence, cwd, prompt_id) in [
+        (1, "main", 1, "/a", "p1"),
+        (4, "main", 2, "/c", "p2"),
+        (2, "sub-1", 5, "/b", "p1"),
+    ] {
+        post_event(
+            &client,
+            &generator_url,
+            "UserPromptSubmit",
+            json!({
+                "session_id":session_id,"order":order,"observed_at":order,"sequence":sequence,
+                "meta":{"agent_id":agent_id,"cwd":cwd,"prompt_id":prompt_id},
+                "payload":{"prompt":format!("prompt {order}"),"kind":"user","user_docs":[]}
+            }),
+        )
+        .await;
+    }
+    post_event(
+        &client,
+        &generator_url,
+        "PreToolUse",
+        json!({
+            "session_id":session_id,"order":3,"observed_at":3,"meta":{"tool_use_id":"tool-7"},
+            "payload":{"tool_name":"Bash","tool_input":{"command":"ls","flags":[1,2]}},
+            "mode":"record"
+        }),
+    )
+    .await;
+
+    let cursor = |session: String| {
+        let (client, url) = (client.clone(), generator_url.clone());
+        async move {
+            client
+                .get(format!("{url}/v1/sessions/{session}/cursor"))
+                .send()
+                .await
+                .unwrap()
+                .json::<Value>()
+                .await
+                .unwrap()
+        }
+    };
+    assert_eq!(
+        cursor(session_id.clone()).await,
+        json!({
+            "last_order":4,"agent_sequences":{"main":2,"sub-1":5},"cwd":"/c","prompt_id":"p2"
+        })
+    );
+    assert_eq!(
+        cursor(unique_session("generator-cursor-unknown")).await,
+        json!({"last_order":0,"agent_sequences":{},"cwd":null,"prompt_id":null})
+    );
+
+    let call = client
+        .get(format!(
+            "{generator_url}/v1/sessions/{session_id}/calls/tool-7"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert!(call.status().is_success());
+    assert_eq!(
+        call.json::<Value>().await.unwrap(),
+        json!({"tool_name":"Bash","tool_input":{"command":"ls","flags":[1,2]}})
+    );
+    let missing = client
+        .get(format!(
+            "{generator_url}/v1/sessions/{session_id}/calls/unknown"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), reqwest::StatusCode::NOT_FOUND);
+
+    delete_session(&query, &session_id).await;
+}
+
+async fn start_without_decision() -> Option<(QueryClient, String)> {
+    let Some(neo4j_url) = std::env::var("NEO4J_INTEGRATION_URL").ok() else {
+        eprintln!("skipping Neo4j integration test; NEO4J_INTEGRATION_URL is unset");
+        return None;
+    };
+    let neo4j_user = std::env::var("NEO4J_INTEGRATION_USER").unwrap_or_else(|_| "neo4j".into());
+    let neo4j_password = std::env::var("NEO4J_INTEGRATION_PASSWORD")
+        .unwrap_or_else(|_| "withhuman-integration".into());
+    let query = QueryClient::new(&neo4j_url, &neo4j_user, &neo4j_password);
+    install_schema(&query).await;
+    let config = GeneratorConfig {
+        bind_address: "127.0.0.1:0".parse().unwrap(),
+        neo4j_url,
+        neo4j_user,
+        neo4j_password,
+        neo4j_database: "neo4j".into(),
+        decision_url: "http://127.0.0.1:9".into(),
+    };
+    let repository = Neo4jRepository::connect(&config).await.unwrap();
+    Some((
+        query,
+        spawn_generator(GeneratorService::new(repository)).await,
+    ))
+}
+
+fn unique_session(prefix: &str) -> String {
+    format!(
+        "{prefix}-{}-{}",
+        process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    )
+}
+
+async fn delete_session(query: &QueryClient, session_id: &str) {
+    query
+        .one(
+            "MATCH (s:Session {session_id:$session_id}) \
+             OPTIONAL MATCH (s)-[:CONTAINS]->(n) \
+             OPTIONAL MATCH (c:EventCommit {session_id:$session_id}) \
+             OPTIONAL MATCH (t:Token {session_id:$session_id}) \
+             DETACH DELETE n, c, t, s \
+             RETURN true",
+            json!({"session_id":session_id}),
+        )
+        .await;
+}
+
 async fn post_event(client: &reqwest::Client, base_url: &str, event: &str, body: Value) -> Value {
     let response = client
         .post(format!("{base_url}/v1/events/{event}"))

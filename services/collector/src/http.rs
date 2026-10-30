@@ -1,4 +1,5 @@
 use std::{
+    fmt,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -26,7 +27,8 @@ use withhuman_contracts::{
 
 use crate::{
     CollectorConfig, FailurePolicy, GeneratorError, GeneratorHttpClient, GeneratorTransport,
-    Normalizer, ReviewPolicy, StoredVerdict, VerdictStore,
+    InMemoryVerdictStore, NormalizeError, Normalizer, RedisSessionStore, RedisVerdictStore,
+    ReviewPolicy, StoreError, StoredVerdict, VerdictStore, redis_connection,
 };
 
 const CLIENT_HEADER: &str = "x-withhuman-client";
@@ -51,18 +53,39 @@ pub struct CollectorService {
     pub config: CollectorConfig,
     pub normalizer: Normalizer,
     pub generator: Arc<dyn GeneratorTransport>,
-    pub verdicts: VerdictStore,
+    pub verdicts: Arc<dyn VerdictStore>,
 }
 
 impl CollectorService {
     pub fn new(config: CollectorConfig, generator: Arc<dyn GeneratorTransport>) -> Self {
-        let verdicts = VerdictStore::new(config.verdict_capacity);
+        let verdicts = Arc::new(InMemoryVerdictStore::new(config.verdict_capacity));
         Self {
             config,
-            normalizer: Normalizer::default(),
+            normalizer: Normalizer::default().with_history(generator.clone()),
             generator,
             verdicts,
         }
+    }
+
+    /// Uses Redis-backed state when `config.redis_url` is set, in-process state otherwise.
+    pub fn from_config(
+        config: CollectorConfig,
+        generator: Arc<dyn GeneratorTransport>,
+    ) -> Result<Self, StoreError> {
+        let Some(url) = config.redis_url.clone() else {
+            return Ok(Self::new(config, generator));
+        };
+        let connection = redis_connection(&url)?;
+        Ok(Self {
+            verdicts: Arc::new(RedisVerdictStore::new(
+                connection.clone(),
+                config.verdict_ttl,
+            )),
+            normalizer: Normalizer::new(RedisSessionStore::new(connection, config.session_ttl))
+                .with_history(generator.clone()),
+            config,
+            generator,
+        })
     }
 }
 
@@ -129,6 +152,9 @@ async fn swagger_ui() -> Html<&'static str> {
     tag = "Collector",
     responses((status = 200, description = "Collector is ready", body = HealthResponse))
 )]
+// Redis is deliberately not probed: an outage would mark every replica unhealthy at once, so
+// Hooks would fail at the gateway instead of getting the configured failure policy, and
+// restarting replicas cannot repair Redis. Each request applies the policy on Redis errors.
 async fn health() -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok",
@@ -149,7 +175,7 @@ async fn health() -> Json<HealthResponse> {
         (status = 200, description = "Session accepted", body = HookSpecificResponse<SessionStartOutput>),
         (status = 400, description = "Invalid JSON", body = ErrorResponse),
         (status = 415, description = "Content-Type is not application/json", body = ErrorResponse),
-        (status = 502, description = "Generator unavailable", body = ErrorResponse)
+        (status = 502, description = "Generator or session store unavailable", body = ErrorResponse)
     )
 )]
 async fn session_start(
@@ -157,9 +183,14 @@ async fn session_start(
     headers: HeaderMap,
     StrictJson(request): StrictJson<SessionStartRequest>,
 ) -> Response {
-    let event = service
+    let event = match service
         .normalizer
-        .session_start(&trusted(&headers), request, now());
+        .session_start(&trusted(&headers), request, now())
+        .await
+    {
+        Ok(event) => event,
+        Err(error) => return normalize_failure(error),
+    };
     match tokio::time::timeout(
         service.config.decision_budget,
         service.generator.send(event),
@@ -193,7 +224,7 @@ macro_rules! regular_handler {
                 (status = 200, description = "Event accepted; response body is empty"),
                 (status = 400, description = "Invalid JSON", body = ErrorResponse),
                 (status = 415, description = "Content-Type is not application/json", body = ErrorResponse),
-                (status = 502, description = "Generator unavailable", body = ErrorResponse)
+                (status = 502, description = "Generator or session store unavailable", body = ErrorResponse)
             )
         )]
         async fn $name(
@@ -201,10 +232,14 @@ macro_rules! regular_handler {
             headers: HeaderMap,
             StrictJson(request): StrictJson<$request>,
         ) -> Response {
-            let event = service
+            match service
                 .normalizer
-                .$normalize(&trusted(&headers), request, now());
-            send_regular(&service, event).await
+                .$normalize(&trusted(&headers), request, now())
+                .await
+            {
+                Ok(event) => send_regular(&service, event).await,
+                Err(error) => normalize_failure(error),
+            }
         }
     };
 }
@@ -270,10 +305,14 @@ async fn subagent_start(
     headers: HeaderMap,
     StrictJson(request): StrictJson<SubagentLifecycleRequest>,
 ) -> Response {
-    let event = service
+    match service
         .normalizer
-        .subagent_start(&trusted(&headers), request, now());
-    send_regular(&service, event).await
+        .subagent_start(&trusted(&headers), request, now())
+        .await
+    {
+        Ok(event) => send_regular(&service, event).await,
+        Err(error) => normalize_failure(error),
+    }
 }
 
 #[utoipa::path(
@@ -288,10 +327,14 @@ async fn subagent_stop(
     headers: HeaderMap,
     StrictJson(request): StrictJson<SubagentLifecycleRequest>,
 ) -> Response {
-    let event = service
+    match service
         .normalizer
-        .subagent_stop(&trusted(&headers), request, now());
-    send_regular(&service, event).await
+        .subagent_stop(&trusted(&headers), request, now())
+        .await
+    {
+        Ok(event) => send_regular(&service, event).await,
+        Err(error) => normalize_failure(error),
+    }
 }
 
 #[utoipa::path(
@@ -309,16 +352,11 @@ async fn message_display(
     match service
         .normalizer
         .message_display(&trusted(&headers), request, now())
+        .await
     {
         Ok(Some(event)) => send_regular(&service, event).await,
         Ok(None) => StatusCode::OK.into_response(),
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: "normalization_failed",
-            }),
-        )
-            .into_response(),
+        Err(error) => normalize_failure(error),
     }
 }
 
@@ -343,13 +381,20 @@ async fn pre_tool_use(
     let tool_name = request.tool_name.clone();
     let arguments = request.tool_input.clone();
     let deadline_ms = u64::try_from(service.config.decision_budget.as_millis()).ok();
-    let event = service.normalizer.pre_tool_use(
-        &trusted(&headers),
-        request,
-        now(),
-        service.config.enforcement_mode,
-        deadline_ms,
-    );
+    let event = match service
+        .normalizer
+        .pre_tool_use(
+            &trusted(&headers),
+            request,
+            now(),
+            service.config.enforcement_mode,
+            deadline_ms,
+        )
+        .await
+    {
+        Ok(event) => event,
+        Err(error) => return pre_tool_failure(&service, error),
+    };
     let result = tokio::time::timeout(
         service.config.decision_budget,
         service.generator.send(event),
@@ -372,17 +417,28 @@ async fn pre_tool_use(
             GeneratorError::InvalidResponse("invalid decision semantics".to_owned()),
         );
     }
-    service.verdicts.insert(
-        tool_use_id,
-        StoredVerdict {
-            decision: decision.clone(),
-            tool_name,
-            arguments,
-        },
-    );
-    if is_mcp && !service.config.enforce_mcp_at_hook {
-        return StatusCode::OK.into_response();
+    let enforced_at_hook = !is_mcp || service.config.enforce_mcp_at_hook;
+    let stored = service
+        .verdicts
+        .insert(
+            tool_use_id,
+            StoredVerdict {
+                decision: decision.clone(),
+                tool_name,
+                arguments,
+            },
+        )
+        .await;
+    if !enforced_at_hook {
+        // AgentGateway enforces this call and needs the stored verdict; without it the
+        // extAuthz check denies, so the Hook answer follows the failure policy.
+        return match stored {
+            Ok(()) => StatusCode::OK.into_response(),
+            Err(error) => pre_tool_failure(&service, error),
+        };
     }
+    // The verdict is in hand, so a store failure must not override it (a DENY must never turn
+    // into ALLOW under the open failure policy).
     decision_response(decision, service.config.review_policy)
 }
 
@@ -411,7 +467,7 @@ fn blocking_response(permission_decision: PermissionDecision, reason: String) ->
     .into_response()
 }
 
-fn pre_tool_failure(service: &CollectorService, error: GeneratorError) -> Response {
+fn pre_tool_failure(service: &CollectorService, error: impl fmt::Display) -> Response {
     match service.config.failure_policy {
         FailurePolicy::Open => StatusCode::OK.into_response(),
         FailurePolicy::Closed => blocking_response(PermissionDecision::Deny, error.to_string()),
@@ -435,6 +491,19 @@ async fn send_regular(service: &CollectorService, event: crate::NormalizedEvent)
         Ok(result) => acknowledge(result),
         Err(_) => generator_failure(GeneratorError::Timeout),
     }
+}
+
+/// Session store and cursor failures answer like Generator failures (502); a message that
+/// cannot be assembled stays an internal error.
+fn normalize_failure(error: NormalizeError) -> Response {
+    let (status, error) = match error {
+        NormalizeError::Store(_) => (StatusCode::BAD_GATEWAY, "session_store_unavailable"),
+        NormalizeError::History(_) => (StatusCode::BAD_GATEWAY, "generator_unavailable"),
+        NormalizeError::MissingMessageBuffer => {
+            (StatusCode::INTERNAL_SERVER_ERROR, "normalization_failed")
+        }
+    };
+    (status, Json(ErrorResponse { error })).into_response()
 }
 
 fn generator_failure(_error: GeneratorError) -> Response {

@@ -10,7 +10,8 @@ async fn main() -> io::Result<()> {
     let config = CollectorConfig::from_env()?;
     let listener = tokio::net::TcpListener::bind(config.bind_address).await?;
     let generator = Arc::new(GeneratorHttpClient::new(config.generator_url.clone()));
-    let service = CollectorService::new(config.clone(), generator);
+    let service =
+        CollectorService::from_config(config.clone(), generator).map_err(io::Error::other)?;
     let ext_authz = ExtAuthzService::new(service.verdicts.clone(), config.enforcement_mode);
     let http_app = app_with_transport(service);
 

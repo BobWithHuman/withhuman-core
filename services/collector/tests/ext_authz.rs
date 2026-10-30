@@ -1,7 +1,12 @@
+use std::sync::Arc;
+
+use async_trait::async_trait;
 use serde_json::{Value, json};
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::Request;
-use withhuman_collector::{ExtAuthzService, StoredVerdict, VerdictStore};
+use withhuman_collector::{
+    ExtAuthzService, InMemoryVerdictStore, StoreError, StoredVerdict, VerdictStore,
+};
 use withhuman_contracts::{
     decisions::{CausalStart, Decision, DecisionResponse, EnforcementMode},
     ext_authz::{
@@ -12,7 +17,7 @@ use withhuman_contracts::{
 
 #[tokio::test]
 async fn allows_only_a_matching_allow_verdict_in_enforce_mode() {
-    let service = service(EnforcementMode::Enforce, Decision::Allow, "");
+    let service = service(EnforcementMode::Enforce, Decision::Allow, "").await;
     let response = check(
         &service,
         tool_call("tool-1", "write_file", json!({"path":"a"})),
@@ -28,7 +33,8 @@ async fn denies_policy_denials_reviews_and_missing_verdicts() {
         EnforcementMode::Enforce,
         Decision::Deny,
         "blocked by policy",
-    );
+    )
+    .await;
     let response = check(
         &denied,
         tool_call("tool-1", "write_file", json!({"path":"a"})),
@@ -40,7 +46,8 @@ async fn denies_policy_denials_reviews_and_missing_verdicts() {
         EnforcementMode::Enforce,
         Decision::Review,
         "human review required",
-    );
+    )
+    .await;
     let response = check(
         &review,
         tool_call("tool-1", "write_file", json!({"path":"a"})),
@@ -48,7 +55,10 @@ async fn denies_policy_denials_reviews_and_missing_verdicts() {
     .await;
     assert_denied(&response, "human review required");
 
-    let missing = ExtAuthzService::new(VerdictStore::new(2), EnforcementMode::Enforce);
+    let missing = ExtAuthzService::new(
+        Arc::new(InMemoryVerdictStore::new(2)),
+        EnforcementMode::Enforce,
+    );
     let response = check(
         &missing,
         tool_call("unknown", "write_file", json!({"path":"a"})),
@@ -59,7 +69,7 @@ async fn denies_policy_denials_reviews_and_missing_verdicts() {
 
 #[tokio::test]
 async fn denies_changed_tool_names_arguments_and_missing_correlation() {
-    let service = service(EnforcementMode::Enforce, Decision::Allow, "");
+    let service = service(EnforcementMode::Enforce, Decision::Allow, "").await;
 
     let response = check(
         &service,
@@ -85,7 +95,7 @@ async fn denies_changed_tool_names_arguments_and_missing_correlation() {
 
 #[tokio::test]
 async fn permits_non_tool_calls_and_non_enforcing_modes() {
-    let enforce = service(EnforcementMode::Enforce, Decision::Deny, "blocked");
+    let enforce = service(EnforcementMode::Enforce, Decision::Deny, "blocked").await;
     let response = check(
         &enforce,
         json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}),
@@ -94,7 +104,7 @@ async fn permits_non_tool_calls_and_non_enforcing_modes() {
     assert_allowed(&response);
 
     for mode in [EnforcementMode::Record, EnforcementMode::Shadow] {
-        let service = ExtAuthzService::new(VerdictStore::new(2), mode);
+        let service = ExtAuthzService::new(Arc::new(InMemoryVerdictStore::new(2)), mode);
         let response = Authorization::check(&service, Request::new(CheckRequest::default()))
             .await
             .unwrap()
@@ -107,7 +117,7 @@ async fn permits_non_tool_calls_and_non_enforcing_modes() {
 async fn serves_the_envoy_authorization_contract_over_grpc() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    let service = service(EnforcementMode::Enforce, Decision::Allow, "");
+    let service = service(EnforcementMode::Enforce, Decision::Allow, "").await;
     let server = tokio::spawn(async move {
         tonic::transport::Server::builder()
             .add_service(AuthorizationServer::new(service))
@@ -135,24 +145,51 @@ async fn serves_the_envoy_authorization_contract_over_grpc() {
     server.abort();
 }
 
-fn service(mode: EnforcementMode, decision: Decision, reason: &str) -> ExtAuthzService {
-    let verdicts = VerdictStore::new(2);
-    verdicts.insert(
-        "tool-1".to_owned(),
-        StoredVerdict {
-            decision: DecisionResponse {
-                decision,
-                reason: reason.to_owned(),
-                rule: "test-rule".to_owned(),
-                start: CausalStart::User,
-                written: true,
-                jev: None,
+#[tokio::test]
+async fn denies_when_the_verdict_store_is_unavailable() {
+    struct UnavailableVerdicts;
+
+    #[async_trait]
+    impl VerdictStore for UnavailableVerdicts {
+        async fn insert(&self, _: String, _: StoredVerdict) -> Result<(), StoreError> {
+            Err(StoreError::Unavailable("down".to_owned()))
+        }
+
+        async fn get(&self, _: &str) -> Result<Option<StoredVerdict>, StoreError> {
+            Err(StoreError::Unavailable("down".to_owned()))
+        }
+    }
+
+    let service = ExtAuthzService::new(Arc::new(UnavailableVerdicts), EnforcementMode::Enforce);
+    let response = check(
+        &service,
+        tool_call("tool-1", "write_file", json!({"path":"a"})),
+    )
+    .await;
+    assert_denied(&response, "Policy verdict store is unavailable.");
+}
+
+async fn service(mode: EnforcementMode, decision: Decision, reason: &str) -> ExtAuthzService {
+    let verdicts = InMemoryVerdictStore::new(2);
+    verdicts
+        .insert(
+            "tool-1".to_owned(),
+            StoredVerdict {
+                decision: DecisionResponse {
+                    decision,
+                    reason: reason.to_owned(),
+                    rule: "test-rule".to_owned(),
+                    start: CausalStart::User,
+                    written: true,
+                    jev: None,
+                },
+                tool_name: "mcp__filesystem__write_file".to_owned(),
+                arguments: json!({"path":"a"}),
             },
-            tool_name: "mcp__filesystem__write_file".to_owned(),
-            arguments: json!({"path":"a"}),
-        },
-    );
-    ExtAuthzService::new(verdicts, mode)
+        )
+        .await
+        .unwrap();
+    ExtAuthzService::new(Arc::new(verdicts), mode)
 }
 
 async fn check(

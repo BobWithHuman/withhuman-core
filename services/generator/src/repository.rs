@@ -1,21 +1,33 @@
-use std::{error::Error, fmt};
+use std::{
+    error::Error,
+    fmt,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use withhuman_contracts::events::{
     CreatedNode, EventResponse, ParagraphClassificationRequest, ParagraphClassificationResponse,
-    ParagraphReference, RequestContinuationRequest, RequestContinuationResponse,
+    ParagraphReference, RequestContinuationRequest, RequestContinuationResponse, SessionCursor,
+    ToolCall,
 };
 
 use crate::{GeneratorConfig, GeneratorEvent, event::GraphMutation};
 
+// Events of one session may arrive in any order and concurrently (several Collector replicas).
+// `SET session.commit_lock` takes the Session write lock first, so commits of a session queue up
+// instead of deadlocking, and every later read sees the previous commit. `seq` stays the arrival
+// version that Decision snapshots against; NEXT, AGENT_SEQUENCE and a Token's first mention
+// follow `order` and are repaired when an earlier event arrives late.
 const COMMIT_EVENT: &str = "\
 MERGE (session:Session {session_id: $session_id}) \
 ON CREATE SET session.version = 0, session.created_at = $observed_at \
+SET session.commit_lock = true \
 MERGE (commit:EventCommit {session_id: $session_id, order: $order}) \
 ON CREATE SET commit.event_name = $event_name, commit.observed_at = $observed_at, \
-commit.client_id = $client_id, commit.event_json = $event_json \
+commit.client_id = $client_id, commit.event_json = $event_json, \
+commit.cwd = $cwd, commit.prompt_id = $prompt_id \
 WITH session, commit, commit.version IS NULL AS is_new \
 CALL (session, commit, is_new) { \
   WITH session, commit WHERE is_new \
@@ -39,20 +51,41 @@ FOREACH (_ IN CASE WHEN created AND $has_node THEN [1] ELSE [] END | \
   CREATE (commit)-[:CREATED]->(node) \
   CREATE (session)-[:CONTAINS]->(node) \
 ) \
-WITH session, commit \
+WITH session, commit, created \
 OPTIONAL MATCH (node:ExecutionNode {session_id: $session_id, seq: commit.version}) \
-OPTIONAL MATCH (previous:ExecutionNode {session_id: $session_id, seq: commit.version - 1}) \
-FOREACH (_ IN CASE WHEN node IS NULL OR previous IS NULL THEN [] ELSE [1] END | \
-  MERGE (previous)-[edge:NEXT]->(node) \
-  ON CREATE SET edge.edge_id = $session_id + ':' + toString(previous.seq) + ':' + toString(node.seq), \
-                edge.probability = 1.0 \
-) \
+CALL (node, created) { \
+  WITH node WHERE created AND node IS NOT NULL \
+  OPTIONAL MATCH (before:ExecutionNode {session_id: $session_id}) WHERE before.order < node.order \
+  WITH node, before ORDER BY before.order DESC LIMIT 1 \
+  OPTIONAL MATCH (after:ExecutionNode {session_id: $session_id}) WHERE after.order > node.order \
+  WITH node, before, after ORDER BY after.order LIMIT 1 \
+  OPTIONAL MATCH (before)-[stale:NEXT]->(after) \
+  DELETE stale \
+  FOREACH (_ IN CASE WHEN before IS NULL THEN [] ELSE [1] END | \
+    MERGE (before)-[edge:NEXT]->(node) \
+    ON CREATE SET edge.edge_id = $session_id + ':' + toString(before.seq) + ':' + toString(node.seq), \
+                  edge.probability = 1.0 \
+  ) \
+  FOREACH (_ IN CASE WHEN after IS NULL THEN [] ELSE [1] END | \
+    MERGE (node)-[edge:NEXT]->(after) \
+    ON CREATE SET edge.edge_id = $session_id + ':' + toString(node.seq) + ':' + toString(after.seq), \
+                  edge.probability = 1.0 \
+  ) \
+  RETURN count(*) AS linked \
+} \
 WITH commit, node \
 OPTIONAL MATCH (agent_previous:ExecutionNode { \
   session_id: $session_id, agent_id: $agent_id, sequence: $previous_sequence \
 }) \
 FOREACH (_ IN CASE WHEN node IS NULL OR agent_previous IS NULL THEN [] ELSE [1] END | \
   MERGE (agent_previous)-[:AGENT_SEQUENCE]->(node) \
+) \
+WITH commit, node \
+OPTIONAL MATCH (agent_next:ExecutionNode { \
+  session_id: $session_id, agent_id: $agent_id, sequence: $next_sequence \
+}) \
+FOREACH (_ IN CASE WHEN node IS NULL OR agent_next IS NULL THEN [] ELSE [1] END | \
+  MERGE (node)-[:AGENT_SEQUENCE]->(agent_next) \
 ) \
 WITH commit, node \
 OPTIONAL MATCH (call:ExecutionNode { \
@@ -73,7 +106,7 @@ CALL (node) { \
   MERGE (stored:Paragraph {hash: paragraph.hash}) \
   ON CREATE SET stored.text = paragraph.text, stored.source = paragraph.source, \
                 stored.hidden = paragraph.hidden, stored.from_user_doc = paragraph.from_user_doc, \
-                stored.created_in_seq = node.seq \
+                stored.long_paragraph = paragraph.long_paragraph, stored.created_in_seq = node.seq \
   MERGE (node)-[:CONTAINS_PARAGRAPH {index: paragraph.index}]->(stored) \
   WITH node, stored, paragraph \
   OPTIONAL MATCH (pending:PendingParagraphEnrichment {session_id: $session_id, hash: paragraph.hash}) \
@@ -91,8 +124,14 @@ CALL (node, commit) { \
   WITH node, commit WHERE node IS NOT NULL AND size($tokens) > 0 \
   UNWIND $tokens AS token \
   MERGE (stored_token:Token {session_id: $session_id, key_kind: token.key_kind, key: token.key, slot: token.slot}) \
-  ON CREATE SET stored_token.node_seq = node.seq, stored_token.decoded = token.decoded, \
-                stored_token.version = commit.version \
+  ON CREATE SET stored_token.node_seq = node.seq, stored_token.node_order = node.order, \
+                stored_token.decoded = token.decoded, stored_token.version = commit.version \
+  ON MATCH SET stored_token.node_seq = CASE WHEN node.order < stored_token.node_order \
+                 THEN node.seq ELSE stored_token.node_seq END, \
+               stored_token.version = CASE WHEN node.order < stored_token.node_order \
+                 THEN commit.version ELSE stored_token.version END, \
+               stored_token.node_order = CASE WHEN node.order < stored_token.node_order \
+                 THEN node.order ELSE stored_token.node_order END \
   MERGE (node)-[:MENTIONS_TOKEN {slot: token.slot}]->(stored_token) \
   RETURN count(stored_token) AS token_count \
   UNION \
@@ -156,6 +195,76 @@ CALL (session, request, target) { \
 } \
 RETURN applied, request_seq";
 
+// Every event carries the session cwd and prompt id as they were after it, so the values of the
+// highest order are the current ones. Commits made before they were recorded on EventCommit fall
+// back to their ExecutionNode.
+const SESSION_CURSOR: &str = "\
+OPTIONAL MATCH (commit:EventCommit {session_id: $session_id}) \
+WITH coalesce(max(commit.order), 0) AS last_order \
+OPTIONAL MATCH (node:ExecutionNode {session_id: $session_id}) \
+WHERE node.agent_id IS NOT NULL AND node.sequence IS NOT NULL \
+WITH last_order, node.agent_id AS agent_id, max(node.sequence) AS sequence \
+WITH last_order, \
+     collect(CASE WHEN agent_id IS NULL THEN NULL ELSE [agent_id, sequence] END) AS agents \
+RETURN last_order, agents, \
+  coalesce( \
+    COLLECT { MATCH (c:EventCommit {session_id: $session_id}) WHERE c.cwd IS NOT NULL \
+              RETURN c.cwd ORDER BY c.order DESC LIMIT 1 }[0], \
+    COLLECT { MATCH (n:ExecutionNode {session_id: $session_id}) WHERE n.cwd IS NOT NULL \
+              RETURN n.cwd ORDER BY n.order DESC LIMIT 1 }[0]) AS cwd, \
+  coalesce( \
+    COLLECT { MATCH (c:EventCommit {session_id: $session_id}) WHERE c.prompt_id IS NOT NULL \
+              RETURN c.prompt_id ORDER BY c.order DESC LIMIT 1 }[0], \
+    COLLECT { MATCH (n:ExecutionNode {session_id: $session_id}) WHERE n.prompt_id IS NOT NULL \
+              RETURN n.prompt_id ORDER BY n.order DESC LIMIT 1 }[0]) AS prompt_id";
+
+const TOOL_CALL: &str = "\
+MATCH (call:ExecutionNode {session_id: $session_id, type: 'Call', tool_use_id: $tool_use_id}) \
+RETURN call.payload_json ORDER BY call.order DESC LIMIT 1";
+
+const DELETE_PARAGRAPHS: &str = "\
+MATCH (paragraph) WHERE paragraph:Paragraph OR paragraph:PendingParagraphEnrichment \
+DETACH DELETE paragraph";
+
+const LIST_NODE_COMMITS: &str = "\
+MATCH (commit:EventCommit) WHERE commit.has_node \
+RETURN commit.event_name, commit.event_json \
+ORDER BY commit.observed_at, commit.session_id, commit.order \
+SKIP $skip LIMIT $limit";
+
+const REINDEX_PARAGRAPHS: &str = "\
+UNWIND $rows AS row \
+MATCH (commit:EventCommit {session_id: row.session_id, order: row.order})-[:CREATED]->(node:ExecutionNode) \
+CALL (node, row) { \
+  UNWIND row.paragraphs AS paragraph \
+  MERGE (stored:Paragraph {hash: paragraph.hash}) \
+  ON CREATE SET stored.text = paragraph.text, stored.source = paragraph.source, \
+                stored.hidden = paragraph.hidden, stored.from_user_doc = paragraph.from_user_doc, \
+                stored.long_paragraph = paragraph.long_paragraph, stored.created_in_seq = node.seq \
+  MERGE (node)-[:CONTAINS_PARAGRAPH {index: paragraph.index}]->(stored) \
+} \
+CALL (node, commit, row) { \
+  UNWIND row.tokens AS token \
+  MERGE (stored_token:Token {session_id: row.session_id, key_kind: token.key_kind, key: token.key, slot: token.slot}) \
+  ON CREATE SET stored_token.node_seq = node.seq, stored_token.node_order = node.order, \
+                stored_token.decoded = token.decoded, stored_token.version = commit.version \
+  MERGE (node)-[:MENTIONS_TOKEN {slot: token.slot}]->(stored_token) \
+} \
+RETURN count(node) AS reindexed";
+
+const REINDEX_PAGE: usize = 500;
+
+/// Concurrent commits to one session can deadlock on the Session node. Neo4j reports that
+/// as a transient error and the whole statement is safe to run again.
+const TRANSIENT_ATTEMPTS: u32 = 5;
+
+/// Outcome of [`Neo4jRepository::reindex_paragraphs`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReindexReport {
+    pub scanned: usize,
+    pub reindexed: usize,
+}
+
 #[async_trait]
 pub trait GraphRepository: Send + Sync + 'static {
     async fn health(&self) -> Result<(), RepositoryError>;
@@ -174,6 +283,20 @@ pub trait GraphRepository: Send + Sync + 'static {
         _order: u64,
         _request: RequestContinuationRequest,
     ) -> Result<RequestContinuationResponse, RepositoryError> {
+        Err(RepositoryError::NotFound)
+    }
+
+    /// Unknown sessions have a zero cursor.
+    async fn session_cursor(&self, _session_id: &str) -> Result<SessionCursor, RepositoryError> {
+        Err(RepositoryError::NotFound)
+    }
+
+    /// The committed PreToolUse call with this tool_use_id; `NotFound` when there is none.
+    async fn tool_call(
+        &self,
+        _session_id: &str,
+        _tool_use_id: &str,
+    ) -> Result<ToolCall, RepositoryError> {
         Err(RepositoryError::NotFound)
     }
 }
@@ -207,6 +330,23 @@ impl Neo4jRepository {
         statement: &str,
         parameters: Value,
     ) -> Result<QueryData, RepositoryError> {
+        let mut attempt = 1;
+        loop {
+            match self.execute_once(statement, &parameters).await {
+                Err(error) if is_transient(&error) && attempt < TRANSIENT_ATTEMPTS => {
+                    tokio::time::sleep(retry_delay(attempt)).await;
+                    attempt += 1;
+                }
+                result => return result,
+            }
+        }
+    }
+
+    async fn execute_once(
+        &self,
+        statement: &str,
+        parameters: &Value,
+    ) -> Result<QueryData, RepositoryError> {
         let response = self
             .client
             .post(&self.endpoint)
@@ -239,6 +379,60 @@ impl Neo4jRepository {
             .ok_or_else(|| RepositoryError::InvalidResponse("missing data".to_owned()))
     }
 
+    /// Drops every Paragraph and re-chunks the text of each committed event with the current
+    /// rules. Paragraph classifications are lost and must be requested again.
+    pub async fn reindex_paragraphs(&self) -> Result<ReindexReport, RepositoryError> {
+        self.execute(DELETE_PARAGRAPHS, json!({})).await?;
+        let mut report = ReindexReport {
+            scanned: 0,
+            reindexed: 0,
+        };
+        loop {
+            let page = self
+                .execute(
+                    LIST_NODE_COMMITS,
+                    json!({"skip": report.scanned, "limit": REINDEX_PAGE}),
+                )
+                .await?;
+            if page.values.is_empty() {
+                return Ok(report);
+            }
+            report.scanned += page.values.len();
+            let mut rows = Vec::new();
+            for row in &page.values {
+                let text = |index, field| {
+                    value_at(row, index, field)?.as_str().ok_or_else(|| {
+                        RepositoryError::InvalidResponse(format!("{field} is not a string"))
+                    })
+                };
+                let mutation =
+                    GeneratorEvent::from_json(text(0, "event_name")?, text(1, "event_json")?)?
+                        .into_mutation()?;
+                if !mutation.paragraphs.is_empty() {
+                    rows.push(json!({
+                        "session_id": mutation.session_id,
+                        "order": mutation.order,
+                        "paragraphs": mutation.paragraphs,
+                        "tokens": mutation.tokens,
+                    }));
+                }
+            }
+            if rows.is_empty() {
+                continue;
+            }
+            let data = self
+                .execute(REINDEX_PARAGRAPHS, json!({"rows": rows}))
+                .await?;
+            report.reindexed += data
+                .values
+                .first()
+                .and_then(|row| row.first())
+                .and_then(Value::as_u64)
+                .and_then(|count| usize::try_from(count).ok())
+                .unwrap_or(0);
+        }
+    }
+
     async fn commit_mutation(
         &self,
         mutation: GraphMutation,
@@ -246,6 +440,7 @@ impl Neo4jRepository {
         let has_node = mutation.node_type.is_some();
         let is_tool_result = matches!(mutation.node_type, Some("Sequence" | "Error"));
         let previous_sequence = mutation.sequence.map(|sequence| sequence - 1);
+        let next_sequence = mutation.sequence.map(|sequence| sequence + 1);
         let parameters = json!({
             "session_id": mutation.session_id,
             "order": mutation.order,
@@ -256,6 +451,7 @@ impl Neo4jRepository {
             "client_id": mutation.client_id,
             "sequence": mutation.sequence,
             "previous_sequence": previous_sequence,
+            "next_sequence": next_sequence,
             "prompt_id": mutation.prompt_id,
             "agent_id": mutation.agent_id,
             "agent_type": mutation.agent_type,
@@ -420,6 +616,57 @@ impl GraphRepository for Neo4jRepository {
             request_seq: row.get(1).and_then(Value::as_u64),
         })
     }
+
+    async fn session_cursor(&self, session_id: &str) -> Result<SessionCursor, RepositoryError> {
+        let data = self
+            .execute(SESSION_CURSOR, json!({"session_id": session_id}))
+            .await?;
+        let row = data
+            .values
+            .first()
+            .ok_or_else(|| RepositoryError::InvalidResponse("missing cursor row".to_owned()))?;
+        Ok(SessionCursor {
+            last_order: unsigned(value_at(row, 0, "last_order")?, "last_order")?,
+            agent_sequences: value_at(row, 1, "agents")?
+                .as_array()
+                .ok_or_else(|| {
+                    RepositoryError::InvalidResponse("agents is not an array".to_owned())
+                })?
+                .iter()
+                .map(agent_sequence)
+                .collect::<Result<_, _>>()?,
+            cwd: row.get(2).and_then(Value::as_str).map(str::to_owned),
+            prompt_id: row.get(3).and_then(Value::as_str).map(str::to_owned),
+        })
+    }
+
+    async fn tool_call(
+        &self,
+        session_id: &str,
+        tool_use_id: &str,
+    ) -> Result<ToolCall, RepositoryError> {
+        let data = self
+            .execute(
+                TOOL_CALL,
+                json!({"session_id": session_id, "tool_use_id": tool_use_id}),
+            )
+            .await?;
+        let payload = data
+            .values
+            .first()
+            .and_then(|row| row.first())
+            .and_then(Value::as_str)
+            .ok_or(RepositoryError::NotFound)?;
+        serde_json::from_str(payload)
+            .map_err(|error| RepositoryError::InvalidResponse(error.to_string()))
+    }
+}
+
+fn agent_sequence(pair: &Value) -> Result<(String, u64), RepositoryError> {
+    let invalid = || RepositoryError::InvalidResponse("invalid agent sequence".to_owned());
+    let agent_id = pair.get(0).and_then(Value::as_str).ok_or_else(invalid)?;
+    let sequence = pair.get(1).and_then(Value::as_u64).ok_or_else(invalid)?;
+    Ok((agent_id.to_owned(), sequence))
 }
 
 fn parse_choice_order(choice: &str) -> Result<Option<u64>, RepositoryError> {
@@ -431,6 +678,18 @@ fn parse_choice_order(choice: &str) -> Result<Option<u64>, RepositoryError> {
         .and_then(|order| order.parse().ok())
         .map(Some)
         .ok_or_else(|| RepositoryError::InvalidEvent("choice must be `none` or `o<order>`".into()))
+}
+
+fn is_transient(error: &RepositoryError) -> bool {
+    matches!(error, RepositoryError::Query(message) if message.starts_with("Neo.TransientError."))
+}
+
+/// Linear backoff with jitter so transactions that deadlocked together do not retry in lockstep.
+fn retry_delay(attempt: u32) -> Duration {
+    let jitter = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |now| now.subsec_nanos() % 20);
+    Duration::from_millis(u64::from(attempt * 20 + jitter))
 }
 
 fn value_at<'a>(row: &'a [Value], index: usize, field: &str) -> Result<&'a Value, RepositoryError> {
@@ -447,7 +706,7 @@ fn unsigned(value: &Value, field: &str) -> Result<u64, RepositoryError> {
 #[derive(Serialize)]
 struct QueryRequest<'a> {
     statement: &'a str,
-    parameters: Value,
+    parameters: &'a Value,
 }
 
 #[derive(Deserialize)]

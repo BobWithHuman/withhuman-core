@@ -74,6 +74,7 @@
     "session_id": "8e789b84",
     "hook_event_name": "MessageDisplay",
     "message_id": "m7",
+    "index": 3,
     "delta": "설치 스크립트를 실행하겠습니다.",
     "final": true,
     "turn_id": "t3"

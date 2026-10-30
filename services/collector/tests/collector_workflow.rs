@@ -12,12 +12,15 @@ use serde_json::{Value, json};
 use tokio::sync::Notify;
 use tower::ServiceExt as _;
 use withhuman_collector::{
-    CollectorConfig, CollectorService, FailurePolicy, GeneratorError, GeneratorTransport,
-    NormalizedEvent, ReviewPolicy, StoredVerdict, VerdictStore, app_with_transport,
+    CollectorConfig, CollectorService, ExtAuthzService, FailurePolicy, GeneratorError,
+    GeneratorTransport, InMemoryVerdictStore, MessageFragment, NormalizedEvent, Normalizer,
+    ReviewPolicy, SessionSnapshot, SessionStore, SessionUpdate, StoreError, StoredVerdict,
+    VerdictStore, app_with_transport,
 };
 use withhuman_contracts::{
-    decisions::{CausalStart, Decision, DecisionResponse},
-    events::EventResponse,
+    decisions::{CausalStart, Decision, DecisionResponse, EnforcementMode},
+    events::{EventResponse, SessionCursor, SidePending},
+    ext_authz::{AttributeContext, Authorization, CheckRequest, attribute_context},
 };
 
 #[tokio::test]
@@ -151,21 +154,191 @@ async fn retains_mcp_verdict_but_leaves_enforcement_to_ext_authz() {
             .is_empty()
     );
     assert_eq!(
-        verdicts.get("mcp-call-1").unwrap().decision.decision,
+        verdicts
+            .get("mcp-call-1")
+            .await
+            .unwrap()
+            .unwrap()
+            .decision
+            .decision,
         Decision::Deny
     );
 }
 
-#[test]
-fn evicts_the_oldest_verdict_at_capacity() {
-    let verdicts = VerdictStore::new(2);
-    verdicts.insert("one".to_owned(), stored(Decision::Allow, ""));
-    verdicts.insert("two".to_owned(), stored(Decision::Deny, "two"));
-    verdicts.insert("three".to_owned(), stored(Decision::Review, "three"));
+#[tokio::test]
+async fn evicts_the_oldest_verdict_at_capacity() {
+    let verdicts = InMemoryVerdictStore::new(2);
+    for (id, decision, reason) in [
+        ("one", Decision::Allow, ""),
+        ("two", Decision::Deny, "two"),
+        ("three", Decision::Review, "three"),
+    ] {
+        verdicts
+            .insert(id.to_owned(), stored(decision, reason))
+            .await
+            .unwrap();
+    }
 
-    assert!(verdicts.get("one").is_none());
-    assert!(verdicts.get("two").is_some());
-    assert!(verdicts.get("three").is_some());
+    assert!(verdicts.get("one").await.unwrap().is_none());
+    assert!(verdicts.get("two").await.unwrap().is_some());
+    assert!(verdicts.get("three").await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn applies_the_failure_policy_when_the_session_store_fails() {
+    for (policy, denied) in [(FailurePolicy::Closed, true), (FailurePolicy::Open, false)] {
+        let config = CollectorConfig {
+            failure_policy: policy,
+            ..Default::default()
+        };
+        let generator = Arc::new(RecordingGenerator::allow());
+        let mut service = CollectorService::new(config, generator.clone());
+        service.normalizer = Normalizer::new(UnavailableSessions);
+        let (status, body) = response_json(
+            app_with_transport(service)
+                .oneshot(pre_tool_request("Read", "tool-1"))
+                .await
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            body["hookSpecificOutput"]["permissionDecision"] == "deny",
+            denied
+        );
+        assert!(generator.events.lock().unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn reports_session_store_failures_on_regular_events_as_bad_gateway() {
+    let mut service = CollectorService::new(
+        CollectorConfig::default(),
+        Arc::new(RecordingGenerator::allow()),
+    );
+    service.normalizer = Normalizer::new(UnavailableSessions);
+    let app = app_with_transport(service);
+
+    for request in [
+        json_request(
+            "/v1/hooks/UserPromptSubmit",
+            json!({"session_id":"s1","prompt":"hi"}),
+        ),
+        json_request(
+            "/v1/hooks/MessageDisplay",
+            json!({"session_id":"s1","message_id":"m1","delta":"x","final":false}),
+        ),
+    ] {
+        let (status, body) = response_json(app.clone().oneshot(request).await.unwrap()).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(body["error"], "session_store_unavailable");
+    }
+}
+
+#[tokio::test]
+async fn keeps_a_hook_decision_when_its_verdict_cannot_be_stored() {
+    let config = CollectorConfig {
+        failure_policy: FailurePolicy::Open,
+        ..Default::default()
+    };
+    let mut service = CollectorService::new(
+        config,
+        Arc::new(RecordingGenerator::decision(Decision::Deny, "blocked")),
+    );
+    service.verdicts = Arc::new(UnavailableVerdicts);
+    let (_, body) = response_json(
+        app_with_transport(service)
+            .oneshot(pre_tool_request("Read", "tool-1"))
+            .await
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(body["hookSpecificOutput"]["permissionDecision"], "deny");
+    assert_eq!(
+        body["hookSpecificOutput"]["permissionDecisionReason"],
+        "blocked"
+    );
+}
+
+/// With Redis configured but unreachable, Hooks and extAuthz answer by policy within budget.
+#[tokio::test]
+async fn unreachable_redis_falls_back_to_failure_policies() {
+    let config = CollectorConfig {
+        failure_policy: FailurePolicy::Closed,
+        redis_url: Some("redis://127.0.0.1:1".to_owned()),
+        ..Default::default()
+    };
+    let service =
+        CollectorService::from_config(config, Arc::new(RecordingGenerator::allow())).unwrap();
+    let ext_authz = ExtAuthzService::new(service.verdicts.clone(), EnforcementMode::Enforce);
+
+    let (_, body) = tokio::time::timeout(
+        Duration::from_secs(10),
+        app_with_transport(service).oneshot(pre_tool_request("Read", "tool-1")),
+    )
+    .await
+    .expect("PreToolUse must answer while Redis is down")
+    .map(response_json)
+    .unwrap()
+    .await;
+    assert_eq!(body["hookSpecificOutput"]["permissionDecision"], "deny");
+
+    let body = json!({
+        "jsonrpc":"2.0","id":1,"method":"tools/call",
+        "params":{"name":"write_file","arguments":{},"_meta":{"claudecode/toolUseId":"tool-1"}}
+    });
+    let check = CheckRequest {
+        attributes: Some(AttributeContext {
+            request: Some(attribute_context::Request {
+                http: Some(attribute_context::HttpRequest {
+                    raw_body: serde_json::to_vec(&body).unwrap(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+    };
+    let response = tokio::time::timeout(
+        Duration::from_secs(10),
+        Authorization::check(&ext_authz, tonic::Request::new(check)),
+    )
+    .await
+    .expect("extAuthz must answer while Redis is down")
+    .unwrap()
+    .into_inner();
+    assert_eq!(response.status.unwrap().code, 7);
+}
+
+#[tokio::test]
+async fn applies_failure_policies_when_the_generator_cursor_is_unreadable() {
+    let closed = CollectorConfig {
+        failure_policy: FailurePolicy::Closed,
+        ..Default::default()
+    };
+    let (_, body) = response_json(
+        test_app(closed, Arc::new(NoCursorGenerator))
+            .oneshot(pre_tool_request("Read", "tool-1"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(body["hookSpecificOutput"]["permissionDecision"], "deny");
+
+    let (status, body) = response_json(
+        test_app(CollectorConfig::default(), Arc::new(NoCursorGenerator))
+            .oneshot(json_request(
+                "/v1/hooks/UserPromptSubmit",
+                json!({"session_id":"s1","prompt":"hi"}),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    assert_eq!(body["error"], "generator_unavailable");
 }
 
 async fn pre_tool_response(
@@ -303,5 +476,52 @@ struct NeverGenerator;
 impl GeneratorTransport for NeverGenerator {
     async fn send(&self, _event: NormalizedEvent) -> Result<EventResponse, GeneratorError> {
         std::future::pending().await
+    }
+}
+
+struct UnavailableSessions;
+
+#[async_trait]
+impl SessionStore for UnavailableSessions {
+    async fn apply_event(&self, _: &str, _: SessionUpdate) -> Result<SessionSnapshot, StoreError> {
+        Err(StoreError::Unavailable("down".to_owned()))
+    }
+
+    async fn seed(&self, _: &str, _: &SessionCursor) -> Result<(), StoreError> {
+        Err(StoreError::Unavailable("down".to_owned()))
+    }
+
+    async fn append_fragment(&self, _: &str, _: MessageFragment) -> Result<(), StoreError> {
+        Err(StoreError::Unavailable("down".to_owned()))
+    }
+
+    async fn set_side_pending(&self, _: &str, _: SidePending) -> Result<(), StoreError> {
+        Err(StoreError::Unavailable("down".to_owned()))
+    }
+}
+
+struct UnavailableVerdicts;
+
+#[async_trait]
+impl VerdictStore for UnavailableVerdicts {
+    async fn insert(&self, _: String, _: StoredVerdict) -> Result<(), StoreError> {
+        Err(StoreError::Unavailable("down".to_owned()))
+    }
+
+    async fn get(&self, _: &str) -> Result<Option<StoredVerdict>, StoreError> {
+        Err(StoreError::Unavailable("down".to_owned()))
+    }
+}
+
+struct NoCursorGenerator;
+
+#[async_trait]
+impl GeneratorTransport for NoCursorGenerator {
+    async fn send(&self, _event: NormalizedEvent) -> Result<EventResponse, GeneratorError> {
+        Ok(event_response(Some(decision(Decision::Allow, ""))))
+    }
+
+    async fn session_cursor(&self, _session_id: &str) -> Result<SessionCursor, GeneratorError> {
+        Err(GeneratorError::Unavailable("offline".to_owned()))
     }
 }
