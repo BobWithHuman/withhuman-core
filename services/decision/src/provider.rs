@@ -87,7 +87,8 @@ impl DecisionProvider for MockDecisionProvider {
 }
 
 /// Traces the Call's cause through Jev and denies it when one of the traced chains of events
-/// departs from the user's intents by more than the configured threshold.
+/// departs from the user's intents by more than the configured threshold, or when Jev finds
+/// its cause in neither the latest prompt nor a tool result (`none`).
 ///
 /// When tracing fails, the Call gets the Collector's failure policy (an error), or REVIEW when
 /// an earlier SubGraph of the Call's agent holds hidden content or a sensitive value. Jev sees prompts only through the
@@ -373,6 +374,17 @@ impl DecisionProvider for JevDecisionProvider {
         // The agent sees the reason, so it names no score, intent or path it could learn to
         // avoid; those stay with the Call's trace.
         let (decision, rule, reason) = match outcome.judged_score {
+            // A Call that follows from neither the prompt nor a tool result is turned back
+            // whatever its intent score.
+            _ if outcome.acted_alone() => (
+                Decision::Deny,
+                "cause::none",
+                format!(
+                    "WithHuman이 사용자 요청이나 앞선 도구 결과와 이어지지 않는 행동으로 판단해 \
+                     차단했습니다. (세션 {}, 호출 {})",
+                    request.session_id, request.call_seq
+                ),
+            ),
             Some(score) if 1.0 - score > self.threshold => (
                 Decision::Deny,
                 "intent::mismatch",
