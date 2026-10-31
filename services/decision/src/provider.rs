@@ -313,6 +313,8 @@ impl DecisionProvider for JevDecisionProvider {
         trace_json["intent_source"] = intents.source.into();
         trace_json["jev_ms"] = serde_json::json!({"judge": judge_ms, "paragraph": paragraph_ms});
         trace_json["jev"] = exchanges.into();
+        let (deny_at, review_at) = self.thresholds.for_link(outcome.link);
+        trace_json["thresholds"] = serde_json::json!({"deny": deny_at, "review": review_at});
         let record = TraceRecord {
             subgraph: graph.call.subgraph,
             parent: outcome.primary().key.clone(),
@@ -371,7 +373,6 @@ impl DecisionProvider for JevDecisionProvider {
         });
         // The agent sees the reason, so it names no score, intent or path it could learn to
         // avoid; those stay with the Call's trace.
-        let (deny_at, review_at) = self.thresholds.for_link(outcome.link);
         let (decision, rule, reason) = match &outcome.deviation {
             Some(deviation) if deviation.score >= deny_at => (
                 Decision::Deny,

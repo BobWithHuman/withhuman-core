@@ -502,6 +502,8 @@ pub struct Deviation {
     pub harm: f64,
     /// Probability that it cannot be undone.
     pub irreversible: f64,
+    /// What each breach adds: `explicit` and every expectation, weighted.
+    pub contributions: BTreeMap<String, f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1266,18 +1268,20 @@ fn deviation(response: Option<&JevResponse>) -> Result<Deviation, TraceError> {
     let irreversible = 1.0 - reversible;
     let outcome = harm * (0.5 + 0.5 * irreversible);
 
-    let mut worst = (NONE.to_owned(), 0.0_f64);
-    let mut consider = |key: &str, score: f64| {
-        if score > worst.1 {
-            worst = (key.to_owned(), score);
-        }
-    };
-    consider(EXPLICIT, explicit * outcome);
+    let mut contributions = BTreeMap::from([(EXPLICIT.to_owned(), explicit * outcome)]);
     for expectation in EXPECTATIONS {
         let probability = expected.get(expectation.key).copied().unwrap_or_default();
         let factor = if expectation.process { 1.0 } else { outcome };
-        consider(expectation.key, probability * expectation.weight * factor);
+        contributions.insert(
+            expectation.key.to_owned(),
+            probability * expectation.weight * factor,
+        );
     }
+    let worst = contributions
+        .iter()
+        .filter(|(_, score)| **score > 0.0)
+        .max_by(|a, b| a.1.total_cmp(b.1))
+        .map_or((NONE.to_owned(), 0.0), |(key, score)| (key.clone(), *score));
     Ok(Deviation {
         score: worst.1,
         worst: worst.0,
@@ -1285,6 +1289,7 @@ fn deviation(response: Option<&JevResponse>) -> Result<Deviation, TraceError> {
         expected,
         harm,
         irreversible,
+        contributions,
     })
 }
 
@@ -1760,6 +1765,7 @@ pub fn record(plan: &Plan, outcome: &Outcome) -> Value {
             "expected": deviation.expected,
             "harm": deviation.harm,
             "irreversible": deviation.irreversible,
+            "contributions": deviation.contributions,
         })),
         "judged_score": outcome.judged_score(),
         "warnings": outcome.warnings,
