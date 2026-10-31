@@ -19,7 +19,7 @@ async fn main() -> io::Result<()> {
             Arc::new(HttpJevClient::new(&jev.url, jev.api_key.clone()).map_err(io::Error::other)?),
             config.trace.clone(),
             jev.timeout,
-            config.intent_block_threshold,
+            config.thresholds,
         )),
         None => Arc::new(MockDecisionProvider::new(&config)),
     };

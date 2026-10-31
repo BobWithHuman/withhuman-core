@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use withhuman_contracts::decisions::{Decision, DecisionResponse};
 use withhuman_decision::{
     DecisionConfig, DecisionService, MockDecisionProvider, Neo4jDecisionRepository,
-    RuntimeEnvironment, app,
+    RuntimeEnvironment, app, trace::Thresholds,
 };
 
 #[tokio::test]
@@ -50,7 +50,7 @@ async fn verifies_graph_version_and_persists_mock_verdict_over_real_http() {
         neo4j_password,
         neo4j_database: "neo4j".into(),
         jev: None,
-        intent_block_threshold: 0.5,
+        thresholds: Thresholds::default(),
         trace: Default::default(),
     };
     let repository = Neo4jDecisionRepository::connect(&config).await.unwrap();

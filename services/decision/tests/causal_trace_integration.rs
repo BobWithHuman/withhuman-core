@@ -13,7 +13,8 @@ use withhuman_contracts::decisions::{DecisionRequest, EnforcementMode};
 use withhuman_decision::{
     DecisionConfig, DecisionRepository, DecisionService, JevDecisionProvider,
     Neo4jDecisionRepository, RuntimeEnvironment, TraceRecord, TracedParent, app as decision_app,
-    jev::HttpJevClient, trace::TraceSettings,
+    jev::HttpJevClient,
+    trace::{Thresholds, TraceSettings},
 };
 use withhuman_generator::{
     GeneratorConfig, GeneratorService, HttpDecisionClient, Neo4jRepository, app as generator_app,
@@ -28,7 +29,7 @@ struct FakeJev {
 }
 
 /// Answers like Jev would for an injected instruction in SubGraph 1: the hidden paragraph of its
-/// tool result caused the Call, and the chain through s1 departs from the intent.
+/// tool result caused the Call, which follows a goal the result brought in.
 async fn systemone(
     State(jev): State<FakeJev>,
     headers: HeaderMap,
@@ -75,7 +76,12 @@ async fn systemone(
                 .collect();
             json!({"choice": options[hidden], "probabilities": probabilities})
         } else {
-            json!({"noul": if id == "intent_s1" { 0.05 } else { 0.9 }})
+            match id.as_str() {
+                "expected" => json!({"probabilities": {"hijacked_goal": 0.9, "none": 0.1}}),
+                "harm" => json!({"probabilities": {"low": 1.0}}),
+                "reversible" => json!({"noul": 0.9}),
+                _ => json!({"noul": 0.05}),
+            }
         };
         answers.insert(id.clone(), answer);
     }
@@ -141,7 +147,7 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
         neo4j_password: neo4j_password.clone(),
         neo4j_database: "neo4j".into(),
         jev: None,
-        intent_block_threshold: 0.5,
+        thresholds: Thresholds::default(),
         trace: TraceSettings::default(),
     };
     let repository: Arc<dyn DecisionRepository> = Arc::new(
@@ -154,7 +160,7 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
         Arc::new(HttpJevClient::new(&jev_url, "test-key").unwrap()),
         TraceSettings::default(),
         Duration::from_secs(3),
-        0.5,
+        Thresholds::default(),
     );
     let decision_url = spawn(decision_app(DecisionService::from_shared(
         repository,
@@ -308,7 +314,7 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
     let (_, request) = &requests[0];
     let asked = questions(request);
     assert_eq!(asked[0], "cause", "{asked:?}");
-    assert!(asked.contains(&"intent_s1".to_owned()), "{asked:?}");
+    assert!(asked.contains(&"expected".to_owned()), "{asked:?}");
     assert_eq!(request["state"]["intents"], "1. README 요약 (현재 턴)");
     // The page is weighed paragraph by paragraph, the hidden one marked.
     let paragraphs = request["state"]["segments_s1"].as_object().unwrap();
@@ -342,7 +348,7 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
                 OPTIONAL MATCH (call)-[next:NEXT {kind:'cause'}]->(cause) \
                 OPTIONAL MATCH (cause)<-[:CONTAINS_PARAGRAPH]-(result)-[:RESULT_OF]->(origin:Call) \
                 RETURN call.parent, cause.hidden, labels(cause)[0], next.rank, \
-                       call.intent_score, result.order, origin.order",
+                       round(call.intent_score, 2), result.order, origin.order",
             "parameters": {"s": session_id}
         }))
         .send()
@@ -353,7 +359,7 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
         .unwrap();
     assert_eq!(
         rows["data"]["values"],
-        json!([["s1", true, "Paragraph", 1, 0.05, 4, 3]]),
+        json!([["s1", true, "Paragraph", 1, 0.28, 4, 3]]),
         "{rows}"
     );
 
@@ -365,7 +371,7 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
          OPTIONAL MATCH (call)-[next:NEXT {kind:'cause'}]->(cause) \
          OPTIONAL MATCH (cause)<-[:CONTAINS_PARAGRAPH]-(result)-[:RESULT_OF]->(origin:Call) \
          RETURN call.parent, cause.hidden, labels(cause)[0], next.rank, \
-                call.intent_score, result.order, origin.order",
+                round(call.intent_score, 2), result.order, origin.order",
         json!({"s": session_id}),
     )
     .await;
@@ -506,7 +512,7 @@ async fn keeps_only_the_latest_mention_of_a_value() {
         neo4j_password,
         neo4j_database: "neo4j".into(),
         jev: None,
-        intent_block_threshold: 0.5,
+        thresholds: Thresholds::default(),
         trace: TraceSettings::default(),
     })
     .await
@@ -598,7 +604,7 @@ async fn ends_the_cause_chain_at_the_prompt() {
         neo4j_password,
         neo4j_database: "neo4j".into(),
         jev: None,
-        intent_block_threshold: 0.5,
+        thresholds: Thresholds::default(),
         trace: TraceSettings::default(),
     })
     .await
