@@ -40,7 +40,9 @@
   .error { color: var(--deny); }
   main { flex: 1; display: flex; min-height: 0; }
   #graph { flex: 1; min-width: 0; }
-  aside { width: 400px; max-width: 42vw; overflow: auto; background: var(--panel); border-left: 1px solid var(--line); padding: 14px; }
+  aside { width: 460px; flex: none; overflow: auto; background: var(--panel); padding: 14px; }
+  #splitter { flex: none; width: 5px; cursor: col-resize; background: var(--line); touch-action: none; }
+  #splitter:hover, #splitter.dragging { background: var(--accent); }
   aside h2 { font-size: 15px; margin: 0 0 8px; }
   aside h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 16px 0 6px; }
   .empty { color: var(--muted); }
@@ -64,9 +66,36 @@
   details { border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; margin: 6px 0; }
   summary { cursor: pointer; font-weight: 600; }
   details h4 { font-size: 11px; color: var(--muted); margin: 10px 0 4px; }
+  .card { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 10px 0; }
+  .card > h3:first-child { margin-top: 0; }
+  .verdict { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .verdict .badge { font-size: 14px; padding: 3px 10px; }
+  .verdict strong { font-size: 14px; }
+  .callline { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--bg);
+              border-radius: 6px; padding: 6px 8px; margin: 8px 0 4px; word-break: break-word; }
+  .muted { color: var(--muted); }
+  .facts { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; margin: 6px 0; }
+  .facts dt { color: var(--muted); } .facts dd { margin: 0; }
+  .gauge { position: relative; margin: 22px 0 4px; }
+  .gauge .zones { display: flex; height: 10px; border-radius: 5px; overflow: hidden; }
+  .gauge .zones i { display: block; height: 100%; opacity: .75; }
+  .gauge .marker { position: absolute; top: -20px; transform: translateX(-50%); font-size: 11px; font-weight: 700;
+                   white-space: nowrap; }
+  .gauge .marker::after { content: ''; display: block; width: 2px; height: 22px; background: var(--text); margin: 1px auto 0; }
+  table.breach td { padding: 4px 6px; }
+  table.breach td:first-child { width: auto; white-space: normal; color: var(--text); }
+  table.breach tr.worst td { font-weight: 600; }
+  table.breach tr.zero td { color: var(--muted); }
+  .num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .goto { color: var(--accent); cursor: pointer; }
+  .goto:hover { text-decoration: underline; }
+  .preview { color: var(--muted); font-size: 12px; margin: 2px 0 6px; white-space: pre-wrap; word-break: break-word; }
+  details.section { border: 0; border-top: 1px solid var(--line); border-radius: 0; padding: 8px 0 4px; margin: 0; }
+  details.section > summary { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
   @media (max-width: 760px) {
     main { flex-direction: column; }
-    aside { width: auto; max-width: none; height: 45vh; border-left: 0; border-top: 1px solid var(--line); }
+    #splitter { display: none; }
+    aside { width: auto !important; height: 45vh; border-top: 1px solid var(--line); }
   }
 </style>
 </head>
@@ -94,6 +123,7 @@
 </header>
 <main>
   <div id="graph"></div>
+  <div id="splitter" role="separator" aria-orientation="vertical" aria-label="패널 폭 조절"></div>
   <aside id="panel"><p class="empty">노드를 누르면 여기에 속성이 나옵니다. Call을 누르면 그 Call의 원인선이 강조됩니다.</p></aside>
 </main>
 <script>
@@ -412,7 +442,8 @@ function selectEdge(edge) {
 
 const row = (key, value) => {
   const parsed = /_json$/.test(key) ? parse(value) : null;
-  const shown = parsed !== null ? `<pre>${escape(JSON.stringify(parsed, null, 2))}</pre>`
+  const shown = parsed !== null
+    ? `<details><summary class="muted">JSON · ${String(value).length}자</summary><pre>${escape(JSON.stringify(parsed, null, 2))}</pre></details>`
     : /(_at|^observed_at)$/.test(key) && typeof value === 'number' ? `${value} <span class="empty">(${time(value)})</span>`
     : typeof value === 'object' ? `<pre>${escape(JSON.stringify(value, null, 2))}</pre>`
     : escape(String(value));
@@ -450,6 +481,129 @@ function resultHtml(question, answer, trace, highlight) {
     return `<tr><td>${escape(name)}${tag}</td><td>${bar(p, cls)}</td></tr>`;
   }).join('');
   return rows ? `<table class="bars">${rows}</table>` : `<pre>${escape(JSON.stringify(answer, null, 2))}</pre>`;
+}
+
+
+const RULE_TEXT = {
+  'intent::mismatch': '의도에서 벗어난 행동으로 차단',
+  'intent::review': '의도에서 벗어났을 수 있어 사용자 확인',
+  'intent::match': '의도 안의 행동',
+  'intent::unknown': '의도가 기록되지 않아 판정 없음',
+  'trace::unresolved': '원인 추적 실패',
+  'trace::no_subgraph': '추적할 SubGraph 없음',
+  'cause::none': '원인 없음으로 차단 (이전 규칙)',
+};
+const LINK_TEXT = { request: '사용자 요청의 다음 단계', segment: '도구 결과의 내용', none: '요청·결과와 무관' };
+const BREACH_TEXT = {
+  none: '위반 없음',
+  explicit: '사용자가 말한 목표·조건을 어김',
+  unrelated_change: '요청과 관계없는 파일·저장소를 바꿈',
+  exfiltration: '사용자 데이터·비밀값을 외부로 보냄',
+  unconfirmed_irreversible: '되돌릴 수 없는 작업을 묻지 않고 함',
+  security_change: '권한·인증·보안 설정을 바꿈',
+  out_of_scope_access: '요청 범위 밖 시스템·계정에 접근',
+  hijacked_goal: '도구 결과가 끌어들인 새 목표를 따름',
+};
+const PROCESS = new Set(['out_of_scope_access', 'hijacked_goal']);
+// Defaults of the Decision Module, for traces stored before they were recorded.
+const THRESHOLDS = { request: { deny: 0.3, review: 0.15 }, segment: { deny: 0.15, review: 0.08 }, none: { deny: 0.15, review: 0.08 } };
+const harmText = h => h >= 0.7 ? '큼' : h >= 0.2 ? '작음' : '없음';
+const goto = (seq, text) => `<span class="goto" data-seq="${seq}">${escape(text)}</span>`;
+
+// The cause answer, by what the Call can follow from.
+function causeShares(trace) {
+  const answer = (trace.jev || []).find(x => x.stage === 'cause')?.response?.answers?.cause;
+  const probabilities = answer?.probabilities || {};
+  const shares = { request: 0, segment: 0, none: 0 };
+  for (const [option, p] of Object.entries(probabilities)) {
+    if (/^g\d+/.test(option)) shares.segment += p;
+    else if (option === 'none') shares.none += p;
+    else shares.request += p;
+  }
+  return Object.keys(probabilities).length ? shares : null;
+}
+
+// What the Call follows from: its link, the three shares, and the results it was traced to.
+function causeHtml(trace) {
+  const link = trace.link;
+  const shares = causeShares(trace);
+  const rows = shares ? ['request', 'segment', 'none'].map(key =>
+    `<tr><td>${escape(LINK_TEXT[key])}${key === link ? '<span class="tag">선택</span>' : ''}</td><td>${bar(shares[key], key === link ? 'chosen' : '')}</td></tr>`).join('') : '';
+  const segments = (trace.segments || []).map(x => `<div>${goto(x.seq, `${nodeName(x.seq)}${x.paragraph != null ? ` ¶${x.paragraph}` : ''}`)}
+      <span class="muted">· p=${percent(x.probability)}</span></div>
+      <div class="preview" data-preview="${x.seq}:${x.paragraph ?? ''}"></div>`).join('');
+  return `<div class="card"><h3>원인</h3>
+    <dl class="facts">
+      <dt>연결</dt><dd><strong>${escape(LINK_TEXT[link] || link || '–')}</strong>${trace.picked === false ? ' <span class="muted">(Jev 답 없음 · 가장 가까운 SubGraph로 대체)</span>' : ''}</dd>
+      <dt>부모</dt><dd>${escape(subgraphName(trace.parent || ''))}</dd>
+    </dl>
+    ${rows ? `<table class="bars">${rows}</table>` : ''}
+    ${segments ? `<h4 class="muted">원인이 된 도구 결과</h4>${segments}` : ''}</div>`;
+}
+
+// The deviation on a gauge split where the Call would be reviewed and denied, and what each
+// breach added.
+function deviationHtml(trace) {
+  const d = trace.deviation;
+  if (!d) return '';
+  const t = trace.thresholds || THRESHOLDS[trace.link] || THRESHOLDS.request;
+  const zones = [[t.review, '--allow'], [t.deny - t.review, '--review'], [1 - t.deny, '--deny']]
+    .map(([w, color]) => `<i style="width:${Math.max(0, w) * 100}%;background:var(${color})"></i>`).join('');
+  const contributions = d.contributions || { explicit: null, ...Object.fromEntries(Object.keys(d.expected || {}).map(k => [k, null])) };
+  const probability = key => key === 'explicit' ? d.explicit : d.expected?.[key];
+  const rows = Object.entries(contributions)
+    .filter(([key, score]) => key !== 'none' && (score > 0.001 || probability(key) > 0.05))
+    .sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))
+    .map(([key, score]) => `<tr class="${key === d.worst ? 'worst' : score > 0.001 ? '' : 'zero'}">
+      <td>${escape(BREACH_TEXT[key] || key)}${PROCESS.has(key) ? ' <span class="muted">(과정형)</span>' : ''}${key === d.worst ? '<span class="tag">최대</span>' : ''}</td>
+      <td class="num">${probability(key) == null ? '–' : percent(probability(key)) || '0'}</td><td class="num">${score == null ? '–' : percent(score) || '0'}</td></tr>`).join('');
+  return `<div class="card"><h3>이탈 점수</h3>
+    <div class="gauge"><div class="marker" style="left:${Math.min(1, d.score) * 100}%">${percent(d.score) || '0'}</div><div class="zones">${zones}</div></div>
+    <p class="muted">허용 &lt; ${percent(t.review)} ≤ 확인 &lt; ${percent(t.deny)} ≤ 차단
+      · ${escape(LINK_TEXT[trace.link] || '')}에 이어진 Call의 기준${trace.thresholds ? '' : ' (기본값)'}</p>
+    ${rows ? `<table class="breach"><tr><td class="muted">위반</td><td class="num muted">확률</td><td class="num muted">점수</td></tr>${rows}</table>`
+      : '<p>어긴 것이 없습니다.</p>'}
+    <dl class="facts">
+      <dt>피해</dt><dd>${harmText(d.harm)} <span class="muted">(${percent(d.harm) || '0'})</span></dd>
+      <dt>되돌릴 수 없음</dt><dd>${percent(d.irreversible) || '0'}</dd>
+    </dl></div>`;
+}
+
+// A Call's verdict at a glance: the decision, why, what Call it was, and the reason the agent saw.
+function verdictHtml(props, trace) {
+  const payload = parse(props.payload_json) || {};
+  const call = `${payload.tool_name || ''}${model.bySeq.get(props.seq)?.summary?.brief ? ': ' + model.bySeq.get(props.seq).summary.brief : ''}`;
+  const score = trace?.deviation ? `<span class="muted">이탈 ${percent(trace.deviation.score) || '0'}</span>`
+    : props.intent_score != null ? `<span class="muted">score ${percent(props.intent_score)}</span>` : '';
+  return `<div class="card">
+    <div class="verdict"><span class="badge" style="background:${css(DECISION_COLOR[props.decision] || '--other')}">${escape(props.decision)}</span>
+      <strong>${escape(RULE_TEXT[props.decision_rule] || props.decision_rule || '')}</strong> ${score}</div>
+    <div class="callline">${escape(call)}</div>
+    ${props.decision_reason ? `<p class="muted">${escape(props.decision_reason)}</p>` : ''}
+    <p class="muted">${escape(props.decision_rule || '')}${trace?.jev_ms ? ` · Jev ${trace.jev_ms.judge ?? '–'}ms` : ''}</p></div>`;
+}
+
+const section = (title, body, open = false) => body
+  ? `<details class="section"${open ? ' open' : ''}><summary>${escape(title)}</summary>${body}</details>` : '';
+
+// Fills each cause's preview with its paragraph, or the start of its result.
+async function fillPreviews(seq) {
+  const wanted = [...document.querySelectorAll('[data-preview]')];
+  const bySeq = new Map();
+  for (const el of wanted) {
+    const [result] = el.dataset.preview.split(':');
+    if (!bySeq.has(result)) bySeq.set(result, api(`/api/node?session=${encodeURIComponent(current)}&seq=${result}`).catch(() => null));
+  }
+  for (const el of wanted) {
+    const [result, index] = el.dataset.preview.split(':');
+    const detail = await bySeq.get(result);
+    if (shownSeq !== seq) return;
+    const paragraph = index !== '' ? detail?.paragraphs?.find(p => p.index === Number(index)) : null;
+    const payload = parse(detail?.props?.payload_json) || {};
+    const text = paragraph ? `${paragraph.hidden ? '[숨김] ' : ''}${paragraph.text}`
+      : JSON.stringify(payload.tool_response ?? payload.error ?? '');
+    el.textContent = clip(text, 240);
+  }
 }
 
 // Each Jev request as it was sent, its state and questions, with its answers.
@@ -513,7 +667,8 @@ async function showEdge(callSeq, targetSeq) {
   $('panel').innerHTML = `<h2>원인 엣지</h2>
     <p>${escape(nodeName(callSeq))}<br>→ ${escape(nodeName(targetSeq))}${indexes.length ? ` ¶${indexes.join(', ¶')}` : ''}${cause && !indexes.length ? ` <span class="empty">p=${percent(cause.props.probability)}</span>` : ''}</p>
     ${indexes.length ? '<h3>원인 문단</h3><div id="edge-paragraphs"><p class="empty">불러오는 중…</p></div>' : ''}
-    ${trace ? jevHtml(trace, targetSeq) : '<p class="empty">판정 기록이 없습니다.</p>'}`;
+    ${trace ? causeHtml(trace) + deviationHtml(trace) + section('Jev 원본 (state · question · answer)', jevHtml(trace, targetSeq), true)
+      : '<p class="empty">판정 기록이 없습니다.</p>'}`;
   if (!indexes.length) return;
   const edge = `${callSeq}-${targetSeq}`;
   shownEdge = edge;
@@ -539,17 +694,21 @@ async function show(seq, highlight = null) {
   shownEdge = null;
   const props = node.props;
   const trace = parse(props.trace_json);
+  const isCall = Boolean(props.decision || props.trace_error);
+  const head = `<h2>#${props.seq} ${escape(node.kind)}</h2>`;
   const decision = props.decision
-    ? `<p><span class="badge" style="background:${css(DECISION_COLOR[props.decision] || '--other')}">${escape(props.decision)}</span> ${escape(props.decision_rule || '')} ${trace?.deviation ? `· 이탈 ${percent(trace.deviation.score)} (${escape(trace.deviation.worst)}) · 연결 ${escape(trace.link || '')}`
-         : props.intent_score != null ? '· score ' + percent(props.intent_score) : ''}</p>
-       ${props.decision_reason ? `<p>${escape(props.decision_reason)}</p>` : ''}
-       ${pathHtml(seq)}
-       ${trace && !model.causes.some(c => c.from === seq)
-         ? `<p class="empty">이 Call에는 원인 엣지가 없어 Jev 내용을 여기에 보여 줍니다.</p>${jevHtml(trace, highlight)}` : ''}`
+    ? `${verdictHtml(props, trace)}${trace ? causeHtml(trace) + deviationHtml(trace) : ''}
+       ${pathHtml(seq) ? `<div class="card">${pathHtml(seq)}</div>` : ''}
+       ${trace ? section(`사용자 의도`, trace.intents ? `<pre>${escape(trace.intents)}</pre>` : '') : ''}
+       ${trace ? section('이번 턴 흐름', trace.turn ? `<pre>${escape(trace.turn)}</pre>` : '') : ''}
+       ${trace ? section('Jev 원본 (state · question · answer)', jevHtml(trace, highlight)) : ''}`
     : props.trace_error ? `<p class="error">판정 실패: ${escape(props.trace_error)}</p>` : '';
-  const head = `<h2>#${props.seq} ${escape(node.kind)}</h2>${decision}`;
   const panel = $('panel');
-  panel.innerHTML = `${head}<h3>속성</h3>${table(props)}<h3>문단 · 토큰</h3><p class="empty">불러오는 중…</p>`;
+  const paint = (detail, extra) => {
+    const shownProps = detail?.props || props;
+    panel.innerHTML = `${head}${decision}${isCall ? section('속성', table(shownProps)) : `<h3>속성</h3>${table(shownProps)}`}${extra}`;
+  };
+  paint(null, '<p class="empty">문단 · 토큰 불러오는 중…</p>');
   try {
     const detail = await api(`/api/node?session=${encodeURIComponent(current)}&seq=${props.seq}`);
     if (shownSeq !== seq) return;
@@ -557,9 +716,13 @@ async function show(seq, highlight = null) {
     const paragraphs = (detail?.paragraphs || []).map(p => paragraphHtml(p, traced.get(p.index))).join('');
     const tokens = (detail?.tokens || []).map(t =>
       `<tr><td>${escape(t.kind)} · ${escape(t.slot)}</td><td>${escape(String(t.decoded ?? ''))} <span class="empty">${escape(t.category || '')}</span></td></tr>`).join('');
-    panel.innerHTML = `${head}<h3>속성</h3>${table(detail?.props || props)}
-      <h3>토큰 (${detail?.tokens?.length || 0})</h3>${tokens ? `<table>${tokens}</table>` : '<p class="empty">없음</p>'}
-      <h3>문단 (${detail?.paragraphs?.length || 0})${traced.size ? ` <span class="empty">· 원인 ${traced.size}개, 빨간 테두리</span>` : ''}</h3>${paragraphs || '<p class="empty">없음</p>'}`;
+    const tokenTitle = `토큰 (${detail?.tokens?.length || 0})`;
+    const paragraphTitle = `문단 (${detail?.paragraphs?.length || 0})${traced.size ? ` · 원인 ${traced.size}개` : ''}`;
+    paint(detail, isCall
+      ? section(tokenTitle, tokens ? `<table>${tokens}</table>` : '') + section(paragraphTitle, paragraphs)
+      : `<h3>${tokenTitle}</h3>${tokens ? `<table>${tokens}</table>` : '<p class="empty">없음</p>'}
+         <h3>${escape(paragraphTitle)}${traced.size ? ' <span class="empty">· 빨간 테두리</span>' : ''}</h3>${paragraphs || '<p class="empty">없음</p>'}`);
+    if (props.decision) fillPreviews(seq);
   } catch (error) {
     panel.insertAdjacentHTML('beforeend', `<p class="error">${escape(error.message)}</p>`);
   }
@@ -612,6 +775,36 @@ $('live').addEventListener('change', () => {
   clearInterval(liveTimer);
   if ($('live').checked) liveTimer = setInterval(() => loadGraph(true), 3000);
 });
+// A node named in the panel opens like a tap on it.
+$('panel').addEventListener('click', event => {
+  const target = event.target.closest('[data-seq]');
+  if (!target || !cy) return;
+  const seq = Number(target.dataset.seq);
+  const node = cy.$id(`n${seq}`);
+  if (node.length) { select(node); cy.animate({ center: { eles: node }, duration: 250 }); }
+  show(seq);
+});
+
+// The panel's width follows the splitter and is kept for the next visit.
+(() => {
+  const panel = $('panel'), splitter = $('splitter');
+  try { const saved = Number(localStorage.getItem('panelWidth')); if (saved) panel.style.width = `${saved}px`; } catch {}
+  splitter.addEventListener('pointerdown', event => {
+    splitter.setPointerCapture(event.pointerId);
+    splitter.classList.add('dragging');
+  });
+  splitter.addEventListener('pointermove', event => {
+    if (!splitter.classList.contains('dragging')) return;
+    const right = document.querySelector('main').getBoundingClientRect().right;
+    panel.style.width = `${Math.max(300, Math.min(right - event.clientX, innerWidth - 240))}px`;
+    cy?.resize();
+  });
+  splitter.addEventListener('pointerup', () => {
+    splitter.classList.remove('dragging');
+    try { localStorage.setItem('panelWidth', String(panel.offsetWidth)); } catch {}
+  });
+})();
+
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => lastData && render(lastData, true));
 
 loadSessions().then(session => { current = session; loadGraph(false); })
