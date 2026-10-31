@@ -466,12 +466,15 @@ fn falls_back_to_the_walked_parent_without_a_cause() {
     let (parents, judgements) = judge(&plan, Some(&response(&[("intent_s2", noul(0.9))]))).unwrap();
     assert_eq!(keys(&parents.chosen), ["s2"]);
     assert_eq!(parents.influence, BTreeMap::from([("s2".to_owned(), 1.0)]));
+    assert!(!parents.picked);
     assert!(judgements[0].segments.is_empty());
     assert_eq!(judgements[0].warnings.len(), 1);
 
     let unparented = self::plan(&graph(6), &members(), None, &TraceSettings::default());
     let (parents, judgements) = judge(&unparented, None).unwrap();
     assert_eq!(keys(&parents.chosen), ["none"]);
+    // Nothing to trace through is not the agent acting on its own.
+    assert!(!outcome(parents.clone(), judgements.clone()).acted_alone());
     assert_eq!(judgements[0].intent_score, None);
     assert!(judgements[0].warnings.is_empty());
 }
@@ -522,6 +525,8 @@ fn picks_the_parents_by_the_causes_they_offer() {
     // The Call is judged by the lowest score of its parents.
     let outcome = outcome(parents, judgements);
     assert_eq!(outcome.primary().key, "s2");
+    // `none` is a parent but not the most influential one.
+    assert!(outcome.picked && !outcome.acted_alone());
     assert_eq!(
         outcome.intent_scores,
         BTreeMap::from([("none".to_owned(), 0.2), ("s2".to_owned(), 0.9)])
@@ -558,13 +563,14 @@ fn reports_missing_answers() {
         )
         .is_err()
     );
-    // The parent `none` needs no score of s2.
-    let (parents, _) = judge(
+    // The parent `none` needs no score of s2, and Jev found the agent acting on its own.
+    let (parents, judgements) = judge(
         &plan,
         Some(&response(&[cause(), ("intent_none", noul(0.4))])),
     )
     .unwrap();
     assert_eq!(keys(&parents.chosen), ["none"]);
+    assert!(outcome(parents, judgements).acted_alone());
 }
 
 #[test]

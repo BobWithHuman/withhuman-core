@@ -17,7 +17,8 @@
 //!    every tool result, whose influence is at least half the top one is a parent or a cause.
 //!    Without a usable `cause` answer the Call's parent is the nearest SubGraph walking back
 //!    that holds a prompt or a tool result, or `none`.
-//! 4. The Call is judged by the lowest intent score of its parents.
+//! 4. The Call is judged by the lowest intent score of its parents. One whose most influential
+//!    cause Jev found to be `none` is denied whatever its score.
 //!
 //! Questions are in Korean (Jev 1.14), like the intents and paths they refer to. Jev sees a prompt only as
 //! the intent the agent stated for it, never the prompt's text.
@@ -321,6 +322,8 @@ pub struct Parents {
     pub influence: BTreeMap<String, f64>,
     /// The candidates reaching half the top influence, the most influential first.
     pub chosen: Vec<Parent>,
+    /// Jev picked them by the cause; otherwise the parent is the one walking back reaches.
+    pub picked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -356,6 +359,8 @@ pub struct Outcome {
     pub intent_scores: BTreeMap<String, f64>,
     /// The lowest of `intent_scores`; the Call is judged by it.
     pub judged_score: Option<f64>,
+    /// Jev picked the parents by the cause.
+    pub picked: bool,
     pub warnings: Vec<String>,
 }
 
@@ -363,6 +368,12 @@ impl Outcome {
     /// The most influential parent.
     pub fn primary(&self) -> &Candidate {
         &self.parents[0].candidate
+    }
+
+    /// Jev found the Call's cause in neither the prompt nor a tool result: the agent acted on
+    /// its own.
+    pub fn acted_alone(&self) -> bool {
+        self.picked && self.primary().key == NONE
     }
 }
 
@@ -906,6 +917,7 @@ pub fn judge(
     }
     let parents = Parents {
         influence,
+        picked: top > 0.0,
         chosen: chosen
             .iter()
             .map(|(index, total)| Parent {
@@ -1066,6 +1078,7 @@ pub fn outcome(parents: Parents, judgements: Vec<Judgement>) -> Outcome {
         segments,
         intent_scores,
         judged_score,
+        picked: parents.picked,
         warnings,
     }
 }
@@ -1348,6 +1361,7 @@ pub fn record(plan: &Plan, outcome: &Outcome) -> Value {
     json!({
         "candidates": plan.candidates.iter().map(|candidate| &candidate.key).collect::<Vec<_>>(),
         "parent": primary.key,
+        "picked": outcome.picked,
         "parents": outcome.parents.iter().map(|parent| json!({
             "key": parent.candidate.key,
             "influence": parent.influence,

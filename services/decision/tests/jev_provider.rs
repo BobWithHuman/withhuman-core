@@ -376,15 +376,15 @@ async fn falls_back_to_the_nearest_subgraph_when_no_cause_is_offered() {
     assert!(jev[0]["request"]["questions"]["intent_s1"].is_object());
 }
 
-#[tokio::test]
-async fn traces_the_call_to_the_cause_jev_picks() {
+/// A provider over a graph whose latest prompt is in SubGraph 0, with Jev picking `cause`.
+fn provider_picking(cause: &'static str) -> (JevDecisionProvider, Arc<Graph>, Arc<Jev>) {
     let graph = Arc::new(Graph {
         prompt: true,
         ..Graph::default()
     });
     let jev = Arc::new(Jev {
         intent_score: 0.9,
-        cause: Some("s0"),
+        cause: Some(cause),
         fail: false,
         asked: Mutex::default(),
         requests: Mutex::default(),
@@ -396,6 +396,12 @@ async fn traces_the_call_to_the_cause_jev_picks() {
         Duration::from_secs(3),
         0.5,
     );
+    (provider, graph, jev)
+}
+
+#[tokio::test]
+async fn traces_the_call_to_the_cause_jev_picks() {
+    let (provider, graph, jev) = provider_picking("s0");
     let response = provider
         .decide(&request(Some("빌드 고치기"), Some(4_000)))
         .await
@@ -418,4 +424,25 @@ async fn traces_the_call_to_the_cause_jev_picks() {
         .map(|parent| (parent.key.as_str(), parent.number, parent.probability))
         .collect();
     assert_eq!(parents, [("s0", Some(0), 1.0)]);
+}
+
+#[tokio::test]
+async fn denies_a_call_jev_traces_to_no_prompt_or_tool_result() {
+    let (provider, graph, _) = provider_picking("none");
+    let response = provider
+        .decide(&request(Some("빌드 고치기"), Some(4_000)))
+        .await
+        .unwrap();
+    // Denied although its chain serves the intent.
+    assert_eq!(response.decision, Decision::Deny);
+    assert_eq!(response.rule, "cause::none");
+    assert_eq!(response.start, CausalStart::Self_);
+    assert!(
+        !response.reason.contains("빌드 고치기"),
+        "{}",
+        response.reason
+    );
+    let traces = graph.traces.lock().unwrap();
+    assert_eq!(traces[0].parent, "none");
+    assert_eq!(traces[0].trace["picked"], true);
 }
