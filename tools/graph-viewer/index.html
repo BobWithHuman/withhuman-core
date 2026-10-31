@@ -438,11 +438,13 @@ function resultHtml(question, answer, trace, highlight) {
     const match = /^g(\d+)(?:p(\d+))?$/.exec(option);
     const seq = match ? Number(match[1]) : null;
     const paragraph = match?.[2] ?? '';
-    const name = question === 'parent' ? subgraphName(option)
-      : seq !== null ? `${nodeName(seq)}${paragraph !== '' ? ` ¶${paragraph}` : ''}` : option;
-    const chosen = question === 'parent' ? option === trace.parent : activated.has(`${seq}:${paragraph}`);
+    // A candidate itself (its Request, or `none`) rather than one of its tool results.
+    const whole = question === 'parent' || seq === null;
+    const name = whole ? subgraphName(option) : `${nodeName(seq)}${paragraph !== '' ? ` ¶${paragraph}` : ''}`;
+    const chosen = whole ? (trace.parents || []).some(x => x.key === option) || option === trace.parent
+      : activated.has(`${seq}:${paragraph}`);
     const cls = seq !== null && seq === highlight ? 'this' : chosen ? 'chosen' : '';
-    const tag = chosen ? `<span class="tag">${question === 'parent' ? '선택' : '원인'}</span>` : '';
+    const tag = chosen ? `<span class="tag">${whole ? '선택' : '원인'}</span>` : '';
     return `<tr><td>${escape(name)}${tag}</td><td>${bar(p, cls)}</td></tr>`;
   }).join('');
   return rows ? `<table class="bars">${rows}</table>` : `<pre>${escape(JSON.stringify(answer, null, 2))}</pre>`;
@@ -463,6 +465,7 @@ function jevHtml(trace, highlight) {
       `<h4>${escape(key)}</h4>${resultHtml(key, answer, trace, highlight)}`).join('');
     const output = `<details><summary>answers</summary><pre>${escape(JSON.stringify(exchange.response?.answers, null, 2))}</pre></details>`;
     const title = exchange.stage === 'parent' ? 'parent 질문'
+      : exchange.stage === 'cause' ? '원인 질문'
       : exchange.stage === 'paragraph' ? `${nodeName(exchange.seq)} 문단 질문` : `${subgraphName(exchange.parent)} 질문`;
     return `<h3>${escape(title)}</h3>
       <h4>입력 · state</h4>${state}<h4>입력 · question</h4>${questions}
