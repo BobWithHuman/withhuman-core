@@ -29,6 +29,31 @@
   select, button { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line);
                    border-radius: 6px; padding: 4px 8px; }
   select { max-width: 380px; }
+  .picker { position: relative; }
+  #session-button { max-width: 520px; display: inline-flex; gap: 8px; align-items: center; text-align: left;
+                    overflow: hidden; white-space: nowrap; }
+  #session-button .clip { overflow: hidden; text-overflow: ellipsis; }
+  #session-popover { position: absolute; top: calc(100% + 6px); left: 0; z-index: 20; width: min(680px, 94vw);
+                     max-height: 72vh; display: flex; flex-direction: column; background: var(--panel);
+                     border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,.18); }
+  #session-popover[hidden] { display: none; }
+  .picker-tools { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding: 10px;
+                  border-bottom: 1px solid var(--line); }
+  .picker-tools input[type=search] { flex: 1 1 220px; font: inherit; color: var(--text); background: var(--bg);
+                                     border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+  #session-list { overflow: auto; padding: 4px 0 8px; }
+  .session-day { position: sticky; top: 0; background: var(--panel); color: var(--muted); font-size: 11px;
+                 font-weight: 600; padding: 8px 12px 4px; }
+  .session-item { display: block; width: 100%; text-align: left; border: 0; border-radius: 0; background: none;
+                  padding: 7px 12px; border-left: 3px solid transparent; }
+  .session-item:hover, .session-item:focus { background: var(--bg); outline: none; }
+  .session-item.current { border-left-color: var(--accent); background: var(--bg); }
+  .session-item .top { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .session-item .time { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .session-item .folder { font-weight: 600; }
+  .session-item .prompt { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
+  .session-item .id { color: var(--muted); font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; margin-left: auto; }
+  .count { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 8px; color: #fff; }
   button { cursor: pointer; }
   .tabs { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
   .tabs button { border: 0; border-radius: 0; background: var(--panel); padding: 5px 12px; }
@@ -102,7 +127,17 @@
 <body>
 <header>
   <h1>WithHuman Graph</h1>
-  <select id="session" aria-label="세션"></select>
+  <div class="picker">
+    <button id="session-button" type="button" aria-haspopup="listbox" aria-expanded="false">세션 불러오는 중…</button>
+    <div id="session-popover" hidden>
+      <div class="picker-tools">
+        <input id="session-search" type="search" placeholder="프롬프트, 의도, 폴더, 세션 ID 검색" aria-label="세션 검색">
+        <select id="session-folder" aria-label="폴더"><option value="">모든 폴더</option></select>
+        <label><input id="session-flagged" type="checkbox"> 차단·확인 있는 세션만</label>
+      </div>
+      <div id="session-list" role="listbox" aria-label="세션"></div>
+    </div>
+  </div>
   <span class="tabs" role="group" aria-label="보기">
     <button type="button" data-view="tree" aria-pressed="true">원인 트리</button>
     <button type="button" data-view="flow" aria-pressed="false">시간 흐름</button>
@@ -735,13 +770,77 @@ async function api(path) {
   return body;
 }
 
+let sessions = [];
+// The last part of a path, whether it uses / or \.
+const folderOf = cwd => String(cwd || '').split(/[\\/]/).filter(Boolean).pop() || '';
+const hhmm = ms => ms ? new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+function dayOf(ms) {
+  const day = new Date(ms); day.setHours(0, 0, 0, 0);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const days = Math.round((today - day) / 86400000);
+  return days === 0 ? '오늘' : days === 1 ? '어제' : day.toLocaleDateString();
+}
+const counts = s => `${s.denied ? `<span class="count" style="background:var(--deny)">차단 ${s.denied}</span>` : ''}
+  ${s.reviewed ? `<span class="count" style="background:var(--review)">확인 ${s.reviewed}</span>` : ''}
+  <span class="muted">Call ${s.calls ?? 0}</span>`;
+
 async function loadSessions() {
-  const sessions = await api('/api/sessions');
+  sessions = await api('/api/sessions');
+  const folders = [...new Set(sessions.map(s => folderOf(s.cwd)).filter(Boolean))].sort();
+  const folder = $('session-folder');
+  const chosen = folder.value;
+  folder.innerHTML = '<option value="">모든 폴더</option>' +
+    folders.map(f => `<option value="${escape(f)}">${escape(f)}</option>`).join('');
+  folder.value = folders.includes(chosen) ? chosen : '';
   const wanted = decodeURIComponent(location.hash.slice(1)) || current;
-  $('session').innerHTML = sessions.map(s =>
-    `<option value="${escape(s.id)}">${escape(time(s.created_at))} · ${escape(s.id)} (${s.nodes})</option>`).join('');
-  if (wanted && sessions.some(s => s.id === wanted)) $('session').value = wanted;
-  return $('session').value;
+  renderSessions();
+  return sessions.some(s => s.id === wanted) ? wanted : sessions[0]?.id;
+}
+
+// The sessions matching the search and filters, by day, the most recently active first.
+function renderSessions() {
+  const query = $('session-search').value.trim().toLowerCase();
+  const folder = $('session-folder').value;
+  const flagged = $('session-flagged').checked;
+  const latest = s => s.last_at || s.created_at;
+  const shown = [...sessions].sort((a, b) => latest(b) - latest(a)).filter(s =>
+    (!folder || folderOf(s.cwd) === folder) && (!flagged || s.denied || s.reviewed) &&
+    (!query || [s.prompt, s.intent, s.cwd, s.id, s.client].some(v => String(v || '').toLowerCase().includes(query))));
+  let day = null;
+  $('session-list').innerHTML = shown.map(s => {
+    const at = s.last_at || s.created_at;
+    const heading = dayOf(at) !== day ? `<div class="session-day">${escape(day = dayOf(at))}</div>` : '';
+    return `${heading}<button type="button" role="option" class="session-item${s.id === current ? ' current' : ''}"
+        data-session="${escape(s.id)}" aria-selected="${s.id === current}" title="${escape(s.cwd || '')}">
+      <div class="top"><span class="time">${escape(hhmm(at))}</span>
+        <span class="folder">${escape(folderOf(s.cwd) || '(폴더 없음)')}</span>${counts(s)}
+        <span class="id">${escape(s.id.slice(0, 8))}</span></div>
+      <div class="prompt">${escape(clip(s.prompt || s.intent || '(프롬프트 없음)', 140))}</div></button>`;
+  }).join('') || '<p class="empty" style="padding:12px">맞는 세션이 없습니다.</p>';
+}
+
+// The picker's button names the current session the way the list does.
+function showCurrent() {
+  const s = sessions.find(x => x.id === current);
+  $('session-button').innerHTML = s
+    ? `<span class="folder">${escape(folderOf(s.cwd) || s.id.slice(0, 8))}</span>
+       <span class="clip muted">${escape(clip(s.prompt || s.intent || '', 60))}</span>${counts(s)} ▾`
+    : '세션 선택 ▾';
+}
+
+function openPicker(open) {
+  $('session-popover').hidden = !open;
+  $('session-button').setAttribute('aria-expanded', String(open));
+  if (open) { renderSessions(); $('session-search').focus(); }
+}
+
+function chooseSession(id) {
+  openPicker(false);
+  if (!id || id === current) return;
+  current = id; location.hash = encodeURIComponent(current); lastSignature = '';
+  showCurrent();
+  $('panel').innerHTML = '<p class="empty">노드를 누르면 여기에 속성이 나옵니다. Call을 누르면 그 Call의 원인선이 강조됩니다.</p>';
+  loadGraph(false);
 }
 
 async function loadGraph(keepView) {
@@ -764,12 +863,15 @@ document.querySelectorAll('.tabs button').forEach(button => button.addEventListe
   document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-pressed', String(b === button)));
   if (lastData) render(lastData, false);
 }));
-$('session').addEventListener('change', () => {
-  current = $('session').value; location.hash = encodeURIComponent(current); lastSignature = '';
-  $('panel').innerHTML = '<p class="empty">노드를 누르면 여기에 속성이 나옵니다. Call을 누르면 그 Call의 원인선이 강조됩니다.</p>';
-  loadGraph(false);
+$('session-button').addEventListener('click', () => openPicker($('session-popover').hidden));
+$('session-list').addEventListener('click', event => chooseSession(event.target.closest('[data-session]')?.dataset.session));
+['session-search', 'session-folder', 'session-flagged'].forEach(id => $(id).addEventListener('input', renderSessions));
+$('session-search').addEventListener('keydown', event => {
+  if (event.key === 'Enter') chooseSession($('session-list').querySelector('[data-session]')?.dataset.session);
 });
-$('reload').addEventListener('click', async () => { await loadSessions(); loadGraph(true); });
+document.addEventListener('keydown', event => { if (event.key === 'Escape') openPicker(false); });
+document.addEventListener('click', event => { if (!event.target.closest('.picker')) openPicker(false); });
+$('reload').addEventListener('click', async () => { await loadSessions(); showCurrent(); loadGraph(true); });
 $('fit').addEventListener('click', () => cy?.fit(undefined, 40));
 $('live').addEventListener('change', () => {
   clearInterval(liveTimer);
@@ -807,7 +909,7 @@ $('panel').addEventListener('click', event => {
 
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => lastData && render(lastData, true));
 
-loadSessions().then(session => { current = session; loadGraph(false); })
+loadSessions().then(session => { current = session; showCurrent(); loadGraph(false); })
   .catch(error => { $('status').innerHTML = `<span class="error">${escape(error.message)}</span>`; });
 </script>
 </body>
