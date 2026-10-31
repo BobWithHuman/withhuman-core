@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """SubGraph timeline viewer for the WithHuman execution graph.
 
-Serves index.html and a read-only JSON API over Neo4j's HTTP query endpoint. It listens on
-127.0.0.1 only; forward the port to open it from another machine.
+Serves index.html and a JSON API over Neo4j's HTTP query endpoint: reads, and deleting a
+session that is no longer active. It listens on 127.0.0.1 only; forward the port to open it
+from another machine.
 
     NEO4J_PASSWORD=... python3 tools/graph-viewer/server.py   # http://127.0.0.1:7480
 """
@@ -10,6 +11,7 @@ Serves index.html and a read-only JSON API over Neo4j's HTTP query endpoint. It 
 import base64
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -24,6 +26,9 @@ ADDRESS = os.environ.get("VIEWER_ADDR", "127.0.0.1")
 PORT = int(os.environ.get("VIEWER_PORT", "7480"))
 
 INDEX = Path(__file__).with_name("index.html")
+# A session active this recently may still be running; deleting it would break the version
+# check of the events still to come.
+ACTIVE_MS = 10 * 60 * 1000
 # Tool outputs can hold whole files; the graph carries a preview and the node panel the rest.
 # A decision trace stays whole: the page reads it as JSON for the Jev panels.
 PREVIEW_CHARS = 4000
@@ -69,6 +74,18 @@ RETURN a.seq AS source, b.seq AS target, type(r) AS type, properties(r) AS props
        CASE WHEN b:Paragraph THEN b.index END AS paragraph
 """
 
+LAST_ACTIVE = """
+MATCH (n {session_id: $session}) WHERE n.observed_at IS NOT NULL OR n:Session
+RETURN count(n) AS nodes, max(n.observed_at) AS last_at
+"""
+
+# Every node of a session carries its id; Files are shared and stay.
+DELETE_SESSION = """
+MATCH (n {session_id: $session})
+DETACH DELETE n
+RETURN count(n) AS deleted
+"""
+
 NODE = """
 MATCH (:Session {session_id: $session})-[:CONTAINS]->(n {seq: $seq})
 RETURN labels(n)[0] AS kind, properties(n) AS props,
@@ -82,11 +99,11 @@ RETURN labels(n)[0] AS kind, properties(n) AS props,
 """
 
 
-def cypher(statement, **parameters):
+def cypher(statement, access="READ", **parameters):
     request = urllib.request.Request(
         f"{NEO4J_URL}/db/{NEO4J_DATABASE}/query/v2",
         data=json.dumps(
-            {"statement": statement, "parameters": parameters, "accessMode": "READ"}
+            {"statement": statement, "parameters": parameters, "accessMode": access}
         ).encode(),
         headers={
             "content-type": "application/json",
@@ -116,6 +133,18 @@ def sessions():
         prompt = request.get("prompt") if isinstance(request, dict) else None
         row["prompt"] = prompt[:300] if isinstance(prompt, str) else None
     return rows
+
+
+def delete_session(session):
+    """Deletes a session no longer active; returns the HTTP status and the answer."""
+    found = cypher(LAST_ACTIVE, session=session)[0]
+    if not found["nodes"]:
+        return 404, {"error": "세션을 찾지 못했습니다."}
+    idle = time.time() * 1000 - (found["last_at"] or 0)
+    if idle < ACTIVE_MS:
+        minutes = ACTIVE_MS // 60000
+        return 409, {"error": f"최근 {minutes}분 안에 활동한 세션은 진행 중일 수 있어 삭제하지 않습니다."}
+    return 200, cypher(DELETE_SESSION, access="WRITE", session=session)[0]
 
 
 def preview(props):
@@ -177,6 +206,19 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == "/api/node":
                 rows = cypher(NODE, session=query["session"], seq=int(query["seq"]))
                 self.json(rows[0] if rows else None)
+            else:
+                self.send(404, b"not found", "text/plain")
+        except Exception as error:  # noqa: BLE001 - the page shows the message
+            self.json({"error": str(error)}, status=500)
+
+    def do_DELETE(self):
+        # DELETE needs a CORS preflight this server never grants, so no other site can send it.
+        url = urlparse(self.path)
+        query = {key: values[0] for key, values in parse_qs(url.query).items()}
+        try:
+            if url.path == "/api/session" and query.get("session"):
+                status, body = delete_session(query["session"])
+                self.json(body, status=status)
             else:
                 self.send(404, b"not found", "text/plain")
         except Exception as error:  # noqa: BLE001 - the page shows the message
