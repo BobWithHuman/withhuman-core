@@ -45,14 +45,22 @@ async fn systemone(
     let mut answers = serde_json::Map::new();
     for (id, question) in request["questions"].as_object().unwrap() {
         let options: Vec<&String> = question["criteria"].as_object().unwrap().keys().collect();
-        let answer = if let Some(key) = id.strip_prefix("segment_") {
-            let texts = &request["state"][format!("segments_{key}")];
+        let answer = if id == "cause" {
+            let texts: Vec<&Value> = request["state"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .filter(|(key, _)| key.starts_with("segments_"))
+                .map(|(_, texts)| texts)
+                .collect();
             let hidden = options
                 .iter()
                 .position(|option| {
-                    texts[option.as_str()]
-                        .as_str()
-                        .is_some_and(|text| text.contains("[숨김 내용]"))
+                    texts.iter().any(|texts| {
+                        texts[option.as_str()]
+                            .as_str()
+                            .is_some_and(|text| text.contains("[숨김 내용]"))
+                    })
                 })
                 .unwrap_or(0);
             let probabilities: serde_json::Map<String, Value> = options
@@ -277,7 +285,8 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
     // The agent learns neither the intent nor the path it was judged by.
     assert!(!decision["reason"].as_str().unwrap().contains("README 요약"));
 
-    // The parent, s1, is the nearest SubGraph with a tool result; Jev is asked only about it.
+    // One request offers the prompt, s1's tool results and `none`; the hidden paragraph of s1
+    // makes s1 the parent.
     let requests = jev.requests.lock().unwrap().clone();
     assert_eq!(requests.len(), 1, "{requests:?}");
     for (authorization, request) in &requests {
@@ -297,7 +306,9 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
             .collect()
     };
     let (_, request) = &requests[0];
-    assert_eq!(questions(request), ["intent_s1", "segment_s1"]);
+    let asked = questions(request);
+    assert_eq!(asked[0], "cause", "{asked:?}");
+    assert!(asked.contains(&"intent_s1".to_owned()), "{asked:?}");
     assert_eq!(request["state"]["intents"], "1. README 요약 (현재 턴)");
     // The page is weighed paragraph by paragraph, the hidden one marked.
     let paragraphs = request["state"]["segments_s1"].as_object().unwrap();

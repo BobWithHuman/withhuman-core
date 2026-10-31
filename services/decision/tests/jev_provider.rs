@@ -23,6 +23,8 @@ struct Graph {
     hidden: bool,
     /// One user prompt came before the Call, with no intent stated for it.
     unstated_turn: bool,
+    /// The latest user prompt is in SubGraph 0.
+    prompt: bool,
     no_subgraph: bool,
 }
 
@@ -70,6 +72,11 @@ impl DecisionRepository for Graph {
             parents: BTreeMap::new(),
             turns: if self.unstated_turn {
                 vec![Turn::default()]
+            } else if self.prompt {
+                vec![Turn {
+                    intent: Some("빌드 고치기".to_owned()),
+                    subgraph: Some(0),
+                }]
             } else {
                 Vec::new()
             },
@@ -104,9 +111,10 @@ impl DecisionRepository for Graph {
     }
 }
 
-/// Answers every intent question with `intent_score`.
+/// Answers every intent question with `intent_score`, and the cause with `cause` when set.
 struct Jev {
     intent_score: f64,
+    cause: Option<&'static str>,
     fail: bool,
     asked: Mutex<Vec<Duration>>,
     requests: Mutex<Vec<JevRequest>>,
@@ -124,9 +132,15 @@ impl JevClient for Jev {
             .questions
             .keys()
             .map(|id| {
-                let answer = JevAnswer {
-                    noul: Some(self.intent_score),
-                    ..Default::default()
+                let answer = match self.cause {
+                    Some(cause) if id == "cause" => JevAnswer {
+                        probabilities: BTreeMap::from([(cause.to_owned(), 1.0)]),
+                        ..Default::default()
+                    },
+                    _ => JevAnswer {
+                        noul: Some(self.intent_score),
+                        ..Default::default()
+                    },
                 };
                 (id.clone(), answer)
             })
@@ -147,6 +161,7 @@ fn provider_on(
     let graph = Arc::new(graph);
     let jev = Arc::new(Jev {
         intent_score,
+        cause: None,
         fail,
         asked: Mutex::default(),
         requests: Mutex::default(),
@@ -329,7 +344,7 @@ async fn bounds_the_jev_call_by_the_decision_deadline() {
 }
 
 #[tokio::test]
-async fn finds_the_parent_without_asking_jev() {
+async fn falls_back_to_the_nearest_subgraph_when_no_cause_is_offered() {
     let (provider, graph, jev) = provider(0.9, false);
     let response = provider
         .decide(&request(Some("빌드 고치기"), Some(4_000)))
@@ -357,7 +372,50 @@ async fn finds_the_parent_without_asking_jev() {
     // What Jev was asked and answered stays with the trace.
     let jev = &traces[0].trace["jev"];
     assert_eq!(jev.as_array().unwrap().len(), 1);
-    assert_eq!(jev[0]["stage"], "judge");
-    assert_eq!(jev[0]["parent"], "s1");
+    assert_eq!(jev[0]["stage"], "cause");
     assert!(jev[0]["request"]["questions"]["intent_s1"].is_object());
+}
+
+#[tokio::test]
+async fn traces_the_call_to_the_cause_jev_picks() {
+    let graph = Arc::new(Graph {
+        prompt: true,
+        ..Graph::default()
+    });
+    let jev = Arc::new(Jev {
+        intent_score: 0.9,
+        cause: Some("s0"),
+        fail: false,
+        asked: Mutex::default(),
+        requests: Mutex::default(),
+    });
+    let provider = JevDecisionProvider::new(
+        graph.clone(),
+        jev.clone(),
+        TraceSettings::default(),
+        Duration::from_secs(3),
+        0.5,
+    );
+    let response = provider
+        .decide(&request(Some("빌드 고치기"), Some(4_000)))
+        .await
+        .unwrap();
+    assert_eq!(response.decision, Decision::Allow);
+
+    // One request offers the prompt's Request and `none` beside s1, and judges each.
+    let requests = jev.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].questions.keys().collect::<Vec<_>>(),
+        ["cause", "intent_none", "intent_s0", "intent_s1"]
+    );
+    let traces = graph.traces.lock().unwrap();
+    assert_eq!(traces[0].parent, "s0");
+    assert_eq!(traces[0].candidates, ["s1", "s0", "none"]);
+    let parents: Vec<(&str, Option<u64>, f64)> = traces[0]
+        .parents
+        .iter()
+        .map(|parent| (parent.key.as_str(), parent.number, parent.probability))
+        .collect();
+    assert_eq!(parents, [("s0", Some(0), 1.0)]);
 }
