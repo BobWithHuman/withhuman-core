@@ -29,10 +29,25 @@ INDEX = Path(__file__).with_name("index.html")
 PREVIEW_CHARS = 4000
 WHOLE = {"trace_json"}
 
+# What tells sessions apart in the picker: the first prompt, the latest intent, the folder and
+# device, how many Calls were denied or reviewed, and when it was last active.
 SESSIONS = """
 MATCH (s:Session) WHERE s.created_at IS NOT NULL
 RETURN s.session_id AS id, s.version AS version, s.created_at AS created_at,
-       COUNT { (s)-[:CONTAINS]->() } AS nodes
+       COUNT { (s)-[:CONTAINS]->() } AS nodes,
+       COUNT { (s)-[:CONTAINS]->(:Call) } AS calls,
+       COUNT { (s)-[:CONTAINS]->(c:Call) WHERE c.decision = 'DENY' } AS denied,
+       COUNT { (s)-[:CONTAINS]->(c:Call) WHERE c.decision = 'REVIEW' } AS reviewed,
+       COLLECT { MATCH (s)-[:CONTAINS]->(r:Request) RETURN r.payload_json ORDER BY r.order LIMIT 1 }[0]
+         AS first_request,
+       COLLECT { MATCH (s)-[:CONTAINS]->(i:Intent) RETURN i.intent ORDER BY i.order DESC LIMIT 1 }[0]
+         AS intent,
+       COLLECT { MATCH (s)-[:CONTAINS]->(n) WHERE n.cwd IS NOT NULL RETURN n.cwd ORDER BY n.order LIMIT 1 }[0]
+         AS cwd,
+       COLLECT { MATCH (s)-[:CONTAINS]->(n) WHERE n.client_id IS NOT NULL RETURN n.client_id LIMIT 1 }[0]
+         AS client,
+       COLLECT { MATCH (s)-[:CONTAINS]->(n) WHERE n.observed_at IS NOT NULL
+                 RETURN n.observed_at ORDER BY n.observed_at DESC LIMIT 1 }[0] AS last_at
 ORDER BY s.created_at DESC LIMIT 200
 """
 
@@ -90,6 +105,19 @@ def cypher(statement, **parameters):
     return [dict(zip(data["fields"], row)) for row in data["values"]]
 
 
+def sessions():
+    """The sessions, each with its first prompt's text rather than the Request's payload."""
+    rows = cypher(SESSIONS)
+    for row in rows:
+        try:
+            request = json.loads(row.pop("first_request") or "{}")
+        except ValueError:
+            request = {}
+        prompt = request.get("prompt") if isinstance(request, dict) else None
+        row["prompt"] = prompt[:300] if isinstance(prompt, str) else None
+    return rows
+
+
 def preview(props):
     return {
         key: value[:PREVIEW_CHARS] + "…"
@@ -143,7 +171,7 @@ class Handler(BaseHTTPRequestHandler):
             if url.path == "/":
                 self.send(200, INDEX.read_bytes(), "text/html; charset=utf-8")
             elif url.path == "/api/sessions":
-                self.json(cypher(SESSIONS))
+                self.json(sessions())
             elif url.path == "/api/graph":
                 self.json(graph(query["session"]))
             elif url.path == "/api/node":
