@@ -44,8 +44,14 @@
   #session-list { overflow: auto; padding: 4px 0 8px; }
   .session-day { position: sticky; top: 0; background: var(--panel); color: var(--muted); font-size: 11px;
                  font-weight: 600; padding: 8px 12px 4px; }
-  .session-item { display: block; width: 100%; text-align: left; border: 0; border-radius: 0; background: none;
+  .session-item { display: block; width: 100%; text-align: left; cursor: pointer;
                   padding: 7px 12px; border-left: 3px solid transparent; }
+  .session-item .actions { display: inline-flex; gap: 2px; }
+  .session-item .actions button { border: 0; background: none; padding: 0 5px; color: var(--muted); font-size: 14px; line-height: 1.2; }
+  .session-item .actions button:hover { color: var(--text); background: var(--line); }
+  .session-item .actions .pinned { color: var(--review); }
+  .session-item .actions .delete:hover { color: #fff; background: var(--deny); }
+  .picker-message { padding: 6px 12px; }
   .session-item:hover, .session-item:focus { background: var(--bg); outline: none; }
   .session-item.current { border-left-color: var(--accent); background: var(--bg); }
   .session-item .top { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -135,6 +141,7 @@
         <select id="session-folder" aria-label="폴더"><option value="">모든 폴더</option></select>
         <label><input id="session-flagged" type="checkbox"> 차단·확인 있는 세션만</label>
       </div>
+      <div id="session-message" class="picker-message" hidden></div>
       <div id="session-list" role="listbox" aria-label="세션"></div>
     </div>
   </div>
@@ -771,6 +778,13 @@ async function api(path) {
 }
 
 let sessions = [];
+// Pinned sessions are kept per browser.
+function pinned() {
+  try { return new Set(JSON.parse(localStorage.getItem('pinnedSessions') || '[]')); } catch { return new Set(); }
+}
+function setPinned(ids) {
+  try { localStorage.setItem('pinnedSessions', JSON.stringify([...ids])); } catch {}
+}
 // The last part of a path, whether it uses / or \.
 const folderOf = cwd => String(cwd || '').split(/[\\/]/).filter(Boolean).pop() || '';
 const hhmm = ms => ms ? new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
@@ -806,17 +820,62 @@ function renderSessions() {
   const shown = [...sessions].sort((a, b) => latest(b) - latest(a)).filter(s =>
     (!folder || folderOf(s.cwd) === folder) && (!flagged || s.denied || s.reviewed) &&
     (!query || [s.prompt, s.intent, s.cwd, s.id, s.client].some(v => String(v || '').toLowerCase().includes(query))));
-  let day = null;
-  $('session-list').innerHTML = shown.map(s => {
+  const pins = pinned();
+  const item = s => {
     const at = s.last_at || s.created_at;
-    const heading = dayOf(at) !== day ? `<div class="session-day">${escape(day = dayOf(at))}</div>` : '';
-    return `${heading}<button type="button" role="option" class="session-item${s.id === current ? ' current' : ''}"
+    const pin = pins.has(s.id);
+    return `<div role="option" tabindex="0" class="session-item${s.id === current ? ' current' : ''}"
         data-session="${escape(s.id)}" aria-selected="${s.id === current}" title="${escape(s.cwd || '')}">
       <div class="top"><span class="time">${escape(hhmm(at))}</span>
         <span class="folder">${escape(folderOf(s.cwd) || '(폴더 없음)')}</span>${counts(s)}
-        <span class="id">${escape(s.id.slice(0, 8))}</span></div>
-      <div class="prompt">${escape(clip(s.prompt || s.intent || '(프롬프트 없음)', 140))}</div></button>`;
-  }).join('') || '<p class="empty" style="padding:12px">맞는 세션이 없습니다.</p>';
+        <span class="id">${escape(s.id.slice(0, 8))}</span>
+        <span class="actions">
+          <button type="button" data-pin="${escape(s.id)}" class="${pin ? 'pinned' : ''}" title="${pin ? '고정 해제' : '고정'}" aria-label="${pin ? '고정 해제' : '고정'}">${pin ? '★' : '☆'}</button>
+          <button type="button" data-delete="${escape(s.id)}" class="delete" title="삭제" aria-label="삭제">🗑</button>
+        </span></div>
+      <div class="prompt">${escape(clip(s.prompt || s.intent || '(프롬프트 없음)', 140))}</div></div>`;
+  };
+  const top = shown.filter(s => pins.has(s.id));
+  let day = null;
+  $('session-list').innerHTML = (top.length ? `<div class="session-day">고정됨</div>${top.map(item).join('')}` : '') +
+    shown.filter(s => !pins.has(s.id)).map(s => {
+      const at = s.last_at || s.created_at;
+      return `${dayOf(at) !== day ? `<div class="session-day">${escape(day = dayOf(at))}</div>` : ''}${item(s)}`;
+    }).join('') || (top.length ? '' : '<p class="empty" style="padding:12px">맞는 세션이 없습니다.</p>');
+}
+
+function pickerMessage(text, error = false) {
+  const box = $('session-message');
+  box.hidden = !text;
+  box.className = `picker-message${error ? ' error' : ' empty'}`;
+  box.textContent = text || '';
+}
+
+function togglePin(id) {
+  const ids = pinned();
+  if (ids.has(id)) ids.delete(id); else ids.add(id);
+  setPinned(ids);
+  renderSessions();
+}
+
+// Deletes a session from the graph for good, after the user confirms which one.
+async function deleteSession(id) {
+  const s = sessions.find(x => x.id === id);
+  if (!s) return;
+  const what = [folderOf(s.cwd), clip(s.prompt || s.intent || '', 80), s.id].filter(Boolean).join('\n');
+  if (!confirm(`이 세션을 삭제할까요? 그래프에서 영구히 지워지고 되돌릴 수 없습니다.\n\n${what}`)) return;
+  try {
+    const response = await fetch(`/api/session?session=${encodeURIComponent(id)}`, { method: 'DELETE' });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body?.error || response.statusText);
+    sessions = sessions.filter(x => x.id !== id);
+    const ids = pinned(); ids.delete(id); setPinned(ids);
+    if (id === current) { current = null; chooseSession(sessions[0]?.id); openPicker(true); }
+    renderSessions();
+    pickerMessage(`세션 ${id.slice(0, 8)}을 삭제했습니다 (노드 ${body.deleted ?? 0}개).`);
+  } catch (error) {
+    pickerMessage(`삭제하지 못했습니다: ${error.message}`, true);
+  }
 }
 
 // The picker's button names the current session the way the list does.
@@ -830,6 +889,7 @@ function showCurrent() {
 
 function openPicker(open) {
   $('session-popover').hidden = !open;
+  if (!open) pickerMessage('');
   $('session-button').setAttribute('aria-expanded', String(open));
   if (open) { renderSessions(); $('session-search').focus(); }
 }
@@ -864,7 +924,16 @@ document.querySelectorAll('.tabs button').forEach(button => button.addEventListe
   if (lastData) render(lastData, false);
 }));
 $('session-button').addEventListener('click', () => openPicker($('session-popover').hidden));
-$('session-list').addEventListener('click', event => chooseSession(event.target.closest('[data-session]')?.dataset.session));
+$('session-list').addEventListener('click', event => {
+  const pin = event.target.closest('[data-pin]'), remove = event.target.closest('[data-delete]');
+  if (pin) togglePin(pin.dataset.pin);
+  else if (remove) deleteSession(remove.dataset.delete);
+  else chooseSession(event.target.closest('[data-session]')?.dataset.session);
+});
+$('session-list').addEventListener('keydown', event => {
+  const item = event.target.closest('[data-session]');
+  if (item && event.key === 'Enter' && event.target === item) chooseSession(item.dataset.session);
+});
 ['session-search', 'session-folder', 'session-flagged'].forEach(id => $(id).addEventListener('input', renderSessions));
 $('session-search').addEventListener('keydown', event => {
   if (event.key === 'Enter') chooseSession($('session-list').querySelector('[data-session]')?.dataset.session);
