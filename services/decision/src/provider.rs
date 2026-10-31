@@ -186,11 +186,13 @@ impl DecisionProvider for JevDecisionProvider {
             Err(error) => return Err(ProviderError(error.to_string())),
         };
 
-        // The parent and the SubGraphs its path passes through, whose content Jev sees.
-        let mut shown: Vec<u64> = trace::parent_subgraph(&graph)
-            .map(|parent| trace::ancestry(&graph, parent, |_| false, self.settings.max_hops).0)
-            .unwrap_or_default();
+        // The candidates and the SubGraphs their paths pass through, whose content Jev sees.
+        let mut shown: Vec<u64> = trace::candidate_subgraphs(&graph)
+            .into_iter()
+            .flat_map(|number| trace::ancestry(&graph, number, |_| false, self.settings.max_hops).0)
+            .collect();
         shown.sort_unstable();
+        shown.dedup();
         let members = self
             .repository
             .subgraph_members(&request.session_id, &shown, graph.call.order)
@@ -212,8 +214,8 @@ impl DecisionProvider for JevDecisionProvider {
             remaining(PERSIST_RESERVE).map_or(self.jev_timeout, |left| left.min(self.jev_timeout))
         };
 
-        // The parent is found without Jev; Jev is asked only about it.
-        let parents = trace::parents(&plan);
+        // One request asks for the cause among every candidate's and judges each against the
+        // intents; the parents follow from the cause.
         // What Jev was asked and answered, kept with the trace so it can be inspected.
         let mut exchanges = Vec::new();
         let judged = Instant::now();
@@ -223,39 +225,22 @@ impl DecisionProvider for JevDecisionProvider {
                 .unresolved(request, "no time left to ask Jev", risky)
                 .await;
         }
-        let pending: Vec<_> = parents
-            .chosen
-            .iter()
-            .map(|parent| {
-                trace::judge_request(&plan, &parent.candidate).map(|jev_request| {
-                    let jev = self.jev.clone();
-                    let sent = jev_request.clone();
-                    let task = tokio::spawn(async move { jev.ask(&jev_request, budget).await });
-                    (sent, task)
-                })
-            })
-            .collect();
-        let mut judgements = Vec::new();
-        for (parent, pending) in parents.chosen.iter().zip(pending) {
-            let response = match pending {
-                None => None,
-                Some((sent, task)) => match task.await {
-                    Ok(Ok(response)) => {
-                        exchanges.push(serde_json::json!({
-                            "stage": "judge", "parent": &parent.candidate.key,
-                            "request": sent, "response": &response,
-                        }));
-                        Some(response)
-                    }
-                    Ok(Err(error)) => return self.unresolved(request, error, risky).await,
-                    Err(error) => return self.unresolved(request, error, risky).await,
-                },
-            };
-            match trace::judge(&plan, &parent.candidate, response.as_ref()) {
-                Ok(judgement) => judgements.push(judgement),
+        let response = match trace::judge_request(&plan) {
+            None => None,
+            Some(sent) => match self.jev.ask(&sent, budget).await {
+                Ok(response) => {
+                    exchanges.push(serde_json::json!({
+                        "stage": "cause", "request": sent, "response": &response,
+                    }));
+                    Some(response)
+                }
                 Err(error) => return self.unresolved(request, error, risky).await,
-            }
-        }
+            },
+        };
+        let (parents, mut judgements) = match trace::judge(&plan, response.as_ref()) {
+            Ok(judged) => judged,
+            Err(error) => return self.unresolved(request, error, risky).await,
+        };
         let judge_ms = elapsed_ms(judged);
 
         // A parent with too many paragraphs to ask about at once was asked about its tool
