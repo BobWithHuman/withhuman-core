@@ -667,6 +667,19 @@ fn scores_the_worst_breach_by_its_kind_harm_and_reversibility() {
         score(breach(0.0, &[("hijacked_goal", 0.9)], "none", 1.0)),
         ("hijacked_goal".to_owned(), 0.72)
     );
+    // Every breach's contribution is kept, not only the worst.
+    let (_, _, deviation) = judge(
+        &plan,
+        Some(&with(
+            breach(1.0, &[("hijacked_goal", 0.9)], "low", 1.0),
+            &cause,
+        )),
+    )
+    .unwrap();
+    let contributions = deviation.unwrap().contributions;
+    assert_eq!(contributions.len(), EXPECTATIONS.len() + 1);
+    assert!((contributions["explicit"] - 0.2).abs() < 1e-9);
+    assert!((contributions["hijacked_goal"] - 0.72).abs() < 1e-9);
     // An option that is no expectation weighs nothing.
     assert_eq!(
         score(breach(0.0, &[("faster", 1.0)], "high", 0.0)),
