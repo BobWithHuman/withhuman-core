@@ -43,6 +43,8 @@ RETURN s.session_id AS id, s.version AS version, s.created_at AS created_at,
        COUNT { (s)-[:CONTAINS]->(:Call) } AS calls,
        COUNT { (s)-[:CONTAINS]->(c:Call) WHERE c.decision = 'DENY' } AS denied,
        COUNT { (s)-[:CONTAINS]->(c:Call) WHERE c.decision = 'REVIEW' } AS reviewed,
+       COUNT { (s)-[:CONTAINS]->(c:Call) WHERE c.decision = 'ALLOW' } AS allowed,
+       COUNT { (s)-[:CONTAINS]->(c:Call) WHERE c.trace_error IS NOT NULL } AS failed,
        COLLECT { MATCH (s)-[:CONTAINS]->(r:Request) RETURN r.payload_json ORDER BY r.order LIMIT 1 }[0]
          AS first_request,
        COLLECT { MATCH (s)-[:CONTAINS]->(i:Intent) RETURN i.intent ORDER BY i.order DESC LIMIT 1 }[0]
@@ -72,6 +74,13 @@ EDGES = """
 MATCH (:Session {session_id: $session})-[:CONTAINS]->(a)-[r:NEXT|RESULT_OF]->(b)
 RETURN a.seq AS source, b.seq AS target, type(r) AS type, properties(r) AS props,
        CASE WHEN b:Paragraph THEN b.index END AS paragraph
+"""
+
+# A session's Calls with their verdicts, for setting runs of a case side by side.
+CALLS = """
+MATCH (:Session {session_id: $session})-[:CONTAINS]->(c:Call)
+RETURN properties(c) AS props
+ORDER BY c.order
 """
 
 LAST_ACTIVE = """
@@ -192,6 +201,31 @@ def graph(session):
     }
 
 
+def calls(session):
+    """Each Call's tool, verdict and deviation, without its payload or trace."""
+    rows = []
+    for row in cypher(CALLS, session=session):
+        props = row["props"]
+        try:
+            trace = json.loads(props.get("trace_json") or "{}")
+        except ValueError:
+            trace = {}
+        deviation = trace.get("deviation") if isinstance(trace.get("deviation"), dict) else {}
+        brief = summary(props)
+        rows.append({
+            "seq": props.get("seq"),
+            "tool_name": brief.get("tool_name"),
+            "brief": brief.get("brief"),
+            "decision": props.get("decision"),
+            "rule": props.get("decision_rule"),
+            "error": props.get("trace_error"),
+            "link": trace.get("link"),
+            "score": deviation.get("score"),
+            "worst": deviation.get("worst"),
+        })
+    return rows
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urlparse(self.path)
@@ -203,6 +237,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.json(sessions())
             elif url.path == "/api/graph":
                 self.json(graph(query["session"]))
+            elif url.path == "/api/calls":
+                self.json(calls(query["session"]))
             elif url.path == "/api/node":
                 rows = cypher(NODE, session=query["session"], seq=int(query["seq"]))
                 self.json(rows[0] if rows else None)

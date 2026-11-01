@@ -123,6 +123,39 @@
   .preview { color: var(--muted); font-size: 12px; margin: 2px 0 6px; white-space: pre-wrap; word-break: break-word; }
   details.section { border: 0; border-top: 1px solid var(--line); border-radius: 0; padding: 8px 0 4px; margin: 0; }
   details.section > summary { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .graph-only { display: contents; }
+  body.comparing .graph-only, body.comparing main { display: none; }
+  #compare { flex: 1; min-height: 0; overflow: auto; padding: 14px; }
+  #compare[hidden] { display: none; }
+  .compare-tools { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin-bottom: 12px; }
+  .compare-tools input[type=search] { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line);
+                                      border-radius: 6px; padding: 4px 8px; width: 200px; }
+  .conditions { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+  .matrix-wrap { overflow-x: auto; }
+  .matrix { width: auto; min-width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+  .matrix th { text-align: left; font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  .matrix th small { display: block; color: var(--muted); font-weight: 400; }
+  .matrix td, .matrix td:first-child { width: auto; padding: 6px 8px; color: var(--text); white-space: normal; }
+  .matrix td.case { font-weight: 600; white-space: nowrap; }
+  .matrix tr.picked td { background: var(--bg); }
+  .matrix tbody tr { cursor: pointer; }
+  .matrix tbody tr:hover td { background: var(--bg); }
+  .matrix tfoot td { border-top: 2px solid var(--line); }
+  .run { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; padding: 1px 0; }
+  .run + .run { border-top: 1px dashed var(--line); }
+  .run .when { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .lanes { display: flex; gap: 10px; align-items: flex-start; overflow-x: auto; margin-top: 14px; padding-bottom: 6px; }
+  .lane { flex: 0 0 340px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+  .lane h3 { margin: 0; padding: 8px 10px; font-size: 13px; border-bottom: 1px solid var(--line); }
+  .lane h3 small { display: block; color: var(--muted); font-weight: 400; }
+  .lane .call { display: grid; grid-template-columns: 22px 1fr auto; gap: 2px 6px; padding: 5px 10px; cursor: pointer;
+                border-left: 3px solid transparent; }
+  .lane .call:hover { background: var(--bg); }
+  .lane .call .n { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .lane .call .what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                      font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .lane .call .why { grid-column: 2 / 4; color: var(--muted); font-size: 11px; }
+  .lane .call .badge { font-size: 11px; padding: 0 6px; }
   @media (max-width: 760px) {
     main { flex-direction: column; }
     #splitter { display: none; }
@@ -133,6 +166,11 @@
 <body>
 <header>
   <h1>WithHuman Graph</h1>
+  <span class="tabs" id="modes" role="group" aria-label="모드">
+    <button type="button" data-mode="graph" aria-pressed="true">그래프</button>
+    <button type="button" data-mode="compare" aria-pressed="false">조건 비교</button>
+  </span>
+  <span class="graph-only">
   <div class="picker">
     <button id="session-button" type="button" aria-haspopup="listbox" aria-expanded="false">세션 불러오는 중…</button>
     <div id="session-popover" hidden>
@@ -145,7 +183,7 @@
       <div id="session-list" role="listbox" aria-label="세션"></div>
     </div>
   </div>
-  <span class="tabs" role="group" aria-label="보기">
+  <span class="tabs" id="views" role="group" aria-label="보기">
     <button type="button" data-view="tree" aria-pressed="true">원인 트리</button>
     <button type="button" data-view="flow" aria-pressed="false">시간 흐름</button>
   </span>
@@ -161,6 +199,7 @@
     <span><i style="background:var(--deny)"></i>DENY</span>
     <span><i style="background:var(--cause)"></i>원인</span>
   </span>
+  </span>
   <span class="status" id="status"></span>
 </header>
 <main>
@@ -168,6 +207,15 @@
   <div id="splitter" role="separator" aria-orientation="vertical" aria-label="패널 폭 조절"></div>
   <aside id="panel"><p class="empty">노드를 누르면 여기에 속성이 나옵니다. Call을 누르면 그 Call의 원인선이 강조됩니다.</p></aside>
 </main>
+<section id="compare" hidden>
+  <div class="compare-tools">
+    <label>케이스 <input id="compare-case" type="search" value="core-00" placeholder="예: core-00, tidy" aria-label="케이스 검색"></label>
+    <span class="muted">조건</span><span class="conditions" id="compare-conditions"></span>
+    <button id="compare-reload" type="button">새로고침</button>
+  </div>
+  <div id="compare-matrix"></div>
+  <div id="compare-lanes"></div>
+</section>
 <script>
 const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const KIND_COLOR = { Request: '--request', Intent: '--intent', Message: '--message', Call: '--call', Segment: '--segment', Error: '--error' };
@@ -178,6 +226,8 @@ const RESULT = new Set(['Segment', 'Error']);
 const HIDDEN = new Set(['ToolBatch', 'ToolDescriptions']);
 const $ = id => document.getElementById(id);
 let cy, current = null, liveTimer = null, lastData = null, lastSignature = '', model = null, view = 'tree';
+// A node to open once its session's graph is drawn, and whether the graph was drawn while hidden.
+let pendingSeq = null, needsFit = false;
 
 function parse(json) {
   if (typeof json !== 'string') return null;
@@ -429,6 +479,7 @@ function render(data, keepView) {
     wheelSensitivity: 0.25, minZoom: 0.05, maxZoom: 3, autoungrabify: false });
   if (saved) { cy.zoom(saved.zoom); cy.pan(saved.pan); if (saved.selected) select(cy.$id(saved.selected)); }
   else cy.fit(undefined, 40);
+  if (document.body.classList.contains('comparing')) needsFit = true;
   cy.on('tap', 'node[seq]', event => { select(event.target); show(event.target.data('seq')); });
   cy.on('tap', 'edge[?cause]', event => {
     selectEdge(event.target);
@@ -910,6 +961,7 @@ async function loadGraph(keepView) {
     const data = await api(`/api/graph?session=${encodeURIComponent(current)}`);
     const signature = JSON.stringify(data);
     if (!keepView || signature !== lastSignature) render(data, keepView);
+    if (pendingSeq !== null) { focusSeq(pendingSeq); pendingSeq = null; }
     lastData = data;
     lastSignature = signature;
     $('status').textContent = `노드 ${data.nodes.length} · 서브그래프 ${data.subgraphs.length} · ${new Date().toLocaleTimeString()}`;
@@ -918,9 +970,170 @@ async function loadGraph(keepView) {
   }
 }
 
-document.querySelectorAll('.tabs button').forEach(button => button.addEventListener('click', () => {
+// Comparing a case's runs under each condition. A session's folder is its case and the folder
+// above it the condition, as RepoGuardBench lays out `<condition>/<case>`; a case run more than
+// once under a condition shows each run.
+const conditionOf = cwd => String(cwd || '').split(/[\\/]/).filter(Boolean).slice(-2, -1)[0] || '(폴더 없음)';
+const callsOf = new Map();
+let pickedCase = null;
+function hiddenConditions() {
+  try { return new Set(JSON.parse(localStorage.getItem('hiddenConditions') || '[]')); } catch { return new Set(); }
+}
+function setHiddenConditions(names) {
+  try { localStorage.setItem('hiddenConditions', JSON.stringify([...names])); } catch {}
+}
+const verdicts = s => `${s.denied ? `<span class="count" style="background:var(--deny)">차단 ${s.denied}</span>` : ''}
+  ${s.reviewed ? `<span class="count" style="background:var(--review)">확인 ${s.reviewed}</span>` : ''}
+  ${s.allowed ? `<span class="count" style="background:var(--allow)">허용 ${s.allowed}</span>` : ''}
+  ${s.failed ? `<span class="count" style="background:var(--muted)">실패 ${s.failed}</span>` : ''}
+  <span class="muted">Call ${s.calls ?? 0}</span>`;
+
+// The sessions whose case matches any of the comma-separated terms, by case and condition.
+function compareGroups() {
+  const terms = $('compare-case').value.toLowerCase().split(',').map(t => t.trim()).filter(Boolean);
+  const matching = sessions.filter(s => {
+    const name = folderOf(s.cwd).toLowerCase();
+    return name && (!terms.length || terms.some(t => name.includes(t)));
+  }).sort((a, b) => a.created_at - b.created_at);
+  const conditions = new Map(), cases = new Map();
+  for (const s of matching) {
+    const condition = conditionOf(s.cwd), name = folderOf(s.cwd);
+    if (!conditions.has(condition)) conditions.set(condition, s.created_at);
+    if (!cases.has(name)) cases.set(name, new Map());
+    const runs = cases.get(name);
+    if (!runs.has(condition)) runs.set(condition, []);
+    runs.get(condition).push(s);
+  }
+  // Conditions in the order they were first run.
+  const order = [...conditions].sort((a, b) => a[1] - b[1]).map(([name]) => name);
+  return { conditions: order, cases: new Map([...cases].sort((a, b) => a[0].localeCompare(b[0]))) };
+}
+
+function renderCompare() {
+  const { conditions, cases } = compareGroups();
+  const hidden = hiddenConditions();
+  $('compare-conditions').innerHTML = conditions.map(c =>
+    `<label><input type="checkbox" data-condition="${escape(c)}"${hidden.has(c) ? '' : ' checked'}> ${escape(c)}</label>`).join('')
+    || '<span class="empty">없음</span>';
+  const shown = conditions.filter(c => !hidden.has(c));
+  if (!cases.size || !shown.length) {
+    $('compare-matrix').innerHTML = '<p class="empty">맞는 케이스가 없습니다. 케이스 이름 일부를 쉼표로 나눠 입력하세요 (예: core-001, core-002).</p>';
+    $('compare-lanes').innerHTML = '';
+    return;
+  }
+  const runsIn = condition => [...cases.values()].flatMap(runs => runs.get(condition) || []);
+  const head = shown.map(c => {
+    const runs = runsIn(c);
+    const first = Math.min(...runs.map(s => s.created_at));
+    return `<th>${escape(c)}<small>세션 ${runs.length} · ${escape(time(first))}</small></th>`;
+  }).join('');
+  const cell = runs => (runs || []).map(s => `<div class="run" title="${escape(s.id)}">${verdicts(s)}
+      ${runs.length > 1 ? `<span class="when">${escape(hhmm(s.created_at))}</span>` : ''}</div>`).join('') || '<span class="empty">–</span>';
+  const body = [...cases].map(([name, runs]) =>
+    `<tr data-case="${escape(name)}" class="${name === pickedCase ? 'picked' : ''}"><td class="case">${escape(name)}</td>
+      ${shown.map(c => `<td>${cell(runs.get(c))}</td>`).join('')}</tr>`).join('');
+  // What each condition did over every case: its verdicts and how many cases had a Call denied.
+  const foot = shown.map(c => {
+    const runs = runsIn(c);
+    const total = key => runs.reduce((n, s) => n + (s[key] || 0), 0);
+    const denied = [...cases.values()].filter(r => (r.get(c) || []).some(s => s.denied)).length;
+    const ran = [...cases.values()].filter(r => r.has(c)).length;
+    return `<td><div class="run">${verdicts({ denied: total('denied'), reviewed: total('reviewed'), allowed: total('allowed'), failed: total('failed'), calls: total('calls') })}</div>
+      <div class="muted">차단 있는 케이스 ${denied}/${ran}</div></td>`;
+  }).join('');
+  $('compare-matrix').innerHTML = `<div class="matrix-wrap"><table class="matrix"><thead><tr><th>케이스</th>${head}</tr></thead>
+    <tbody>${body}</tbody><tfoot><tr><td class="case">합계</td>${foot}</tr></tfoot></table></div>`;
+  if (!cases.has(pickedCase)) pickedCase = null;
+  renderLanes(pickedCase ? shown.map(c => [c, cases.get(pickedCase).get(c) || []]) : []);
+}
+
+// The picked case's Calls, one lane per run, side by side.
+async function renderLanes(columns) {
+  const box = $('compare-lanes');
+  if (!pickedCase) { box.innerHTML = '<p class="empty">케이스 행을 누르면 조건별 Call을 나란히 봅니다.</p>'; return; }
+  const runs = columns.flatMap(([condition, list]) => list.map((s, i) => ({ condition, s, nth: list.length > 1 ? i + 1 : null })));
+  const wanted = pickedCase;
+  box.innerHTML = `<div class="lanes">${runs.map(({ condition, s, nth }) => `<div class="lane">
+      <h3>${escape(condition)}${nth ? ` · #${nth}` : ''}<small>${escape(time(s.created_at))} · ${escape(s.id.slice(0, 8))}</small>
+        <div class="run">${verdicts(s)}</div></h3>
+      <div data-lane="${escape(s.id)}"><p class="empty" style="padding:8px 10px">불러오는 중…</p></div></div>`).join('')
+    || '<p class="empty">선택한 조건에서 이 케이스를 실행한 세션이 없습니다.</p>'}</div>`;
+  await Promise.all(runs.map(async ({ s }) => {
+    const lane = () => pickedCase === wanted ? box.querySelector(`[data-lane="${CSS.escape(s.id)}"]`) : null;
+    try {
+      if (!callsOf.has(s.id)) callsOf.set(s.id, await api(`/api/calls?session=${encodeURIComponent(s.id)}`));
+      const el = lane();
+      if (el) el.innerHTML = laneHtml(s, callsOf.get(s.id));
+    } catch (error) {
+      const el = lane();
+      if (el) el.innerHTML = `<p class="error" style="padding:8px 10px">${escape(error.message)}</p>`;
+    }
+  }));
+}
+
+function laneHtml(s, calls) {
+  // Paths inside the case's folder read shorter without it.
+  const local = text => s.cwd ? String(text || '').split(`${s.cwd}/`).join('') : String(text || '');
+  return calls.map((c, i) => {
+    const color = c.decision ? DECISION_COLOR[c.decision] || '--other' : '--muted';
+    const verdict = c.decision || (c.error ? '실패' : '–');
+    const why = c.error ? c.error
+      : [RULE_TEXT[c.rule] || c.rule, c.score != null ? `이탈 ${percent(c.score) || '0'}` : '',
+         c.worst && c.score > 0.001 ? BREACH_TEXT[c.worst] || c.worst : '', c.link ? `연결 ${c.link}` : ''].filter(Boolean).join(' · ');
+    return `<div class="call" data-open="${escape(s.id)}" data-call="${c.seq}" style="border-left-color:var(${color})" title="${escape(local(c.brief))}">
+      <span class="n">${i + 1}</span><span class="what">${escape(`${c.tool_name || 'Call'} ${local(c.brief)}`)}</span>
+      <span class="badge" style="background:var(${color})">${escape(verdict)}</span>
+      <span class="why">${escape(why)}</span></div>`;
+  }).join('') || '<p class="empty" style="padding:8px 10px">Call 없음</p>';
+}
+
+// Opens a Call of a compared run in the graph.
+function openInGraph(session, seq) {
+  setMode('graph');
+  if (session === current && model) focusSeq(seq);
+  else { pendingSeq = seq; chooseSession(session); }
+}
+
+function setMode(mode) {
+  const comparing = mode === 'compare';
+  document.body.classList.toggle('comparing', comparing);
+  $('compare').hidden = !comparing;
+  document.querySelectorAll('#modes button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.mode === mode)));
+  if (comparing) { openPicker(false); location.hash = 'compare'; renderCompare(); return; }
+  if (current) location.hash = encodeURIComponent(current);
+  cy?.resize();
+  if (needsFit) { cy?.fit(undefined, 40); needsFit = false; }
+}
+
+document.querySelectorAll('#modes button').forEach(button => button.addEventListener('click', () => setMode(button.dataset.mode)));
+$('compare-case').addEventListener('input', renderCompare);
+$('compare-conditions').addEventListener('change', event => {
+  const box = event.target.closest('[data-condition]');
+  if (!box) return;
+  const names = hiddenConditions();
+  if (box.checked) names.delete(box.dataset.condition); else names.add(box.dataset.condition);
+  setHiddenConditions(names);
+  renderCompare();
+});
+$('compare-matrix').addEventListener('click', event => {
+  const row = event.target.closest('[data-case]');
+  if (!row) return;
+  pickedCase = row.dataset.case === pickedCase ? null : row.dataset.case;
+  renderCompare();
+});
+$('compare-lanes').addEventListener('click', event => {
+  const call = event.target.closest('[data-open]');
+  if (call) openInGraph(call.dataset.open, Number(call.dataset.call));
+});
+$('compare-reload').addEventListener('click', async () => {
+  callsOf.clear();
+  try { await loadSessions(); showCurrent(); renderCompare(); }
+  catch (error) { $('compare-matrix').innerHTML = `<p class="error">${escape(error.message)}</p>`; }
+});
+
+document.querySelectorAll('#views button').forEach(button => button.addEventListener('click', () => {
   view = button.dataset.view;
-  document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-pressed', String(b === button)));
+  document.querySelectorAll('#views button').forEach(b => b.setAttribute('aria-pressed', String(b === button)));
   if (lastData) render(lastData, false);
 }));
 $('session-button').addEventListener('click', () => openPicker($('session-popover').hidden));
@@ -946,14 +1159,16 @@ $('live').addEventListener('change', () => {
   clearInterval(liveTimer);
   if ($('live').checked) liveTimer = setInterval(() => loadGraph(true), 3000);
 });
-// A node named in the panel opens like a tap on it.
-$('panel').addEventListener('click', event => {
-  const target = event.target.closest('[data-seq]');
-  if (!target || !cy) return;
-  const seq = Number(target.dataset.seq);
+// Opens a node like a tap on it, and brings it into view.
+function focusSeq(seq) {
   const node = cy.$id(`n${seq}`);
   if (node.length) { select(node); cy.animate({ center: { eles: node }, duration: 250 }); }
   show(seq);
+}
+// A node named in the panel opens like a tap on it.
+$('panel').addEventListener('click', event => {
+  const target = event.target.closest('[data-seq]');
+  if (target && cy) focusSeq(Number(target.dataset.seq));
 });
 
 // The panel's width follows the splitter and is kept for the next visit.
@@ -978,7 +1193,8 @@ $('panel').addEventListener('click', event => {
 
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => lastData && render(lastData, true));
 
-loadSessions().then(session => { current = session; showCurrent(); loadGraph(false); })
+const startComparing = location.hash === '#compare';
+loadSessions().then(session => { current = session; showCurrent(); loadGraph(false); if (startComparing) setMode('compare'); })
   .catch(error => { $('status').innerHTML = `<span class="error">${escape(error.message)}</span>`; });
 </script>
 </body>
