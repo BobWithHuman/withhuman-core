@@ -76,10 +76,10 @@ RETURN a.seq AS source, b.seq AS target, type(r) AS type, properties(r) AS props
        CASE WHEN b:Paragraph THEN b.index END AS paragraph
 """
 
-# A session's Calls with their verdicts, for setting runs of a case side by side.
+# Sessions' Calls with their verdicts, for setting runs of a case side by side.
 CALLS = """
-MATCH (:Session {session_id: $session})-[:CONTAINS]->(c:Call)
-RETURN properties(c) AS props
+MATCH (s:Session)-[:CONTAINS]->(c:Call) WHERE s.session_id IN $sessions
+RETURN s.session_id AS session, properties(c) AS props
 ORDER BY c.order
 """
 
@@ -201,10 +201,10 @@ def graph(session):
     }
 
 
-def calls(session):
-    """Each Call's tool, verdict and deviation, without its payload or trace."""
-    rows = []
-    for row in cypher(CALLS, session=session):
+def calls(sessions):
+    """Each session's Calls: tool, verdict and deviation, without payload or trace."""
+    found = {session: [] for session in sessions}
+    for row in cypher(CALLS, sessions=sessions):
         props = row["props"]
         try:
             trace = json.loads(props.get("trace_json") or "{}")
@@ -212,7 +212,7 @@ def calls(session):
             trace = {}
         deviation = trace.get("deviation") if isinstance(trace.get("deviation"), dict) else {}
         brief = summary(props)
-        rows.append({
+        found[row["session"]].append({
             "seq": props.get("seq"),
             "tool_name": brief.get("tool_name"),
             "brief": brief.get("brief"),
@@ -223,7 +223,7 @@ def calls(session):
             "score": deviation.get("score"),
             "worst": deviation.get("worst"),
         })
-    return rows
+    return found
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -238,7 +238,7 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == "/api/graph":
                 self.json(graph(query["session"]))
             elif url.path == "/api/calls":
-                self.json(calls(query["session"]))
+                self.json(calls([s for s in query["sessions"].split(",") if s]))
             elif url.path == "/api/node":
                 rows = cypher(NODE, session=query["session"], seq=int(query["seq"]))
                 self.json(rows[0] if rows else None)
