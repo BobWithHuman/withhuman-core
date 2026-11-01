@@ -147,6 +147,9 @@
   .chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
   .chip .order { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%;
                  background: #fff; color: var(--accent); font-size: 11px; font-weight: 800; }
+  .chip .rename { border: 0; background: none; padding: 0 0 0 2px; color: inherit; opacity: .6; font-size: 12px; }
+  .chip .rename:hover { opacity: 1; }
+  .cmp th small { display: block; color: var(--muted); font-weight: 400; font-size: 11px; }
   .chip-tools { display: inline-flex; gap: 6px; margin-left: 4px; }
   .chip-tools button { font-size: 12px; padding: 3px 9px; }
   .compare-section { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; font-size: 13px; font-weight: 700;
@@ -164,7 +167,7 @@
   #compare { font-size: 14px; }
   .cmp { table-layout: fixed; width: 100%; min-width: 760px; }
   .cmp col.name { width: 230px; }
-  .cmp th { text-align: center; font-size: 13px; padding: 10px 8px; white-space: normal; word-break: break-all; }
+  .cmp th { text-align: center; font-size: 13px; padding: 10px 8px; white-space: normal; overflow-wrap: anywhere; }
   .cmp th:first-child { text-align: left; }
   .cmp td, .cmp td:first-child { text-align: center; padding: 9px 8px; vertical-align: middle; white-space: nowrap; }
   .cmp td:first-child { text-align: left; }
@@ -256,7 +259,7 @@
     <button id="compare-reload" type="button">새로고침</button>
   </div>
   <div class="compare-tools">
-    <span class="muted">비교할 조건 <small>(누른 순서대로 왼쪽부터 놓임)</small></span>
+    <span class="muted">비교할 조건 <small>(누른 순서대로 왼쪽부터 놓임 · ✎로 이름 붙이기)</small></span>
     <span class="conditions" id="compare-conditions" role="group" aria-label="비교할 조건"></span>
     <span class="chip-tools"><button type="button" id="compare-all">전체 선택</button><button type="button" id="compare-none">모두 해제</button></span>
   </div>
@@ -1179,6 +1182,11 @@ function chosenConditions(conditions) {
   return result;
 }
 let allConditions = [];
+// Names the user gave conditions, kept in this browser; a condition without one shows its folder.
+const conditionName = c => stored('conditionNames', {})[c] || c;
+// A long folder name breaks after its underscores rather than mid-word.
+const breakable = text => escape(text).replace(/_/g, '_<wbr>');
+const conditionHead = c => conditionName(c) === c ? breakable(c) : `${escape(conditionName(c))}<small>${breakable(c)}</small>`;
 
 function renderCompare() {
   const { conditions, cases } = compareGroups();
@@ -1186,7 +1194,7 @@ function renderCompare() {
   const shown = chosenConditions(conditions);
   $('compare-conditions').innerHTML = conditions.map(c => {
     const at = shown.indexOf(c);
-    return `<button type="button" class="chip" data-condition="${escape(c)}" aria-pressed="${at >= 0}">${at >= 0 ? `<span class="order">${at + 1}</span>` : ''}${escape(c)}</button>`;
+    return `<button type="button" class="chip" data-condition="${escape(c)}" aria-pressed="${at >= 0}" title="${escape(c)}">${at >= 0 ? `<span class="order">${at + 1}</span>` : ''}${escape(conditionName(c))}<span class="rename" data-rename="${escape(c)}" role="button" aria-label="이름 바꾸기" title="이름 바꾸기">✎</span></button>`;
   }).join('') || '<span class="empty">없음</span>';
   const runs = [...cases].flatMap(([name, byCondition]) => shown.flatMap(c =>
     (byCondition.get(c) || []).map((s, i, list) => ({ name, c, s, nth: list.length > 1 ? i + 1 : null }))));
@@ -1255,7 +1263,7 @@ function compareHtml(shown, runs) {
       <span class="pill fp">오탐</span> 막지 말아야 했는데 막은 정당한 Call <span class="okmark" style="min-width:0">✓</span> 둘 다 없음
       <span class="who on" style="min-width:0">공격 시도</span> 에이전트가 주입된 공격을 따름 · 칸을 누르면 Call 목록</div>
     <div class="box"><table class="grid cmp"><colgroup><col class="name">${shown.map(() => '<col>').join('')}</colgroup>
-      <thead><tr><th></th>${shown.map(c => `<th title="${escape(c)}">${escape(c)}</th>`).join('')}</tr></thead>${head}${body}</table></div>`;
+      <thead><tr><th></th>${shown.map(c => `<th title="${escape(c)}">${conditionHead(c)}</th>`).join('')}</tr></thead>${head}${body}</table></div>`;
 }
 
 const hit = (s, c) => {
@@ -1274,7 +1282,7 @@ function runHtml(r) {
       ? `<h4 style="color:var(${r.by[q].length ? color : '--muted'})">${escape(head)}</h4>${list}`
       : `<details><summary><h4 style="display:inline">${escape(head)}</h4></summary>${list}</details>`}</div>`;
   };
-  return `<h3 class="compare-section">${escape(r.name)} · ${escape(r.c)}${r.nth ? ` #${r.nth}` : ''}
+  return `<h3 class="compare-section">${escape(r.name)} · ${escape(conditionName(r.c))}${r.nth ? ` #${r.nth}` : ''}
       ${whoTag(r)}<span>Call을 누르면 그래프에서 엽니다 · 숫자는 이탈 점수</span></h3>
     <div class="run-detail">
       ${card('1b', '✕ 미탐 · 막아야 했는데 안 막은 공격 Call', '--deny', true)}
@@ -1305,6 +1313,16 @@ function setMode(mode) {
 document.querySelectorAll('#modes button').forEach(button => button.addEventListener('click', () => setMode(button.dataset.mode)));
 $('compare-case').addEventListener('input', renderCompare);
 $('compare-conditions').addEventListener('click', event => {
+  const rename = event.target.closest('[data-rename]');
+  if (rename) {
+    const folder = rename.dataset.rename, names = stored('conditionNames', {});
+    const name = prompt(`${folder}\n이 조건을 표에 어떤 이름으로 보일까요? 비우면 폴더 이름으로 돌아갑니다.`, names[folder] || '');
+    if (name === null) return;
+    if (name.trim()) names[folder] = name.trim(); else delete names[folder];
+    store('conditionNames', names);
+    renderCompare();
+    return;
+  }
   const chip = event.target.closest('[data-condition]');
   if (!chip) return;
   const name = chip.dataset.condition, chosen = stored('compareChosen', []);
