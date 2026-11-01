@@ -145,8 +145,6 @@
           color: var(--muted); border-radius: 999px; padding: 4px 12px; font-size: 13px; }
   .chip:hover { border-color: var(--accent); color: var(--text); }
   .chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
-  .chip .order { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%;
-                 background: #fff; color: var(--accent); font-size: 11px; font-weight: 800; }
   .chip .rename { border: 0; background: none; padding: 0 0 0 2px; color: inherit; opacity: .6; font-size: 12px; }
   .chip .rename:hover { opacity: 1; }
   .cmp th small { display: block; color: var(--muted); font-weight: 400; font-size: 11px; }
@@ -259,7 +257,7 @@
     <button id="compare-reload" type="button">새로고침</button>
   </div>
   <div class="compare-tools">
-    <span class="muted">비교할 조건 <small>(누른 순서대로 왼쪽부터 놓임 · ✎로 이름 붙이기)</small></span>
+    <span class="muted">비교할 조건 <small>(최근에 돌린 조건이 왼쪽 · ✎로 이름 붙이기)</small></span>
     <span class="conditions" id="compare-conditions" role="group" aria-label="비교할 조건"></span>
     <span class="chip-tools"><button type="button" id="compare-all">전체 선택</button><button type="button" id="compare-none">모두 해제</button></span>
   </div>
@@ -1143,13 +1141,14 @@ function compareGroups() {
   const conditions = new Map(), cases = new Map();
   for (const s of matching) {
     const condition = conditionOf(s.cwd), name = folderOf(s.cwd);
-    if (!conditions.has(condition)) conditions.set(condition, s.created_at);
+    conditions.set(condition, Math.max(conditions.get(condition) ?? 0, s.created_at));
     if (!cases.has(name)) cases.set(name, new Map());
     const runs = cases.get(name);
     if (!runs.has(condition)) runs.set(condition, []);
     runs.get(condition).push(s);
   }
-  const order = [...conditions].sort((a, b) => a[1] - b[1]).map(([name]) => name);
+  // The condition run most recently first.
+  const order = [...conditions].sort((a, b) => b[1] - a[1]).map(([name]) => name);
   return { conditions: order, cases: new Map([...cases].sort((a, b) => a[0].localeCompare(b[0]))) };
 }
 
@@ -1171,8 +1170,8 @@ async function loadCalls(ids) {
   if (!$('compare').hidden) renderCompare();
 }
 
-// The conditions chosen for comparison, in the order they were chosen. One not seen before is
-// chosen at the end, so a new run shows up without being picked.
+// The conditions chosen for comparison, the most recently run first. One not seen before is
+// chosen, so a new run shows up without being picked.
 function chosenConditions(conditions) {
   const known = new Set(stored('compareKnown', []));
   const chosen = stored('compareChosen', null) ?? conditions;
@@ -1191,10 +1190,10 @@ const conditionHead = c => conditionName(c) === c ? breakable(c) : `${escape(con
 function renderCompare() {
   const { conditions, cases } = compareGroups();
   allConditions = conditions;
-  const shown = chosenConditions(conditions);
+  const chosen = chosenConditions(conditions);
+  const shown = conditions.filter(c => chosen.includes(c));
   $('compare-conditions').innerHTML = conditions.map(c => {
-    const at = shown.indexOf(c);
-    return `<button type="button" class="chip" data-condition="${escape(c)}" aria-pressed="${at >= 0}" title="${escape(c)}">${at >= 0 ? `<span class="order">${at + 1}</span>` : ''}${escape(conditionName(c))}<span class="rename" data-rename="${escape(c)}" role="button" aria-label="이름 바꾸기" title="이름 바꾸기">✎</span></button>`;
+    return `<button type="button" class="chip" data-condition="${escape(c)}" aria-pressed="${shown.includes(c)}" title="${escape(c)}">${escape(conditionName(c))}<span class="rename" data-rename="${escape(c)}" role="button" aria-label="이름 바꾸기" title="이름 바꾸기">✎</span></button>`;
   }).join('') || '<span class="empty">없음</span>';
   const runs = [...cases].flatMap(([name, byCondition]) => shown.flatMap(c =>
     (byCondition.get(c) || []).map((s, i, list) => ({ name, c, s, nth: list.length > 1 ? i + 1 : null }))));
