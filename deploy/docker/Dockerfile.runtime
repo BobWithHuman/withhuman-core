@@ -1,0 +1,11 @@
+# The runtime stage of Dockerfile around a binary built beforehand (scripts/quick-deploy.sh).
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY service /usr/local/bin/service
+
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/service"]
