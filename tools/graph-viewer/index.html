@@ -143,27 +143,19 @@
   .grid th:first-child, .grid td:first-child { position: sticky; left: 0; z-index: 1; background: var(--panel); font-weight: 600; }
   .grid .num { text-align: right; font-variant-numeric: tabular-nums; }
   .grid .zero { color: var(--muted); font-weight: 400; }
-  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 12px; }
-  .card-c { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
-  .card-c h4 { margin: 0; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .card-c .sub { color: var(--muted); font-size: 12px; margin: 2px 0 10px; }
-  .card-c .sub b { color: var(--text); }
-  .quad { display: grid; grid-template-columns: auto 1fr 1fr auto; gap: 4px; align-items: stretch; font-size: 12px; }
-  .quad .h { color: var(--muted); font-size: 11px; text-align: center; align-self: end; }
-  .quad .r { color: var(--muted); font-size: 12px; align-self: center; padding-right: 4px; white-space: nowrap; }
-  .quad .r b { color: var(--text); display: block; font-size: 15px; }
-  .quad .cell { border-radius: 7px; padding: 6px 8px; text-align: center; line-height: 1.2; }
-  .quad .cell small { display: block; font-size: 10px; font-weight: 600; opacity: .8; }
-  .quad .cell b { font-size: 20px; font-variant-numeric: tabular-nums; }
-  .quad .rate { align-self: center; text-align: right; font-size: 12px; color: var(--muted); padding-left: 4px; white-space: nowrap; }
-  .quad .rate b { display: block; font-size: 15px; }
-  .q { font-weight: 700; }
-  .q.zero { color: var(--muted); font-weight: 400; }
-  .runs-table tbody tr { cursor: pointer; }
-  .runs-table tbody tr:hover td, .runs-table tr.picked td { background: var(--bg); }
-  .runs-table th.q-head { text-align: right; }
-  .runs-table td.total { font-weight: 600; border-left: 1px solid var(--line); }
-  .runs-table th.q-head small { font-weight: 400; }
+  .by-condition th:not(:first-child), .by-condition td:not(:first-child) { text-align: right; min-width: 120px; }
+  .by-condition tr.total td { font-weight: 700; border-top: 2px solid var(--line); }
+  .by-condition tr.part td:first-child { padding-left: 26px; font-weight: 400; }
+  .by-condition td .rate { color: var(--muted); font-weight: 400; font-size: 11px; margin-left: 6px; }
+  .by-case td:not(:first-child) { min-width: 190px; cursor: pointer; }
+  .by-case td.fooled { background: color-mix(in srgb, var(--deny) 9%, var(--panel)); }
+  .by-case td:not(:first-child):hover { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .by-case td.picked { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .by-case .who { font-weight: 700; margin-right: 8px; }
+  .by-case .who.yes { color: var(--deny); } .by-case .who.no { color: var(--muted); font-weight: 400; }
+  .by-case .n { font-variant-numeric: tabular-nums; margin-right: 8px; color: var(--muted); }
+  .by-case .n b { font-weight: 700; }
+  .by-case .run + .run { margin-top: 4px; }
   .run-detail { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 10px; margin-top: 10px; }
   .run-card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
   .run-card h4 { margin: 0 0 6px; font-size: 13px; }
@@ -1088,53 +1080,56 @@ function renderCompare() {
   }
   runs.forEach(r => Object.assign(r, tally(callsOf.get(r.s.id))));
   $('compare-summary').innerHTML = summaryHtml(shown, runs);
-  $('compare-matrix').innerHTML = runsTable('에이전트가 속은 실행', '주입된 공격을 하려 한 Call이 있는 실행', runs.filter(r => r.fooled))
-    + runsTable('에이전트가 속지 않은 실행', '공격 Call 없이 정당한 작업만 한 실행', runs.filter(r => !r.fooled));
+  $('compare-matrix').innerHTML = casesHtml(shown, runs);
   const picked = runs.find(r => r.s.id === pickedRun);
   $('compare-detail').innerHTML = picked ? runHtml(picked) : '';
 }
 
-const quadrantCells = by => {
-  const n = q => by[q].length;
-  const cell = q => `<td class="num q${n(q) ? '' : ' zero'}"${n(q) ? ` style="color:var(${QUADRANT[q][1]})"` : ''}>${n(q)}</td>`;
-  return `<td class="num total">${n('1a') + n('1b')}</td>${cell('1a')}${cell('1b')}<td class="num total">${n('2a') + n('2b')}</td>${cell('2a')}${cell('2b')}`;
-};
-const quadrantHeads = `<th class="num">공격 Call</th>${['1a', '1b'].map(q => `<th class="num q-head">${q}<small>${q === '1a' ? '막음' : '놓침'}</small></th>`).join('')}
-  <th class="num">정당한 Call</th>${['2a', '2b'].map(q => `<th class="num q-head">${q}<small>${q === '2a' ? '잘못 막음' : '통과'}</small></th>`).join('')}`;
-
-// One card per condition: its Calls in the four quadrants, attack and legitimate Calls totalled,
-// how many attacks were stopped and how much legitimate work was stopped.
+// Per condition, side by side: runs whose agent was fooled, and its attack and legitimate
+// Calls with how many of each the engine stopped.
 function summaryHtml(shown, runs) {
-  const tint = (q, n) => n ? `background:color-mix(in srgb, var(${QUADRANT[q][1]}) ${q === '2b' ? 12 : 22}%, var(--panel));color:var(--text)`
-    : 'background:var(--bg);color:var(--muted)';
-  const pct = (n, d) => d ? `${Math.round(n / d * 100)}%` : '–';
-  const cards = shown.map(c => {
+  const of = c => {
     const group = runs.filter(r => r.c === c);
     const n = Object.fromEntries(['1a', '1b', '2a', '2b'].map(q => [q, group.reduce((sum, r) => sum + r.by[q].length, 0)]));
-    const attacks = n['1a'] + n['1b'], legit = n['2a'] + n['2b'];
-    const cell = (q, name) => `<div class="cell" style="${tint(q, n[q])}"><small>${q} · ${name}</small><b>${n[q]}</b></div>`;
-    return `<div class="card-c"><h4 title="${escape(c)}">${escape(c)}</h4>
-      <div class="sub">실행 <b>${group.length}</b> · 에이전트가 속은 실행 <b>${group.filter(r => r.fooled).length}</b> · Call <b>${attacks + legit}</b></div>
-      <div class="quad">
-        <span></span><span class="h">엔진이 막음</span><span class="h">안 막음</span><span></span>
-        <div class="r">공격 Call<b>${attacks}</b></div>${cell('1a', '막음')}${cell('1b', '놓침')}
-        <div class="rate">막은 비율<b style="color:var(${attacks ? (n['1b'] ? '--deny' : '--accent') : '--muted'})">${pct(n['1a'], attacks)}</b></div>
-        <div class="r">정당한 Call<b>${legit}</b></div>${cell('2a', '잘못 막음')}${cell('2b', '통과')}
-        <div class="rate">잘못 막은 비율<b style="color:var(${n['2a'] ? '--false' : '--muted'})">${pct(n['2a'], legit)}</b></div>
-      </div></div>`;
-  }).join('');
-  return `<h3 class="compare-section">조건별 요약<span>공격 Call = 에이전트가 속아서 한 Call · 정당한 Call = 원래 작업 · 막음 = 차단 또는 확인</span></h3>
-    <div class="cards">${cards}</div>`;
+    return { runs: group.length, fooled: group.filter(r => r.fooled).length, attacks: n['1a'] + n['1b'], legit: n['2a'] + n['2b'], ...n };
+  };
+  const all = shown.map(of);
+  const pct = (a, b) => b ? `<span class="rate">${Math.round(a / b * 100)}%</span>` : '';
+  const row = (cls, name, value, color) => `<tr class="${cls}"><td>${name}</td>${all.map(st => {
+    const v = value(st);
+    return `<td${color && v.n ? ` style="color:var(${color});font-weight:700"` : ''}>${v.n}${v.rate || ''}</td>`;
+  }).join('')}</tr>`;
+  return `<h3 class="compare-section">조건별 요약<span>막음 = 엔진이 차단 또는 확인 · % 는 그 합계 대비</span></h3>
+    <div class="box"><table class="grid by-condition"><thead><tr><th></th>${shown.map(c => `<th title="${escape(c)}">${escape(c)}</th>`).join('')}</tr></thead><tbody>
+      ${row('total', '실행', st => ({ n: st.runs }))}
+      ${row('part', '에이전트가 속은 실행', st => ({ n: st.fooled, rate: pct(st.fooled, st.runs) }), '--deny')}
+      ${row('total', '공격 Call <span class="muted">(속아서 한 Call)</span>', st => ({ n: st.attacks }))}
+      ${row('part', '1a · 막음', st => ({ n: st['1a'], rate: pct(st['1a'], st.attacks) }), '--accent')}
+      ${row('part', '1b · 놓침', st => ({ n: st['1b'], rate: pct(st['1b'], st.attacks) }), '--deny')}
+      ${row('total', '정당한 Call <span class="muted">(원래 작업)</span>', st => ({ n: st.legit }))}
+      ${row('part', '2a · 잘못 막음', st => ({ n: st['2a'], rate: pct(st['2a'], st.legit) }), '--false')}
+      ${row('part', '2b · 통과', st => ({ n: st['2b'], rate: pct(st['2b'], st.legit) }))}
+    </tbody></table></div>`;
 }
 
-// Every run of one kind, each with its Calls in the four quadrants.
-function runsTable(title, note, list) {
-  const rows = list.map(r => `<tr data-run="${escape(r.s.id)}" class="${r.s.id === pickedRun ? 'picked' : ''}">
-      <td>${escape(r.name)}</td><td title="${escape(r.c)}">${escape(r.c)}${r.nth ? ` #${r.nth}` : ''}</td>${quadrantCells(r.by)}</tr>`).join('')
-    || '<tr><td colspan="8" class="empty">없음</td></tr>';
-  return `<h3 class="compare-section">${escape(title)} (${list.length})<span>${escape(note)} · 행을 누르면 Call 목록이 나옵니다</span></h3>
-    <div class="box"><table class="grid runs-table"><thead><tr><th>케이스</th><th>조건</th>${quadrantHeads}</tr></thead>
-    <tbody>${rows}</tbody></table></div>`;
+// Cases against conditions: whether each run's agent was fooled, and its Calls by quadrant.
+function casesHtml(shown, runs) {
+  const names = [...new Set(runs.map(r => r.name))];
+  const n = (r, q, color) => {
+    const v = r.by[q].length;
+    return `<span class="n">${q} <b${v && color ? ` style="color:var(${color})"` : ''}>${v}</b></span>`;
+  };
+  const cell = (name, c) => {
+    const list = runs.filter(r => r.name === name && r.c === c);
+    if (!list.length) return '<td class="muted" style="cursor:default">–</td>';
+    const fooled = list.some(r => r.fooled), picked = list.some(r => r.s.id === pickedRun);
+    return `<td class="${fooled ? 'fooled' : ''}${picked ? ' picked' : ''}">${list.map(r => `<div class="run" data-run="${escape(r.s.id)}">
+        ${r.nth ? `<span class="muted">#${r.nth}</span> ` : ''}<span class="who ${r.fooled ? 'yes' : 'no'}">${r.fooled ? '속음' : '안 속음'}</span>
+        ${r.fooled ? n(r, '1a', '--accent') + n(r, '1b', '--deny') : ''}${n(r, '2a', '--false')}${n(r, '2b')}</div>`).join('')}</td>`;
+  };
+  return `<h3 class="compare-section">케이스별<span>빨간 칸 = 에이전트가 속은 실행 · 1a 공격 막음 · 1b 공격 놓침 · 2a 정당한 작업 잘못 막음 · 2b 정당한 작업 통과 · 칸을 누르면 Call 목록</span></h3>
+    <div class="box"><table class="grid by-case"><thead><tr><th>케이스</th>${shown.map(c => `<th title="${escape(c)}">${escape(c)}</th>`).join('')}</tr></thead>
+    <tbody>${names.map(name => `<tr><td>${escape(name)}</td>${shown.map(c => cell(name, c)).join('')}</tr>`).join('')}</tbody></table></div>`;
 }
 
 const hit = (s, c) => {
