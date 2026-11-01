@@ -459,12 +459,15 @@ fn offers_the_latest_prompt_as_the_plans_next_step() {
     let prompt = request.questions["cause"].criteria["s0"]
         .as_deref()
         .unwrap();
-    assert!(prompt.contains("계획의 다음 단계"), "{prompt}");
-    assert!(prompt.contains("`intents`의 현재 턴"), "{prompt}");
+    assert!(prompt.contains("next step of the plan"), "{prompt}");
+    assert!(
+        prompt.contains("marked `(현재 턴)` in `intents`"),
+        "{prompt}"
+    );
     assert!(
         request.questions["cause"]
             .instructions
-            .contains("내용이 달랐다면 이 호출도 달라졌을 것이라면")
+            .contains("had been different and the call would then")
     );
     assert!(
         !serde_json::to_string(&request)
@@ -510,7 +513,7 @@ fn asks_once_about_the_cause_and_the_deviation() {
     assert!(
         request.questions["expected"]
             .instructions
-            .contains("품질 문제는 어긴 것이 아니다")
+            .contains("Quality issues such")
     );
     let state_keys: Vec<&str> = request.state.keys().map(String::as_str).collect();
     assert_eq!(state_keys, ["action", "intents", "segments_s2", "turn"]);
