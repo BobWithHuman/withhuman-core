@@ -130,7 +130,15 @@
   .compare-tools { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin-bottom: 4px; }
   .compare-tools input[type=search] { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line);
                                       border-radius: 6px; padding: 4px 8px; width: 200px; }
-  .conditions { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+  .conditions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .chip { display: inline-flex; gap: 6px; align-items: center; border: 1.5px solid var(--line); background: var(--panel);
+          color: var(--muted); border-radius: 999px; padding: 4px 12px; font-size: 13px; }
+  .chip:hover { border-color: var(--accent); color: var(--text); }
+  .chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .chip .order { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%;
+                 background: #fff; color: var(--accent); font-size: 11px; font-weight: 800; }
+  .chip-tools { display: inline-flex; gap: 6px; margin-left: 4px; }
+  .chip-tools button { font-size: 12px; padding: 3px 9px; }
   .compare-section { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; font-size: 13px; font-weight: 700;
                      color: var(--text); margin: 20px 0 6px; }
   .compare-section span { font-size: 12px; font-weight: 400; color: var(--muted); }
@@ -235,8 +243,12 @@
 <section id="compare" hidden>
   <div class="compare-tools">
     <label>케이스 <input id="compare-case" type="search" value="core-00" placeholder="예: core-00, tidy" aria-label="케이스 검색"></label>
-    <span class="muted">조건</span><span class="conditions" id="compare-conditions"></span>
     <button id="compare-reload" type="button">새로고침</button>
+  </div>
+  <div class="compare-tools">
+    <span class="muted">비교할 조건 <small>(누른 순서대로 왼쪽부터 놓임)</small></span>
+    <span class="conditions" id="compare-conditions" role="group" aria-label="비교할 조건"></span>
+    <span class="chip-tools"><button type="button" id="compare-all">전체 선택</button><button type="button" id="compare-none">모두 해제</button></span>
   </div>
   <div id="compare-summary"></div>
   <div id="compare-matrix"></div>
@@ -1073,15 +1085,33 @@ async function loadCalls(ids) {
   if (!$('compare').hidden) renderCompare();
 }
 
+// The conditions chosen for comparison, in the order they were chosen. One not seen before is
+// chosen at the end, so a new run shows up without being picked.
+function chosenConditions(conditions) {
+  const known = new Set(stored('compareKnown', []));
+  const chosen = stored('compareChosen', null) ?? conditions;
+  const result = chosen.filter(c => conditions.includes(c)).concat(conditions.filter(c => !known.has(c) && !chosen.includes(c)));
+  store('compareKnown', [...new Set([...known, ...conditions])]);
+  store('compareChosen', result);
+  return result;
+}
+let allConditions = [];
+
 function renderCompare() {
   const { conditions, cases } = compareGroups();
-  const hidden = new Set(stored('hiddenConditions', []));
-  $('compare-conditions').innerHTML = conditions.map(c =>
-    `<label><input type="checkbox" data-condition="${escape(c)}"${hidden.has(c) ? '' : ' checked'}> ${escape(c)}</label>`).join('')
-    || '<span class="empty">없음</span>';
-  const shown = conditions.filter(c => !hidden.has(c));
+  allConditions = conditions;
+  const shown = chosenConditions(conditions);
+  $('compare-conditions').innerHTML = conditions.map(c => {
+    const at = shown.indexOf(c);
+    return `<button type="button" class="chip" data-condition="${escape(c)}" aria-pressed="${at >= 0}">${at >= 0 ? `<span class="order">${at + 1}</span>` : ''}${escape(c)}</button>`;
+  }).join('') || '<span class="empty">없음</span>';
   const runs = [...cases].flatMap(([name, byCondition]) => shown.flatMap(c =>
     (byCondition.get(c) || []).map((s, i, list) => ({ name, c, s, nth: list.length > 1 ? i + 1 : null }))));
+  if (!shown.length) {
+    $('compare-summary').innerHTML = '<p class="empty">위에서 비교할 조건을 누르세요.</p>';
+    $('compare-matrix').innerHTML = $('compare-detail').innerHTML = '';
+    return;
+  }
   if (!runs.length) {
     $('compare-summary').innerHTML = '<p class="empty">맞는 케이스가 없습니다. 케이스 이름 일부를 쉼표로 나눠 입력하세요 (예: core-001, core-002).</p>';
     $('compare-matrix').innerHTML = $('compare-detail').innerHTML = '';
@@ -1191,14 +1221,19 @@ function setMode(mode) {
 
 document.querySelectorAll('#modes button').forEach(button => button.addEventListener('click', () => setMode(button.dataset.mode)));
 $('compare-case').addEventListener('input', renderCompare);
-$('compare-conditions').addEventListener('change', event => {
-  const box = event.target.closest('[data-condition]');
-  if (!box) return;
-  const names = new Set(stored('hiddenConditions', []));
-  if (box.checked) names.delete(box.dataset.condition); else names.add(box.dataset.condition);
-  store('hiddenConditions', [...names]);
+$('compare-conditions').addEventListener('click', event => {
+  const chip = event.target.closest('[data-condition]');
+  if (!chip) return;
+  const name = chip.dataset.condition, chosen = stored('compareChosen', []);
+  store('compareChosen', chosen.includes(name) ? chosen.filter(c => c !== name) : [...chosen, name]);
   renderCompare();
 });
+$('compare-all').addEventListener('click', () => {
+  const chosen = stored('compareChosen', []);
+  store('compareChosen', [...chosen, ...allConditions.filter(c => !chosen.includes(c))]);
+  renderCompare();
+});
+$('compare-none').addEventListener('click', () => { store('compareChosen', []); renderCompare(); });
 $('compare').addEventListener('click', event => {
   const call = event.target.closest('[data-open]');
   if (call) { openInGraph(call.dataset.open, Number(call.dataset.call)); return; }
