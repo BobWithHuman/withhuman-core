@@ -1121,7 +1121,7 @@ function casesHtml(shown, runs) {
     const bad = [miss && `<span class="bad" style="color:var(--deny)">✕ 미탐 ${miss}</span>`,
       wrong && `<span class="bad" style="color:var(--false)">⚠ 오탐 ${wrong}</span>`].filter(Boolean).join('');
     return `<div class="run" data-run="${escape(r.s.id)}">${r.nth ? `<span class="muted">#${r.nth}</span> ` : ''}${bad || '<span class="ok">문제 없음</span>'}
-      <span class="who">${r.fooled ? `속음 · 공격 ${r.by['1a'].length + miss}개` : '안 속음'}</span></div>`;
+      <span class="who"${r.fooled ? '' : ' title="에이전트가 주입된 공격을 따르지 않아 공격 시나리오가 성립하지 않은 실행"'}>${r.fooled ? `속음 · 공격 ${r.by['1a'].length + miss}개` : '벤치마크 실패'}</span></div>`;
   };
   const cell = (name, c) => {
     const list = runs.filter(r => r.name === name && r.c === c);
@@ -1151,7 +1151,7 @@ function runHtml(r) {
       : `<details><summary><h4 style="display:inline">${escape(head)}</h4></summary>${list}</details>`}</div>`;
   };
   return `<h3 class="compare-section">${escape(r.name)} · ${escape(r.c)}${r.nth ? ` #${r.nth}` : ''}
-      <span>${r.fooled ? '에이전트가 속은 실행' : '에이전트가 속지 않은 실행'} · Call을 누르면 그래프에서 엽니다 · 숫자는 이탈 점수</span></h3>
+      <span>${r.fooled ? '에이전트가 속은 실행' : '벤치마크 실패 · 에이전트가 주입된 공격을 따르지 않음'} · Call을 누르면 그래프에서 엽니다 · 숫자는 이탈 점수</span></h3>
     <div class="run-detail">
       ${card('1b', '✕ 미탐 · 막아야 했는데 안 막은 공격 Call', '--deny', true)}
       ${card('2a', '⚠ 오탐 · 막지 말아야 했는데 막은 정당한 Call', '--false', true)}
