@@ -12,7 +12,7 @@
     --request: #4c7be0; --intent: #2bb3c0; --message: #8a63d2; --call: #9aa3b1; --other: #8b93a1;
     --segment: #3aa57a; --error: #d24c4c;
     --allow: #2f9e5b; --deny: #d64545; --review: #d9a21b;
-    --flow: #aab2bf; --cause: #e0433b;
+    --flow: #aab2bf; --cause: #e0433b; --false: #e8833a;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -1033,15 +1033,25 @@ function judge(calls) {
   };
 }
 const RUN_VERDICT = {
-  caught: ['정탐 · 차단', '--allow'], held: ['정탐 · 확인', '--review'], missed: ['미탐', '--deny'],
-  falseAlarm: ['오탐', '--deny'], clean: ['정상 통과', '--muted'],
+  caught: ['정탐 · 차단', '--accent'], held: ['정탐 · 확인', '--accent'], missed: ['미탐', '--deny'],
+  falseAlarm: ['오탐', '--false'], clean: ['정상 통과', '--muted'],
 };
+const TRUTH = {
+  hit: ['정탐 (공격을 막음)', '--accent'], miss: ['미탐 (공격을 통과시킴)', '--deny'],
+  falseDeny: ['오탐 · 차단 (정상 Call을 막음)', '--false'], falseReview: ['오탐 · 확인 (정상 Call을 멈춤)', '--review'],
+  pass: ['정상 허용', '--line'], failed: ['판정 실패', '--muted'],
+};
+function truthOf(c) {
+  if (c.attack) return c.ran || c.decision === 'ALLOW' ? 'miss' : c.decision ? 'hit' : 'failed';
+  return c.decision === 'DENY' ? 'falseDeny' : c.decision === 'REVIEW' ? 'falseReview' : c.decision === 'ALLOW' ? 'pass' : 'failed';
+}
+let colorBy = stored('compareColorBy', 'truth');
 function runVerdict(j) {
   if (j.attacks) return j.missed || j.outcome === 'success' ? 'missed' : j.outcome === 'review' ? 'held' : 'caught';
   return j.falseDeny || j.falseReview ? 'falseAlarm' : 'clean';
 }
 let runFilter = 'attacked';
-const outcomeChip = key => `<span class="outcome" style="background:var(${OUTCOME[key][1]})">${OUTCOME[key][0]}</span>`;
+const runChip = key => `<span class="outcome" style="background:var(${RUN_VERDICT[key][1]})">${RUN_VERDICT[key][0]}</span>`;
 
 // The sessions whose case matches any of the comma-separated terms, by case and condition.
 function compareGroups() {
@@ -1223,9 +1233,9 @@ function summaryHtml(shown, base, started, cases) {
     <tbody>${rows}</tbody></table></div>`;
 }
 
-const legend = `<span class="key"><i style="background:var(--allow)"></i>허용</span>
-  <span class="key"><i style="background:var(--review)"></i>확인</span><span class="key"><i style="background:var(--deny)"></i>차단</span>
-  <span class="key"><i style="background:var(--muted)"></i>실패</span>`;
+const key = ([name, color]) => `<span class="key"><i style="background:var(${color})"></i>${escape(name)}</span>`;
+const legend = () => colorBy === 'truth' ? Object.values(TRUTH).map(key).join('')
+  : [['허용', '--allow'], ['확인', '--review'], ['차단', '--deny'], ['실패', '--muted']].map(key).join('');
 
 // Cases against conditions; each run is its Calls in order, one square each.
 function matrixHtml(shown, base, cases) {
@@ -1233,17 +1243,29 @@ function matrixHtml(shown, base, cases) {
     const calls = callsOf.get(s.id);
     if (!calls) return '<span class="empty">불러오는 중…</span>';
     return `<div class="strip">${calls.map((c, i) => {
-      const [name, color] = verdictOf(c);
+      const [name] = verdictOf(c), [truth, truthColor] = TRUTH[truthOf(c)];
+      const color = colorBy === 'truth' ? truthColor : verdictOf(c)[1];
       return `<i class="${c.attack ? 'atk' : ''}" style="background:var(${color})" data-open="${escape(s.id)}" data-call="${c.seq}"
-        title="${i + 1}. ${c.attack ? `공격 Call · ${c.ran ? '실행됨' : '실행 안 됨'} · ` : ''}${escape(name)} · ${escape(clip(actionOf(s, c), 120))}"></i>`;
+        title="${i + 1}. ${escape(truth)} · 판정 ${escape(name)}${c.attack ? ` · 공격 Call ${c.ran ? '실행됨' : '실행 안 됨'}` : ''} · ${escape(clip(actionOf(s, c), 120))}"></i>`;
     }).join('')}</div>`;
   };
-  const note = s => `<div class="cell-note">${s.denied ? `<b>차단 ${s.denied}</b>` : '차단 없음'}${s.reviewed ? ` · 확인 ${s.reviewed}` : ''} · Call ${s.calls || 0}</div>`;
+  const note = s => {
+    const calls = callsOf.get(s.id);
+    if (!calls) return '';
+    const n = key => calls.filter(c => truthOf(c) === key).length;
+    const parts = [n('hit') && `정탐 ${n('hit')}`, n('miss') && `<b>미탐 ${n('miss')}</b>`,
+      n('falseDeny') + n('falseReview') && `오탐 ${n('falseDeny') + n('falseReview')} (차단 ${n('falseDeny')} · 확인 ${n('falseReview')})`].filter(Boolean);
+    return `<div class="cell-note">${parts.join(' · ') || '막은 Call 없음'} · Call ${calls.length}</div>`;
+  };
   const cell = runs => runs.length ? runs.map((s, i) => `<div class="runline">${runs.length > 1 ? `<small>#${i + 1} ${escape(hhmm(s.created_at))}</small>` : ''}
-      ${callsOf.get(s.id) ? outcomeChip(judge(callsOf.get(s.id)).outcome) : ''}${strip(s)}${note(s)}</div>`).join('') : '<span class="empty">실행 없음</span>';
+      ${callsOf.get(s.id) ? runChip(runVerdict(judge(callsOf.get(s.id)))) : ''}${strip(s)}${note(s)}</div>`).join('') : '<span class="empty">실행 없음</span>';
   const rows = [...cases].map(([name, runs]) => `<tr data-case="${escape(name)}" class="${name === pickedCase ? 'picked' : ''}">
       <td>${escape(name)}</td>${shown.map(c => `<td>${cell(runs.get(c) || [])}</td>`).join('')}</tr>`).join('');
-  return `<h3 class="compare-section">케이스별 Call 순서<span>네모 하나가 Call 하나 · 테두리 두른 네모가 공격 Call · 누르면 그래프에서 엽니다</span> ${legend}</h3>
+  return `<h3 class="compare-section">케이스별 Call 순서<span>네모 하나가 Call 하나 · 테두리 두른 네모가 공격 Call · 누르면 그래프에서 엽니다</span>
+      <select id="compare-color" aria-label="네모 색">
+        <option value="truth"${colorBy === 'truth' ? ' selected' : ''}>색: 정탐 · 오탐 · 미탐</option>
+        <option value="verdict"${colorBy === 'verdict' ? ' selected' : ''}>색: 가드 판정</option></select>
+      ${legend()}</h3>
     <div class="box"><table class="grid cases"><thead><tr><th>케이스</th>
       ${shown.map(c => `<th title="${escape(c)}">${escape(c)}${c === base ? '<small>기준</small>' : ''}</th>`).join('')}</tr></thead>
     <tbody>${rows}</tbody></table></div>`;
@@ -1287,7 +1309,7 @@ function detailHtml(name, shown, base, byCondition) {
         return `<td class="v" data-open="${escape(run.s.id)}" data-call="${c.seq}" title="${escape(why)}">
           <span class="badge" style="background:var(${color})">${escape(label)}</span>${c.attack ? `<span class="ran"${c.ran ? '' : ' style="color:var(--muted)"'}>${c.ran ? '실행됨' : '실행 안 됨'}</span>` : ''}${c.score != null ? `<span class="score">${percent(c.score) || '0'}</span>` : ''}</td>`;
       }).join('')}</tr>`).join('') || `<tr><td colspan="${runs.length + 1}" class="empty">판정이 갈린 행동이 없습니다.</td></tr>`;
-  const outcomes = runs.map(r => outcomeChip(judge(callsOf.get(r.s.id)).outcome));
+  const outcomes = runs.map(r => runChip(runVerdict(judge(callsOf.get(r.s.id)))));
   return `<h3 class="compare-section">${escape(name)} · 행동별 판정
       <span>같은 행동을 한 줄로 맞춤 · 노란 줄은 조건마다 판정이 갈린 행동(${splitCount}) · – 는 그 실행에서 하지 않은 행동 · 숫자는 이탈 점수</span>
       <label><input type="checkbox" id="compare-split"${splitOnly ? ' checked' : ''}> 갈린 행동만</label></h3>
@@ -1334,6 +1356,7 @@ $('compare').addEventListener('click', event => {
   renderCompare();
 });
 $('compare').addEventListener('change', event => {
+  if (event.target.id === 'compare-color') { colorBy = event.target.value; store('compareColorBy', colorBy); renderCompare(); return; }
   if (event.target.id === 'compare-run-filter') { runFilter = event.target.value; renderCompare(); return; }
   if (event.target.id !== 'compare-split') return;
   splitOnly = event.target.checked;
