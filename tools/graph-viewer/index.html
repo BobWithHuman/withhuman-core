@@ -714,7 +714,9 @@ function deviationHtml(trace) {
 // The check of the Call against the user's prompt (Decision Module `check`), apart from the
 // first question: where the trace left the Call, the second question's score on its own gauge,
 // and what that question saw and answered.
-const CHECK_CUT = { file: 0.2, purpose: 0.4 };
+// Cuts of the Decision Module; a file change was asked `requested` (cut 0.2) before `unasked`.
+const CHECK_CUT = { file: 0.5, purpose: 0.4 };
+const checkCut = (c, exchange) => c.branch === 'file' && exchange?.request?.questions?.requested ? 0.2 : CHECK_CUT[c.branch];
 const CHECK_LOW = 0.15;
 const BRANCH_TEXT = {
   safeguard: '에이전트 설정·훅을 바꾸는 호출 → 규칙으로 차단 (2차 질문 없음)',
@@ -728,10 +730,10 @@ function checkHtml(trace) {
   const c = trace.check;
   if (!c) return '';
   const exchange = (trace.jev || []).find(x => x.stage === 'check');
-  const cut = CHECK_CUT[c.branch];
+  const cut = checkCut(c, exchange);
   const facts = `<dl class="facts">
       <dt>분기</dt><dd>${escape(BRANCH_TEXT[c.branch] || c.branch)}</dd>
-      ${c.breach != null ? `<dt>1차 판단</dt><dd>${c.breach ? '위반이 1등 (또는 사용자 조건 위반 ≥ 50%)' : '위반 없음이 1등'}
+      ${c.breach != null ? `<dt>1차 판단</dt><dd>${c.breach ? '위반이 1등 (또는 사용자 조건 위반 ≥ 70%)' : '위반 없음이 1등'}
         <span class="muted">· 의심 ${percent(c.doubt) || '0'} (기준 ${percent(CHECK_LOW)})</span></dd>` : ''}
       <dt>2차 판정</dt><dd>${c.verdict ? `<span class="badge" style="background:${css(DECISION_COLOR[c.verdict] || '--other')}">${escape(c.verdict)}</span>`
         : `<span class="muted">${cut ? '2차 답 없음 → 1차 이탈 점수로 판정' : '–'}</span>`}</dd>
@@ -742,7 +744,7 @@ function checkHtml(trace) {
     const below = c.breach ? '--review' : '--allow';
     const zones = [[cut, below], [1 - cut, '--deny']]
       .map(([w, color]) => `<i style="width:${w * 100}%;background:var(${color})"></i>`).join('');
-    const label = c.branch === 'file' ? '사용자가 요청하지 않았을 확률' : '요청 밖 목표·사용자에 반할 확률';
+    const label = c.branch === 'file' ? '요청 밖의 것을 추가할 확률' : '요청 밖 목표·사용자에 반할 확률';
     gauge = `<h4>2차 점수 · ${escape(label)}</h4>
       <div class="gauge"><div class="marker" style="left:${Math.min(1, c.unwanted) * 100}%">${percent(c.unwanted) || '0'}</div><div class="zones">${zones}</div></div>
       <p class="muted">${c.breach ? '확인' : '허용'} &lt; ${percent(cut)} ≤ 차단${c.breach ? ' · 1차가 위반이라 기준 미만이면 확인' : ''}</p>`;
@@ -760,6 +762,7 @@ function checkExchangeHtml(exchange) {
   const answers = exchange.response?.answers || {};
   const results = Object.entries(answers).map(([key, answer]) => {
     if (key === 'requested') return `<h4>requested · 사용자가 요청했는가</h4>${bar(answer.noul, 'chosen')}`;
+    if (key === 'unasked') return `<h4>unasked · 요청 밖의 것을 추가하는가</h4>${bar(answer.noul, 'chosen')}`;
     const rows = Object.entries(answer.probabilities || {}).sort((a, b) => b[1] - a[1]).map(([option, p]) => {
       const m = /^g(\d+)(?:p(\d+))?$/.exec(option);
       const name = m ? `${nodeName(Number(m[1]))}${m[2] != null ? ` ¶${m[2]}` : ''}` : option;
