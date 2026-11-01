@@ -1010,8 +1010,8 @@ const actionOf = (s, c) => `${c.tool_name || 'Call'} ${localTo(s, c.brief)}`.tri
 // held for review): 1a an attack stopped, 1b an attack let through, 2a legitimate work stopped,
 // 2b legitimate work let through.
 const QUADRANT = {
-  '1a': ['공격 Call · 막음', '--accent'], '1b': ['공격 Call · 안 막음', '--deny'],
-  '2a': ['정당한 Call · 막음', '--false'], '2b': ['정당한 Call · 안 막음', '--muted'],
+  '1a': ['정탐', '--accent'], '1b': ['미탐', '--deny'],
+  '2a': ['오탐', '--false'], '2b': ['정당한 Call · 안 막음', '--muted'],
 };
 const quadrantOf = c => {
   const stopped = (c.decision === 'DENY' || c.decision === 'REVIEW') && !c.ran;
@@ -1105,10 +1105,10 @@ function summaryHtml(shown, runs) {
   }).join('')}</tr>`;
   return `<h3 class="compare-section">조건별 요약<span>위 두 줄이 문제 · 막음 = 엔진이 차단 또는 확인</span></h3>
     <div class="box"><table class="grid by-condition"><thead><tr><th></th>${shown.map(c => `<th title="${escape(c)}">${escape(c)}</th>`).join('')}</tr></thead><tbody>
-      ${row('problem miss', '✕ 막아야 했는데 안 막음 <span class="muted">(1b · 공격 Call 중)</span>', st => ({ n: st['1b'], rate: pct(st['1b'], st.attacks) }), '--deny')}
-      ${row('problem false', '⚠ 막지 말아야 했는데 막음 <span class="muted">(2a · 정당한 Call 중)</span>', st => ({ n: st['2a'], rate: pct(st['2a'], st.legit) }), '--false')}
+      ${row('problem miss', '✕ 미탐 <span class="muted">(1b · 막아야 했는데 안 막은 공격 Call)</span>', st => ({ n: st['1b'], rate: pct(st['1b'], st.attacks) }), '--deny')}
+      ${row('problem false', '⚠ 오탐 <span class="muted">(2a · 막지 말아야 했는데 막은 정당한 Call)</span>', st => ({ n: st['2a'], rate: pct(st['2a'], st.legit) }), '--false')}
       ${row('rest gap', '실행 · 그중 에이전트가 속은 실행', st => ({ n: `${st.runs} · ${st.fooled}` }))}
-      ${row('rest', '공격 Call · 그중 막음 (1a)', st => ({ n: `${st.attacks} · ${st['1a']}` }))}
+      ${row('rest', '공격 Call · 그중 정탐 (1a)', st => ({ n: `${st.attacks} · ${st['1a']}` }))}
       ${row('rest', '정당한 Call · 그중 통과 (2b)', st => ({ n: `${st.legit} · ${st['2b']}` }))}
     </tbody></table></div>`;
 }
@@ -1118,8 +1118,8 @@ function casesHtml(shown, runs) {
   const names = [...new Set(runs.map(r => r.name))];
   const line = r => {
     const miss = r.by['1b'].length, wrong = r.by['2a'].length;
-    const bad = [miss && `<span class="bad" style="color:var(--deny)">✕ 놓침 ${miss}</span>`,
-      wrong && `<span class="bad" style="color:var(--false)">⚠ 잘못 막음 ${wrong}</span>`].filter(Boolean).join('');
+    const bad = [miss && `<span class="bad" style="color:var(--deny)">✕ 미탐 ${miss}</span>`,
+      wrong && `<span class="bad" style="color:var(--false)">⚠ 오탐 ${wrong}</span>`].filter(Boolean).join('');
     return `<div class="run" data-run="${escape(r.s.id)}">${r.nth ? `<span class="muted">#${r.nth}</span> ` : ''}${bad || '<span class="ok">문제 없음</span>'}
       <span class="who">${r.fooled ? `속음 · 공격 ${r.by['1a'].length + miss}개` : '안 속음'}</span></div>`;
   };
@@ -1129,7 +1129,7 @@ function casesHtml(shown, runs) {
     const cls = list.some(r => r.by['1b'].length) ? 'miss' : list.some(r => r.by['2a'].length) ? 'false' : '';
     return `<td class="${cls}${list.some(r => r.s.id === pickedRun) ? ' picked' : ''}">${list.map(line).join('')}</td>`;
   };
-  return `<h3 class="compare-section">케이스별<span>빨강 = 공격을 놓친 실행 · 주황 = 정당한 작업을 막은 실행 · 칸을 누르면 그 Call들이 나옵니다</span></h3>
+  return `<h3 class="compare-section">케이스별<span>빨강 = 미탐이 있는 실행 · 주황 = 오탐이 있는 실행 · 칸을 누르면 그 Call들이 나옵니다</span></h3>
     <div class="box"><table class="grid by-case"><thead><tr><th>케이스</th>${shown.map(c => `<th title="${escape(c)}">${escape(c)}</th>`).join('')}</tr></thead>
     <tbody>${names.map(name => `<tr><td>${escape(name)}</td>${shown.map(c => cell(name, c)).join('')}</tr>`).join('')}</tbody></table></div>`;
 }
@@ -1153,9 +1153,9 @@ function runHtml(r) {
   return `<h3 class="compare-section">${escape(r.name)} · ${escape(r.c)}${r.nth ? ` #${r.nth}` : ''}
       <span>${r.fooled ? '에이전트가 속은 실행' : '에이전트가 속지 않은 실행'} · Call을 누르면 그래프에서 엽니다 · 숫자는 이탈 점수</span></h3>
     <div class="run-detail">
-      ${card('1b', '✕ 막아야 했는데 안 막은 공격 Call', '--deny', true)}
-      ${card('2a', '⚠ 막지 말아야 했는데 막은 정당한 Call', '--false', true)}
-      ${card('1a', '막은 공격 Call', '--accent', false)}
+      ${card('1b', '✕ 미탐 · 막아야 했는데 안 막은 공격 Call', '--deny', true)}
+      ${card('2a', '⚠ 오탐 · 막지 말아야 했는데 막은 정당한 Call', '--false', true)}
+      ${card('1a', '정탐 · 막은 공격 Call', '--accent', false)}
       ${card('2b', '통과한 정당한 Call', '--muted', false)}
     </div>`;
 }
