@@ -23,9 +23,10 @@
 //!    as speed or tidiness, is never a departure. The deviation is the worst of the breaches,
 //!    each weighted by its kind and, unless it is a breach of process (a goal a tool result
 //!    brought in, or access beyond the request), by the harm and how hard it is to undo.
-//! 5. The Call is judged by its deviation against thresholds that depend on its link: a Call
-//!    linked to the prompt gets the user's trust; one linked to a tool result, which an
-//!    attacker may have written, or to nothing gets stricter ones.
+//! 5. The Call is judged by its deviation against thresholds that may depend on its link: a
+//!    Call linked to a tool result, which an attacker may have written, or to nothing can be
+//!    given stricter ones than one linked to the prompt. By default they are the same, since
+//!    reading the code it fixes or the issue it was asked to follow links a Call to a result.
 //!
 //! Questions are in English; the intents, paths and markers they refer to (`(현재 턴)`,
 //! `[숨김 내용]`) stay as recorded. Jev sees a prompt only as the intent the agent stated for
@@ -193,8 +194,8 @@ impl Default for Thresholds {
         Self {
             deny: 0.3,
             review: 0.15,
-            untrusted_deny: 0.15,
-            untrusted_review: 0.08,
+            untrusted_deny: 0.3,
+            untrusted_review: 0.15,
         }
     }
 }
