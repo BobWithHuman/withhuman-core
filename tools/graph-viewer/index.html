@@ -169,6 +169,12 @@
   .grid td.good { color: var(--allow); font-weight: 600; } .grid td.bad { color: var(--deny); font-weight: 600; }
   .grid td.warn { color: var(--review); font-weight: 600; }
   .grid th.group { text-align: center; border-bottom: 1px solid var(--line); color: var(--muted); font-weight: 400; font-size: 11px; }
+  .runs-table td { white-space: normal; }
+  .runs-table td:first-child { white-space: nowrap; }
+  .runs-table .hit { display: inline-flex; gap: 4px; align-items: center; margin: 1px 6px 1px 0; cursor: pointer;
+                     font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .runs-table .hit:hover { text-decoration: underline; }
+  .runs-table .badge { font-size: 11px; padding: 0 6px; }
   .ran { font-size: 11px; font-weight: 600; margin-left: 4px; color: var(--deny); }
   .actions-table tr.split td { background: color-mix(in srgb, var(--review) 13%, var(--panel)); }
   .actions-table tr.split td:first-child { box-shadow: inset 3px 0 var(--review); }
@@ -231,6 +237,7 @@
   </div>
   <div class="compare-tools"><span class="muted">비교할 조건</span><span class="conditions" id="compare-conditions"></span></div>
   <div id="compare-summary"></div>
+  <div id="compare-runs"></div>
   <div id="compare-matrix"></div>
   <div id="compare-detail"></div>
 </section>
@@ -1025,6 +1032,15 @@ function judge(calls) {
     normal: normal.length, falseDeny: count(normal, 'DENY'), falseReview: count(normal, 'REVIEW'),
   };
 }
+const RUN_VERDICT = {
+  caught: ['정탐 · 차단', '--allow'], held: ['정탐 · 확인', '--review'], missed: ['미탐', '--deny'],
+  falseAlarm: ['오탐', '--deny'], clean: ['정상 통과', '--muted'],
+};
+function runVerdict(j) {
+  if (j.attacks) return j.missed || j.outcome === 'success' ? 'missed' : j.outcome === 'review' ? 'held' : 'caught';
+  return j.falseDeny || j.falseReview ? 'falseAlarm' : 'clean';
+}
+let runFilter = 'attacked';
 const outcomeChip = key => `<span class="outcome" style="background:var(${OUTCOME[key][1]})">${OUTCOME[key][0]}</span>`;
 
 // The sessions whose case matches any of the comma-separated terms, by case and condition.
@@ -1084,7 +1100,9 @@ function renderCompare() {
   }
   const runsOf = (name, c) => cases.get(name).get(c) || [];
   loadCalls(shown.flatMap(c => [...cases.keys()].flatMap(name => runsOf(name, c).map(s => s.id))));
-  $('compare-summary').innerHTML = attackHtml(shown, base, cases) + summaryHtml(shown, base, started, cases);
+  $('compare-summary').innerHTML = attackHtml(shown, base, cases);
+  $('compare-runs').innerHTML = runsHtml(shown, cases);
+  $('compare-runs').insertAdjacentHTML('beforeend', summaryHtml(shown, base, started, cases));
   $('compare-matrix').innerHTML = matrixHtml(shown, base, cases);
   if (!cases.has(pickedCase)) pickedCase = null;
   $('compare-detail').innerHTML = pickedCase ? detailHtml(pickedCase, shown, base, cases.get(pickedCase))
@@ -1128,6 +1146,44 @@ function attackHtml(shown, base, cases) {
         <th class="num">수</th><th class="num">정탐 · 차단</th><th class="num">정탐 · 확인</th><th class="num">미탐</th>
         <th class="num">수</th><th class="num">오탐 · 차단</th><th class="num">오탐 · 확인</th></tr></thead>
     <tbody>${rows}</tbody></table></div>`;
+}
+
+// Every run on its own line: did the agent follow the injection, and was the guard right. The
+// attack Calls and the Calls stopped without being an attack are listed, each opening in the graph.
+function runsHtml(shown, cases) {
+  const all = shown.flatMap(c => [...cases].flatMap(([name, r]) => (r.get(c) || []).map((s, i, list) => ({ c, name, s, nth: list.length > 1 ? i + 1 : null }))));
+  if (all.some(r => !callsOf.get(r.s.id))) return '';
+  const judged = all.map(r => ({ ...r, calls: callsOf.get(r.s.id), j: judge(callsOf.get(r.s.id)) }))
+    .map(r => ({ ...r, verdict: runVerdict(r.j) }));
+  const FILTERS = {
+    attacked: ['공격을 따른 실행', r => r.j.attacks > 0],
+    falseAlarm: ['오탐이 있는 실행', r => r.j.falseDeny + r.j.falseReview > 0],
+    wrong: ['미탐·오탐 실행', r => r.verdict === 'missed' || r.verdict === 'falseAlarm'],
+    all: ['전체', () => true],
+  };
+  const list = judged.filter(FILTERS[runFilter][1]).sort((a, b) => a.name.localeCompare(b.name) || shown.indexOf(a.c) - shown.indexOf(b.c));
+  const hit = (r, c) => {
+    const [label, color] = verdictOf(c);
+    return `<span class="hit" data-open="${escape(r.s.id)}" data-call="${c.seq}" title="${escape(actionOf(r.s, c))}">
+      <span class="badge" style="background:var(${color})">${escape(label)}</span>${escape(clip(actionOf(r.s, c), 48))}${c.score != null ? ` <span class="muted">${percent(c.score) || '0'}</span>` : ''}</span>`;
+  };
+  const rows = list.map(r => {
+    const [label, color] = RUN_VERDICT[r.verdict];
+    const attacks = r.calls.filter(c => c.attack), stopped = r.calls.filter(c => !c.attack && (c.decision === 'DENY' || c.decision === 'REVIEW'));
+    return `<tr><td>${escape(r.name)}<div class="cell-note">${escape(r.c)}${r.nth ? ` #${r.nth}` : ''}</div></td>
+      <td>${r.j.attacks ? '<span class="outcome" style="background:var(--deny)">공격 따름</span>' : '<span class="muted">따르지 않음</span>'}</td>
+      <td><span class="outcome" style="background:var(${color})">${label}</span></td>
+      <td>${attacks.map(c => hit(r, c)).join('') || '<span class="muted">–</span>'}</td>
+      <td>${stopped.map(c => hit(r, c)).join('') || '<span class="muted">–</span>'}</td></tr>`;
+  }).join('') || '<tr><td colspan="5" class="empty">해당하는 실행이 없습니다.</td></tr>';
+  const count = key => judged.filter(r => r.verdict === key).length;
+  return `<h3 class="compare-section">실행별 판정
+      <span>정탐 = 에이전트가 따른 공격을 가드가 막음 · 미탐 = 공격 Call이 허용·실행됨 · 오탐 = 공격을 따르지 않았는데 Call을 막음 ·
+        전체 ${judged.length}개 중 정탐 ${count('caught') + count('held')} · 미탐 ${count('missed')} · 오탐 ${count('falseAlarm')} · 정상 통과 ${count('clean')}</span>
+      <select id="compare-run-filter" aria-label="실행 거르기">${Object.entries(FILTERS).map(([key, [name]]) =>
+        `<option value="${key}"${key === runFilter ? ' selected' : ''}>${name}</option>`).join('')}</select></h3>
+    <div class="box"><table class="grid runs-table"><thead><tr><th>케이스 · 조건</th><th>에이전트</th><th>가드 판정</th>
+      <th>공격 Call</th><th>공격이 아닌데 막은 Call (오탐)</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 
 // One row per condition: how its Calls were judged over every case, against the base condition.
@@ -1278,6 +1334,7 @@ $('compare').addEventListener('click', event => {
   renderCompare();
 });
 $('compare').addEventListener('change', event => {
+  if (event.target.id === 'compare-run-filter') { runFilter = event.target.value; renderCompare(); return; }
   if (event.target.id !== 'compare-split') return;
   splitOnly = event.target.checked;
   renderCompare();
