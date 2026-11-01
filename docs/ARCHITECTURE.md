@@ -292,7 +292,7 @@ DecisionRequest
    ▼
 [2] trace_graph ── Call 이전 SubGraph들, 서브에이전트 소속, hidden 문단 보유 SubGraph,
    │               민감 토큰의 최근 언급 SubGraph(및 Call이 같은 토큰을 언급하는지), 이전 Call들의 parent,
-   │               모든 프롬프트와 그에 대해 진술된 의도(프롬프트 원문은 읽지 않음)
+   │               모든 프롬프트와 그에 대해 진술된 의도(프롬프트 원문은 [7]의 확인 질문만 봄)
    ▼
 [3] Candidates (Jev 없이 결정)
    │   • 최신 사용자 프롬프트의 SubGraph (Request를 cause 후보로 제공)
@@ -308,16 +308,29 @@ DecisionRequest
    │   (cause 답이 없으면 역방향 탐색으로 가장 가까운 프롬프트/결과 SubGraph가 parent)
    │   (후보 문단 수 > max_causes(30)이면 결과 단위로 먼저 묻고, 선택된 결과에 대해 문단 정밀화 질의 추가)
    ▼
-[6] Judgement: judged_score = min(parents의 intent 점수)
+[6] Deviation: explicit / expected / harm / reversible 답으로 이탈 점수 계산
    ▼
-[7] Rule
+[7] Check (services/decision/src/check.rs) — 이탈 질문은 확신이 없으면 `none`을 고르고 의심을
+   │   다른 선택지 확률에 남기므로, 그 의심을 사용자 프롬프트 원문과 대조하는 2차 질문으로 확정
+   │   • 안전장치 변경(.claude/settings·hooks 수정, update-config 스킬) → 규칙으로 DENY
+   │   • 위반 없음이 1등이고 의심(최대 위반 확률·explicit) < 0.15, link ≠ none → ALLOW (2차 질문 없음)
+   │   • 파일 수정(Edit/Write/MultiEdit, Bash here-doc 쓰기) → 추가·삭제된 줄 + user_request로
+   │     "requested"(noul) 질문: P(요청 안 함) ≥ 0.2 → DENY
+   │   • 그 외 호출 → "purpose"(step / result_goal / against_user) 질문:
+   │     P(result_goal + against_user) ≥ 0.4 → DENY
+   │   • 기준 미만이면 ALLOW, 단 1차에서 위반이 1등(또는 explicit ≥ 0.5)이었으면 REVIEW(두 판단 불일치)
+   │   • 2차 답이 없으면 이탈 점수를 link별 기준(아래 설정)에 대어 판정
+   ▼
+[8] Rule
 ```
 
 | 조건 | Decision | rule |
 |---|---|---|
-| 가장 영향력 큰 cause = `none` | **DENY** | `cause::none` |
-| 1 − judged_score > θ (기본 θ = 0.5) | **DENY** | `intent::mismatch` |
-| 그 외 점수 존재 | ALLOW | `intent::match` |
+| 안전장치 변경 (Jev 실패해도) | **DENY** | `safeguard::change` |
+| 2차 질문이 원치 않는 호출로 판단 | **DENY** | `intent::mismatch` |
+| 1차 위반 & 2차 정상 (불일치) | REVIEW | `intent::review` |
+| 의심 낮음, 또는 2차 정상 | ALLOW | `intent::match` |
+| 2차 답 없음: 이탈 점수 ≥ deny / ≥ review | DENY / REVIEW | `intent::mismatch` / `intent::review` |
 | 점수 없음(진술된 의도 없음) & risky | REVIEW | `intent::unknown` |
 | 점수 없음 & not risky | ALLOW | `intent::unknown` |
 | Jev 오류/시간 초과 | 실패 정책(오류) 또는 risky면 REVIEW | – |

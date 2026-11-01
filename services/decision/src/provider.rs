@@ -12,6 +12,7 @@ use withhuman_contracts::decisions::{
 
 use crate::{
     DecisionConfig, DecisionRepository, RepositoryError,
+    check::{self, Branch, Effect, Verdict},
     jev::JevClient,
     repository::{TraceRecord, TracedParent, TracedSegment},
     trace::{self, Stop, Thresholds, TraceSettings},
@@ -87,8 +88,10 @@ impl DecisionProvider for MockDecisionProvider {
 }
 
 /// Traces the Call's cause through Jev and measures how far it departs from the user's
-/// intents; it is denied or reviewed past thresholds that are stricter when it follows from a
-/// tool result or from nothing than when it follows from the user's request.
+/// intents, then checks it against the user's prompt unless that clears it (`check`): a Call
+/// changing the agent's safeguards is denied, one the check finds unwanted denied, one it does
+/// not allowed, or reviewed when the trace found a breach. Without the check's answer the
+/// deviation decides against thresholds that may depend on the Call's link.
 ///
 /// When tracing fails, the Call gets the Collector's failure policy (an error), or REVIEW when
 /// an earlier SubGraph of the Call's agent holds hidden content or a sensitive value. Jev sees prompts only through the
@@ -120,12 +123,14 @@ impl JevDecisionProvider {
         }
     }
 
-    /// Records the failure, then gives the failure policy or, when `risky`, REVIEW.
+    /// Records the failure, then denies a Call that changes the agent's safeguards, or gives
+    /// the failure policy or, when `risky`, REVIEW.
     async fn unresolved(
         &self,
         request: &DecisionRequest,
         error: impl fmt::Display,
         risky: bool,
+        safeguard: bool,
     ) -> Result<DecisionResponse, ProviderError> {
         let error = error.to_string();
         let repository = self.repository.clone();
@@ -140,6 +145,21 @@ impl JevDecisionProvider {
             STORE_WAIT,
         )
         .await;
+        if safeguard {
+            return Ok(DecisionResponse {
+                decision: Decision::Deny,
+                reason: SAFEGUARD_REASON.to_owned(),
+                rule: SAFEGUARD_RULE.to_owned(),
+                start: CausalStart::Unresolved,
+                written: false,
+                jev: Some(JevActivity {
+                    asked: true,
+                    ms: None,
+                    reused_from: None,
+                    error: Some(error),
+                }),
+            });
+        }
         if !risky {
             return Err(ProviderError(error));
         }
@@ -166,6 +186,9 @@ const STORE_WAIT: Duration = Duration::from_millis(200);
 
 const REVIEW_REASON: &str =
     "WithHuman이 이 도구 호출의 원인을 확인하지 못했습니다. 사용자 확인이 필요합니다.";
+
+const SAFEGUARD_RULE: &str = "safeguard::change";
+const SAFEGUARD_REASON: &str = "WithHuman이 에이전트의 설정이나 훅을 바꾸는 도구 호출을 차단했습니다. 사용자가 직접 바꿔야 합니다.";
 
 const DEVIATION_REVIEW_REASON: &str = "WithHuman이 이 도구 호출이 사용자 의도에서 벗어났을 수 있다고 판단했습니다. 사용자 확인이 필요합니다.";
 
@@ -201,6 +224,8 @@ impl DecisionProvider for JevDecisionProvider {
         let intents = trace::intents(&graph, request.intent.as_deref(), &self.settings);
         let plan = trace::plan(&graph, &members, intents.text.as_deref(), &self.settings);
         let risky = graph.risky();
+        let effect = check::effect(&graph.call);
+        let safeguard = effect == Effect::Safeguard;
 
         let remaining = |reserve: Duration| {
             request.deadline_ms.map(|deadline| {
@@ -221,26 +246,48 @@ impl DecisionProvider for JevDecisionProvider {
         let budget = timeout();
         if budget.is_zero() {
             return self
-                .unresolved(request, "no time left to ask Jev", risky)
+                .unresolved(request, "no time left to ask Jev", risky, safeguard)
                 .await;
         }
-        let response = match trace::judge_request(&plan) {
+        let judge_request = trace::judge_request(&plan);
+        let response = match &judge_request {
             None => None,
-            Some(sent) => match self.jev.ask(&sent, budget).await {
+            Some(sent) => match self.jev.ask(sent, budget).await {
                 Ok(response) => {
                     exchanges.push(serde_json::json!({
                         "stage": "cause", "request": sent, "response": &response,
                     }));
                     Some(response)
                 }
-                Err(error) => return self.unresolved(request, error, risky).await,
+                Err(error) => return self.unresolved(request, error, risky, safeguard).await,
             },
         };
         let (parents, mut judgements, deviation) = match trace::judge(&plan, response.as_ref()) {
             Ok(judged) => judged,
-            Err(error) => return self.unresolved(request, error, risky).await,
+            Err(error) => return self.unresolved(request, error, risky, safeguard).await,
         };
         let judge_ms = elapsed_ms(judged);
+
+        // Unless the trace clears the Call, a second question checks it against the user's
+        // prompt, asked while the paragraphs are.
+        let checked = deviation
+            .as_ref()
+            .map(|deviation| check::check(deviation, parents.link, &effect));
+        let checking = Instant::now();
+        let check_request = checked
+            .zip(judge_request.as_ref())
+            .and_then(|(checked, judged)| {
+                check::request(judged, checked.branch, &effect, graph.prompt.as_deref())
+            });
+        let budget = timeout();
+        let check_task = check_request.filter(|_| !budget.is_zero()).map(|sent| {
+            let jev = self.jev.clone();
+            let asked = sent.clone();
+            (
+                sent,
+                tokio::spawn(async move { jev.ask(&asked, budget).await }),
+            )
+        });
 
         // A parent with too many paragraphs to ask about at once was asked about its tool
         // results whole; now which paragraphs of each activated one. The decision does not
@@ -307,11 +354,41 @@ impl DecisionProvider for JevDecisionProvider {
             }
         }
         let paragraph_ms = elapsed_ms(refined);
+        let check_response = match check_task {
+            Some((sent, task)) => match task.await {
+                Ok(Ok(response)) => {
+                    exchanges.push(serde_json::json!({
+                        "stage": "check", "request": sent, "response": &response,
+                    }));
+                    Some(response)
+                }
+                _ => None,
+            },
+            None => None,
+        };
+        let check_ms = elapsed_ms(checking);
+        let unwanted =
+            checked.and_then(|checked| check::unwanted(checked.branch, check_response.as_ref()));
+        let verdict = if safeguard {
+            Some(Verdict::Deny)
+        } else {
+            checked.and_then(|checked| checked.verdict(unwanted))
+        };
         let outcome = trace::outcome(parents, judgements, deviation);
 
         let mut trace_json = trace::record(&plan, &outcome);
         trace_json["intent_source"] = intents.source.into();
-        trace_json["jev_ms"] = serde_json::json!({"judge": judge_ms, "paragraph": paragraph_ms});
+        trace_json["jev_ms"] = serde_json::json!({
+            "judge": judge_ms, "paragraph": paragraph_ms, "check": check_ms,
+        });
+        trace_json["check"] = serde_json::json!({
+            "branch": checked.map(|checked| checked.branch.as_str())
+                .unwrap_or(if safeguard { Branch::Safeguard.as_str() } else { "none" }),
+            "breach": checked.map(|checked| checked.breach),
+            "doubt": checked.map(|checked| checked.doubt),
+            "unwanted": unwanted,
+            "verdict": verdict.map(|verdict| format!("{verdict:?}").to_ascii_uppercase()),
+        });
         trace_json["jev"] = exchanges.into();
         let (deny_at, review_at) = self.thresholds.for_link(outcome.link);
         trace_json["thresholds"] = serde_json::json!({"deny": deny_at, "review": review_at});
@@ -373,27 +450,39 @@ impl DecisionProvider for JevDecisionProvider {
         });
         // The agent sees the reason, so it names no score, intent or path it could learn to
         // avoid; those stay with the Call's trace.
-        let (decision, rule, reason) = match &outcome.deviation {
-            Some(deviation) if deviation.score >= deny_at => (
-                Decision::Deny,
-                "intent::mismatch",
-                format!(
-                    "WithHuman이 사용자 의도와 다른 행동으로 판단해 차단했습니다. (세션 {}, 호출 {})",
-                    request.session_id, request.call_seq
-                ),
-            ),
-            Some(deviation) if deviation.score >= review_at => (
+        let mismatch = || {
+            format!(
+                "WithHuman이 사용자 의도와 다른 행동으로 판단해 차단했습니다. (세션 {}, 호출 {})",
+                request.session_id, request.call_seq
+            )
+        };
+        // The check decides when it could; without its answer, the deviation does.
+        let (decision, rule, reason) = match (verdict, &outcome.deviation) {
+            (Some(Verdict::Deny), _) if safeguard => {
+                (Decision::Deny, SAFEGUARD_RULE, SAFEGUARD_REASON.to_owned())
+            }
+            (Some(Verdict::Deny), _) => (Decision::Deny, "intent::mismatch", mismatch()),
+            (Some(Verdict::Review), _) => (
                 Decision::Review,
                 "intent::review",
                 DEVIATION_REVIEW_REASON.to_owned(),
             ),
-            Some(_) => (Decision::Allow, "intent::match", String::new()),
-            None if risky => (
+            (Some(Verdict::Allow), _) => (Decision::Allow, "intent::match", String::new()),
+            (None, Some(deviation)) if deviation.score >= deny_at => {
+                (Decision::Deny, "intent::mismatch", mismatch())
+            }
+            (None, Some(deviation)) if deviation.score >= review_at => (
+                Decision::Review,
+                "intent::review",
+                DEVIATION_REVIEW_REASON.to_owned(),
+            ),
+            (None, Some(_)) => (Decision::Allow, "intent::match", String::new()),
+            (None, None) if risky => (
                 Decision::Review,
                 "intent::unknown",
                 REVIEW_REASON.to_owned(),
             ),
-            None => (Decision::Allow, "intent::unknown", String::new()),
+            (None, None) => (Decision::Allow, "intent::unknown", String::new()),
         };
         Ok(DecisionResponse {
             decision,
