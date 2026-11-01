@@ -131,21 +131,35 @@
   .compare-tools input[type=search] { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line);
                                       border-radius: 6px; padding: 4px 8px; width: 200px; }
   .conditions { display: flex; flex-wrap: wrap; gap: 4px 12px; }
-  .matrix-wrap { overflow-x: auto; }
-  .matrix { width: auto; min-width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
-  .matrix th { text-align: left; font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
-  .matrix th small { display: block; color: var(--muted); font-weight: 400; }
-  .matrix td, .matrix td:first-child { width: auto; padding: 6px 8px; color: var(--text); white-space: normal; }
-  .matrix td.case { font-weight: 600; white-space: nowrap; }
+  .compare-section { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 16px 0 6px; }
+  .stack { display: flex; height: 14px; border-radius: 7px; overflow: hidden; background: var(--line); min-width: 60px; }
+  .stack i { display: block; height: 100%; font-style: normal; font-size: 10px; line-height: 14px; color: #fff;
+             text-align: center; overflow: hidden; white-space: nowrap; }
+  .stack.big { height: 22px; border-radius: 11px; }
+  .stack.big i { font-size: 12px; line-height: 22px; font-weight: 600; }
+  .tally { display: flex; gap: 10px; flex-wrap: wrap; font-size: 12px; font-variant-numeric: tabular-nums; }
+  .tally b { font-weight: 600; }
+  .tally .deny { color: var(--deny); } .tally .review { color: var(--review); } .tally .allow { color: var(--allow); }
+  .summary { display: grid; grid-template-columns: minmax(140px, max-content) minmax(200px, 1fr) auto; gap: 4px 14px;
+             align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  .summary .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 320px; }
+  .summary .name small { display: block; color: var(--muted); font-weight: 400; }
+  .summary .head { color: var(--muted); font-size: 11px; }
+  .matrix-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+  .matrix { width: auto; min-width: 100%; }
+  .matrix th { text-align: left; font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap;
+               max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
+  .matrix td, .matrix td:first-child { width: auto; padding: 6px 8px; color: var(--text); white-space: normal; min-width: 150px; }
+  .matrix th:first-child, .matrix td.case { position: sticky; left: 0; z-index: 1; background: var(--panel); }
+  .matrix td.case { font-weight: 600; white-space: nowrap; min-width: 0; }
   .matrix tr.picked td { background: var(--bg); }
   .matrix tbody tr { cursor: pointer; }
   .matrix tbody tr:hover td { background: var(--bg); }
-  .matrix tfoot td { border-top: 2px solid var(--line); }
-  .run { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; padding: 1px 0; }
+  .run { display: grid; gap: 2px; padding: 3px 0; }
   .run + .run { border-top: 1px dashed var(--line); }
   .run .when { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
   .lanes { display: flex; gap: 10px; align-items: flex-start; overflow-x: auto; margin-top: 14px; padding-bottom: 6px; }
-  .lane { flex: 0 0 340px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+  .lane { flex: 0 0 300px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
   .lane h3 { margin: 0; padding: 8px 10px; font-size: 13px; border-bottom: 1px solid var(--line); }
   .lane h3 small { display: block; color: var(--muted); font-weight: 400; }
   .lane .call { display: grid; grid-template-columns: 22px 1fr auto; gap: 2px 6px; padding: 5px 10px; cursor: pointer;
@@ -213,6 +227,7 @@
     <span class="muted">조건</span><span class="conditions" id="compare-conditions"></span>
     <button id="compare-reload" type="button">새로고침</button>
   </div>
+  <div id="compare-summary"></div>
   <div id="compare-matrix"></div>
   <div id="compare-lanes"></div>
 </section>
@@ -982,11 +997,24 @@ function hiddenConditions() {
 function setHiddenConditions(names) {
   try { localStorage.setItem('hiddenConditions', JSON.stringify([...names])); } catch {}
 }
-const verdicts = s => `${s.denied ? `<span class="count" style="background:var(--deny)">차단 ${s.denied}</span>` : ''}
-  ${s.reviewed ? `<span class="count" style="background:var(--review)">확인 ${s.reviewed}</span>` : ''}
-  ${s.allowed ? `<span class="count" style="background:var(--allow)">허용 ${s.allowed}</span>` : ''}
-  ${s.failed ? `<span class="count" style="background:var(--muted)">실패 ${s.failed}</span>` : ''}
-  <span class="muted">Call ${s.calls ?? 0}</span>`;
+// A run's Calls as one bar, allowed to denied left to right; the rest are Calls left unjudged.
+const SHARES = [['allowed', '허용', '--allow'], ['reviewed', '확인', '--review'], ['denied', '차단', '--deny'], ['failed', '실패', '--muted']];
+const share = (n, total) => total ? `${Math.round(n / total * 100)}%` : '';
+function stack(s, big = false) {
+  const total = s.calls || 0;
+  const parts = SHARES.filter(([key]) => s[key]).map(([key, name, color]) => {
+    const width = s[key] / total * 100;
+    const text = big ? (width >= 9 ? `${s[key]} · ${share(s[key], total)}` : width >= 4 ? s[key] : '') : width >= 12 ? s[key] : '';
+    return `<i style="width:${width}%;background:var(${color})" title="${name} ${s[key]}/${total} (${share(s[key], total)})">${text}</i>`;
+  }).join('');
+  return `<div class="stack${big ? ' big' : ''}" title="Call ${total}">${parts}</div>`;
+}
+const tally = s => `<span class="tally"><span class="deny">차단 <b>${s.denied || 0}</b></span>
+  <span class="review">확인 <b>${s.reviewed || 0}</b></span><span class="allow">허용 <b>${s.allowed || 0}</b></span>
+  ${s.failed ? `<span class="muted">실패 <b>${s.failed}</b></span>` : ''}<span class="muted">/ Call ${s.calls || 0}</span></span>`;
+const verdicts = s => `${stack(s)}${tally(s)}`;
+const sum = runs => Object.fromEntries(['calls', 'allowed', 'reviewed', 'denied', 'failed']
+  .map(key => [key, runs.reduce((n, s) => n + (s[key] || 0), 0)]));
 
 // The sessions whose case matches any of the comma-separated terms, by case and condition.
 function compareGroups() {
@@ -1017,32 +1045,32 @@ function renderCompare() {
     || '<span class="empty">없음</span>';
   const shown = conditions.filter(c => !hidden.has(c));
   if (!cases.size || !shown.length) {
+    $('compare-summary').innerHTML = '';
     $('compare-matrix').innerHTML = '<p class="empty">맞는 케이스가 없습니다. 케이스 이름 일부를 쉼표로 나눠 입력하세요 (예: core-001, core-002).</p>';
     $('compare-lanes').innerHTML = '';
     return;
   }
   const runsIn = condition => [...cases.values()].flatMap(runs => runs.get(condition) || []);
-  const head = shown.map(c => {
+  // Each condition over every case: its Calls' verdicts and how many cases had a Call denied.
+  const summary = shown.map(c => {
     const runs = runsIn(c);
-    const first = Math.min(...runs.map(s => s.created_at));
-    return `<th>${escape(c)}<small>세션 ${runs.length} · ${escape(time(first))}</small></th>`;
+    const denied = [...cases.values()].filter(r => (r.get(c) || []).some(s => s.denied)).length;
+    const ran = [...cases.values()].filter(r => r.has(c)).length;
+    return `<div class="name" title="${escape(c)}">${escape(c)}<small>${escape(time(Math.min(...runs.map(s => s.created_at))))}</small></div>
+      ${stack(sum(runs), true)}
+      <div>${tally(sum(runs))}<div class="muted">케이스 ${ran} · 세션 ${runs.length} · 차단 있는 케이스 ${denied}/${ran}</div></div>`;
   }).join('');
-  const cell = runs => (runs || []).map(s => `<div class="run" title="${escape(s.id)}">${verdicts(s)}
-      ${runs.length > 1 ? `<span class="when">${escape(hhmm(s.created_at))}</span>` : ''}</div>`).join('') || '<span class="empty">–</span>';
+  $('compare-summary').innerHTML = `<h3 class="compare-section">조건별 요약 · 전체 도구 호출</h3>
+    <div class="summary"><span class="head">조건</span><span class="head">허용 · 확인 · 차단 비율</span><span class="head">개수</span>${summary}</div>
+    <h3 class="compare-section">케이스별</h3>`;
+  const head = shown.map(c => `<th title="${escape(c)}">${escape(c)}</th>`).join('');
+  const cell = runs => (runs || []).map((s, i) => `<div class="run" title="${escape(s.id)}">
+      ${runs.length > 1 ? `<span class="when">#${i + 1} · ${escape(hhmm(s.created_at))}</span>` : ''}${verdicts(s)}</div>`).join('') || '<span class="empty">–</span>';
   const body = [...cases].map(([name, runs]) =>
     `<tr data-case="${escape(name)}" class="${name === pickedCase ? 'picked' : ''}"><td class="case">${escape(name)}</td>
       ${shown.map(c => `<td>${cell(runs.get(c))}</td>`).join('')}</tr>`).join('');
-  // What each condition did over every case: its verdicts and how many cases had a Call denied.
-  const foot = shown.map(c => {
-    const runs = runsIn(c);
-    const total = key => runs.reduce((n, s) => n + (s[key] || 0), 0);
-    const denied = [...cases.values()].filter(r => (r.get(c) || []).some(s => s.denied)).length;
-    const ran = [...cases.values()].filter(r => r.has(c)).length;
-    return `<td><div class="run">${verdicts({ denied: total('denied'), reviewed: total('reviewed'), allowed: total('allowed'), failed: total('failed'), calls: total('calls') })}</div>
-      <div class="muted">차단 있는 케이스 ${denied}/${ran}</div></td>`;
-  }).join('');
   $('compare-matrix').innerHTML = `<div class="matrix-wrap"><table class="matrix"><thead><tr><th>케이스</th>${head}</tr></thead>
-    <tbody>${body}</tbody><tfoot><tr><td class="case">합계</td>${foot}</tr></tfoot></table></div>`;
+    <tbody>${body}</tbody></table></div>`;
   if (!cases.has(pickedCase)) pickedCase = null;
   renderLanes(pickedCase ? shown.map(c => [c, cases.get(pickedCase).get(c) || []]) : []);
 }
