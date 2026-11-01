@@ -12,12 +12,13 @@
     --request: #4c7be0; --intent: #2bb3c0; --message: #8a63d2; --call: #9aa3b1; --other: #8b93a1;
     --segment: #3aa57a; --error: #d24c4c;
     --allow: #2f9e5b; --deny: #d64545; --review: #d9a21b;
-    --flow: #aab2bf; --cause: #e0433b; --false: #e8833a;
+    --flow: #aab2bf; --cause: #e0433b; --false: #e8833a; --check: #7c4dcc; --check-bg: #f3eefc;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #14171c; --panel: #1c2027; --text: #e4e7ec; --muted: #9aa3b1; --line: #2e343e;
       --group-bg: #1d2129; --group-border: #313844; --node-bg: #252a33; --flow: #5d6675; --call: #6b7484;
+      --check: #a98be6; --check-bg: #241f33;
     }
   }
   * { box-sizing: border-box; }
@@ -113,6 +114,15 @@
   .gauge .marker { position: absolute; top: -20px; transform: translateX(-50%); font-size: 11px; font-weight: 700;
                    white-space: nowrap; }
   .gauge .marker::after { content: ''; display: block; width: 2px; height: 22px; background: var(--text); margin: 1px auto 0; }
+  .card.check { border-color: var(--check); background: var(--check-bg); }
+  .card.check h3, .card.check h4 { color: var(--check); }
+  .card.check .tag, .tag.check { background: var(--check); }
+  .card.check .bar span { background: var(--check); opacity: .55; }
+  .card.check .bar.chosen span { opacity: 1; }
+  .card.check .lines { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--panel);
+                       border-radius: 6px; padding: 6px 8px; margin: 4px 0; white-space: pre-wrap; word-break: break-word; }
+  .card.check .lines .add { color: var(--allow); } .card.check .lines .del { color: var(--deny); }
+  h3.check { color: var(--check); }
   table.breach td { padding: 4px 6px; }
   table.breach td:first-child { width: auto; white-space: normal; color: var(--text); }
   table.breach tr.worst td { font-weight: 600; }
@@ -623,6 +633,7 @@ const RULE_TEXT = {
   'trace::unresolved': '원인 추적 실패',
   'trace::no_subgraph': '추적할 SubGraph 없음',
   'cause::none': '원인 없음으로 차단 (이전 규칙)',
+  'safeguard::change': '에이전트 설정·훅 변경으로 차단',
 };
 const LINK_TEXT = { request: '사용자 요청의 다음 단계', segment: '도구 결과의 내용', none: '요청·결과와 무관' };
 const BREACH_TEXT = {
@@ -688,7 +699,7 @@ function deviationHtml(trace) {
     .map(([key, score]) => `<tr class="${key === d.worst ? 'worst' : score > 0.001 ? '' : 'zero'}">
       <td>${escape(BREACH_TEXT[key] || key)}${PROCESS.has(key) ? ' <span class="muted">(과정형)</span>' : ''}${key === d.worst ? '<span class="tag">최대</span>' : ''}</td>
       <td class="num">${probability(key) == null ? '–' : percent(probability(key)) || '0'}</td><td class="num">${score == null ? '–' : percent(score) || '0'}</td></tr>`).join('');
-  return `<div class="card"><h3>이탈 점수</h3>
+  return `<div class="card"><h3>이탈 점수 <span class="muted">(1차 질문)</span></h3>
     <div class="gauge"><div class="marker" style="left:${Math.min(1, d.score) * 100}%">${percent(d.score) || '0'}</div><div class="zones">${zones}</div></div>
     <p class="muted">허용 &lt; ${percent(t.review)} ≤ 확인 &lt; ${percent(t.deny)} ≤ 차단
       · ${escape(LINK_TEXT[trace.link] || '')}에 이어진 Call의 기준${trace.thresholds ? '' : ' (기본값)'}</p>
@@ -700,18 +711,86 @@ function deviationHtml(trace) {
     </dl></div>`;
 }
 
+// The check of the Call against the user's prompt (Decision Module `check`), apart from the
+// first question: where the trace left the Call, the second question's score on its own gauge,
+// and what that question saw and answered.
+const CHECK_CUT = { file: 0.2, purpose: 0.4 };
+const CHECK_LOW = 0.15;
+const BRANCH_TEXT = {
+  safeguard: '에이전트 설정·훅을 바꾸는 호출 → 규칙으로 차단 (2차 질문 없음)',
+  clear: '1차에서 위반 없음 · 의심 낮음 → 2차 질문 없이 허용',
+  file: '파일 수정 → 추가한 줄을 사용자가 요청했는지 확인',
+  purpose: '그 외 호출 → 무엇을 위한 호출인지 확인',
+  none: '1차 답이 없어 확인하지 않음',
+};
+const VERDICT_TEXT = { ALLOW: '허용', REVIEW: '확인', DENY: '차단' };
+function checkHtml(trace) {
+  const c = trace.check;
+  if (!c) return '';
+  const exchange = (trace.jev || []).find(x => x.stage === 'check');
+  const cut = CHECK_CUT[c.branch];
+  const facts = `<dl class="facts">
+      <dt>분기</dt><dd>${escape(BRANCH_TEXT[c.branch] || c.branch)}</dd>
+      ${c.breach != null ? `<dt>1차 판단</dt><dd>${c.breach ? '위반이 1등 (또는 사용자 조건 위반 ≥ 50%)' : '위반 없음이 1등'}
+        <span class="muted">· 의심 ${percent(c.doubt) || '0'} (기준 ${percent(CHECK_LOW)})</span></dd>` : ''}
+      <dt>2차 판정</dt><dd>${c.verdict ? `<span class="badge" style="background:${css(DECISION_COLOR[c.verdict] || '--other')}">${escape(c.verdict)}</span>`
+        : `<span class="muted">${cut ? '2차 답 없음 → 1차 이탈 점수로 판정' : '–'}</span>`}</dd>
+    </dl>`;
+  let gauge = '';
+  if (cut && c.unwanted != null) {
+    // Short of the cut the Call is allowed, or reviewed when the first question found a breach.
+    const below = c.breach ? '--review' : '--allow';
+    const zones = [[cut, below], [1 - cut, '--deny']]
+      .map(([w, color]) => `<i style="width:${w * 100}%;background:var(${color})"></i>`).join('');
+    const label = c.branch === 'file' ? '사용자가 요청하지 않았을 확률' : '요청 밖 목표·사용자에 반할 확률';
+    gauge = `<h4>2차 점수 · ${escape(label)}</h4>
+      <div class="gauge"><div class="marker" style="left:${Math.min(1, c.unwanted) * 100}%">${percent(c.unwanted) || '0'}</div><div class="zones">${zones}</div></div>
+      <p class="muted">${c.breach ? '확인' : '허용'} &lt; ${percent(cut)} ≤ 차단${c.breach ? ' · 1차가 위반이라 기준 미만이면 확인' : ''}</p>`;
+  }
+  return `<div class="card check"><h3>2차 확인 <span class="muted">(프롬프트 대조)</span></h3>${facts}${gauge}${exchange ? checkExchangeHtml(exchange) : ''}</div>`;
+}
+
+// What the second question saw (the change, the user's prompt) and asked, with its answers.
+function checkExchangeHtml(exchange) {
+  const state = exchange.request?.state || {};
+  const lines = (text, cls, sign) => text && text !== '(nothing)'
+    ? String(text).split('\n').map(line => `<span class="${cls}">${sign} ${escape(line)}</span>`).join('\n') : '';
+  const change = state.added != null
+    ? `<h4>추가·삭제된 줄</h4><div class="lines">${[lines(state.added, 'add', '+'), lines(state.removed, 'del', '-')].filter(Boolean).join('\n') || '<span class="muted">(변경 없음)</span>'}</div>` : '';
+  const answers = exchange.response?.answers || {};
+  const results = Object.entries(answers).map(([key, answer]) => {
+    if (key === 'requested') return `<h4>requested · 사용자가 요청했는가</h4>${bar(answer.noul, 'chosen')}`;
+    const rows = Object.entries(answer.probabilities || {}).sort((a, b) => b[1] - a[1]).map(([option, p]) => {
+      const m = /^g(\d+)(?:p(\d+))?$/.exec(option);
+      const name = m ? `${nodeName(Number(m[1]))}${m[2] != null ? ` ¶${m[2]}` : ''}` : option;
+      return `<tr><td>${escape(name)}${option === answer.choice ? '<span class="tag">선택</span>' : ''}</td><td>${bar(p, option === answer.choice ? 'chosen' : '')}</td></tr>`;
+    }).join('');
+    return `<h4>${escape(key)}${key === 'purpose' ? ' · 무엇을 위한 호출인가' : key === 'source' ? ' · 어느 문단의 지시인가' : ''}</h4><table class="bars">${rows}</table>`;
+  }).join('');
+  const questions = Object.entries(exchange.request?.questions || {}).map(([key, q]) =>
+    `<details><summary>${escape(key)} <span class="empty">(${escape(q.type)})</span></summary><pre>${escape(q.instructions)}\n\n${escape(JSON.stringify(q.criteria, null, 2))}</pre></details>`).join('');
+  return `${change}
+    ${state.user_request ? `<details><summary>user_request · 사용자 프롬프트 원문</summary><pre>${escape(state.user_request)}</pre></details>` : ''}
+    ${results}
+    <h4>Jev에 넣은 질문</h4>${questions}
+    <details><summary>state 전체</summary><pre>${escape(JSON.stringify(state, null, 2))}</pre></details>`;
+}
+
 // A Call's verdict at a glance: the decision, why, what Call it was, and the reason the agent saw.
 function verdictHtml(props, trace) {
   const payload = parse(props.payload_json) || {};
   const call = `${payload.tool_name || ''}${model.bySeq.get(props.seq)?.summary?.brief ? ': ' + model.bySeq.get(props.seq).summary.brief : ''}`;
   const score = trace?.deviation ? `<span class="muted">이탈 ${percent(trace.deviation.score) || '0'}</span>`
     : props.intent_score != null ? `<span class="muted">score ${percent(props.intent_score)}</span>` : '';
+  const checked = trace?.check?.unwanted != null
+    ? ` <span class="tag check">2차 ${percent(trace.check.unwanted) || '0'}</span>`
+    : trace?.check?.branch === 'safeguard' ? ' <span class="tag check">설정 변경</span>' : '';
   return `<div class="card">
     <div class="verdict"><span class="badge" style="background:${css(DECISION_COLOR[props.decision] || '--other')}">${escape(props.decision)}</span>
-      <strong>${escape(RULE_TEXT[props.decision_rule] || props.decision_rule || '')}</strong> ${score}</div>
+      <strong>${escape(RULE_TEXT[props.decision_rule] || props.decision_rule || '')}</strong> ${score}${checked}</div>
     <div class="callline">${escape(call)}</div>
     ${props.decision_reason ? `<p class="muted">${escape(props.decision_reason)}</p>` : ''}
-    <p class="muted">${escape(props.decision_rule || '')}${trace?.jev_ms ? ` · Jev ${trace.jev_ms.judge ?? '–'}ms` : ''}</p></div>`;
+    <p class="muted">${escape(props.decision_rule || '')}${trace?.jev_ms ? ` · Jev ${trace.jev_ms.judge ?? '–'}ms${trace.jev_ms.check != null ? ` · 2차 ${trace.jev_ms.check}ms` : ''}` : ''}</p></div>`;
 }
 
 const section = (title, body, open = false) => body
@@ -752,9 +831,10 @@ function jevHtml(trace, highlight) {
       `<h4>${escape(key)}</h4>${resultHtml(key, answer, trace, highlight)}`).join('');
     const output = `<details><summary>answers</summary><pre>${escape(JSON.stringify(exchange.response?.answers, null, 2))}</pre></details>`;
     const title = exchange.stage === 'parent' ? 'parent 질문'
-      : exchange.stage === 'cause' ? '원인 질문'
+      : exchange.stage === 'cause' ? '원인 질문 (1차)'
+      : exchange.stage === 'check' ? '2차 확인 질문'
       : exchange.stage === 'paragraph' ? `${nodeName(exchange.seq)} 문단 질문` : `${subgraphName(exchange.parent)} 질문`;
-    return `<h3>${escape(title)}</h3>
+    return `<h3${exchange.stage === 'check' ? ' class="check"' : ''}>${escape(title)}</h3>
       <h4>입력 · state</h4>${state}<h4>입력 · question</h4>${questions}
       <h4>출력</h4>${output}
       <h4>결과</h4>${results}`;
@@ -798,7 +878,7 @@ async function showEdge(callSeq, targetSeq) {
   $('panel').innerHTML = `<h2>원인 엣지</h2>
     <p>${escape(nodeName(callSeq))}<br>→ ${escape(nodeName(targetSeq))}${indexes.length ? ` ¶${indexes.join(', ¶')}` : ''}${cause && !indexes.length ? ` <span class="empty">p=${percent(cause.props.probability)}</span>` : ''}</p>
     ${indexes.length ? '<h3>원인 문단</h3><div id="edge-paragraphs"><p class="empty">불러오는 중…</p></div>' : ''}
-    ${trace ? causeHtml(trace) + deviationHtml(trace) + section('Jev 원본 (state · question · answer)', jevHtml(trace, targetSeq), true)
+    ${trace ? causeHtml(trace) + deviationHtml(trace) + checkHtml(trace) + section('Jev 원본 (state · question · answer)', jevHtml(trace, targetSeq), true)
       : '<p class="empty">판정 기록이 없습니다.</p>'}`;
   if (!indexes.length) return;
   const edge = `${callSeq}-${targetSeq}`;
@@ -828,7 +908,7 @@ async function show(seq, highlight = null) {
   const isCall = Boolean(props.decision || props.trace_error);
   const head = `<h2>#${props.seq} ${escape(node.kind)}</h2>`;
   const decision = props.decision
-    ? `${verdictHtml(props, trace)}${trace ? causeHtml(trace) + deviationHtml(trace) : ''}
+    ? `${verdictHtml(props, trace)}${trace ? causeHtml(trace) + deviationHtml(trace) + checkHtml(trace) : ''}
        ${pathHtml(seq) ? `<div class="card">${pathHtml(seq)}</div>` : ''}
        ${trace ? section(`사용자 의도`, trace.intents ? `<pre>${escape(trace.intents)}</pre>` : '') : ''}
        ${trace ? section('이번 턴 흐름', trace.turn ? `<pre>${escape(trace.turn)}</pre>` : '') : ''}
