@@ -235,6 +235,9 @@ pub struct CallInfo {
     pub agent_id: Option<String>,
     pub tool_name: String,
     pub tool_input: Value,
+    /// For a Write, the file's content as the session last saw it before the Call (read whole
+    /// or written), so the Call is shown as the change it makes.
+    pub prior: Option<String>,
 }
 
 /// Where an earlier SubGraph was traced to.
@@ -767,11 +770,7 @@ pub fn plan(
     intents: Option<&str>,
     settings: &TraceSettings,
 ) -> Plan {
-    let action = call_summary(
-        &graph.call.tool_name,
-        &graph.call.tool_input,
-        settings.text_chars,
-    );
+    let action = action_summary(&graph.call, settings.text_chars);
     let current_line = format!("현재 호출(서브그래프 {}): {action}", graph.call.subgraph);
 
     // The turn's most recent tool results, oldest first.
@@ -1718,6 +1717,150 @@ pub fn call_summary(tool_name: &str, input: &Value, chars: usize) -> String {
     };
     // Redact before cutting, so no secret is left half-visible.
     truncate(&tokens::redact(&text), chars)
+}
+
+/// The Call as Jev sees it: a Write over content the session saw is shown as its diff, so text
+/// the file already held (an instruction planted in it, say) is not taken for what the agent
+/// wrote; any other Call by its summary.
+fn action_summary(call: &CallInfo, chars: usize) -> String {
+    let path = call.tool_input.get("file_path").and_then(Value::as_str);
+    let content = call.tool_input.get("content").and_then(Value::as_str);
+    match (call.tool_name.as_str(), path, content, &call.prior) {
+        ("Write", Some(path), Some(content), Some(prior)) => {
+            let diff = line_diff(prior, content, DIFF_CONTEXT);
+            let diff = if diff.is_empty() {
+                "(no change)".to_owned()
+            } else {
+                diff
+            };
+            let text = format!(
+                "Write: {path} (overwrites the file; diff against the content last read)\n{diff}"
+            );
+            truncate(&tokens::redact(&text), chars)
+        }
+        _ => call_summary(&call.tool_name, &call.tool_input, chars),
+    }
+}
+
+/// Unchanged lines kept around each change of a diff.
+const DIFF_CONTEXT: usize = 2;
+/// Above this many line pairs between the first and last change, they are shown replaced
+/// whole rather than compared line by line.
+const DIFF_CELLS: usize = 4_000_000;
+
+/// The content the session last saw of the file at `path`, from earlier tool results oldest
+/// first: a whole Read's output or a Write's content. An Edit of the file since leaves it
+/// unknown, as does a Read of only part of it.
+pub fn last_seen_content(results: &[Value], path: &str) -> Option<String> {
+    let mut seen = None;
+    for result in results {
+        let input = result.get("tool_input").unwrap_or(&Value::Null);
+        if input.get("file_path").and_then(Value::as_str) != Some(path) {
+            continue;
+        }
+        let tool_name = result.get("tool_name").and_then(Value::as_str);
+        seen = match tool_name {
+            Some("Read") if input.get("offset").is_none() && input.get("limit").is_none() => result
+                .get("tool_response")
+                .and_then(|response| response.get("file"))
+                .and_then(|file| file.get("content"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            Some("Write") => input
+                .get("content")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            Some("Edit" | "MultiEdit" | "NotebookEdit") => None,
+            _ => continue,
+        };
+    }
+    seen
+}
+
+/// A unified diff of `before` and `after` by line (`-` removed, `+` added), `context` unchanged
+/// lines around each change; empty when they are the same.
+pub fn line_diff(before: &str, after: &str, context: usize) -> String {
+    let old: Vec<&str> = before.lines().collect();
+    let new: Vec<&str> = after.lines().collect();
+    let prefix = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
+    let suffix = old[prefix..]
+        .iter()
+        .rev()
+        .zip(new[prefix..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let (old_middle, new_middle) = (
+        &old[prefix..old.len() - suffix],
+        &new[prefix..new.len() - suffix],
+    );
+    if old_middle.is_empty() && new_middle.is_empty() {
+        return String::new();
+    }
+
+    // Each line as kept (' '), removed ('-') or added ('+').
+    let mut ops: Vec<(char, &str)> = old[..prefix].iter().map(|line| (' ', *line)).collect();
+    if old_middle.len().saturating_mul(new_middle.len()) > DIFF_CELLS {
+        ops.extend(old_middle.iter().map(|line| ('-', *line)));
+        ops.extend(new_middle.iter().map(|line| ('+', *line)));
+    } else {
+        // The longest common subsequence, from the end.
+        let (n, m) = (old_middle.len(), new_middle.len());
+        let mut lcs = vec![vec![0u32; m + 1]; n + 1];
+        for i in (0..n).rev() {
+            for j in (0..m).rev() {
+                lcs[i][j] = if old_middle[i] == new_middle[j] {
+                    lcs[i + 1][j + 1] + 1
+                } else {
+                    lcs[i + 1][j].max(lcs[i][j + 1])
+                };
+            }
+        }
+        let (mut i, mut j) = (0, 0);
+        while i < n || j < m {
+            if i < n && j < m && old_middle[i] == new_middle[j] {
+                ops.push((' ', old_middle[i]));
+                (i, j) = (i + 1, j + 1);
+            } else if i < n && (j == m || lcs[i + 1][j] >= lcs[i][j + 1]) {
+                // Removed lines come before the lines that replace them.
+                ops.push(('-', old_middle[i]));
+                i += 1;
+            } else {
+                ops.push(('+', new_middle[j]));
+                j += 1;
+            }
+        }
+    }
+    ops.extend(old[old.len() - suffix..].iter().map(|line| (' ', *line)));
+
+    // Hunks: the changes with their context, merged where the contexts meet.
+    let changed: Vec<usize> = (0..ops.len()).filter(|&at| ops[at].0 != ' ').collect();
+    let mut hunks: Vec<(usize, usize)> = Vec::new();
+    for at in changed {
+        let start = at.saturating_sub(context);
+        let end = (at + context + 1).min(ops.len());
+        match hunks.last_mut() {
+            Some(last) if start <= last.1 => last.1 = end,
+            _ => hunks.push((start, end)),
+        }
+    }
+    let mut lines = vec!["--- before".to_owned(), "+++ after".to_owned()];
+    for (start, end) in hunks {
+        let old_start = ops[..start].iter().filter(|op| op.0 != '+').count();
+        let new_start = ops[..start].iter().filter(|op| op.0 != '-').count();
+        let old_count = ops[start..end].iter().filter(|op| op.0 != '+').count();
+        let new_count = ops[start..end].iter().filter(|op| op.0 != '-').count();
+        lines.push(format!(
+            "@@ -{},{old_count} +{},{new_count} @@",
+            old_start + 1,
+            new_start + 1
+        ));
+        lines.extend(
+            ops[start..end]
+                .iter()
+                .map(|(sign, line)| format!("{sign}{line}")),
+        );
+    }
+    lines.join("\n")
 }
 
 fn truncate(text: &str, chars: usize) -> String {

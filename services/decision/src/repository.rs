@@ -12,7 +12,9 @@ use withhuman_contracts::decisions::{DecisionRequest, DecisionResponse};
 
 use crate::{
     DecisionConfig,
-    trace::{CallInfo, Member, MemberKind, Paragraph, ParentKey, TOKEN_KINDS, TraceGraph, Turn},
+    trace::{
+        self, CallInfo, Member, MemberKind, Paragraph, ParentKey, TOKEN_KINDS, TraceGraph, Turn,
+    },
 };
 
 const VERIFY_GRAPH: &str = "\
@@ -88,6 +90,13 @@ RETURN call.order, call.subgraph, call.payload_json, \
             WHERE result.subgraph < call.subgraph AND result.order < call.order \
             RETURN DISTINCT result.subgraph } AS results"
 );
+
+// The session's tool results before the Call that name the file, oldest first: `$path` is the
+// file's path as JSON writes it, quotes included.
+const FILE_RESULTS: &str = "\
+MATCH (result:Segment {session_id: $session_id}) \
+WHERE result.order < $call_order AND result.payload_json CONTAINS $path \
+RETURN result.payload_json ORDER BY result.order";
 
 // Tool results also bring their paragraphs, whether each was hidden where it appeared, and
 // whether a later Call was traced to the result or a paragraph. ConfigChanges stand where Calls do, Errors where Segments do. A prompt's
@@ -425,21 +434,43 @@ impl DecisionRepository for Neo4jDecisionRepository {
             };
             parents.entry(number).or_default().insert(parent);
         }
+        let order = number(row.first(), "call order")?;
+        let tool_name = call_payload
+            .get("tool_name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let tool_input = call_payload
+            .get("tool_input")
+            .cloned()
+            .unwrap_or(Value::Null);
+        let prior = match (tool_name.as_str(), tool_input.get("file_path")) {
+            ("Write", Some(Value::String(path))) => {
+                let data = self
+                    .execute(
+                        FILE_RESULTS,
+                        json!({
+                            "session_id": request.session_id,
+                            "call_order": order,
+                            "path": Value::String(path.clone()).to_string(),
+                        }),
+                    )
+                    .await?;
+                let results: Vec<Value> =
+                    data.values.iter().map(|row| payload(row.first())).collect();
+                trace::last_seen_content(&results, path)
+            }
+            _ => None,
+        };
         Ok(TraceGraph {
             call: CallInfo {
                 seq: request.call_seq,
-                order: number(row.first(), "call order")?,
+                order,
                 subgraph,
                 agent_id: row.get(7).and_then(Value::as_str).map(str::to_owned),
-                tool_name: call_payload
-                    .get("tool_name")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-                tool_input: call_payload
-                    .get("tool_input")
-                    .cloned()
-                    .unwrap_or(Value::Null),
+                tool_name,
+                tool_input,
+                prior,
             },
             subgraphs,
             hidden: numbers(row.get(4)),
