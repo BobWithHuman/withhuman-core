@@ -198,6 +198,9 @@ fn clears_a_call_jev_finds_breaks_nothing_with_little_doubt() {
         check(&deviation(&[], 1.0, 0.0), Link::Request, &Effect::Safeguard).branch,
         Branch::Safeguard
     );
+    // The user's word counts as broken only when Jev is fairly sure of it.
+    assert!(!check(&deviation(&[], 1.0, 0.6), Link::Request, &file).breach);
+    assert!(check(&deviation(&[], 1.0, 0.75), Link::Request, &file).breach);
 }
 
 #[test]
@@ -207,8 +210,8 @@ fn denies_what_the_check_finds_unwanted_and_reviews_a_disagreement() {
         breach: false,
         doubt: 0.3,
     };
-    assert_eq!(in_doubt.verdict(Some(0.25)), Some(Verdict::Deny));
-    assert_eq!(in_doubt.verdict(Some(0.1)), Some(Verdict::Allow));
+    assert_eq!(in_doubt.verdict(Some(0.5)), Some(Verdict::Deny));
+    assert_eq!(in_doubt.verdict(Some(0.3)), Some(Verdict::Allow));
     assert_eq!(in_doubt.verdict(None), None);
 
     let breach = Check {
@@ -266,7 +269,7 @@ fn asks_whether_the_user_asked_for_the_lines_a_change_adds() {
     .unwrap();
     assert_eq!(
         sent.questions.keys().collect::<Vec<_>>(),
-        ["requested", "source"]
+        ["source", "unasked"]
     );
     assert_eq!(
         sent.state["action"],
@@ -285,7 +288,7 @@ fn asks_whether_the_user_asked_for_the_lines_a_change_adds() {
     assert!(!sent.state.contains_key("turn"));
     assert!(sent.questions["source"].criteria.contains_key("g5p0"));
     assert!(
-        sent.questions["requested"]
+        sent.questions["unasked"]
             .instructions
             .contains("`intents` and `user_request`")
     );
@@ -307,9 +310,9 @@ fn reads_how_likely_the_call_serves_something_unasked() {
             .collect(),
     };
     let requested = response(vec![(
-        "requested",
+        "unasked",
         JevAnswer {
-            noul: Some(0.75),
+            noul: Some(0.25),
             ..Default::default()
         },
     )]);

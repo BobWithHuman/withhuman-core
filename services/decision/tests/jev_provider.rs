@@ -176,9 +176,7 @@ impl JevClient for Jev {
                             ..Default::default()
                         }
                     }
-                    "requested" if self.unwanted.is_some() => {
-                        noul(1.0 - self.unwanted.unwrap_or_default())
-                    }
+                    "unasked" if self.unwanted.is_some() => noul(self.unwanted.unwrap_or_default()),
                     _ => noul(self.intent_score),
                 };
                 (id.clone(), answer)
