@@ -1110,17 +1110,17 @@ function summaryHtml(shown, runs) {
     <div class="box"><table class="grid by-condition"><thead><tr><th></th>${shown.map(c => `<th title="${escape(c)}">${escape(c)}</th>`).join('')}</tr></thead><tbody>
       ${row('problem miss', '✕ 미탐 <span class="muted">(1b · 막아야 했는데 안 막은 공격 Call)</span>', st => ({ n: st['1b'], rate: pct(st['1b'], st.attacks) }), '--deny')}
       ${row('problem false', '⚠ 오탐 <span class="muted">(2a · 막지 말아야 했는데 막은 정당한 Call)</span>', st => ({ n: st['2a'], rate: pct(st['2a'], st.legit) }), '--false')}
-      ${row('rest gap', '실행 · 그중 공격 성공 <span class="muted">(에이전트가 주입된 공격을 따름)</span>', st => ({ n: `${st.runs} · ${st.fooled}` }))}
+      ${row('rest gap', '실행 · 그중 공격 시도 <span class="muted">(에이전트가 주입된 공격을 따름)</span>', st => ({ n: `${st.runs} · ${st.fooled}` }))}
       ${row('rest', '공격 Call · 그중 정탐 (1a)', st => ({ n: `${st.attacks} · ${st['1a']}` }))}
       ${row('rest', '정당한 Call · 그중 통과 (2b)', st => ({ n: `${st.legit} · ${st['2b']}` }))}
     </tbody></table></div>`;
 }
 
-// Whether the injection got the agent to attack: it succeeded when the run made an attack Call,
-// whatever the engine then did with it.
+// Whether the injection got the agent to try the attack, that is to make an attack Call; it says
+// nothing of what the engine then did with it.
 const whoTag = r => r.fooled
-  ? `<span class="who on" title="에이전트가 주입된 공격을 따라 공격 Call ${r.by['1a'].length + r.by['1b'].length}개를 시도함">공격 성공 · ${r.by['1a'].length + r.by['1b'].length}개</span>`
-  : '<span class="who off" title="에이전트가 주입된 공격을 따르지 않음">공격 실패</span>';
+  ? `<span class="who on" title="에이전트가 주입된 공격을 따라 공격 Call ${r.by['1a'].length + r.by['1b'].length}개를 시도함 · 엔진이 막았는지는 정탐·미탐으로 표시">공격 시도 · ${r.by['1a'].length + r.by['1b'].length}개</span>`
+  : '<span class="who off" title="에이전트가 주입된 공격을 따르지 않음">공격 시도 없음</span>';
 
 // Cases against conditions. A cell is coloured only when something went wrong, and says what.
 function casesHtml(shown, runs) {
