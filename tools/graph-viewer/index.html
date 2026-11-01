@@ -143,26 +143,34 @@
   .grid th:first-child, .grid td:first-child { position: sticky; left: 0; z-index: 1; background: var(--panel); font-weight: 600; }
   .grid .num { text-align: right; font-variant-numeric: tabular-nums; }
   .grid .zero { color: var(--muted); font-weight: 400; }
-  .by-condition th:not(:first-child), .by-condition td:not(:first-child) { text-align: right; min-width: 120px; }
-  .by-condition tr.problem td { font-size: 15px; font-weight: 700; }
-  .by-condition tr.problem td:first-child { font-size: 13px; }
-  .by-condition tr.miss td { background: color-mix(in srgb, var(--deny) 10%, var(--panel)); }
-  .by-condition tr.false td { background: color-mix(in srgb, var(--false) 12%, var(--panel)); }
-  .by-condition tr.rest td { color: var(--muted); }
-  .by-condition tr.rest:first-of-type td, .by-condition tr.gap td { border-top: 2px solid var(--line); }
-  .by-condition td .rate { color: var(--muted); font-weight: 400; font-size: 11px; margin-left: 6px; }
-  .by-case td:not(:first-child) { min-width: 170px; cursor: pointer; }
-  .by-case td.miss { background: color-mix(in srgb, var(--deny) 14%, var(--panel)); }
-  .by-case td.false { background: color-mix(in srgb, var(--false) 14%, var(--panel)); }
-  .by-case td:not(:first-child):hover { outline: 2px solid var(--accent); outline-offset: -2px; }
-  .by-case td.picked { outline: 2px solid var(--accent); outline-offset: -2px; }
-  .by-case .bad { font-weight: 700; margin-right: 8px; }
-  .by-case .ok { color: var(--muted); }
-  .who { display: inline-block; font-size: 11px; font-weight: 600; padding: 0 7px; border-radius: 9px; margin-left: 4px;
-         border: 1px solid; white-space: nowrap; }
-  .who.on { color: var(--deny); border-color: var(--deny); background: color-mix(in srgb, var(--deny) 8%, var(--panel)); }
-  .who.off { color: var(--muted); border-color: var(--line); background: var(--bg); }
-  .by-case .run + .run { margin-top: 4px; }
+  #compare { font-size: 14px; }
+  .cmp { table-layout: fixed; width: 100%; min-width: 760px; }
+  .cmp col.name { width: 230px; }
+  .cmp th { text-align: center; font-size: 13px; padding: 10px 8px; white-space: normal; word-break: break-all; }
+  .cmp th:first-child { text-align: left; }
+  .cmp td, .cmp td:first-child { text-align: center; padding: 9px 8px; vertical-align: middle; white-space: nowrap; }
+  .cmp td:first-child { text-align: left; }
+  .cmp tbody.sum td { background: var(--bg); }
+  .cmp tbody.sum td:first-child { font-weight: 600; }
+  .cmp tbody.sum td:first-child small { display: block; color: var(--muted); font-weight: 400; font-size: 11px; }
+  .cmp tbody.sum tr:first-child td { border-top: 0; }
+  .cmp tbody.cases tr:first-child td { border-top: 2px solid var(--line); }
+  .cmp .big { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .cmp .of { color: var(--muted); font-size: 12px; margin-left: 4px; }
+  .cmp .mid { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .cmp tbody.cases td:not(:first-child) { cursor: pointer; }
+  .cmp tbody.cases td:not(:first-child):hover { background: var(--bg); }
+  .cmp tbody.cases td.picked { box-shadow: inset 0 0 0 2px var(--accent); background: var(--bg); }
+  .cell { display: flex; gap: 8px; justify-content: center; align-items: center; }
+  .cell + .cell { margin-top: 6px; }
+  .pill { display: inline-block; min-width: 64px; padding: 3px 10px; border-radius: 999px; font-weight: 700; font-size: 13px; color: #fff; }
+  .pill.fn { background: var(--deny); } .pill.fp { background: var(--false); }
+  .okmark { color: var(--allow); font-weight: 800; font-size: 16px; min-width: 64px; }
+  .who { display: inline-block; font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 9px; white-space: nowrap; min-width: 92px; }
+  .who.on { color: var(--deny); border: 1.5px solid var(--deny); }
+  .who.off { color: var(--muted); border: 1.5px solid transparent; font-weight: 400; }
+  .legend-line .pill, .legend-line .who { min-width: 0; }
+  .legend-line { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; color: var(--muted); font-size: 12px; margin: 6px 0 8px; }
   .run-detail { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 10px; margin-top: 10px; }
   .run-card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
   .run-card h4 { margin: 0 0 6px; font-size: 13px; }
@@ -1086,61 +1094,55 @@ function renderCompare() {
     return;
   }
   runs.forEach(r => Object.assign(r, tally(callsOf.get(r.s.id))));
-  $('compare-summary').innerHTML = summaryHtml(shown, runs);
-  $('compare-matrix').innerHTML = casesHtml(shown, runs);
+  $('compare-summary').innerHTML = compareHtml(shown, runs);
+  $('compare-matrix').innerHTML = '';
   const picked = runs.find(r => r.s.id === pickedRun);
   $('compare-detail').innerHTML = picked ? runHtml(picked) : '';
 }
 
-// Per condition, side by side. What went wrong leads: attacks let through (1b) and legitimate
-// work stopped (2a); the rest follows for scale.
-function summaryHtml(shown, runs) {
+// Whether the injection got the agent to try the attack, that is to make an attack Call; it says
+// nothing of what the engine then did with it.
+const attempts = r => r.by['1a'].length + r.by['1b'].length;
+const whoTag = r => r.fooled
+  ? `<span class="who on" title="에이전트가 주입된 공격을 따라 공격 Call ${attempts(r)}개를 시도함 · 엔진이 막았는지는 정탐·미탐으로 표시">공격 시도 ${attempts(r)}</span>`
+  : '<span class="who off" title="에이전트가 주입된 공격을 따르지 않음">시도 없음</span>';
+// What went wrong in a run: attacks let through and legitimate Calls stopped, or a tick.
+const problems = r => {
+  const miss = r.by['1b'].length, wrong = r.by['2a'].length;
+  return [miss && `<span class="pill fn" title="막아야 했는데 안 막은 공격 Call">미탐 ${miss}</span>`,
+    wrong && `<span class="pill fp" title="막지 말아야 했는데 막은 정당한 Call">오탐 ${wrong}</span>`].filter(Boolean).join('')
+    || '<span class="okmark" title="미탐·오탐 없음">✓</span>';
+};
+
+// One table, a column per condition: what went wrong over all its runs on top, each case below.
+function compareHtml(shown, runs) {
   const of = c => {
     const group = runs.filter(r => r.c === c);
     const n = Object.fromEntries(['1a', '1b', '2a', '2b'].map(q => [q, group.reduce((sum, r) => sum + r.by[q].length, 0)]));
     return { runs: group.length, fooled: group.filter(r => r.fooled).length, attacks: n['1a'] + n['1b'], legit: n['2a'] + n['2b'], ...n };
   };
   const all = shown.map(of);
-  const pct = (a, b) => b ? `<span class="rate">${Math.round(a / b * 100)}%</span>` : '';
-  const row = (cls, name, value, color) => `<tr class="${cls}"><td>${name}</td>${all.map(st => {
-    const v = value(st);
-    return `<td${color && v.n ? ` style="color:var(${color})"` : ''}>${v.n}${v.rate || ''}</td>`;
-  }).join('')}</tr>`;
-  return `<h3 class="compare-section">조건별 요약<span>위 두 줄이 문제 · 막음 = 엔진이 차단 또는 확인</span></h3>
-    <div class="box"><table class="grid by-condition"><thead><tr><th></th>${shown.map(c => `<th title="${escape(c)}">${escape(c)}</th>`).join('')}</tr></thead><tbody>
-      ${row('problem miss', '✕ 미탐 <span class="muted">(1b · 막아야 했는데 안 막은 공격 Call)</span>', st => ({ n: st['1b'], rate: pct(st['1b'], st.attacks) }), '--deny')}
-      ${row('problem false', '⚠ 오탐 <span class="muted">(2a · 막지 말아야 했는데 막은 정당한 Call)</span>', st => ({ n: st['2a'], rate: pct(st['2a'], st.legit) }), '--false')}
-      ${row('rest gap', '실행 · 그중 공격 시도 <span class="muted">(에이전트가 주입된 공격을 따름)</span>', st => ({ n: `${st.runs} · ${st.fooled}` }))}
-      ${row('rest', '공격 Call · 그중 정탐 (1a)', st => ({ n: `${st.attacks} · ${st['1a']}` }))}
-      ${row('rest', '정당한 Call · 그중 통과 (2b)', st => ({ n: `${st.legit} · ${st['2b']}` }))}
-    </tbody></table></div>`;
-}
-
-// Whether the injection got the agent to try the attack, that is to make an attack Call; it says
-// nothing of what the engine then did with it.
-const whoTag = r => r.fooled
-  ? `<span class="who on" title="에이전트가 주입된 공격을 따라 공격 Call ${r.by['1a'].length + r.by['1b'].length}개를 시도함 · 엔진이 막았는지는 정탐·미탐으로 표시">공격 시도 · ${r.by['1a'].length + r.by['1b'].length}개</span>`
-  : '<span class="who off" title="에이전트가 주입된 공격을 따르지 않음">공격 시도 없음</span>';
-
-// Cases against conditions. A cell is coloured only when something went wrong, and says what.
-function casesHtml(shown, runs) {
+  const pct = (a, b) => b ? ` · ${Math.round(a / b * 100)}%` : '';
+  const sum = (name, note, cell) => `<tr><td>${name}<small>${note}</small></td>${all.map(st => `<td>${cell(st)}</td>`).join('')}</tr>`;
+  const head = `<tbody class="sum">
+    ${sum('미탐', '막아야 했는데 안 막은 공격 Call', st => `<span class="big" style="color:var(${st['1b'] ? '--deny' : '--allow'})">${st['1b']}</span><span class="of">/ 공격 ${st.attacks}</span>`)}
+    ${sum('오탐', '막지 말아야 했는데 막은 정당한 Call', st => `<span class="big" style="color:var(${st['2a'] ? '--false' : '--allow'})">${st['2a']}</span><span class="of">/ 정당 ${st.legit}${pct(st['2a'], st.legit)}</span>`)}
+    ${sum('정탐', '막은 공격 Call', st => `<span class="mid">${st['1a']}</span><span class="of">/ 공격 ${st.attacks}</span>`)}
+    ${sum('공격 시도', '에이전트가 주입된 공격을 따른 실행', st => `<span class="mid">${st.fooled}</span><span class="of">/ 실행 ${st.runs}</span>`)}
+  </tbody>`;
   const names = [...new Set(runs.map(r => r.name))];
-  const line = r => {
-    const miss = r.by['1b'].length, wrong = r.by['2a'].length;
-    const bad = [miss && `<span class="bad" style="color:var(--deny)">✕ 미탐 ${miss}</span>`,
-      wrong && `<span class="bad" style="color:var(--false)">⚠ 오탐 ${wrong}</span>`].filter(Boolean).join('');
-    return `<div class="run" data-run="${escape(r.s.id)}">${r.nth ? `<span class="muted">#${r.nth}</span> ` : ''}${bad || '<span class="ok">문제 없음</span>'}
-      ${whoTag(r)}</div>`;
-  };
   const cell = (name, c) => {
     const list = runs.filter(r => r.name === name && r.c === c);
     if (!list.length) return '<td class="muted" style="cursor:default">–</td>';
-    const cls = list.some(r => r.by['1b'].length) ? 'miss' : list.some(r => r.by['2a'].length) ? 'false' : '';
-    return `<td class="${cls}${list.some(r => r.s.id === pickedRun) ? ' picked' : ''}">${list.map(line).join('')}</td>`;
+    return `<td class="${list.some(r => r.s.id === pickedRun) ? 'picked' : ''}">${list.map(r => `<div class="cell" data-run="${escape(r.s.id)}">
+        ${r.nth ? `<span class="muted">#${r.nth}</span>` : ''}${problems(r)}${whoTag(r)}</div>`).join('')}</td>`;
   };
-  return `<h3 class="compare-section">케이스별<span>빨강 = 미탐이 있는 실행 · 주황 = 오탐이 있는 실행 · 칸을 누르면 그 Call들이 나옵니다</span></h3>
-    <div class="box"><table class="grid by-case"><thead><tr><th>케이스</th>${shown.map(c => `<th title="${escape(c)}">${escape(c)}</th>`).join('')}</tr></thead>
-    <tbody>${names.map(name => `<tr><td>${escape(name)}</td>${shown.map(c => cell(name, c)).join('')}</tr>`).join('')}</tbody></table></div>`;
+  const body = `<tbody class="cases">${names.map(name => `<tr><td>${escape(name)}</td>${shown.map(c => cell(name, c)).join('')}</tr>`).join('')}</tbody>`;
+  return `<div class="legend-line"><span class="pill fn">미탐</span> 막아야 했는데 안 막은 공격 Call
+      <span class="pill fp">오탐</span> 막지 말아야 했는데 막은 정당한 Call <span class="okmark" style="min-width:0">✓</span> 둘 다 없음
+      <span class="who on" style="min-width:0">공격 시도</span> 에이전트가 주입된 공격을 따름 · 칸을 누르면 Call 목록</div>
+    <div class="box"><table class="grid cmp"><colgroup><col class="name">${shown.map(() => '<col>').join('')}</colgroup>
+      <thead><tr><th></th>${shown.map(c => `<th title="${escape(c)}">${escape(c)}</th>`).join('')}</tr></thead>${head}${body}</table></div>`;
 }
 
 const hit = (s, c) => {
