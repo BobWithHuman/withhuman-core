@@ -144,17 +144,21 @@
   .grid .num { text-align: right; font-variant-numeric: tabular-nums; }
   .grid .zero { color: var(--muted); font-weight: 400; }
   .by-condition th:not(:first-child), .by-condition td:not(:first-child) { text-align: right; min-width: 120px; }
-  .by-condition tr.total td { font-weight: 700; border-top: 2px solid var(--line); }
-  .by-condition tr.part td:first-child { padding-left: 26px; font-weight: 400; }
+  .by-condition tr.problem td { font-size: 15px; font-weight: 700; }
+  .by-condition tr.problem td:first-child { font-size: 13px; }
+  .by-condition tr.miss td { background: color-mix(in srgb, var(--deny) 10%, var(--panel)); }
+  .by-condition tr.false td { background: color-mix(in srgb, var(--false) 12%, var(--panel)); }
+  .by-condition tr.rest td { color: var(--muted); }
+  .by-condition tr.rest:first-of-type td, .by-condition tr.gap td { border-top: 2px solid var(--line); }
   .by-condition td .rate { color: var(--muted); font-weight: 400; font-size: 11px; margin-left: 6px; }
-  .by-case td:not(:first-child) { min-width: 190px; cursor: pointer; }
-  .by-case td.fooled { background: color-mix(in srgb, var(--deny) 9%, var(--panel)); }
+  .by-case td:not(:first-child) { min-width: 170px; cursor: pointer; }
+  .by-case td.miss { background: color-mix(in srgb, var(--deny) 14%, var(--panel)); }
+  .by-case td.false { background: color-mix(in srgb, var(--false) 14%, var(--panel)); }
   .by-case td:not(:first-child):hover { outline: 2px solid var(--accent); outline-offset: -2px; }
   .by-case td.picked { outline: 2px solid var(--accent); outline-offset: -2px; }
-  .by-case .who { font-weight: 700; margin-right: 8px; }
-  .by-case .who.yes { color: var(--deny); } .by-case .who.no { color: var(--muted); font-weight: 400; }
-  .by-case .n { font-variant-numeric: tabular-nums; margin-right: 8px; color: var(--muted); }
-  .by-case .n b { font-weight: 700; }
+  .by-case .bad { font-weight: 700; margin-right: 8px; }
+  .by-case .ok { color: var(--muted); }
+  .by-case .who { color: var(--muted); font-size: 11px; margin-left: 4px; }
   .by-case .run + .run { margin-top: 4px; }
   .run-detail { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 10px; margin-top: 10px; }
   .run-card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
@@ -1085,8 +1089,8 @@ function renderCompare() {
   $('compare-detail').innerHTML = picked ? runHtml(picked) : '';
 }
 
-// Per condition, side by side: runs whose agent was fooled, and its attack and legitimate
-// Calls with how many of each the engine stopped.
+// Per condition, side by side. What went wrong leads: attacks let through (1b) and legitimate
+// work stopped (2a); the rest follows for scale.
 function summaryHtml(shown, runs) {
   const of = c => {
     const group = runs.filter(r => r.c === c);
@@ -1097,37 +1101,35 @@ function summaryHtml(shown, runs) {
   const pct = (a, b) => b ? `<span class="rate">${Math.round(a / b * 100)}%</span>` : '';
   const row = (cls, name, value, color) => `<tr class="${cls}"><td>${name}</td>${all.map(st => {
     const v = value(st);
-    return `<td${color && v.n ? ` style="color:var(${color});font-weight:700"` : ''}>${v.n}${v.rate || ''}</td>`;
+    return `<td${color && v.n ? ` style="color:var(${color})"` : ''}>${v.n}${v.rate || ''}</td>`;
   }).join('')}</tr>`;
-  return `<h3 class="compare-section">조건별 요약<span>막음 = 엔진이 차단 또는 확인 · % 는 그 합계 대비</span></h3>
+  return `<h3 class="compare-section">조건별 요약<span>위 두 줄이 문제 · 막음 = 엔진이 차단 또는 확인</span></h3>
     <div class="box"><table class="grid by-condition"><thead><tr><th></th>${shown.map(c => `<th title="${escape(c)}">${escape(c)}</th>`).join('')}</tr></thead><tbody>
-      ${row('total', '실행', st => ({ n: st.runs }))}
-      ${row('part', '에이전트가 속은 실행', st => ({ n: st.fooled, rate: pct(st.fooled, st.runs) }), '--deny')}
-      ${row('total', '공격 Call <span class="muted">(속아서 한 Call)</span>', st => ({ n: st.attacks }))}
-      ${row('part', '1a · 막음', st => ({ n: st['1a'], rate: pct(st['1a'], st.attacks) }), '--accent')}
-      ${row('part', '1b · 놓침', st => ({ n: st['1b'], rate: pct(st['1b'], st.attacks) }), '--deny')}
-      ${row('total', '정당한 Call <span class="muted">(원래 작업)</span>', st => ({ n: st.legit }))}
-      ${row('part', '2a · 잘못 막음', st => ({ n: st['2a'], rate: pct(st['2a'], st.legit) }), '--false')}
-      ${row('part', '2b · 통과', st => ({ n: st['2b'], rate: pct(st['2b'], st.legit) }))}
+      ${row('problem miss', '✕ 막아야 했는데 안 막음 <span class="muted">(1b · 공격 Call 중)</span>', st => ({ n: st['1b'], rate: pct(st['1b'], st.attacks) }), '--deny')}
+      ${row('problem false', '⚠ 막지 말아야 했는데 막음 <span class="muted">(2a · 정당한 Call 중)</span>', st => ({ n: st['2a'], rate: pct(st['2a'], st.legit) }), '--false')}
+      ${row('rest gap', '실행 · 그중 에이전트가 속은 실행', st => ({ n: `${st.runs} · ${st.fooled}` }))}
+      ${row('rest', '공격 Call · 그중 막음 (1a)', st => ({ n: `${st.attacks} · ${st['1a']}` }))}
+      ${row('rest', '정당한 Call · 그중 통과 (2b)', st => ({ n: `${st.legit} · ${st['2b']}` }))}
     </tbody></table></div>`;
 }
 
-// Cases against conditions: whether each run's agent was fooled, and its Calls by quadrant.
+// Cases against conditions. A cell is coloured only when something went wrong, and says what.
 function casesHtml(shown, runs) {
   const names = [...new Set(runs.map(r => r.name))];
-  const n = (r, q, color) => {
-    const v = r.by[q].length;
-    return `<span class="n">${q} <b${v && color ? ` style="color:var(${color})"` : ''}>${v}</b></span>`;
+  const line = r => {
+    const miss = r.by['1b'].length, wrong = r.by['2a'].length;
+    const bad = [miss && `<span class="bad" style="color:var(--deny)">✕ 놓침 ${miss}</span>`,
+      wrong && `<span class="bad" style="color:var(--false)">⚠ 잘못 막음 ${wrong}</span>`].filter(Boolean).join('');
+    return `<div class="run" data-run="${escape(r.s.id)}">${r.nth ? `<span class="muted">#${r.nth}</span> ` : ''}${bad || '<span class="ok">문제 없음</span>'}
+      <span class="who">${r.fooled ? `속음 · 공격 ${r.by['1a'].length + miss}개` : '안 속음'}</span></div>`;
   };
   const cell = (name, c) => {
     const list = runs.filter(r => r.name === name && r.c === c);
     if (!list.length) return '<td class="muted" style="cursor:default">–</td>';
-    const fooled = list.some(r => r.fooled), picked = list.some(r => r.s.id === pickedRun);
-    return `<td class="${fooled ? 'fooled' : ''}${picked ? ' picked' : ''}">${list.map(r => `<div class="run" data-run="${escape(r.s.id)}">
-        ${r.nth ? `<span class="muted">#${r.nth}</span> ` : ''}<span class="who ${r.fooled ? 'yes' : 'no'}">${r.fooled ? '속음' : '안 속음'}</span>
-        ${r.fooled ? n(r, '1a', '--accent') + n(r, '1b', '--deny') : ''}${n(r, '2a', '--false')}${n(r, '2b')}</div>`).join('')}</td>`;
+    const cls = list.some(r => r.by['1b'].length) ? 'miss' : list.some(r => r.by['2a'].length) ? 'false' : '';
+    return `<td class="${cls}${list.some(r => r.s.id === pickedRun) ? ' picked' : ''}">${list.map(line).join('')}</td>`;
   };
-  return `<h3 class="compare-section">케이스별<span>빨간 칸 = 에이전트가 속은 실행 · 1a 공격 막음 · 1b 공격 놓침 · 2a 정당한 작업 잘못 막음 · 2b 정당한 작업 통과 · 칸을 누르면 Call 목록</span></h3>
+  return `<h3 class="compare-section">케이스별<span>빨강 = 공격을 놓친 실행 · 주황 = 정당한 작업을 막은 실행 · 칸을 누르면 그 Call들이 나옵니다</span></h3>
     <div class="box"><table class="grid by-case"><thead><tr><th>케이스</th>${shown.map(c => `<th title="${escape(c)}">${escape(c)}</th>`).join('')}</tr></thead>
     <tbody>${names.map(name => `<tr><td>${escape(name)}</td>${shown.map(c => cell(name, c)).join('')}</tr>`).join('')}</tbody></table></div>`;
 }
@@ -1139,18 +1141,23 @@ const hit = (s, c) => {
     ${c.score != null ? `<span class="muted">${percent(c.score) || '0'}</span>` : ''}</div>`;
 };
 
-// The picked run's Calls in their quadrants; the work let through, the longest list, folded.
+// The picked run: the Calls that went wrong first, the ones judged right folded below.
 function runHtml(r) {
-  const card = q => {
+  const card = (q, title, color, open) => {
     const list = r.by[q].map(c => hit(r.s, c)).join('') || '<div class="muted">없음</div>';
-    const title = `${q} · ${QUADRANT[q][0]} (${r.by[q].length})`;
-    return `<div class="run-card">${q === '2b' && r.by[q].length
-      ? `<details><summary><h4 style="display:inline">${escape(title)}</h4></summary>${list}</details>`
-      : `<h4 style="color:var(${QUADRANT[q][1]})">${escape(title)}</h4>${list}`}</div>`;
+    const head = `${title} (${r.by[q].length})`;
+    return `<div class="run-card"${open && r.by[q].length ? ` style="border-color:var(${color})"` : ''}>${open
+      ? `<h4 style="color:var(${r.by[q].length ? color : '--muted'})">${escape(head)}</h4>${list}`
+      : `<details><summary><h4 style="display:inline">${escape(head)}</h4></summary>${list}</details>`}</div>`;
   };
   return `<h3 class="compare-section">${escape(r.name)} · ${escape(r.c)}${r.nth ? ` #${r.nth}` : ''}
       <span>${r.fooled ? '에이전트가 속은 실행' : '에이전트가 속지 않은 실행'} · Call을 누르면 그래프에서 엽니다 · 숫자는 이탈 점수</span></h3>
-    <div class="run-detail">${['1a', '1b', '2a', '2b'].map(card).join('')}</div>`;
+    <div class="run-detail">
+      ${card('1b', '✕ 막아야 했는데 안 막은 공격 Call', '--deny', true)}
+      ${card('2a', '⚠ 막지 말아야 했는데 막은 정당한 Call', '--false', true)}
+      ${card('1a', '막은 공격 Call', '--accent', false)}
+      ${card('2b', '통과한 정당한 Call', '--muted', false)}
+    </div>`;
 }
 
 // Opens a Call of a compared run in the graph.
