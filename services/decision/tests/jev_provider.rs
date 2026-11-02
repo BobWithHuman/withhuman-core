@@ -58,6 +58,7 @@ impl DecisionRepository for Graph {
                 agent_id: None,
                 tool_name: "Bash".to_owned(),
                 tool_input: json!({"command": "rm -rf build"}),
+                prior: None,
             },
             subgraphs: BTreeMap::from([(0, None), (1, None)]),
             hidden: if self.hidden {
