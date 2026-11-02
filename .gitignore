@@ -1,6 +1,7 @@
 /target
 deploy/docker/.env
 /.env
+__pycache__/
 
 # Terraform
 .terraform/
