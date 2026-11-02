@@ -72,9 +72,13 @@ services:
         required: false
     environment:
       DECISION_ADDR: 0.0.0.0:8082
-      WITHHUMAN_ENV: production
-      # `jev` traces each Call's cause through Jev and denies calls against the stated intent.
-      DECISION_PROVIDER: jev
+      WITHHUMAN_ENV: ${WITHHUMAN_ENV:-production}
+      # `jev` traces each Call's cause through Jev and denies calls against the stated intent;
+      # the E2E suite runs `mock`, which answers MOCK_DECISION, in the test environment.
+      DECISION_PROVIDER: ${DECISION_PROVIDER:-jev}
+      MOCK_DECISION: ${MOCK_DECISION:-ALLOW}
+      MOCK_DECISION_REASON: ${MOCK_DECISION_REASON:-}
+      MOCK_DECISION_DELAY_MS: ${MOCK_DECISION_DELAY_MS:-0}
       JEV_URL: ${JEV_URL:-https://api.typesafe.ai}
       JEV_TIMEOUT_MS: ${JEV_TIMEOUT_MS:-3000}
       WITHHUMAN_INTENT_BLOCK_THRESHOLD: ${WITHHUMAN_INTENT_BLOCK_THRESHOLD:-0.5}
@@ -130,6 +134,8 @@ services:
       WITHHUMAN_ON_FAILURE: ${WITHHUMAN_ON_FAILURE:-closed}
       WITHHUMAN_ASK: ${WITHHUMAN_ASK:-ask}
       WITHHUMAN_DECISION_TIMEOUT_MS: ${WITHHUMAN_DECISION_TIMEOUT_MS:-4200}
+      # `off` skips waiting for and asking for a turn's intent, as the E2E suite does.
+      WITHHUMAN_INTENT_CAPTURE: ${WITHHUMAN_INTENT_CAPTURE:-on}
     depends_on:
       generator:
         condition: service_healthy

@@ -10,6 +10,10 @@ fixture_url=${MCP_FIXTURE_URL:-http://localhost:8090}
 neo4j_url=${NEO4J_URL:-http://localhost:7474}
 generator_url=${GENERATOR_URL:-http://localhost:8081}
 export NEO4J_PASSWORD=${NEO4J_PASSWORD:-withhuman-e2e}
+export WITHHUMAN_ENV=test
+export DECISION_PROVIDER=mock
+# The suite checks how verdicts are enforced; it states no intents to wait for.
+export WITHHUMAN_INTENT_CAPTURE=off
 export WITHHUMAN_DECISION_TIMEOUT_MS=${WITHHUMAN_DECISION_TIMEOUT_MS:-4200}
 
 for command in docker curl jq; do
