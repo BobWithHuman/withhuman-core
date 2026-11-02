@@ -731,11 +731,11 @@ fn reports_missing_answers() {
 }
 
 #[test]
-fn trusts_the_users_request_more_than_a_tool_result_or_nothing() {
+fn judges_every_link_alike_by_default() {
     let thresholds = Thresholds::default();
     assert_eq!(thresholds.for_link(Link::Request), (0.3, 0.15));
-    assert_eq!(thresholds.for_link(Link::Segment), (0.15, 0.08));
-    assert_eq!(thresholds.for_link(Link::None), (0.15, 0.08));
+    assert_eq!(thresholds.for_link(Link::Segment), (0.3, 0.15));
+    assert_eq!(thresholds.for_link(Link::None), (0.3, 0.15));
 }
 
 #[test]

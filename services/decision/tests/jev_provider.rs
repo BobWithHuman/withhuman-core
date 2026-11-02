@@ -187,7 +187,12 @@ fn provider_on(
         jev.clone(),
         TraceSettings::default(),
         Duration::from_secs(3),
-        Thresholds::default(),
+        // Stricter for a Call that follows from a tool result or nothing.
+        Thresholds {
+            untrusted_deny: 0.15,
+            untrusted_review: 0.08,
+            ..Thresholds::default()
+        },
     );
     (provider, graph, jev)
 }
@@ -411,7 +416,12 @@ fn provider_picking(cause: &'static str) -> (JevDecisionProvider, Arc<Graph>, Ar
         jev.clone(),
         TraceSettings::default(),
         Duration::from_secs(3),
-        Thresholds::default(),
+        // Stricter for a Call that follows from a tool result or nothing.
+        Thresholds {
+            untrusted_deny: 0.15,
+            untrusted_review: 0.08,
+            ..Thresholds::default()
+        },
     );
     (provider, graph, jev)
 }
