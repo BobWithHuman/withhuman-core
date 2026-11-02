@@ -32,7 +32,7 @@ async fn verifies_graph_version_and_persists_mock_verdict_over_real_http() {
     query
         .one(
             "CREATE (session:Session {session_id:$session_id,version:7}) \
-             CREATE (call:ExecutionNode {session_id:$session_id,seq:7,type:'Call'}) \
+             CREATE (call:Call {session_id:$session_id,seq:7}) \
              CREATE (session)-[:CONTAINS]->(call) RETURN call.seq",
             json!({"session_id":session_id}),
         )
@@ -49,6 +49,9 @@ async fn verifies_graph_version_and_persists_mock_verdict_over_real_http() {
         neo4j_user,
         neo4j_password,
         neo4j_database: "neo4j".into(),
+        jev: None,
+        intent_block_threshold: 0.5,
+        trace: Default::default(),
     };
     let repository = Neo4jDecisionRepository::connect(&config).await.unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -79,14 +82,15 @@ async fn verifies_graph_version_and_persists_mock_verdict_over_real_http() {
 
     let row = query
         .one(
-            "MATCH (call:ExecutionNode {session_id:$session_id,seq:7})-[cause:CAUSE]->(verdict:Verdict) \
-             RETURN call.decision, verdict.decision, verdict.graph_version, cause.kind",
+            "MATCH (call:Call {session_id:$session_id,seq:7}) \
+             RETURN call.decision, call.decision_version, call.decision_mode, \
+                    NOT EXISTS { (call)-->() }",
             json!({"session_id":session_id}),
         )
         .await;
     assert_eq!(
         row,
-        vec![json!("DENY"), json!("DENY"), json!(7), json!("mock")]
+        vec![json!("DENY"), json!(7), json!("enforce"), json!(true)]
     );
 
     let stale = reqwest::Client::new()

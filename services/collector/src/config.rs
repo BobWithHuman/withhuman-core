@@ -36,6 +36,14 @@ pub struct CollectorConfig {
     /// Inactivity after which a session's shared state expires. A session that resumes later
     /// restarts its orders at 1, so keep this longer than any session pause.
     pub session_ttl: Duration,
+    /// Ask the model to state the inferred user intent first; the line is hidden from the user
+    /// and stored by the Generator.
+    pub intent_capture: bool,
+    /// How long a Call made before the turn's intent arrived waits for it. Claude Code delivers
+    /// a reply's text a moment after the tool calls that follow it.
+    pub intent_wait: Duration,
+    /// Commands, besides the built-in list, whose output comes from the network.
+    pub network_commands: Vec<String>,
 }
 
 impl Default for CollectorConfig {
@@ -58,6 +66,9 @@ impl Default for CollectorConfig {
             redis_url: None,
             verdict_ttl: Duration::from_secs(3_600),
             session_ttl: Duration::from_secs(604_800),
+            intent_capture: true,
+            intent_wait: Duration::from_millis(3_000),
+            network_commands: Vec::new(),
         }
     }
 }
@@ -102,6 +113,8 @@ impl CollectorConfig {
             ));
         }
 
+        let intent_wait = Duration::from_millis(parse_env("WITHHUMAN_INTENT_WAIT_MS", 3_000)?);
+
         Ok(Self {
             bind_address,
             ext_authz_address,
@@ -130,16 +143,7 @@ impl CollectorConfig {
             })?,
             enforce_mcp_at_hook: env::var("WITHHUMAN_MCP_ENFORCE")
                 .is_ok_and(|value| value == "hook"),
-            watch_paths: env::var("WITHHUMAN_WATCH_PATHS")
-                .map(|value| {
-                    value
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|value| !value.is_empty())
-                        .map(str::to_owned)
-                        .collect()
-                })
-                .unwrap_or_default(),
+            watch_paths: list_env("WITHHUMAN_WATCH_PATHS"),
             verdict_capacity,
             redis_url: env::var("REDIS_URL")
                 .ok()
@@ -147,8 +151,29 @@ impl CollectorConfig {
                 .filter(|value| !value.is_empty()),
             verdict_ttl: Duration::from_secs(verdict_ttl),
             session_ttl: Duration::from_secs(session_ttl),
+            intent_capture: match_env("WITHHUMAN_INTENT_CAPTURE", true, |value| match value {
+                "on" => Some(true),
+                "off" => Some(false),
+                _ => None,
+            })?,
+            intent_wait,
+            network_commands: list_env("WITHHUMAN_EXTERNAL_COMMANDS"),
         })
     }
+}
+
+/// A comma-separated list; empty when unset.
+fn list_env(name: &str) -> Vec<String> {
+    env::var(name)
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn parse_env<T>(name: &str, default: T) -> io::Result<T>

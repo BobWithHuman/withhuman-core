@@ -34,7 +34,7 @@ async fn exposes_every_versioned_event_route() {
     }
 
     let events = repository.events.lock().unwrap();
-    assert_eq!(events.len(), 13);
+    assert_eq!(events.len(), 11);
     assert_eq!(events[0].event_name(), "SessionStart");
     assert_eq!(events[0].session_id(), "session-1");
     assert_eq!(events[0].order(), 1);
@@ -266,16 +266,8 @@ fn event_requests() -> Vec<(&'static str, Value)> {
         ),
         ("SubagentStop", envelope(7, json!({"agent_id":"agent-1"}))),
         (
-            "InstructionsLoaded",
-            envelope(8, json!({"file_path":"/repo/AGENTS.md"})),
-        ),
-        (
             "ConfigChange",
             envelope(9, json!({"file_path":"/repo/config.json"})),
-        ),
-        (
-            "FileChanged",
-            envelope(10, json!({"file_path":"/repo/src/lib.rs"})),
         ),
         (
             "MessageDisplay",

@@ -26,3 +26,9 @@ unknown-git = "deny"
 [[licenses.exceptions]]
 name = "xxhash-rust"
 allow = ["BSL-1.0"]
+
+# webpki-roots carries Mozilla's CA certificates, which rustls needs for Decision to reach Jev
+# over HTTPS.
+[[licenses.exceptions]]
+name = "webpki-roots"
+allow = ["CDLA-Permissive-2.0"]

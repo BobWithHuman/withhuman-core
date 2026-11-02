@@ -1,7 +1,8 @@
 use serde_json::json;
 use withhuman_contracts::hooks::{
-    HookEventName, HookSpecificResponse, InstructionsLoadedRequest, PermissionDecision,
+    HookEventName, HookSpecificResponse, MessageDisplayOutput, PermissionDecision,
     PostToolUseRequest, PreToolUseOutput, PreToolUseRequest, SessionStartOutput,
+    UserPromptSubmitOutput,
 };
 
 #[test]
@@ -49,24 +50,6 @@ fn accepts_nullable_post_tool_input() {
 }
 
 #[test]
-fn preserves_instruction_relationship_paths() {
-    let request: InstructionsLoadedRequest = serde_json::from_value(json!({
-        "session_id": "8e789b84",
-        "hook_event_name": "InstructionsLoaded",
-        "file_path": "/app/.claude/rules/security.md",
-        "trigger_file_path": "/app/CLAUDE.md",
-        "parent_file_path": "/app/.claude/rules"
-    }))
-    .expect("instruction relationship paths should deserialize");
-
-    assert_eq!(request.trigger_file_path.as_deref(), Some("/app/CLAUDE.md"));
-    assert_eq!(
-        request.parent_file_path.as_deref(),
-        Some("/app/.claude/rules")
-    );
-}
-
-#[test]
 fn serializes_deny_response_with_claude_wire_names() {
     let response = HookSpecificResponse {
         hook_specific_output: PreToolUseOutput {
@@ -105,5 +88,30 @@ fn serializes_session_start_watch_paths() {
                 "watchPaths": ["/app/CLAUDE.md"]
             }
         })
+    );
+}
+
+#[test]
+fn serializes_prompt_context_and_display_content_with_claude_wire_names() {
+    let context = HookSpecificResponse {
+        hook_specific_output: UserPromptSubmitOutput {
+            hook_event_name: HookEventName::UserPromptSubmit,
+            additional_context: "context".into(),
+        },
+    };
+    let display = HookSpecificResponse {
+        hook_specific_output: MessageDisplayOutput {
+            hook_event_name: HookEventName::MessageDisplay,
+            display_content: "shown".into(),
+        },
+    };
+
+    assert_eq!(
+        serde_json::to_value(context).expect("response should serialize"),
+        json!({"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"context"}})
+    );
+    assert_eq!(
+        serde_json::to_value(display).expect("response should serialize"),
+        json!({"hookSpecificOutput":{"hookEventName":"MessageDisplay","displayContent":"shown"}})
     );
 }

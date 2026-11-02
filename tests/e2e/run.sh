@@ -3,13 +3,17 @@ set -euo pipefail
 
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 compose_file="$repo_dir/deploy/docker/compose.yaml"
-compose=(docker compose --file "$compose_file")
+compose=(docker compose --file "$compose_file" --file "$repo_dir/tests/e2e/compose.ports.yaml")
 gateway_url=${AGENTGATEWAY_URL:-http://localhost:3000}
 decision_url=${DECISION_URL:-http://localhost:8082}
 fixture_url=${MCP_FIXTURE_URL:-http://localhost:8090}
 neo4j_url=${NEO4J_URL:-http://localhost:7474}
 generator_url=${GENERATOR_URL:-http://localhost:8081}
 export NEO4J_PASSWORD=${NEO4J_PASSWORD:-withhuman-e2e}
+export WITHHUMAN_ENV=test
+export DECISION_PROVIDER=mock
+# The suite checks how verdicts are enforced; it states no intents to wait for.
+export WITHHUMAN_INTENT_CAPTURE=off
 export WITHHUMAN_DECISION_TIMEOUT_MS=${WITHHUMAN_DECISION_TIMEOUT_MS:-4200}
 
 for command in docker curl jq; do
@@ -119,7 +123,7 @@ verdict_count() {
     "$neo4j_url/db/neo4j/query/v2" \
     --header 'content-type: application/json' \
     --data "$(jq -cn --arg session "$session_id" \
-      '{statement:"MATCH (:ExecutionNode {session_id: $session_id, type: \"Call\"})-[:HAS_VERDICT]->(v:Verdict {session_id: $session_id}) RETURN count(v) AS count",parameters:{session_id:$session}}')" \
+      '{statement:"MATCH (c:Call {session_id: $session_id}) WHERE c.decision IS NOT NULL RETURN count(c) AS count",parameters:{session_id:$session}}')" \
     | jq -r '.data.values[0][0]'
 }
 

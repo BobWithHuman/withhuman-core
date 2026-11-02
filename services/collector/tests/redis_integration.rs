@@ -16,12 +16,13 @@ mod support;
 use support::{context, run_scenario};
 use withhuman_collector::{
     CollectorConfig, CollectorService, ExtAuthzService, GeneratorError, GeneratorTransport,
-    InMemorySessionStore, MessageFragment, NormalizedEvent, Normalizer, RedisSessionStore,
-    RedisVerdictStore, SessionStore, VerdictStore, app_with_transport, redis_connection,
+    InMemorySessionStore, IntentAsk, MessageFragment, NormalizedEvent, Normalizer,
+    RedisSessionStore, RedisVerdictStore, SessionStore, SessionUpdate, VerdictStore,
+    app_with_transport, redis_connection,
 };
 use withhuman_contracts::{
     decisions::{CausalStart, Decision, DecisionResponse, EnforcementMode},
-    events::{EventResponse, PostToolUseEventRequest, SessionCursor},
+    events::{ContentOrigin, EventResponse, PostToolUseEventRequest, SessionCursor},
     ext_authz::{AttributeContext, Authorization, CheckRequest, attribute_context},
 };
 
@@ -84,11 +85,11 @@ async fn verdicts_expire_after_their_ttl() {
     store
         .insert(
             tool_use_id.clone(),
-            withhuman_collector::StoredVerdict {
-                decision: decision(Decision::Allow),
-                tool_name: "Read".to_owned(),
-                arguments: json!({}),
-            },
+            withhuman_collector::StoredVerdict::new(
+                decision(Decision::Allow),
+                "Read".to_owned(),
+                &json!({}),
+            ),
         )
         .await
         .unwrap();
@@ -118,7 +119,7 @@ async fn redis_sessions_normalize_like_in_memory_sessions() {
     )
     .await;
 
-    assert_eq!(in_memory.len(), 16);
+    assert_eq!(in_memory.len(), 14);
     assert_eq!(in_memory, redis);
     let golden = support::GOLDEN.replace(support::GOLDEN_SESSION_ID, &session_id);
     assert_eq!(redis, golden.lines().collect::<Vec<_>>());
@@ -266,6 +267,12 @@ async fn restores_session_context_after_redis_state_is_lost() {
             "/v1/hooks/UserPromptSubmit",
             json!({"session_id":session_id,"prompt":"go","prompt_id":"p1","cwd":"/repo"}),
         ),
+        // The turn states its intent first, or its first Call would be turned back.
+        json_request(
+            "/v1/hooks/MessageDisplay",
+            json!({"session_id":session_id,"message_id":"m1","index":0,
+                   "delta":"[의도] 파일 목록 보기\n","final":true}),
+        ),
         json_request(
             "/v1/hooks/PreToolUse",
             json!({
@@ -310,6 +317,208 @@ async fn restores_session_context_after_redis_state_is_lost() {
     assert_eq!(results[0].meta.prompt_id.as_deref(), Some("p1"));
 }
 
+/// Verdicts, remembered tool inputs and message fragments wait in Redis without their secrets,
+/// and still authorize the call and complete the result.
+#[tokio::test]
+async fn keeps_no_secrets_in_redis() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    let generator = Arc::new(RecordingGenerator::default());
+    let service = replica(&url, generator.clone());
+    let ext_authz = ExtAuthzService::new(service.verdicts.clone(), EnforcementMode::Enforce);
+    let app = app_with_transport(service);
+    let session_id = unique("secrets");
+    let tool_use_id = unique("mcp-secret");
+    let arguments =
+        json!({"path":"a","api_key":"q8Zr2Lm4Np6Tx0Vb3Kd7","note":"AKIAIOSFODNN7EXAMPLE"});
+    for request in [
+        json_request(
+            "/v1/hooks/PreToolUse",
+            json!({
+                "session_id":session_id,"tool_name":"mcp__filesystem__write_file",
+                "tool_input":arguments,"tool_use_id":tool_use_id
+            }),
+        ),
+        json_request(
+            "/v1/hooks/MessageDisplay",
+            json!({
+                "session_id":session_id,"message_id":"m-1","index":0,
+                "delta":"token AKIAIOSFODNN7EXAMPLE\n","final":false
+            }),
+        ),
+    ] {
+        assert_eq!(
+            app.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::OK
+        );
+    }
+
+    let mut connection = redis_connection(&url).unwrap();
+    let mut keys: Vec<String> = redis::cmd("KEYS")
+        .arg(format!("withhuman:session:{{{session_id}}}*"))
+        .query_async(&mut connection)
+        .await
+        .unwrap();
+    keys.push(format!("withhuman:verdict:{tool_use_id}"));
+    assert_eq!(
+        keys.len(),
+        4,
+        "session, tool input, fragment and verdict keys"
+    );
+    for key in keys {
+        let kind: String = redis::cmd("TYPE")
+            .arg(&key)
+            .query_async(&mut connection)
+            .await
+            .unwrap();
+        let dump = match kind.as_str() {
+            "string" => redis::cmd("GET")
+                .arg(&key)
+                .query_async::<String>(&mut connection)
+                .await
+                .unwrap(),
+            "hash" => redis::cmd("HGETALL")
+                .arg(&key)
+                .query_async::<Vec<String>>(&mut connection)
+                .await
+                .unwrap()
+                .join("\n"),
+            other => panic!("{key} has unexpected type {other}"),
+        };
+        assert!(!dump.is_empty(), "{key} is empty");
+        for secret in ["q8Zr2Lm4Np6Tx0Vb3Kd7", "AKIAIOSFODNN7EXAMPLE"] {
+            assert!(!dump.contains(secret), "{secret} stored in {key}");
+        }
+    }
+
+    let check = Authorization::check(
+        &ext_authz,
+        tonic::Request::new(check_request(&tool_use_id, arguments)),
+    )
+    .await
+    .unwrap()
+    .into_inner();
+    assert_eq!(
+        check.status.map(|status| status.code),
+        Some(0),
+        "expected allow"
+    );
+
+    app.oneshot(json_request(
+        "/v1/hooks/PostToolUse",
+        json!({
+            "session_id":session_id,"tool_name":"mcp__filesystem__write_file",
+            "tool_response":"ok","tool_use_id":tool_use_id
+        }),
+    ))
+    .await
+    .unwrap();
+    let restored = generator.results.lock().unwrap()[0]
+        .payload
+        .tool_input
+        .clone()
+        .unwrap();
+    assert_eq!(restored["path"], "a");
+    assert_eq!(restored["api_key"], "q8Zr…3Kd7");
+    assert_eq!(restored["note"], "AKIA…MPLE");
+}
+
+/// A clone on one replica makes reads of its files external on another.
+#[tokio::test]
+async fn shares_downloaded_paths_across_replicas() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    let generator = Arc::new(RecordingGenerator::default());
+    let replica_a = app_with_transport(replica(&url, generator.clone()));
+    let replica_b = app_with_transport(replica(&url, generator.clone()));
+    let session_id = unique("downloads");
+    let clone = json!({"command":"git clone https://github.com/acme/tool.git"});
+    replica_a
+        .oneshot(json_request(
+            "/v1/hooks/PreToolUse",
+            json!({"session_id":session_id,"cwd":"/repo","tool_name":"Bash",
+                   "tool_input":clone,"tool_use_id":"t1"}),
+        ))
+        .await
+        .unwrap();
+    replica_b
+        .oneshot(json_request(
+            "/v1/hooks/PostToolUse",
+            json!({"session_id":session_id,"cwd":"/repo","tool_name":"Read",
+                   "tool_input":{"file_path":"/repo/tool/README.md"},
+                   "tool_response":{"type":"text","file":{"content":"readme"}},"tool_use_id":"t2"}),
+        ))
+        .await
+        .unwrap();
+
+    let origin = generator.results.lock().unwrap()[0].meta.content_origin;
+    assert_eq!(origin, Some(ContentOrigin::External));
+    let mut connection = redis_connection(&url).unwrap();
+    let ttl: i64 = redis::cmd("TTL")
+        .arg(format!("withhuman:session:{{{session_id}}}:downloads"))
+        .query_async(&mut connection)
+        .await
+        .unwrap();
+    assert!(ttl > 0);
+}
+
+/// Redis numbers session-wide SubGraphs and keeps the stated intent like the in-memory store.
+#[tokio::test]
+async fn redis_subgraphs_match_in_memory_subgraphs() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    let session_id = unique("subgraphs");
+    let in_memory = support::run_steps(
+        Normalizer::new(InMemorySessionStore::default()),
+        &session_id,
+        support::SUBGRAPH_SCENARIO,
+    )
+    .await;
+    let redis = support::run_steps(
+        Normalizer::new(RedisSessionStore::new(
+            redis_connection(&url).unwrap(),
+            Duration::from_secs(60),
+        )),
+        &session_id,
+        support::SUBGRAPH_SCENARIO,
+    )
+    .await;
+
+    assert_eq!(in_memory, redis);
+}
+
+/// Redis resumes a lost session inside its committed open SubGraph like the in-memory store, and
+/// keeps an intent a fragment stated before the seed.
+#[tokio::test]
+async fn redis_resumes_subgraphs_like_in_memory() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    let session_id = unique("resume-subgraphs");
+    let committed = || Arc::new(support::Committed(support::resume_cursor()));
+    let in_memory = support::run_steps(
+        Normalizer::new(InMemorySessionStore::default()).with_history(committed()),
+        &session_id,
+        support::RESUME_SCENARIO,
+    )
+    .await;
+    let redis = support::run_steps(
+        Normalizer::new(RedisSessionStore::new(
+            redis_connection(&url).unwrap(),
+            Duration::from_secs(60),
+        ))
+        .with_history(committed()),
+        &session_id,
+        support::RESUME_SCENARIO,
+    )
+    .await;
+
+    assert_eq!(in_memory, redis);
+}
+
 /// Replicas that meet an unknown session at the same time seed it once and share one numbering.
 #[tokio::test]
 async fn replicas_seed_a_resumed_session_once() {
@@ -343,6 +552,94 @@ async fn replicas_seed_a_resumed_session_once() {
     orders.sort_unstable();
     let first = 10 + withhuman_collector::RESUME_ORDER_GAP + 1;
     assert_eq!(orders, (first..first + 20).collect::<Vec<_>>());
+}
+
+/// Redis asks a turn for its intent exactly when the in-memory store does: once per turn, never
+/// once the turn stated one, anew after a new prompt, and never for a session not seeded.
+#[tokio::test]
+async fn redis_asks_for_the_intent_like_in_memory() {
+    let Some(url) = redis_url() else {
+        return;
+    };
+    let redis = RedisSessionStore::new(redis_connection(&url).unwrap(), Duration::from_secs(60));
+    let stores: [(&str, Box<dyn SessionStore>); 2] = [
+        ("memory", Box::new(InMemorySessionStore::default())),
+        ("redis", Box::new(redis)),
+    ];
+    for (name, store) in stores {
+        let session = unique("ask-intent");
+        let prompt = SessionUpdate {
+            clear_intent: true,
+            ..SessionUpdate::default()
+        };
+        let stated = SessionUpdate {
+            state_intent: Some("테스트 추가".to_owned()),
+            ..SessionUpdate::default()
+        };
+        assert!(
+            !store
+                .ask_for_intent(&session, IntentAsk::Deny)
+                .await
+                .unwrap(),
+            "{name}: unseeded"
+        );
+        assert_eq!(store.intent_stated(&session).await.unwrap(), None, "{name}");
+        store
+            .seed(&session, &SessionCursor::default())
+            .await
+            .unwrap();
+        store.apply_event(&session, prompt.clone()).await.unwrap();
+        assert_eq!(
+            store.intent_stated(&session).await.unwrap(),
+            Some(false),
+            "{name}"
+        );
+        let asks = [
+            store
+                .ask_for_intent(&session, IntentAsk::Deny)
+                .await
+                .unwrap(),
+            store
+                .ask_for_intent(&session, IntentAsk::Deny)
+                .await
+                .unwrap(),
+        ];
+        assert_eq!(asks, [true, false], "{name}: once per turn");
+        // A reminder is a way of its own, also once per turn.
+        let reminds = [
+            store
+                .ask_for_intent(&session, IntentAsk::Remind)
+                .await
+                .unwrap(),
+            store
+                .ask_for_intent(&session, IntentAsk::Remind)
+                .await
+                .unwrap(),
+        ];
+        assert_eq!(reminds, [true, false], "{name}: reminded once");
+        store.apply_event(&session, prompt.clone()).await.unwrap();
+        store.apply_event(&session, stated).await.unwrap();
+        assert_eq!(
+            store.intent_stated(&session).await.unwrap(),
+            Some(true),
+            "{name}"
+        );
+        assert!(
+            !store
+                .ask_for_intent(&session, IntentAsk::Deny)
+                .await
+                .unwrap(),
+            "{name}: stated"
+        );
+        store.apply_event(&session, prompt).await.unwrap();
+        assert!(
+            store
+                .ask_for_intent(&session, IntentAsk::Deny)
+                .await
+                .unwrap(),
+            "{name}: new prompt"
+        );
+    }
 }
 
 /// Fragments of one message delivered out of order to different replicas assemble by index.
@@ -433,6 +730,7 @@ impl GeneratorTransport for RecordingGenerator {
                 self.results.lock().unwrap().push(event);
                 return Ok(acknowledged);
             }
+            NormalizedEvent::Intent(_) => return Ok(acknowledged),
             other => panic!("unexpected {}", other.event_name()),
         };
         self.orders.lock().unwrap().push(event.event.order);
@@ -464,6 +762,7 @@ impl GeneratorTransport for RecordingGenerator {
                 .collect(),
             cwd: latest.and_then(|(_, cwd, _)| cwd.clone()),
             prompt_id: latest.and_then(|(_, _, prompt_id)| prompt_id.clone()),
+            ..SessionCursor::default()
         })
     }
 

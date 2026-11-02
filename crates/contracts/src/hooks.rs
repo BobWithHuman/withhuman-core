@@ -20,9 +20,7 @@ pub enum HookEventName {
     PostToolUseFailure,
     SubagentStart,
     SubagentStop,
-    InstructionsLoaded,
     ConfigChange,
-    FileChanged,
     MessageDisplay,
     PostToolBatch,
     ToolDescriptions,
@@ -128,22 +126,6 @@ pub struct SubagentLifecycleRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
-pub struct InstructionsLoadedRequest {
-    pub session_id: String,
-    #[serde(default)]
-    pub hook_event_name: Option<HookEventName>,
-    pub file_path: String,
-    #[serde(default)]
-    pub memory_type: Option<String>,
-    #[serde(default)]
-    pub load_reason: Option<String>,
-    #[serde(default)]
-    pub trigger_file_path: Option<String>,
-    #[serde(default)]
-    pub parent_file_path: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 pub struct ConfigChangeRequest {
     pub session_id: String,
     #[serde(default)]
@@ -151,16 +133,6 @@ pub struct ConfigChangeRequest {
     pub file_path: String,
     #[serde(default)]
     pub source: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
-pub struct FileChangedRequest {
-    pub session_id: String,
-    #[serde(default)]
-    pub hook_event_name: Option<HookEventName>,
-    pub file_path: String,
-    #[serde(default)]
-    pub event: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
@@ -184,6 +156,19 @@ pub struct PostToolBatchRequest {
     pub session_id: String,
     #[serde(default)]
     pub hook_event_name: Option<HookEventName>,
+    /// Set when the batch ran in a subagent.
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub agent_type: Option<String>,
+    /// The calls of the batch; only their ids are read.
+    #[serde(default)]
+    pub tool_calls: Vec<BatchedToolCall>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+pub struct BatchedToolCall {
+    pub tool_use_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
@@ -218,6 +203,31 @@ pub struct PreToolUseOutput {
 pub struct SessionStartOutput {
     pub hook_event_name: HookEventName,
     pub watch_paths: Vec<String>,
+}
+
+/// Context Claude Code adds to the prompt it sends to the model.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UserPromptSubmitOutput {
+    pub hook_event_name: HookEventName,
+    pub additional_context: String,
+}
+
+/// Context Claude Code adds to a tool result it shows the model.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PostToolUseOutput {
+    pub hook_event_name: HookEventName,
+    pub additional_context: String,
+}
+
+/// Text Claude Code displays in place of a streamed delta. Display-only: the stored message and
+/// what the model sees are unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageDisplayOutput {
+    pub hook_event_name: HookEventName,
+    pub display_content: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]

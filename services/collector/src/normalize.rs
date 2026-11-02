@@ -1,12 +1,16 @@
-use std::{error::Error, fmt, sync::Arc};
+use std::{error::Error, fmt, sync::Arc, time::Duration};
 
 use serde_json::Value;
+use withhuman_common::{
+    intent::split_intent,
+    origin::{self, Origin, OriginContext},
+    tokens,
+};
 
 use withhuman_contracts::{
     events::{
-        ConfigChangeEventRequest, ConfigChangePayload, EventMetadata, EventRequest,
-        FileChangedEventRequest, FileChangedPayload, InstructionsLoadedEventRequest,
-        InstructionsLoadedPayload, MessageDisplayEventRequest, MessageDisplayPayload,
+        ConfigChangeEventRequest, ConfigChangePayload, ContentOrigin, EventMetadata, EventRequest,
+        IntentEventRequest, IntentPayload, MessageDisplayEventRequest, MessageDisplayPayload,
         PostToolBatchEventRequest, PostToolBatchPayload, PostToolUseEventRequest,
         PostToolUseFailureEventRequest, PostToolUseFailurePayload, PostToolUsePayload,
         PreToolUseEventRequest, PreToolUsePayload, SessionCursor, SessionStartEventRequest,
@@ -16,16 +20,15 @@ use withhuman_contracts::{
         UserPromptSubmitPayload,
     },
     hooks::{
-        ConfigChangeRequest, FileChangedRequest, InstructionsLoadedRequest, MessageDisplayRequest,
-        PostToolBatchRequest, PostToolUseFailureRequest, PostToolUseRequest, PreToolUseRequest,
-        SessionStartRequest, SubagentLifecycleRequest, ToolDescriptionsRequest,
-        UserPromptSubmitRequest,
+        ConfigChangeRequest, MessageDisplayRequest, PostToolBatchRequest,
+        PostToolUseFailureRequest, PostToolUseRequest, PreToolUseRequest, SessionStartRequest,
+        SubagentLifecycleRequest, ToolDescriptionsRequest, UserPromptSubmitRequest,
     },
 };
 
 use crate::{
-    GeneratorError, GeneratorTransport, InMemorySessionStore, MessageFragment, SessionSnapshot,
-    SessionStore, SessionUpdate, StoreError, TrustedHookContext,
+    GeneratorError, GeneratorTransport, InMemorySessionStore, IntentAsk, MessageFragment,
+    SessionSnapshot, SessionStore, SessionUpdate, StoreError, SubGraphStep, TrustedHookContext,
 };
 
 /// Orders skipped when a session resumes without Collector state, so events that were still on
@@ -45,10 +48,9 @@ pub enum NormalizedEvent {
     PostToolUseFailure(PostToolUseFailureEventRequest),
     SubagentStart(SubagentStartEventRequest),
     SubagentStop(SubagentStopEventRequest),
-    InstructionsLoaded(InstructionsLoadedEventRequest),
     ConfigChange(ConfigChangeEventRequest),
-    FileChanged(FileChangedEventRequest),
     MessageDisplay(MessageDisplayEventRequest),
+    Intent(IntentEventRequest),
     PostToolBatch(PostToolBatchEventRequest),
     ToolDescriptions(ToolDescriptionsEventRequest),
 }
@@ -63,10 +65,9 @@ impl NormalizedEvent {
             Self::PostToolUseFailure(_) => "PostToolUseFailure",
             Self::SubagentStart(_) => "SubagentStart",
             Self::SubagentStop(_) => "SubagentStop",
-            Self::InstructionsLoaded(_) => "InstructionsLoaded",
             Self::ConfigChange(_) => "ConfigChange",
-            Self::FileChanged(_) => "FileChanged",
             Self::MessageDisplay(_) => "MessageDisplay",
+            Self::Intent(_) => "Intent",
             Self::PostToolBatch(_) => "PostToolBatch",
             Self::ToolDescriptions(_) => "ToolDescriptions",
         }
@@ -81,10 +82,9 @@ impl NormalizedEvent {
             Self::PostToolUseFailure(event) => event.order,
             Self::SubagentStart(event) => event.order,
             Self::SubagentStop(event) => event.order,
-            Self::InstructionsLoaded(event) => event.order,
             Self::ConfigChange(event) => event.order,
-            Self::FileChanged(event) => event.order,
             Self::MessageDisplay(event) => event.order,
+            Self::Intent(event) => event.order,
             Self::PostToolBatch(event) => event.order,
             Self::ToolDescriptions(event) => event.order,
         }
@@ -95,6 +95,10 @@ impl NormalizedEvent {
 pub struct Normalizer {
     sessions: Arc<dyn SessionStore>,
     history: Option<Arc<dyn GeneratorTransport>>,
+    /// Commands, besides the built-in list, whose output comes from the network.
+    network_commands: Arc<[String]>,
+    /// Reads the `[의도]` line of messages as the turn's intent.
+    intent_capture: bool,
 }
 
 impl Default for Normalizer {
@@ -114,7 +118,21 @@ impl Normalizer {
         Self {
             sessions: Arc::new(sessions),
             history: None,
+            network_commands: Arc::from([]),
+            intent_capture: true,
         }
+    }
+
+    /// Whether messages' `[의도]` lines are kept as the turn's intent.
+    pub fn with_intent_capture(mut self, enabled: bool) -> Self {
+        self.intent_capture = enabled;
+        self
+    }
+
+    /// Treats the output of these commands as fetched from the network.
+    pub fn with_network_commands(mut self, commands: Vec<String>) -> Self {
+        self.network_commands = commands.into();
+        self
     }
 
     /// Resumes sessions the store does not know from the Generator's committed cursor. Without
@@ -228,6 +246,8 @@ impl Normalizer {
                 SessionUpdate {
                     cwd: request.cwd,
                     prompt_id: request.prompt_id,
+                    subgraph_step: SubGraphStep::Request,
+                    clear_intent: true,
                     ..Default::default()
                 },
             )
@@ -249,6 +269,55 @@ impl Normalizer {
         )))
     }
 
+    /// Whether to turn this Call back until the turn states its intent: the main agent called a
+    /// tool and the `[의도]` line has not arrived within `wait`. Claude Code delivers a reply's
+    /// text a moment after the tool calls that follow it, so a Call first waits for the line in
+    /// short polls. Asked once per turn, so an agent that never states one is not stopped for
+    /// good.
+    pub async fn asks_for_intent(
+        &self,
+        request: &PreToolUseRequest,
+        wait: Duration,
+    ) -> Result<bool, NormalizeError> {
+        const POLL: Duration = Duration::from_millis(100);
+        if !self.intent_capture || request.agent_id.is_some() {
+            return Ok(false);
+        }
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            match self.sessions.intent_stated(&request.session_id).await {
+                Ok(Some(false)) => {}
+                Ok(_) => return Ok(false),
+                Err(error) => return Err(NormalizeError::Store(error)),
+            }
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                break;
+            }
+            tokio::time::sleep(POLL.min(deadline - now)).await;
+        }
+        self.sessions
+            .ask_for_intent(&request.session_id, IntentAsk::Deny)
+            .await
+            .map_err(NormalizeError::Store)
+    }
+
+    /// Whether a tool result's Hook response should ask the model, once per turn, to state the
+    /// turn's intent: the main agent's turn has stated none so far.
+    pub async fn reminds_of_intent(
+        &self,
+        session_id: &str,
+        agent_id: Option<&str>,
+    ) -> Result<bool, NormalizeError> {
+        if !self.intent_capture || agent_id.is_some() {
+            return Ok(false);
+        }
+        self.sessions
+            .ask_for_intent(session_id, IntentAsk::Remind)
+            .await
+            .map_err(NormalizeError::Store)
+    }
+
     pub async fn pre_tool_use(
         &self,
         context: &TrustedHookContext,
@@ -257,6 +326,16 @@ impl Normalizer {
         mode: withhuman_contracts::events::EnforcementMode,
         deadline_ms: Option<u64>,
     ) -> Result<NormalizedEvent, NormalizeError> {
+        // Where a command saves downloads, so later reads of those files count as external.
+        let record_downloads = match request.tool_name.as_str() {
+            "Bash" | "PowerShell" => request
+                .tool_input
+                .get("command")
+                .and_then(Value::as_str)
+                .map(|command| origin::downloaded_paths(command, request.cwd.as_deref()))
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
         let state = self
             .apply(
                 &request.session_id,
@@ -265,9 +344,14 @@ impl Normalizer {
                     prompt_id: request.prompt_id,
                     store_tool_input: Some((
                         request.tool_use_id.clone(),
-                        request.tool_input.clone(),
+                        redacted(&request.tool_input),
                     )),
                     agent_id: request.agent_id.clone(),
+                    record_downloads,
+                    subgraph_step: SubGraphStep::Call {
+                        tool_use_id: request.tool_use_id.clone(),
+                        agent_id: request.agent_id.clone(),
+                    },
                     ..Default::default()
                 },
             )
@@ -296,6 +380,7 @@ impl Normalizer {
             ),
             mode,
             deadline_ms,
+            intent: state.intent.clone(),
         }))
     }
 
@@ -313,6 +398,10 @@ impl Normalizer {
                     prompt_id: request.prompt_id,
                     take_tool_input: Some(request.tool_use_id.clone()),
                     agent_id: request.agent_id.clone(),
+                    subgraph_step: SubGraphStep::Result {
+                        tool_use_id: request.tool_use_id.clone(),
+                        agent_id: request.agent_id.clone(),
+                    },
                     ..Default::default()
                 },
             )
@@ -325,7 +414,7 @@ impl Normalizer {
                 state.tool_input.clone(),
             )
             .await?;
-        let meta = metadata(
+        let mut meta = metadata(
             &state,
             context,
             Some(request.tool_use_id),
@@ -333,6 +422,19 @@ impl Normalizer {
             request.agent_type,
             None,
         );
+        let content_origin = origin::tool_origin(
+            &request.tool_name,
+            tool_input.as_ref(),
+            origin::tool_output(&request.tool_response).as_deref(),
+            &OriginContext {
+                cwd: state.cwd.as_deref(),
+                network_commands: &self.network_commands,
+                downloaded_paths: &state.downloads,
+            },
+        );
+        if content_origin == Origin::External {
+            meta.content_origin = Some(ContentOrigin::External);
+        }
         Ok(NormalizedEvent::PostToolUse(envelope(
             &state,
             context,
@@ -363,6 +465,10 @@ impl Normalizer {
                     prompt_id: request.prompt_id,
                     take_tool_input: Some(request.tool_use_id.clone()),
                     agent_id: request.agent_id.clone(),
+                    subgraph_step: SubGraphStep::Result {
+                        tool_use_id: request.tool_use_id.clone(),
+                        agent_id: request.agent_id.clone(),
+                    },
                     ..Default::default()
                 },
             )
@@ -410,6 +516,7 @@ impl Normalizer {
                 &request.session_id,
                 SessionUpdate {
                     agent_id: Some(request.agent_id.clone()),
+                    subgraph_step: SubGraphStep::SubagentStart(request.agent_id.clone()),
                     ..Default::default()
                 },
             )
@@ -474,34 +581,6 @@ impl Normalizer {
         )))
     }
 
-    pub async fn instructions_loaded(
-        &self,
-        context: &TrustedHookContext,
-        request: InstructionsLoadedRequest,
-        observed_at: u64,
-    ) -> Result<NormalizedEvent, NormalizeError> {
-        let state = self
-            .apply(&request.session_id, SessionUpdate::default())
-            .await?;
-        let meta = metadata(&state, context, None, None, None, None);
-        Ok(NormalizedEvent::InstructionsLoaded(envelope(
-            &state,
-            context,
-            request.session_id,
-            observed_at,
-            None,
-            meta,
-            InstructionsLoadedPayload {
-                file_path: request.file_path,
-                memory_type: request.memory_type,
-                load_reason: request.load_reason,
-                trigger_file_path: request.trigger_file_path,
-                parent_file_path: request.parent_file_path,
-                additional_fields: Default::default(),
-            },
-        )))
-    }
-
     pub async fn config_change(
         &self,
         context: &TrustedHookContext,
@@ -527,57 +606,70 @@ impl Normalizer {
         )))
     }
 
-    pub async fn file_changed(
-        &self,
-        context: &TrustedHookContext,
-        request: FileChangedRequest,
-        observed_at: u64,
-    ) -> Result<NormalizedEvent, NormalizeError> {
-        let state = self
-            .apply(&request.session_id, SessionUpdate::default())
-            .await?;
-        let meta = metadata(&state, context, None, None, None, None);
-        let mut additional_fields = withhuman_contracts::events::AdditionalFields::new();
-        if let Some(event) = request.event {
-            additional_fields.insert("event".to_owned(), event.into());
-        }
-        Ok(NormalizedEvent::FileChanged(envelope(
-            &state,
-            context,
-            request.session_id,
-            observed_at,
-            None,
-            meta,
-            FileChangedPayload {
-                file_path: request.file_path,
-                additional_fields,
-            },
-        )))
-    }
-
+    /// The events a MessageDisplay flush adds, in order: the turn's intent when the first flush
+    /// opens with a `[의도]` line the turn had not stated yet, then the message once its final
+    /// flush arrives, unless nothing but the intent line was written.
     pub async fn message_display(
         &self,
         context: &TrustedHookContext,
         request: MessageDisplayRequest,
         observed_at: u64,
-    ) -> Result<Option<NormalizedEvent>, NormalizeError> {
+    ) -> Result<Vec<NormalizedEvent>, NormalizeError> {
+        let mut events = Vec::new();
+        // The `[의도]` line opens a message's first flush. It becomes the turn's intent, in the
+        // SubGraph of the prompt, and is left out of the message.
+        let line = (self.intent_capture && request.index.unwrap_or(0) == 0)
+            .then(|| split_intent(&request.delta))
+            .flatten();
+        if let Some(line) = line {
+            let intent = tokens::redact(line.intent).into_owned();
+            let state = self
+                .apply(
+                    &request.session_id,
+                    SessionUpdate {
+                        state_intent: Some(intent.clone()),
+                        subgraph_step: SubGraphStep::Intent,
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            if state.intent_stated {
+                let meta = metadata(&state, context, None, None, None, request.turn_id.clone());
+                events.push(NormalizedEvent::Intent(envelope(
+                    &state,
+                    context,
+                    request.session_id.clone(),
+                    observed_at,
+                    None,
+                    meta,
+                    IntentPayload {
+                        message_id: request.message_id.clone(),
+                        intent,
+                        additional_fields: Default::default(),
+                    },
+                )));
+            }
+        }
+        // Buffered fragments wait in shared state, so they are kept redacted.
+        let delta = line.map_or(request.delta.as_str(), |line| line.rest);
         let fragment = MessageFragment {
             message_id: request.message_id.clone(),
             index: request.index,
-            delta: request.delta,
+            delta: tokens::redact(delta).into_owned(),
         };
         if !request.final_ {
             self.sessions
                 .append_fragment(&request.session_id, fragment)
                 .await
                 .map_err(NormalizeError::Store)?;
-            return Ok(None);
+            return Ok(events);
         }
         let state = self
             .apply(
                 &request.session_id,
                 SessionUpdate {
                     finish_message: Some(fragment),
+                    subgraph_step: SubGraphStep::Message(request.message_id.clone()),
                     ..Default::default()
                 },
             )
@@ -586,6 +678,9 @@ impl Normalizer {
             .message
             .clone()
             .ok_or(NormalizeError::MissingMessageBuffer)?;
+        if text.trim().is_empty() {
+            return Ok(events);
+        }
         let meta = metadata(&state, context, None, None, None, request.turn_id);
         let mut event = envelope(
             &state,
@@ -603,7 +698,8 @@ impl Normalizer {
         if state.message_incomplete {
             event.flags = Some(vec![MESSAGE_INCOMPLETE_FLAG.to_owned()]);
         }
-        Ok(Some(NormalizedEvent::MessageDisplay(event)))
+        events.push(NormalizedEvent::MessageDisplay(event));
+        Ok(events)
     }
 
     pub async fn post_tool_batch(
@@ -613,9 +709,29 @@ impl Normalizer {
         observed_at: u64,
     ) -> Result<NormalizedEvent, NormalizeError> {
         let state = self
-            .apply(&request.session_id, SessionUpdate::default())
+            .apply(
+                &request.session_id,
+                SessionUpdate {
+                    subgraph_step: SubGraphStep::Batch {
+                        agent_id: request.agent_id.clone(),
+                        tool_use_ids: request
+                            .tool_calls
+                            .into_iter()
+                            .map(|call| call.tool_use_id)
+                            .collect(),
+                    },
+                    ..Default::default()
+                },
+            )
             .await?;
-        let meta = metadata(&state, context, None, None, None, None);
+        let meta = metadata(
+            &state,
+            context,
+            None,
+            request.agent_id,
+            request.agent_type,
+            None,
+        );
         Ok(NormalizedEvent::PostToolBatch(envelope(
             &state,
             context,
@@ -659,6 +775,13 @@ impl Normalizer {
     }
 }
 
+/// A copy of `value` with sensitive values masked, for state the Collector keeps between Hooks.
+fn redacted(value: &Value) -> Value {
+    let mut value = value.clone();
+    tokens::redact_json(&mut value);
+    value
+}
+
 fn envelope<T>(
     state: &SessionSnapshot,
     context: &TrustedHookContext,
@@ -674,6 +797,7 @@ fn envelope<T>(
         observed_at,
         client_id: context.client_id.clone(),
         sequence,
+        subgraph: Some(state.subgraph),
         meta,
         side_pending: Some(state.side_pending.clone()),
         payload,
@@ -699,6 +823,7 @@ fn metadata(
         tool_use_id,
         turn_id,
         repo: context.repository.clone(),
+        content_origin: None,
         additional_fields: Default::default(),
     }
 }

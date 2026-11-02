@@ -18,5 +18,17 @@
       "permissionDecision": "ask",
       "permissionDecisionReason": "Approval required by WithHuman."
     }
+  },
+  "user_prompt_submit": {
+    "hookSpecificOutput": {
+      "hookEventName": "UserPromptSubmit",
+      "additionalContext": "응답 첫 줄에 [의도] ... 형식으로 쓸 것."
+    }
+  },
+  "message_display": {
+    "hookSpecificOutput": {
+      "hookEventName": "MessageDisplay",
+      "displayContent": "수정하겠습니다.\n"
+    }
   }
 }

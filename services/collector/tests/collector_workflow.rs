@@ -13,13 +13,13 @@ use tokio::sync::Notify;
 use tower::ServiceExt as _;
 use withhuman_collector::{
     CollectorConfig, CollectorService, ExtAuthzService, FailurePolicy, GeneratorError,
-    GeneratorTransport, InMemoryVerdictStore, MessageFragment, NormalizedEvent, Normalizer,
-    ReviewPolicy, SessionSnapshot, SessionStore, SessionUpdate, StoreError, StoredVerdict,
-    VerdictStore, app_with_transport,
+    GeneratorTransport, InMemoryVerdictStore, IntentAsk, MessageFragment, NormalizedEvent,
+    Normalizer, ReviewPolicy, SessionSnapshot, SessionStore, SessionUpdate, StoreError,
+    StoredVerdict, VerdictStore, app_with_transport,
 };
 use withhuman_contracts::{
     decisions::{CausalStart, Decision, DecisionResponse, EnforcementMode},
-    events::{EventResponse, SessionCursor, SidePending},
+    events::{ContentOrigin, EventResponse, SessionCursor, SidePending},
     ext_authz::{AttributeContext, Authorization, CheckRequest, attribute_context},
 };
 
@@ -341,6 +341,365 @@ async fn applies_failure_policies_when_the_generator_cursor_is_unreadable() {
     assert_eq!(body["error"], "generator_unavailable");
 }
 
+#[tokio::test]
+async fn adds_the_intent_instruction_to_prompts() {
+    let prompt = || {
+        json_request(
+            "/v1/hooks/UserPromptSubmit",
+            json!({"session_id":"s1","prompt":"fix login"}),
+        )
+    };
+    let (status, body) = response_json(
+        test_app(
+            CollectorConfig::default(),
+            Arc::new(RecordingGenerator::allow()),
+        )
+        .oneshot(prompt())
+        .await
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body,
+        json!({"hookSpecificOutput":{
+            "hookEventName":"UserPromptSubmit",
+            "additionalContext":withhuman_collector::INTENT_INSTRUCTION
+        }})
+    );
+
+    let off = CollectorConfig {
+        intent_capture: false,
+        ..Default::default()
+    };
+    let (status, body) = response_json(
+        test_app(off, Arc::new(RecordingGenerator::allow()))
+            .oneshot(prompt())
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_null());
+}
+
+#[tokio::test]
+async fn hides_the_intent_line_from_the_user_but_records_it() {
+    let generator = Arc::new(RecordingGenerator::allow());
+    let app = test_app(CollectorConfig::default(), generator.clone());
+    let flush = |message: &str, index: u64, delta: &str, final_: bool| {
+        json_request(
+            "/v1/hooks/MessageDisplay",
+            json!({"session_id":"s1","message_id":message,"index":index,"delta":delta,"final":final_}),
+        )
+    };
+    let display = |app: axum::Router, request| async move {
+        response_json(app.oneshot(request).await.unwrap()).await.1
+            ["hookSpecificOutput"]["displayContent"]
+            .clone()
+    };
+
+    // A first flush holding only the intent line shows an invisible character: Claude Code
+    // would show the original for an empty one.
+    assert_eq!(
+        display(
+            app.clone(),
+            flush("m1", 0, "[의도] 로그인 버그 수정 (확신도: 높음)\n", false)
+        )
+        .await,
+        "\u{200B}"
+    );
+    assert_eq!(
+        display(app.clone(), flush("m1", 1, "[의도] 이건 본문\n", true)).await,
+        Value::Null
+    );
+    // A message delivered whole arrives as one final flush with index 0.
+    assert_eq!(
+        display(
+            app,
+            flush("m2", 0, "[의도] 테스트 추가\n추가했습니다.", true)
+        )
+        .await,
+        "추가했습니다."
+    );
+
+    // The message is recorded without its intent line; the turn's first intent is recorded on its
+    // own, and a later one does not replace it.
+    let events = generator.events.lock().unwrap();
+    let texts: Vec<&str> = events
+        .iter()
+        .filter_map(|event| match event {
+            NormalizedEvent::MessageDisplay(event) => Some(event.payload.text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts, ["[의도] 이건 본문\n", "추가했습니다."]);
+    let intents: Vec<(&str, &str)> = events
+        .iter()
+        .filter_map(|event| match event {
+            NormalizedEvent::Intent(event) => Some((
+                event.payload.message_id.as_str(),
+                event.payload.intent.as_str(),
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(intents, [("m1", "로그인 버그 수정 (확신도: 높음)")]);
+}
+
+/// A turn's first Call made before the `[의도]` line is turned back once, unjudged and unrecorded,
+/// so the agent states the intent; the turn is not asked again, and a new prompt asks anew.
+#[tokio::test]
+async fn asks_a_turn_for_its_intent_before_its_first_call() {
+    let generator = Arc::new(RecordingGenerator::allow());
+    let config = CollectorConfig {
+        intent_wait: Duration::from_millis(50),
+        ..CollectorConfig::default()
+    };
+    let app = test_app(config, generator.clone());
+    let send = |request| {
+        let app = app.clone();
+        async move { response_json(app.oneshot(request).await.unwrap()).await }
+    };
+    let prompt = |text: &str| {
+        json_request(
+            "/v1/hooks/UserPromptSubmit",
+            json!({"session_id":"s1","prompt":text}),
+        )
+    };
+    let decision = |body: &Value| body["hookSpecificOutput"]["permissionDecision"].clone();
+
+    send(prompt("계속해")).await;
+    let (status, asked) = send(pre_tool_request("Read", "t1")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(decision(&asked), "deny");
+    assert_eq!(
+        asked["hookSpecificOutput"]["permissionDecisionReason"],
+        withhuman_collector::INTENT_REQUIRED
+    );
+    // Asked once: an agent that still states no intent is judged as usual.
+    let (_, judged) = send(pre_tool_request("Read", "t2")).await;
+    assert_eq!(judged, Value::Null);
+
+    // A turn that states its intent first is never asked.
+    send(prompt("이제 테스트 추가해")).await;
+    send(json_request(
+        "/v1/hooks/MessageDisplay",
+        json!({"session_id":"s1","message_id":"m1","index":0,
+               "delta":"[의도] 테스트 추가 (확신도: 높음)\n추가할게요.","final":true}),
+    ))
+    .await;
+    let (_, judged) = send(pre_tool_request("Edit", "t3")).await;
+    assert_eq!(judged, Value::Null);
+
+    // Subagents state no intent of their own.
+    send(prompt("정리해")).await;
+    let (_, subagent) = send(json_request(
+        "/v1/hooks/PreToolUse",
+        json!({"session_id":"s1","tool_name":"Read","tool_input":{},"tool_use_id":"t4",
+               "agent_id":"a1","agent_type":"Explore"}),
+    ))
+    .await;
+    assert_eq!(subagent, Value::Null);
+
+    // The turned-back Call was neither judged nor recorded.
+    let events = generator.events.lock().unwrap();
+    let calls: Vec<&str> = events
+        .iter()
+        .filter_map(|event| match event {
+            NormalizedEvent::PreToolUse(event) => {
+                Some(event.event.meta.tool_use_id.as_deref().unwrap())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(calls, ["t2", "t3", "t4"]);
+}
+
+/// Claude Code delivers a reply's text a moment after the tool calls that follow it: a Call that
+/// arrives before its turn's intent line waits for it and is judged, not turned back.
+#[tokio::test]
+async fn waits_for_an_intent_line_that_arrives_after_the_call() {
+    let generator = Arc::new(RecordingGenerator::allow());
+    let config = CollectorConfig {
+        intent_wait: Duration::from_secs(5),
+        ..CollectorConfig::default()
+    };
+    let app = test_app(config, generator.clone());
+    app.clone()
+        .oneshot(json_request(
+            "/v1/hooks/UserPromptSubmit",
+            json!({"session_id":"s1","prompt":"응 A로 가보자"}),
+        ))
+        .await
+        .unwrap();
+
+    let call = tokio::spawn(app.clone().oneshot(pre_tool_request("WebSearch", "t1")));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!call.is_finished(), "the Call waits for the intent");
+    app.oneshot(json_request(
+        "/v1/hooks/MessageDisplay",
+        json!({"session_id":"s1","message_id":"m1","index":0,
+               "delta":"[의도] 모델 A로 판매 (확신도: 높음)\n","final":true}),
+    ))
+    .await
+    .unwrap();
+
+    let (status, body) = response_json(call.await.unwrap().unwrap()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, Value::Null, "judged and allowed, not asked");
+    let events = generator.events.lock().unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, NormalizedEvent::PreToolUse(_)))
+    );
+}
+
+/// A tool result of a turn that states no intent asks the model for it through Hook context, once
+/// per turn, which reaches the model only; a turn with an intent and a subagent are not asked.
+#[tokio::test]
+async fn reminds_a_turn_without_an_intent_through_a_tool_result() {
+    let generator = Arc::new(RecordingGenerator::allow());
+    let config = CollectorConfig {
+        enforcement_mode: EnforcementMode::Record,
+        ..CollectorConfig::default()
+    };
+    let app = test_app(config, generator);
+    let send = |request| {
+        let app = app.clone();
+        async move { response_json(app.oneshot(request).await.unwrap()).await.1 }
+    };
+    let result = |tool_use_id: &str, agent_id: Option<&str>| {
+        json_request(
+            "/v1/hooks/PostToolUse",
+            json!({"session_id":"s1","tool_name":"Read","tool_input":{},"tool_response":{},
+                   "tool_use_id":tool_use_id,"agent_id":agent_id}),
+        )
+    };
+    let reminder = json!({"hookSpecificOutput":{
+        "hookEventName":"PostToolUse","additionalContext":withhuman_collector::INTENT_REMINDER
+    }});
+
+    send(json_request(
+        "/v1/hooks/UserPromptSubmit",
+        json!({"session_id":"s1","prompt":"계속해"}),
+    ))
+    .await;
+    assert_eq!(
+        send(result("t0", Some("a1"))).await,
+        Value::Null,
+        "subagent"
+    );
+    assert_eq!(send(result("t1", None)).await, reminder);
+    assert_eq!(send(result("t2", None)).await, Value::Null, "once per turn");
+    let failure = send(json_request(
+        "/v1/hooks/PostToolUseFailure",
+        json!({"session_id":"s1","tool_name":"WebFetch","tool_input":{},"error":"blocked",
+               "tool_use_id":"t3"}),
+    ))
+    .await;
+    assert_eq!(failure, Value::Null, "once per turn, whatever the result");
+
+    send(json_request(
+        "/v1/hooks/UserPromptSubmit",
+        json!({"session_id":"s1","prompt":"이제 정리해"}),
+    ))
+    .await;
+    send(json_request(
+        "/v1/hooks/MessageDisplay",
+        json!({"session_id":"s1","message_id":"m1","index":0,
+               "delta":"[의도] 결과 정리 (확신도: 높음)\n","final":true}),
+    ))
+    .await;
+    assert_eq!(send(result("t4", None)).await, Value::Null, "stated");
+}
+
+#[tokio::test]
+async fn marks_tool_results_from_downloads_and_fetches_as_external() {
+    let generator = Arc::new(RecordingGenerator::allow());
+    let config = CollectorConfig {
+        network_commands: vec!["corp-fetch".to_owned()],
+        ..Default::default()
+    };
+    let app = test_app(config, generator.clone());
+    let pre = |id: &str, tool: &str, input: Value| {
+        json_request(
+            "/v1/hooks/PreToolUse",
+            json!({"session_id":"s1","cwd":"/repo","tool_name":tool,"tool_input":input,"tool_use_id":id}),
+        )
+    };
+    let post = |id: &str, tool: &str, input: Value, response: Value| {
+        json_request(
+            "/v1/hooks/PostToolUse",
+            json!({"session_id":"s1","cwd":"/repo","tool_name":tool,"tool_input":input,
+                   "tool_response":response,"tool_use_id":id}),
+        )
+    };
+    let page = "<!DOCTYPE html><html><head></head><body>hi</body></html>";
+    for request in [
+        pre(
+            "t1",
+            "Bash",
+            json!({"command":"curl -sL https://x.test/p -o page.html"}),
+        ),
+        post(
+            "t1",
+            "Bash",
+            json!({"command":"curl -sL https://x.test/p -o page.html"}),
+            json!({"stdout":"","stderr":""}),
+        ),
+        post(
+            "t2",
+            "Read",
+            json!({"file_path":"/repo/page.html"}),
+            json!({"type":"text","file":{"content":page}}),
+        ),
+        post(
+            "t3",
+            "Read",
+            json!({"file_path":"/repo/src/main.rs"}),
+            json!({"type":"text","file":{"content":"fn main() {}"}}),
+        ),
+        post(
+            "t4",
+            "Bash",
+            json!({"command":"python fetch.py"}),
+            json!({"stdout":page,"stderr":""}),
+        ),
+        post(
+            "t5",
+            "Bash",
+            json!({"command":"corp-fetch wiki/Home"}),
+            json!({"stdout":"wiki text","stderr":""}),
+        ),
+    ] {
+        app.clone().oneshot(request).await.unwrap();
+    }
+
+    let events = generator.events.lock().unwrap();
+    let origins: Vec<(String, Option<ContentOrigin>)> = events
+        .iter()
+        .filter_map(|event| match event {
+            NormalizedEvent::PostToolUse(event) => Some((
+                event.meta.tool_use_id.clone().unwrap(),
+                event.meta.content_origin,
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        origins,
+        [
+            ("t1".to_owned(), Some(ContentOrigin::External)),
+            ("t2".to_owned(), Some(ContentOrigin::External)),
+            ("t3".to_owned(), None),
+            ("t4".to_owned(), Some(ContentOrigin::External)),
+            ("t5".to_owned(), Some(ContentOrigin::External)),
+        ]
+    );
+}
+
 async fn pre_tool_response(
     config: CollectorConfig,
     verdict: Decision,
@@ -412,11 +771,11 @@ fn decision(verdict: Decision, reason: &str) -> DecisionResponse {
 }
 
 fn stored(verdict: Decision, reason: &str) -> StoredVerdict {
-    StoredVerdict {
-        decision: decision(verdict, reason),
-        tool_name: "mcp__server__tool".to_owned(),
-        arguments: json!({}),
-    }
+    StoredVerdict::new(
+        decision(verdict, reason),
+        "mcp__server__tool".to_owned(),
+        &json!({}),
+    )
 }
 
 struct RecordingGenerator {
@@ -496,6 +855,14 @@ impl SessionStore for UnavailableSessions {
     }
 
     async fn set_side_pending(&self, _: &str, _: SidePending) -> Result<(), StoreError> {
+        Err(StoreError::Unavailable("down".to_owned()))
+    }
+
+    async fn ask_for_intent(&self, _: &str, _: IntentAsk) -> Result<bool, StoreError> {
+        Err(StoreError::Unavailable("down".to_owned()))
+    }
+
+    async fn intent_stated(&self, _: &str) -> Result<Option<bool>, StoreError> {
         Err(StoreError::Unavailable("down".to_owned()))
     }
 }

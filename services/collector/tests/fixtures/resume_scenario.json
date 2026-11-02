@@ -1,0 +1,7 @@
+[
+  ["MessageDisplay", {"message_id": "m9", "index": 0, "delta": "[의도] 새 의도\n", "final": false}],
+  ["PostToolUse", {"tool_name": "Read", "tool_response": "fn main() {}", "tool_use_id": "t1"}],
+  ["PreToolUse", {"tool_name": "Grep", "tool_input": {"pattern": "main"}, "tool_use_id": "t2"}],
+  ["MessageDisplay", {"message_id": "m9", "index": 1, "delta": "Next step.", "final": true}],
+  ["PreToolUse", {"tool_name": "Bash", "tool_input": {"command": "cargo build"}, "tool_use_id": "t3"}]
+]

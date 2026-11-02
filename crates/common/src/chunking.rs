@@ -16,6 +16,8 @@ use std::{fmt::Write as _, ops::Range, sync::LazyLock};
 use regex::Regex;
 use sha2::{Digest, Sha256};
 
+use crate::{hidden::hidden_spans, origin::Origin};
+
 /// Longest paragraph, in chars, before it is cut and labelled `long_paragraph`.
 pub const MAX_CHARS: usize = 600;
 /// A paragraph shorter than this, in chars, absorbs the paragraph that follows it.
@@ -37,21 +39,43 @@ pub struct Chunk {
     pub hash: String,
     /// The paragraph came from a line or block longer than [`MAX_CHARS`].
     pub long_paragraph: bool,
+    /// The paragraph holds content hidden from a human reader.
+    pub hidden: bool,
+    /// The [`crate::hidden`] rules that found it, sorted and without duplicates.
+    pub hidden_rules: Vec<&'static str>,
 }
 
+/// Splits external content, applying every hidden-content rule.
 pub fn chunk_text(text: &str, profile: Profile) -> Vec<Chunk> {
+    chunk_text_from(text, profile, Origin::External)
+}
+
+/// Splits content from `origin`; hidden-content rules for rendered content apply only to
+/// [`Origin::External`] text.
+pub fn chunk_text_from(text: &str, profile: Profile, origin: Origin) -> Vec<Chunk> {
     let text = text.replace("\r\n", "\n").replace('\r', "\n");
-    let mut paragraphs: Vec<(String, bool)> = Vec::new();
+    // Each paragraph keeps the byte range it came from, so hidden content found anywhere in the
+    // text (even spanning paragraphs) marks exactly the paragraphs it touches.
+    let mut paragraphs: Vec<(String, bool, Range<usize>)> = Vec::new();
     for unit in units(&text) {
         let long = chars(&unit.text) > MAX_CHARS;
         let pieces = match unit.kind {
-            _ if !long => vec![unit.text],
-            UnitKind::Atomic => vec![unit.text],
+            _ if !long => vec![unit.text.clone()],
+            UnitKind::Atomic => vec![unit.text.clone()],
             UnitKind::Fence => split_lines(&unit.text, profile),
             UnitKind::Line => split_line(&unit.text, profile),
         };
+        let mut cursor = 0;
         for piece in pieces {
-            if let Some((last, last_long)) = paragraphs.last_mut() {
+            let range = match unit.text[cursor..].find(&piece) {
+                Some(offset) => {
+                    let start = cursor + offset;
+                    cursor = start + piece.len();
+                    unit.range.start + start..unit.range.start + cursor
+                }
+                None => unit.range.clone(),
+            };
+            if let Some((last, last_long, last_range)) = paragraphs.last_mut() {
                 let last_chars = chars(last);
                 if !*last_long
                     && !long
@@ -60,21 +84,37 @@ pub fn chunk_text(text: &str, profile: Profile) -> Vec<Chunk> {
                 {
                     last.push('\n');
                     last.push_str(&piece);
+                    last_range.end = range.end;
                     continue;
                 }
             }
-            paragraphs.push((piece, long));
+            paragraphs.push((piece, long, range));
         }
     }
 
+    let hidden: Vec<_> = hidden_spans(&text)
+        .into_iter()
+        .filter(|span| span.scope.applies_to(origin))
+        .collect();
     paragraphs
         .into_iter()
         .enumerate()
-        .map(|(index, (text, long_paragraph))| Chunk {
-            index,
-            hash: sha256(&text),
-            text,
-            long_paragraph,
+        .map(|(index, (text, long_paragraph, range))| {
+            let mut hidden_rules: Vec<&'static str> = hidden
+                .iter()
+                .filter(|span| span.range.start < range.end && range.start < span.range.end)
+                .map(|span| span.rule)
+                .collect();
+            hidden_rules.sort_unstable();
+            hidden_rules.dedup();
+            Chunk {
+                index,
+                hash: sha256(&text),
+                text,
+                long_paragraph,
+                hidden: !hidden_rules.is_empty(),
+                hidden_rules,
+            }
         })
         .collect()
 }
@@ -99,11 +139,21 @@ enum UnitKind {
 struct Unit {
     text: String,
     kind: UnitKind,
+    /// Byte range of `text` in the chunked text.
+    range: Range<usize>,
 }
 
 /// Splits text into lines, keeping fenced code, PEM blocks and wrapped base64 together.
 fn units(text: &str) -> Vec<Unit> {
     let lines = text.split('\n').collect::<Vec<_>>();
+    let starts = lines
+        .iter()
+        .scan(0, |offset, line| {
+            let start = *offset;
+            *offset += line.len() + 1;
+            Some(start)
+        })
+        .collect::<Vec<_>>();
     let mut units = Vec::new();
     let mut index = 0;
     while index < lines.len() {
@@ -127,11 +177,15 @@ fn units(text: &str) -> Vec<Unit> {
         } else {
             (index, UnitKind::Line)
         };
+        let block = &text[starts[index]..starts[end] + lines[end].len()];
+        let leading = block.len() - block.trim_start().len();
+        let unit = block.trim();
+        let range = starts[index] + leading..starts[index] + leading + unit.len();
         let text = match kind {
             UnitKind::Line => line.to_owned(),
-            _ => lines[index..=end].join("\n").trim().to_owned(),
+            _ => unit.to_owned(),
         };
-        units.push(Unit { text, kind });
+        units.push(Unit { text, kind, range });
         index = end + 1;
     }
     units

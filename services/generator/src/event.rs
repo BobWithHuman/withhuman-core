@@ -1,15 +1,17 @@
-use std::{collections::BTreeSet, net::IpAddr, sync::LazyLock};
+use std::collections::BTreeSet;
 
-use regex::Regex;
 use serde::{Serialize, de::DeserializeOwned};
-use serde_json::Value;
-use withhuman_common::chunking::{self, Profile};
+use withhuman_common::{
+    chunking::{self, Profile},
+    intent,
+    origin::{self, Origin, OriginContext},
+    tokens,
+};
 use withhuman_contracts::events::{
-    ConfigChangeEventRequest, FileChangedEventRequest, InstructionsLoadedEventRequest,
-    MessageDisplayEventRequest, PostToolBatchEventRequest, PostToolUseEventRequest,
-    PostToolUseFailureEventRequest, PreToolUseEventRequest, SessionStartEventRequest,
-    SubagentStartEventRequest, SubagentStopEventRequest, ToolDescriptionsEventRequest,
-    UserPromptSubmitEventRequest,
+    ConfigChangeEventRequest, ContentOrigin, IntentEventRequest, MessageDisplayEventRequest,
+    PostToolBatchEventRequest, PostToolUseEventRequest, PostToolUseFailureEventRequest,
+    PreToolUseEventRequest, SessionStartEventRequest, SubagentStartEventRequest,
+    SubagentStopEventRequest, ToolDescriptionsEventRequest, UserPromptSubmitEventRequest,
 };
 
 use crate::RepositoryError;
@@ -23,10 +25,9 @@ pub enum GeneratorEvent {
     PostToolUseFailure(PostToolUseFailureEventRequest),
     SubagentStart(SubagentStartEventRequest),
     SubagentStop(SubagentStopEventRequest),
-    InstructionsLoaded(InstructionsLoadedEventRequest),
     ConfigChange(ConfigChangeEventRequest),
-    FileChanged(FileChangedEventRequest),
     MessageDisplay(MessageDisplayEventRequest),
+    Intent(IntentEventRequest),
     PostToolBatch(PostToolBatchEventRequest),
     ToolDescriptions(ToolDescriptionsEventRequest),
 }
@@ -41,10 +42,9 @@ impl GeneratorEvent {
             Self::PostToolUseFailure(_) => "PostToolUseFailure",
             Self::SubagentStart(_) => "SubagentStart",
             Self::SubagentStop(_) => "SubagentStop",
-            Self::InstructionsLoaded(_) => "InstructionsLoaded",
             Self::ConfigChange(_) => "ConfigChange",
-            Self::FileChanged(_) => "FileChanged",
             Self::MessageDisplay(_) => "MessageDisplay",
+            Self::Intent(_) => "Intent",
             Self::PostToolBatch(_) => "PostToolBatch",
             Self::ToolDescriptions(_) => "ToolDescriptions",
         }
@@ -59,10 +59,9 @@ impl GeneratorEvent {
             Self::PostToolUseFailure(event) => &event.session_id,
             Self::SubagentStart(event) => &event.session_id,
             Self::SubagentStop(event) => &event.session_id,
-            Self::InstructionsLoaded(event) => &event.session_id,
             Self::ConfigChange(event) => &event.session_id,
-            Self::FileChanged(event) => &event.session_id,
             Self::MessageDisplay(event) => &event.session_id,
+            Self::Intent(event) => &event.session_id,
             Self::PostToolBatch(event) => &event.session_id,
             Self::ToolDescriptions(event) => &event.session_id,
         }
@@ -77,10 +76,9 @@ impl GeneratorEvent {
             Self::PostToolUseFailure(event) => event.order,
             Self::SubagentStart(event) => event.order,
             Self::SubagentStop(event) => event.order,
-            Self::InstructionsLoaded(event) => event.order,
             Self::ConfigChange(event) => event.order,
-            Self::FileChanged(event) => event.order,
             Self::MessageDisplay(event) => event.order,
+            Self::Intent(event) => event.order,
             Self::PostToolBatch(event) => event.order,
             Self::ToolDescriptions(event) => event.order,
         }
@@ -101,10 +99,9 @@ impl GeneratorEvent {
             "PostToolUseFailure" => Self::PostToolUseFailure(parse(event_json)?),
             "SubagentStart" => Self::SubagentStart(parse(event_json)?),
             "SubagentStop" => Self::SubagentStop(parse(event_json)?),
-            "InstructionsLoaded" => Self::InstructionsLoaded(parse(event_json)?),
             "ConfigChange" => Self::ConfigChange(parse(event_json)?),
-            "FileChanged" => Self::FileChanged(parse(event_json)?),
             "MessageDisplay" => Self::MessageDisplay(parse(event_json)?),
+            "Intent" => Self::Intent(parse(event_json)?),
             "PostToolBatch" => Self::PostToolBatch(parse(event_json)?),
             "ToolDescriptions" => Self::ToolDescriptions(parse(event_json)?),
             other => {
@@ -121,7 +118,7 @@ impl GeneratorEvent {
                 mutation("SessionStart", None, None, None, event, |event| event)
             }
             Self::UserPromptSubmit(event) => {
-                let text = Some(event.payload.prompt.clone());
+                let text = Some(Text::local(event.payload.prompt.clone()));
                 mutation(
                     "UserPromptSubmit",
                     Some("Request"),
@@ -137,15 +134,27 @@ impl GeneratorEvent {
                 })
             }
             Self::PostToolUse(event) => {
-                let text = text_content(&event.payload.tool_response);
-                mutation(
-                    "PostToolUse",
-                    Some("Sequence"),
-                    text,
-                    None,
-                    event,
-                    |event| event,
-                )
+                let text = origin::tool_output(&event.payload.tool_response).map(|body| {
+                    // The Collector knows the session's downloads and configured commands; events
+                    // it did not judge external fall back to what the event itself shows.
+                    let origin = if event.meta.content_origin == Some(ContentOrigin::External) {
+                        Origin::External
+                    } else {
+                        origin::tool_origin(
+                            &event.payload.tool_name,
+                            event.payload.tool_input.as_ref(),
+                            Some(&body),
+                            &OriginContext {
+                                cwd: event.meta.cwd.as_deref(),
+                                ..Default::default()
+                            },
+                        )
+                    };
+                    Text { body, origin }
+                });
+                mutation("PostToolUse", Some("Segment"), text, None, event, |event| {
+                    event
+                })
             }
             Self::PostToolUseFailure(event) => mutation(
                 "PostToolUseFailure",
@@ -171,17 +180,6 @@ impl GeneratorEvent {
                 event,
                 |event| event,
             ),
-            Self::InstructionsLoaded(event) => {
-                let file_path = Some(event.payload.file_path.clone());
-                mutation(
-                    "InstructionsLoaded",
-                    Some("Instructions"),
-                    None,
-                    file_path,
-                    event,
-                    |event| event,
-                )
-            }
             Self::ConfigChange(event) => {
                 let file_path = Some(event.payload.file_path.clone());
                 mutation(
@@ -193,27 +191,27 @@ impl GeneratorEvent {
                     |event| event,
                 )
             }
-            Self::FileChanged(event) => {
-                let file_path = Some(event.payload.file_path.clone());
-                mutation(
-                    "FileChanged",
-                    Some("FileChanged"),
-                    None,
-                    file_path,
-                    event,
-                    |event| event,
-                )
-            }
             Self::MessageDisplay(event) => {
-                let text = Some(event.payload.text.clone());
-                mutation(
+                let text = event.payload.text.clone();
+                let intent = intent::split_intent(&text)
+                    .map(|line| tokens::redact(line.intent).into_owned());
+                let mut mutation = mutation(
                     "MessageDisplay",
                     Some("Message"),
-                    text,
+                    Some(Text::local(text)),
                     None,
                     event,
                     |event| event,
-                )
+                )?;
+                mutation.intent = intent;
+                Ok(mutation)
+            }
+            Self::Intent(event) => {
+                let intent = tokens::redact(&event.payload.intent).into_owned();
+                let mut mutation =
+                    mutation("Intent", Some("Intent"), None, None, event, |event| event)?;
+                mutation.intent = Some(intent);
+                Ok(mutation)
             }
             Self::PostToolBatch(event) => mutation(
                 "PostToolBatch",
@@ -255,6 +253,11 @@ pub(crate) struct GraphMutation {
     pub(crate) file_path: Option<String>,
     pub(crate) paragraphs: Vec<ParagraphMutation>,
     pub(crate) tokens: Vec<TokenMutation>,
+    /// The user intent an Intent node records, or (from before intents had nodes of their own) a
+    /// message stated on its first line.
+    pub(crate) intent: Option<String>,
+    /// The session-wide SubGraph the event belongs to.
+    pub(crate) subgraph: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -264,6 +267,8 @@ pub(crate) struct ParagraphMutation {
     pub(crate) hash: String,
     pub(crate) source: String,
     pub(crate) hidden: bool,
+    /// Why the paragraph is hidden (`withhuman_common::hidden` rules).
+    pub(crate) hidden_rules: Vec<&'static str>,
     pub(crate) from_user_doc: Option<bool>,
     pub(crate) long_paragraph: bool,
 }
@@ -274,12 +279,29 @@ pub(crate) struct TokenMutation {
     pub(crate) key: String,
     pub(crate) slot: String,
     pub(crate) decoded: String,
+    /// Detector category (`address`, `credential`, `pii`, `financial`, `device`).
+    pub(crate) category: String,
+}
+
+/// Text an event adds to the graph and where it came from.
+struct Text {
+    body: String,
+    origin: Origin,
+}
+
+impl Text {
+    fn local(body: String) -> Self {
+        Self {
+            body,
+            origin: Origin::Local,
+        }
+    }
 }
 
 fn mutation<T, E>(
     event_name: &'static str,
     node_type: Option<&'static str>,
-    text: Option<String>,
+    text: Option<Text>,
     file_path: Option<String>,
     event: T,
     envelope: impl FnOnce(&T) -> &withhuman_contracts::events::EventRequest<E>,
@@ -288,46 +310,68 @@ where
     T: Serialize,
     E: Serialize,
 {
-    let event_json = serde_json::to_string(&event)
-        .map_err(|error| RepositoryError::InvalidEvent(error.to_string()))?;
+    // Tokens come from the original values so sensitive ones are keyed by their real hash;
+    // everything stored (event, payload, paragraphs) is redacted.
+    let event_json = redacted_json(&event)?;
     let envelope = envelope(&event);
-    let payload_json = serde_json::to_string(&envelope.payload)
+    let original_payload_json = serde_json::to_string(&envelope.payload)
         .map_err(|error| RepositoryError::InvalidEvent(error.to_string()))?;
+    let payload_json = redacted_json(&envelope.payload)?;
+    // Only tool results are chunked into paragraphs; other text keeps to its node.
     let paragraphs = match &envelope.chunks {
+        _ if event_name != "PostToolUse" => Vec::new(),
         Some(chunks) => chunks
             .iter()
             .map(|chunk| {
                 Ok(ParagraphMutation {
                     index: signed(chunk.index, "chunk.index")?,
-                    text: chunk.text.clone(),
+                    text: tokens::redact(&chunk.text).into_owned(),
                     hash: chunk.hash.clone(),
                     source: chunk.source.clone(),
                     hidden: chunk.hidden,
+                    hidden_rules: Vec::new(),
                     from_user_doc: chunk.from_user_doc,
                     long_paragraph: false,
                 })
             })
             .collect::<Result<Vec<_>, RepositoryError>>()?,
         None => text
-            .as_deref()
-            .map(|text| chunk_text(text, event_name))
+            .as_ref()
+            .map(|text| chunk_text(&tokens::redact(&text.body), event_name, text.origin))
             .unwrap_or_default(),
     };
 
     let mut tokens = BTreeSet::new();
     let payload_slot = match event_name {
-        "PreToolUse" | "MessageDisplay" => "agent",
+        "PreToolUse" | "MessageDisplay" | "Intent" => "agent",
         "UserPromptSubmit" => "user",
         _ => "external",
     };
-    extract_tokens(&payload_json, payload_slot, &mut tokens);
-    for paragraph in &paragraphs {
-        let slot = match paragraph.source.as_str() {
-            "user" | "UserPromptSubmit" => "user",
-            "MessageDisplay" => "agent",
-            _ => "external",
-        };
-        extract_tokens(&paragraph.text, slot, &mut tokens);
+    // A result repeats its Call's input; those values belong to the Call, so the result only
+    // indexes what the tool returned.
+    let token_source = match event_name {
+        "PostToolUse" | "PostToolUseFailure" => {
+            let mut payload = serde_json::to_value(&envelope.payload)
+                .map_err(|error| RepositoryError::InvalidEvent(error.to_string()))?;
+            if let Some(fields) = payload.as_object_mut() {
+                fields.remove("tool_input");
+            }
+            payload.to_string()
+        }
+        _ => original_payload_json,
+    };
+    extract_tokens(&token_source, payload_slot, &mut tokens);
+    match &envelope.chunks {
+        Some(chunks) => {
+            for chunk in chunks {
+                extract_tokens(&chunk.text, paragraph_slot(&chunk.source), &mut tokens);
+            }
+        }
+        None => {
+            if let Some(text) = &text {
+                extract_tokens(&text.body, paragraph_slot(event_name), &mut tokens);
+            }
+        }
     }
 
     Ok(GraphMutation {
@@ -353,70 +397,60 @@ where
         file_path,
         paragraphs,
         tokens: tokens.into_iter().collect(),
+        intent: None,
+        subgraph: envelope
+            .subgraph
+            .map(|value| signed(value, "subgraph"))
+            .transpose()?,
     })
+}
+
+fn paragraph_slot(source: &str) -> &'static str {
+    match source {
+        "user" | "UserPromptSubmit" => "user",
+        "MessageDisplay" => "agent",
+        _ => "external",
+    }
+}
+
+/// `value` as JSON with sensitive strings masked. It is re-serialized only when something was
+/// masked, so events without secrets keep their exact bytes.
+fn redacted_json<T: Serialize>(value: &T) -> Result<String, RepositoryError> {
+    let invalid = |error: serde_json::Error| RepositoryError::InvalidEvent(error.to_string());
+    let mut tree = serde_json::to_value(value).map_err(invalid)?;
+    if tokens::redact_json(&mut tree) {
+        serde_json::to_string(&tree).map_err(invalid)
+    } else {
+        serde_json::to_string(value).map_err(invalid)
+    }
 }
 
 fn extract_tokens(value: &str, slot: &str, tokens: &mut BTreeSet<TokenMutation>) {
-    static URL: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r#"https?://[^\s\"'<>\\]+"#).unwrap());
-    static EMAIL: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}").unwrap());
-    static IP: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b").unwrap());
-    static PATH: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#"(?:^|[\s\"'=])((?:/|\./|\.\./)[A-Za-z0-9._~/-]+)"#).unwrap()
-    });
-
-    for found in URL.find_iter(value) {
-        insert_token(tokens, "url", found.as_str(), slot);
-    }
-    for found in EMAIL.find_iter(value) {
-        insert_token(tokens, "email", found.as_str(), slot);
-    }
-    for found in IP.find_iter(value) {
-        if found.as_str().parse::<IpAddr>().is_ok() {
-            insert_token(tokens, "ip", found.as_str(), slot);
-        }
-    }
-    for captures in PATH.captures_iter(value) {
-        if let Some(found) = captures.get(1) {
-            insert_token(tokens, "path", found.as_str(), slot);
-        }
+    for token in tokens::extract_tokens(value) {
+        tokens.insert(TokenMutation {
+            key_kind: token.kind.to_owned(),
+            key: token.key,
+            slot: slot.to_owned(),
+            decoded: token.decoded,
+            category: token.category.as_str().to_owned(),
+        });
     }
 }
 
-fn insert_token(tokens: &mut BTreeSet<TokenMutation>, kind: &str, value: &str, slot: &str) {
-    let decoded = value.trim_end_matches([',', '.', ')', ']', '}']);
-    tokens.insert(TokenMutation {
-        key_kind: kind.to_owned(),
-        key: decoded.to_owned(),
-        slot: slot.to_owned(),
-        decoded: decoded.to_owned(),
-    });
-}
-
-fn text_content(value: &Value) -> Option<String> {
-    value.as_str().map(str::to_owned).or_else(|| {
-        value
-            .get("content")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-    })
-}
-
-fn chunk_text(text: &str, source: &str) -> Vec<ParagraphMutation> {
+fn chunk_text(text: &str, source: &str, origin: Origin) -> Vec<ParagraphMutation> {
     let profile = match source {
         "PostToolUse" => Profile::ToolOutput,
         _ => Profile::Prose,
     };
-    chunking::chunk_text(text, profile)
+    chunking::chunk_text_from(text, profile, origin)
         .into_iter()
         .map(|chunk| ParagraphMutation {
             index: i64::try_from(chunk.index).unwrap_or(i64::MAX),
             text: chunk.text,
             hash: chunk.hash,
             source: source.to_owned(),
-            hidden: false,
+            hidden: chunk.hidden,
+            hidden_rules: chunk.hidden_rules,
             from_user_doc: Some(false),
             long_paragraph: chunk.long_paragraph,
         })

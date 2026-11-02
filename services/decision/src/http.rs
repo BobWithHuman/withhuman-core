@@ -1,4 +1,7 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use axum::{
     Json, Router,
@@ -112,8 +115,14 @@ async fn health(State(service): State<DecisionService>) -> Response {
 )]
 async fn decide(
     State(service): State<DecisionService>,
-    StrictJson(request): StrictJson<DecisionRequest>,
+    StrictJson(mut request): StrictJson<DecisionRequest>,
 ) -> Response {
+    // The deadline counts from arrival, so checking the graph spends from it too.
+    let started = Instant::now();
+    let deadline = request.deadline_ms.map(Duration::from_millis);
+    if deadline.is_some_and(|deadline| deadline.is_zero()) {
+        return error(StatusCode::GATEWAY_TIMEOUT, "decision_deadline_exceeded");
+    }
     match service.repository.verify_graph(&request).await {
         Ok(()) => {}
         Err(RepositoryError::NotFound) => {
@@ -121,17 +130,20 @@ async fn decide(
         }
         Err(_) => return error(StatusCode::SERVICE_UNAVAILABLE, "neo4j_unavailable"),
     }
+    let left = || deadline.map(|deadline| deadline.saturating_sub(started.elapsed()));
 
-    let provider = service.provider.decide(&request);
-    let provider_result = match request.deadline_ms {
-        Some(0) => return error(StatusCode::GATEWAY_TIMEOUT, "decision_deadline_exceeded"),
-        Some(deadline_ms) => {
-            match tokio::time::timeout(Duration::from_millis(deadline_ms), provider).await {
+    let provider_result = match left() {
+        Some(left) if left.is_zero() => {
+            return error(StatusCode::GATEWAY_TIMEOUT, "decision_deadline_exceeded");
+        }
+        Some(left) => {
+            request.deadline_ms = Some(u64::try_from(left.as_millis()).unwrap_or(u64::MAX));
+            match tokio::time::timeout(left, service.provider.decide(&request)).await {
                 Ok(result) => result,
                 Err(_) => return error(StatusCode::GATEWAY_TIMEOUT, "decision_deadline_exceeded"),
             }
         }
-        None => provider.await,
+        None => service.provider.decide(&request).await,
     };
     let mut response: DecisionResponse = match provider_result {
         Ok(response) => response,
@@ -148,11 +160,13 @@ async fn decide(
             "invalid_provider_response",
         );
     }
-    response.written = service
-        .repository
-        .persist(&request, &response)
-        .await
-        .is_ok();
+    // A verdict that cannot be stored in time is still returned: the decision must not be lost
+    // to a slow write.
+    let persist = service.repository.persist(&request, &response);
+    response.written = match left() {
+        Some(left) => matches!(tokio::time::timeout(left, persist).await, Ok(Ok(()))),
+        None => persist.await.is_ok(),
+    };
     Json(response).into_response()
 }
 
