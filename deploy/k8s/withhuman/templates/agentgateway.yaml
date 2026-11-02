@@ -54,6 +54,8 @@ metadata:
   name: {{ $name }}
   labels:
     {{- include "withhuman.labels" $context | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "4"
 spec:
   replicas: {{ $values.replicaCount }}
   strategy:
@@ -99,6 +101,11 @@ spec:
               port: http
             periodSeconds: 10
             failureThreshold: 6
+          lifecycle:
+            # The image has no shell tools, so Kubernetes does the waiting.
+            preStop:
+              sleep:
+                seconds: {{ .Values.preStopSleepSeconds }}
           resources:
             {{- toYaml $values.resources | nindent 12 }}
           volumeMounts:

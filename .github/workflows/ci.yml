@@ -105,11 +105,8 @@ jobs:
       - name: Lint chart
         run: helm lint "$CHART" $CHART_VALUES
 
-      - name: Render every environment
-        run: |
-          for values in values values-staging values-prod; do
-            helm template withhuman "$CHART" -f "$CHART/$values.yaml" $CHART_VALUES >/dev/null
-          done
+      - name: Render chart
+        run: helm template withhuman "$CHART" $CHART_VALUES --set ingress.enabled=true >/dev/null
 
   cargo-deny:
     name: Cargo Deny

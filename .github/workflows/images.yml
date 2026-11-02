@@ -104,3 +104,37 @@ jobs:
           cache-from: type=gha,scope=service-images
           provenance: true
           sbom: true
+
+  deploy-staging:
+    name: Point staging at the new images
+    needs: publish
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: none
+    steps:
+      - name: Checkout the GitOps repository
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ github.repository_owner }}/withhuman-gitops
+          ssh-key: ${{ secrets.GITOPS_DEPLOY_KEY }}
+
+      - name: Commit the image tag
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          sed -i "s/^imageTag: .*/imageTag: $IMAGE_TAG/" envs/staging/values.yaml
+          if git diff --quiet; then
+            echo "staging already runs $IMAGE_TAG"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --all --message "deploy(staging): ${IMAGE_TAG:0:12}"
+          # Another merge may have moved the repository; retry on top of it.
+          for attempt in 1 2 3 4 5; do
+            git pull --rebase --quiet && git push --quiet && exit 0
+            sleep "$attempt"
+          done
+          exit 1
