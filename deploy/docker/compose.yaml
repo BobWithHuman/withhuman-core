@@ -66,8 +66,10 @@ services:
       dockerfile: deploy/docker/Dockerfile
       args:
         BINARY: withhuman-decision
+    # Jev's key and settings on a deployment; CI and the E2E suite run without it.
     env_file:
-      - ../../.env
+      - path: ../../.env
+        required: false
     environment:
       DECISION_ADDR: 0.0.0.0:8082
       WITHHUMAN_ENV: production
