@@ -73,15 +73,21 @@ services:
     environment:
       DECISION_ADDR: 0.0.0.0:8082
       WITHHUMAN_ENV: ${WITHHUMAN_ENV:-production}
-      # `jev` traces each Call's cause through Jev and denies calls against the stated intent;
-      # the E2E suite runs `mock`, which answers MOCK_DECISION, in the test environment.
+      # `jev` traces each Call's cause through Jev and denies calls that depart from the
+      # stated intent; the E2E suite runs `mock`, which answers MOCK_DECISION, in the test
+      # environment.
       DECISION_PROVIDER: ${DECISION_PROVIDER:-jev}
       MOCK_DECISION: ${MOCK_DECISION:-ALLOW}
       MOCK_DECISION_REASON: ${MOCK_DECISION_REASON:-}
       MOCK_DECISION_DELAY_MS: ${MOCK_DECISION_DELAY_MS:-0}
       JEV_URL: ${JEV_URL:-https://api.typesafe.ai}
       JEV_TIMEOUT_MS: ${JEV_TIMEOUT_MS:-3000}
-      WITHHUMAN_INTENT_BLOCK_THRESHOLD: ${WITHHUMAN_INTENT_BLOCK_THRESHOLD:-0.5}
+      # Deviations at which a Call is denied or reviewed; the untrusted pair applies to a Call
+      # that follows from a tool result or from nothing.
+      WITHHUMAN_DEVIATION_DENY: ${WITHHUMAN_DEVIATION_DENY:-0.3}
+      WITHHUMAN_DEVIATION_REVIEW: ${WITHHUMAN_DEVIATION_REVIEW:-0.15}
+      WITHHUMAN_UNTRUSTED_DEVIATION_DENY: ${WITHHUMAN_UNTRUSTED_DEVIATION_DENY:-0.15}
+      WITHHUMAN_UNTRUSTED_DEVIATION_REVIEW: ${WITHHUMAN_UNTRUSTED_DEVIATION_REVIEW:-0.08}
       NEO4J_URL: http://neo4j:7474
       NEO4J_USER: neo4j
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:-withhuman-e2e}

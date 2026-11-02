@@ -359,7 +359,8 @@ DecisionRequest
 | `WITHHUMAN_ASK` | `deny`(코드 기본) / `ask`(compose 기본) | REVIEW를 거부로 / 사용자 확인(ask)으로 |
 | `WITHHUMAN_MCP_ENFORCE` | `hook` 또는 미설정 | MCP 강제 지점: 훅 / 게이트웨이(기본) |
 | `WITHHUMAN_INTENT_CAPTURE` | `on`(기본) / `off` | 의도 수집 루프 |
-| `WITHHUMAN_INTENT_BLOCK_THRESHOLD` | 0.5 | θ |
+| `WITHHUMAN_DEVIATION_DENY` / `WITHHUMAN_DEVIATION_REVIEW` | 0.3 / 0.15 | Request에 이어진 Call을 차단 / 확인하는 이탈 점수 |
+| `WITHHUMAN_UNTRUSTED_DEVIATION_DENY` / `WITHHUMAN_UNTRUSTED_DEVIATION_REVIEW` | 0.15 / 0.08 | 도구 결과(Segment)나 `none`에 이어진 Call을 차단 / 확인하는 이탈 점수 |
 | `WITHHUMAN_EXTERNAL_COMMANDS` | CSV | 네트워크 출력 명령 추가 |
 
 불변식: **이미 받은 DENY는 저장소 실패로 ALLOW가 되지 않는다**(verdict 저장 실패는 훅 강제 경로에서 판정을 덮어쓰지 않음).

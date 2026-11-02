@@ -12,7 +12,7 @@ use withhuman_contracts::decisions::{
 use withhuman_decision::{
     DecisionProvider, DecisionRepository, JevDecisionProvider, RepositoryError, TraceRecord,
     jev::{JevAnswer, JevClient, JevError, JevRequest, JevResponse},
-    trace::{CallInfo, Member, TraceGraph, TraceSettings, Turn},
+    trace::{CallInfo, Member, MemberKind, Thresholds, TraceGraph, TraceSettings, Turn},
 };
 
 #[derive(Default)]
@@ -89,7 +89,15 @@ impl DecisionRepository for Graph {
         _: &[u64],
         _: u64,
     ) -> Result<Vec<Member>, RepositoryError> {
-        Ok(Vec::new())
+        // SubGraph 1's tool result.
+        Ok(vec![Member {
+            subgraph: 1,
+            seq: 5,
+            order: 5,
+            kind: MemberKind::Segment,
+            payload: json!({"tool_name": "Bash", "tool_response": {"stdout": "ok"}}),
+            ..Member::default()
+        }])
     }
 
     async fn persist_trace(
@@ -111,7 +119,9 @@ impl DecisionRepository for Graph {
     }
 }
 
-/// Answers every intent question with `intent_score`, and the cause with `cause` when set.
+/// Answers as if the Call broke what the user said with probability 1 − `intent_score`, with
+/// high harm that cannot be undone, so its deviation is 1 − `intent_score`; and the cause with
+/// `cause` when set.
 struct Jev {
     intent_score: f64,
     cause: Option<&'static str>,
@@ -132,15 +142,21 @@ impl JevClient for Jev {
             .questions
             .keys()
             .map(|id| {
-                let answer = match self.cause {
-                    Some(cause) if id == "cause" => JevAnswer {
-                        probabilities: BTreeMap::from([(cause.to_owned(), 1.0)]),
-                        ..Default::default()
-                    },
-                    _ => JevAnswer {
-                        noul: Some(self.intent_score),
-                        ..Default::default()
-                    },
+                let choice = |option: &str| JevAnswer {
+                    probabilities: BTreeMap::from([(option.to_owned(), 1.0)]),
+                    ..Default::default()
+                };
+                let noul = |probability: f64| JevAnswer {
+                    noul: Some(probability),
+                    ..Default::default()
+                };
+                let answer = match id.as_str() {
+                    "cause" => self.cause.map_or_else(|| noul(1.0), choice),
+                    "explicit" => noul(1.0 - self.intent_score),
+                    "expected" => choice("none"),
+                    "harm" => choice("high"),
+                    "reversible" => noul(0.0),
+                    _ => noul(self.intent_score),
                 };
                 (id.clone(), answer)
             })
@@ -171,7 +187,7 @@ fn provider_on(
         jev.clone(),
         TraceSettings::default(),
         Duration::from_secs(3),
-        0.5,
+        Thresholds::default(),
     );
     (provider, graph, jev)
 }
@@ -207,12 +223,12 @@ async fn denies_a_call_whose_cause_departs_from_the_intent() {
     assert!(response.jev.unwrap().asked);
     let traces = graph.traces.lock().unwrap();
     assert_eq!(traces[0].parent, "s1");
-    assert_eq!(traces[0].intent_score, Some(0.2));
+    assert!((traces[0].intent_score.unwrap() - 0.2).abs() < 1e-9);
 }
 
 #[tokio::test]
 async fn allows_a_call_that_serves_the_intent() {
-    let (provider, _, _) = provider(0.8, false);
+    let (provider, _, _) = provider(0.95, false);
     let response = provider
         .decide(&request(Some("빌드 고치기"), Some(4_000)))
         .await
@@ -345,7 +361,7 @@ async fn bounds_the_jev_call_by_the_decision_deadline() {
 
 #[tokio::test]
 async fn falls_back_to_the_nearest_subgraph_when_no_cause_is_offered() {
-    let (provider, graph, jev) = provider(0.9, false);
+    let (provider, graph, jev) = provider(0.95, false);
     let response = provider
         .decide(&request(Some("빌드 고치기"), Some(4_000)))
         .await
@@ -355,10 +371,11 @@ async fn falls_back_to_the_nearest_subgraph_when_no_cause_is_offered() {
     assert_eq!(requests.len(), 1);
     assert_eq!(
         requests[0].questions.keys().collect::<Vec<_>>(),
-        ["intent_s1"]
+        ["cause", "expected", "explicit", "harm", "reversible"]
     );
 
-    // The Call is traced to s1, the nearest SubGraph with a tool result, and judged by it.
+    // Jev picked no cause, so the Call is traced to s1, the nearest SubGraph with a tool
+    // result.
     assert_eq!(response.decision, Decision::Allow);
     let traces = graph.traces.lock().unwrap();
     assert_eq!(traces[0].parent, "s1");
@@ -368,12 +385,12 @@ async fn falls_back_to_the_nearest_subgraph_when_no_cause_is_offered() {
         .map(|parent| (parent.key.as_str(), parent.number, parent.probability))
         .collect();
     assert_eq!(parents, [("s1", Some(1), 1.0)]);
-    assert_eq!(traces[0].intent_score, Some(0.9));
+    assert!((traces[0].intent_score.unwrap() - 0.95).abs() < 1e-9);
     // What Jev was asked and answered stays with the trace.
     let jev = &traces[0].trace["jev"];
     assert_eq!(jev.as_array().unwrap().len(), 1);
     assert_eq!(jev[0]["stage"], "cause");
-    assert!(jev[0]["request"]["questions"]["intent_s1"].is_object());
+    assert!(jev[0]["request"]["questions"]["explicit"].is_object());
 }
 
 /// A provider over a graph whose latest prompt is in SubGraph 0, with Jev picking `cause`.
@@ -394,7 +411,7 @@ fn provider_picking(cause: &'static str) -> (JevDecisionProvider, Arc<Graph>, Ar
         jev.clone(),
         TraceSettings::default(),
         Duration::from_secs(3),
-        0.5,
+        Thresholds::default(),
     );
     (provider, graph, jev)
 }
@@ -408,12 +425,13 @@ async fn traces_the_call_to_the_cause_jev_picks() {
         .unwrap();
     assert_eq!(response.decision, Decision::Allow);
 
-    // One request offers the prompt's Request and `none` beside s1, and judges each.
+    // One request offers the prompt's Request and `none` beside s1's result, and asks about
+    // the deviation.
     let requests = jev.requests.lock().unwrap();
     assert_eq!(requests.len(), 1);
     assert_eq!(
         requests[0].questions.keys().collect::<Vec<_>>(),
-        ["cause", "intent_none", "intent_s0", "intent_s1"]
+        ["cause", "expected", "explicit", "harm", "reversible"]
     );
     let traces = graph.traces.lock().unwrap();
     assert_eq!(traces[0].parent, "s0");
@@ -427,15 +445,23 @@ async fn traces_the_call_to_the_cause_jev_picks() {
 }
 
 #[tokio::test]
-async fn denies_a_call_jev_traces_to_no_prompt_or_tool_result() {
+async fn judges_a_call_with_no_cause_strictly() {
+    // A deviation of 0.1 passes a Call that follows from the request...
+    let (provider, _, _) = provider_picking("s0");
+    let response = provider
+        .decide(&request(Some("빌드 고치기"), Some(4_000)))
+        .await
+        .unwrap();
+    assert_eq!(response.rule, "intent::match");
+
+    // ...but is reviewed for one that follows from nothing, rather than denied outright.
     let (provider, graph, _) = provider_picking("none");
     let response = provider
         .decide(&request(Some("빌드 고치기"), Some(4_000)))
         .await
         .unwrap();
-    // Denied although its chain serves the intent.
-    assert_eq!(response.decision, Decision::Deny);
-    assert_eq!(response.rule, "cause::none");
+    assert_eq!(response.decision, Decision::Review);
+    assert_eq!(response.rule, "intent::review");
     assert_eq!(response.start, CausalStart::Self_);
     assert!(
         !response.reason.contains("빌드 고치기"),
@@ -444,5 +470,5 @@ async fn denies_a_call_jev_traces_to_no_prompt_or_tool_result() {
     );
     let traces = graph.traces.lock().unwrap();
     assert_eq!(traces[0].parent, "none");
-    assert_eq!(traces[0].trace["picked"], true);
+    assert_eq!(traces[0].trace["link"], "none");
 }

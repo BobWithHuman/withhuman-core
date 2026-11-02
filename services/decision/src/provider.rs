@@ -14,7 +14,7 @@ use crate::{
     DecisionConfig, DecisionRepository, RepositoryError,
     jev::JevClient,
     repository::{TraceRecord, TracedParent, TracedSegment},
-    trace::{self, Stop, TraceSettings},
+    trace::{self, Stop, Thresholds, TraceSettings},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,9 +86,9 @@ impl DecisionProvider for MockDecisionProvider {
     }
 }
 
-/// Traces the Call's cause through Jev and denies it when one of the traced chains of events
-/// departs from the user's intents by more than the configured threshold, or when Jev finds
-/// its cause in neither the latest prompt nor a tool result (`none`).
+/// Traces the Call's cause through Jev and measures how far it departs from the user's
+/// intents; it is denied or reviewed past thresholds that are stricter when it follows from a
+/// tool result or from nothing than when it follows from the user's request.
 ///
 /// When tracing fails, the Call gets the Collector's failure policy (an error), or REVIEW when
 /// an earlier SubGraph of the Call's agent holds hidden content or a sensitive value. Jev sees prompts only through the
@@ -100,7 +100,7 @@ pub struct JevDecisionProvider {
     jev: Arc<dyn JevClient>,
     settings: TraceSettings,
     jev_timeout: Duration,
-    threshold: f64,
+    thresholds: Thresholds,
 }
 
 impl JevDecisionProvider {
@@ -109,14 +109,14 @@ impl JevDecisionProvider {
         jev: Arc<dyn JevClient>,
         settings: TraceSettings,
         jev_timeout: Duration,
-        threshold: f64,
+        thresholds: Thresholds,
     ) -> Self {
         Self {
             repository,
             jev,
             settings,
             jev_timeout,
-            threshold,
+            thresholds,
         }
     }
 
@@ -167,6 +167,8 @@ const STORE_WAIT: Duration = Duration::from_millis(200);
 const REVIEW_REASON: &str =
     "WithHuman이 이 도구 호출의 원인을 확인하지 못했습니다. 사용자 확인이 필요합니다.";
 
+const DEVIATION_REVIEW_REASON: &str = "WithHuman이 이 도구 호출이 사용자 의도에서 벗어났을 수 있다고 판단했습니다. 사용자 확인이 필요합니다.";
+
 #[async_trait]
 impl DecisionProvider for JevDecisionProvider {
     async fn decide(&self, request: &DecisionRequest) -> Result<DecisionResponse, ProviderError> {
@@ -187,13 +189,9 @@ impl DecisionProvider for JevDecisionProvider {
             Err(error) => return Err(ProviderError(error.to_string())),
         };
 
-        // The candidates and the SubGraphs their paths pass through, whose content Jev sees.
-        let mut shown: Vec<u64> = trace::candidate_subgraphs(&graph)
-            .into_iter()
-            .flat_map(|number| trace::ancestry(&graph, number, |_| false, self.settings.max_hops).0)
-            .collect();
-        shown.sort_unstable();
-        shown.dedup();
+        // The turn, the candidates and the SubGraphs their paths pass through, whose content
+        // Jev sees.
+        let shown = trace::shown_subgraphs(&graph, self.settings.max_hops);
         let members = self
             .repository
             .subgraph_members(&request.session_id, &shown, graph.call.order)
@@ -215,8 +213,8 @@ impl DecisionProvider for JevDecisionProvider {
             remaining(PERSIST_RESERVE).map_or(self.jev_timeout, |left| left.min(self.jev_timeout))
         };
 
-        // One request asks for the cause among every candidate's and judges each against the
-        // intents; the parents follow from the cause.
+        // One request asks for the cause among every candidate's and how far the Call departs
+        // from the intents; the parent follows from the cause.
         // What Jev was asked and answered, kept with the trace so it can be inspected.
         let mut exchanges = Vec::new();
         let judged = Instant::now();
@@ -238,7 +236,7 @@ impl DecisionProvider for JevDecisionProvider {
                 Err(error) => return self.unresolved(request, error, risky).await,
             },
         };
-        let (parents, mut judgements) = match trace::judge(&plan, response.as_ref()) {
+        let (parents, mut judgements, deviation) = match trace::judge(&plan, response.as_ref()) {
             Ok(judged) => judged,
             Err(error) => return self.unresolved(request, error, risky).await,
         };
@@ -309,7 +307,7 @@ impl DecisionProvider for JevDecisionProvider {
             }
         }
         let paragraph_ms = elapsed_ms(refined);
-        let outcome = trace::outcome(parents, judgements);
+        let outcome = trace::outcome(parents, judgements, deviation);
 
         let mut trace_json = trace::record(&plan, &outcome);
         trace_json["intent_source"] = intents.source.into();
@@ -343,7 +341,7 @@ impl DecisionProvider for JevDecisionProvider {
                     parent: segment.parent.clone(),
                 })
                 .collect(),
-            intent_score: outcome.judged_score,
+            intent_score: outcome.judged_score(),
             trace: trace_json,
         };
         // The trace is stored in its own task, so a slow write neither delays the decision past
@@ -373,25 +371,20 @@ impl DecisionProvider for JevDecisionProvider {
         });
         // The agent sees the reason, so it names no score, intent or path it could learn to
         // avoid; those stay with the Call's trace.
-        let (decision, rule, reason) = match outcome.judged_score {
-            // A Call that follows from neither the prompt nor a tool result is turned back
-            // whatever its intent score.
-            _ if outcome.acted_alone() => (
-                Decision::Deny,
-                "cause::none",
-                format!(
-                    "WithHuman이 사용자 요청이나 앞선 도구 결과와 이어지지 않는 행동으로 판단해 \
-                     차단했습니다. (세션 {}, 호출 {})",
-                    request.session_id, request.call_seq
-                ),
-            ),
-            Some(score) if 1.0 - score > self.threshold => (
+        let (deny_at, review_at) = self.thresholds.for_link(outcome.link);
+        let (decision, rule, reason) = match &outcome.deviation {
+            Some(deviation) if deviation.score >= deny_at => (
                 Decision::Deny,
                 "intent::mismatch",
                 format!(
                     "WithHuman이 사용자 의도와 다른 행동으로 판단해 차단했습니다. (세션 {}, 호출 {})",
                     request.session_id, request.call_seq
                 ),
+            ),
+            Some(deviation) if deviation.score >= review_at => (
+                Decision::Review,
+                "intent::review",
+                DEVIATION_REVIEW_REASON.to_owned(),
             ),
             Some(_) => (Decision::Allow, "intent::match", String::new()),
             None if risky => (
