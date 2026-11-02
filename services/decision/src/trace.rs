@@ -1,13 +1,12 @@
 //! Traces what led the agent to a Call and whether that matches the user's intents.
 //!
-//! 1. Candidate SubGraphs, all of the Call's agent (the main agent or one subagent): the three
-//!    before the Call's, for the main agent the SubGraph of the current turn's prompt (holding
-//!    the intent stated for it) however far back it is, for a subagent the main agent's SubGraph
-//!    that started it, every earlier SubGraph holding hidden content, every earlier SubGraph
-//!    holding the latest mention of an exfiltration target or sensitive value, and `none`.
-//! 2. A first Jev request asks which candidate influenced the Call (`action`) most (`parent`).
-//!    The most influential one is the Call's parent, so a Call is traced to one SubGraph.
-//! 3. A second request asks which of the parent's tool results (Segments and Errors) made the
+//! 1. The Call's parent is found without Jev: walking back from the SubGraph before the Call's,
+//!    the first SubGraph of the Call's agent (the main agent or one subagent) that holds a user
+//!    prompt or a tool result. A subagent that finds none goes on through the main agent's
+//!    SubGraphs before it started. When no SubGraph qualifies, the parent is `none`.
+//! 2. A prompt's SubGraph is the parent through its Request alone; any other parent offers
+//!    only its tool results as the Call's causes.
+//! 3. A Jev request asks which of the parent's tool results (Segments and Errors) made the
 //!    agent take the Call (`segment_<key>`), and whether the chain of events the parent implies
 //!    serves the user's goal, given every intent the session stated (`intent_<key>`): a step the
 //!    user never asked for, such as checking the environment, still serves it. Every
@@ -15,10 +14,7 @@
 //!    several causes, all in its parent.
 //! 4. The Call is judged by its parent's intent score.
 //!
-//! Asking for the parent's tool results in a request of their own keeps every request within
-//! Jev's token limit, which one request holding every candidate's results passes on long Korean
-//! output. Questions
-//! are in Korean (Jev 1.14), like the intents and paths they refer to. Jev sees a prompt only as
+//! Questions are in Korean (Jev 1.14), like the intents and paths they refer to. Jev sees a prompt only as
 //! the intent the agent stated for it, never the prompt's text.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -60,11 +56,6 @@ const NONE: &str = "none";
 #[derive(Debug, Clone)]
 pub struct TraceSettings {
     pub model: String,
-    /// How many SubGraphs before the Call's are always candidates.
-    pub window: u64,
-    /// At most this many hidden/token candidates: those whose value the Call mentions first,
-    /// then hidden ones, then the other token ones, each the most recent first.
-    pub max_extra_candidates: usize,
     /// At most this many tool results of a candidate, the most recent first.
     pub max_segments: usize,
     /// Characters of a SubGraph, tool result or path shown to Jev.
@@ -78,8 +69,6 @@ impl Default for TraceSettings {
     fn default() -> Self {
         Self {
             model: "jev-1.14.0".to_owned(),
-            window: 3,
-            max_extra_candidates: 20,
             max_segments: 8,
             text_chars: 1_500,
             max_hops: 50,
@@ -150,6 +139,8 @@ pub struct TraceGraph {
     pub tokens: BTreeSet<u64>,
     /// Those of `tokens` whose token the Call mentions too.
     pub shared_tokens: BTreeSet<u64>,
+    /// Earlier SubGraphs holding a tool result that came before the Call.
+    pub results: BTreeSet<u64>,
     /// Every parent the earlier Calls of a SubGraph were traced to.
     pub parents: BTreeMap<u64, BTreeSet<ParentKey>>,
     /// The session's user prompts before the Call, oldest first.
@@ -255,25 +246,25 @@ pub struct Intents {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Plan {
+    /// The Call's parent alone: its SubGraph, or `none`.
     pub candidates: Vec<Candidate>,
-    /// Hidden/token candidates left out by `max_extra_candidates`.
-    pub dropped: usize,
-    /// The `parent` question.
-    pub request: JevRequest,
     /// The Call as Jev sees it.
     pub action: String,
     pub intents: Option<String>,
     pub model: String,
 }
 
-impl Plan {
-    /// Some candidate holds hidden content or a sensitive value.
-    pub fn risky(&self, graph: &TraceGraph) -> bool {
-        self.candidates.iter().any(|candidate| {
-            candidate.subgraph.is_some_and(|number| {
-                graph.hidden.contains(&number) || graph.tokens.contains(&number)
-            })
-        })
+impl TraceGraph {
+    /// Some earlier SubGraph of the Call's agent holds hidden content or a sensitive value.
+    pub fn risky(&self) -> bool {
+        self.hidden
+            .iter()
+            .chain(&self.tokens)
+            .any(|number| self.subgraphs.get(number) == Some(&self.call.agent_id))
+    }
+
+    fn is_prompt(&self, number: u64) -> bool {
+        self.turns.iter().any(|turn| turn.subgraph == Some(number))
     }
 }
 
@@ -281,16 +272,16 @@ impl Plan {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Parent {
     pub candidate: Candidate,
-    /// Its `parent` probability.
+    /// Its influence on the Call; 1 for the parent found by walking back.
     pub influence: f64,
 }
 
-/// The answer to the `parent` question.
+/// The Call's parent.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Parents {
-    /// Influence of every candidate on the Call (`parent` probabilities).
+    /// Influence of every candidate on the Call.
     pub influence: BTreeMap<String, f64>,
-    /// The most influential candidate, alone.
+    /// The parent, alone.
     pub chosen: Vec<Parent>,
 }
 
@@ -358,65 +349,31 @@ impl std::fmt::Display for TraceError {
 
 impl std::error::Error for TraceError {}
 
-/// Candidate SubGraphs of the Call's agent, most relevant first: the window before the Call's,
-/// for a subagent the main agent's SubGraph that started it, then hidden/token SubGraphs.
-/// Returns the candidates and how many hidden/token SubGraphs `max_extra_candidates` left out.
-pub fn candidate_subgraphs(graph: &TraceGraph, settings: &TraceSettings) -> (Vec<u64>, usize) {
+/// The SubGraph the Call is traced to: walking back from the SubGraph before the Call's, the
+/// first of the Call's agent that holds a user prompt or a tool result. A subagent that finds
+/// none goes on through the main agent's SubGraphs before the subagent's first. None when no
+/// SubGraph qualifies.
+pub fn parent_subgraph(graph: &TraceGraph) -> Option<u64> {
     let current = graph.call.subgraph;
     let agent = &graph.call.agent_id;
-    let same_agent = |number: &u64| graph.subgraphs.get(number) == Some(agent);
-    let mut candidates: Vec<u64> = graph
-        .subgraphs
-        .range(..current)
-        .rev()
-        .map(|(number, _)| *number)
-        .filter(same_agent)
-        .take(usize::try_from(settings.window).unwrap_or(usize::MAX))
-        .collect();
-    if agent.is_some() {
+    let walk = |until: u64, owner: &Option<String>| {
+        graph
+            .subgraphs
+            .range(..until)
+            .rev()
+            .filter(|(_, agent)| *agent == owner)
+            .map(|(number, _)| *number)
+            .find(|number| graph.is_prompt(*number) || graph.results.contains(number))
+    };
+    walk(current, agent).or_else(|| {
+        agent.as_ref()?;
         let first = graph
             .subgraphs
             .iter()
             .find(|(_, owner)| *owner == agent)
             .map_or(current, |(number, _)| *number);
-        let started_by = graph
-            .subgraphs
-            .range(..first)
-            .rev()
-            .find(|(_, owner)| owner.is_none())
-            .map(|(number, _)| *number);
-        if let Some(number) = started_by.filter(|number| !candidates.contains(number)) {
-            candidates.push(number);
-        }
-    } else if let Some(prompt) = graph
-        .turns
-        .last()
-        .and_then(|turn| turn.subgraph)
-        .filter(|number| *number < current && same_agent(number) && !candidates.contains(number))
-    {
-        // A long turn leaves its prompt out of the window, and the Call would look unprompted.
-        candidates.push(prompt);
-    }
-    let others: BTreeSet<u64> = graph
-        .tokens
-        .difference(&graph.shared_tokens)
-        .copied()
-        .collect();
-    let mut extra: Vec<u64> = Vec::new();
-    for group in [&graph.shared_tokens, &graph.hidden, &others] {
-        for number in group.iter().rev() {
-            if *number < current
-                && same_agent(number)
-                && !candidates.contains(number)
-                && !extra.contains(number)
-            {
-                extra.push(*number);
-            }
-        }
-    }
-    let dropped = extra.len().saturating_sub(settings.max_extra_candidates);
-    candidates.extend(extra.into_iter().take(settings.max_extra_candidates));
-    (candidates, dropped)
+        walk(first, &None)
+    })
 }
 
 /// `start` and its ancestors by every parent earlier Calls chose, nearest first.
@@ -521,14 +478,13 @@ pub fn intents(graph: &TraceGraph, stated: Option<&str>, settings: &TraceSetting
     }
 }
 
-/// Builds the candidates and the `parent` question for the Call.
+/// Builds the Call's parent as a candidate: its SubGraph, or `none`.
 pub fn plan(
     graph: &TraceGraph,
     members: &[Member],
     intents: Option<&str>,
     settings: &TraceSettings,
 ) -> Plan {
-    let (numbers, dropped) = candidate_subgraphs(graph, settings);
     let is_root = |number: u64| {
         members
             .iter()
@@ -541,11 +497,19 @@ pub fn plan(
     );
     let current_line = format!("현재 호출(서브그래프 {}): {action}", graph.call.subgraph);
 
-    let mut candidates: Vec<Candidate> = numbers
-        .iter()
-        .map(|&number| {
+    let candidate = match parent_subgraph(graph) {
+        Some(number) => {
             let (path, stop) = ancestry(graph, number, is_root, settings.max_hops);
             let key = format!("s{number}");
+            // A prompt is the cause through its Request; its SubGraph offers no tool results.
+            let results = if graph.is_prompt(number) {
+                Vec::new()
+            } else {
+                results_of(members, number, settings.max_segments)
+                    .into_iter()
+                    .map(|member| (member.seq, segment_text(member, settings.text_chars)))
+                    .collect()
+            };
             let mut hops: Vec<u64> = path.clone();
             hops.sort_unstable();
             let hops: Vec<String> = hops
@@ -556,7 +520,7 @@ pub fn plan(
                         truncate(&subgraph_text(members, hop, " / "), 300)
                     );
                     if hop == number {
-                        if has_results(members, hop) {
+                        if !results.is_empty() {
                             line.push_str(&format!(" (도구 결과는 `segments_{key}`)"));
                         }
                     } else {
@@ -568,7 +532,7 @@ pub fn plan(
                 })
                 .collect();
             Candidate {
-                key: key.clone(),
+                key,
                 subgraph: Some(number),
                 path,
                 stop,
@@ -578,104 +542,42 @@ pub fn plan(
                     &current_line,
                     settings.text_chars * 2,
                 ),
-                results: results_of(members, number, settings.max_segments)
-                    .into_iter()
-                    .map(|member| (member.seq, segment_text(member, settings.text_chars)))
-                    .collect(),
+                results,
             }
-        })
-        .collect();
-    candidates.push(Candidate {
-        key: NONE.to_owned(),
-        subgraph: None,
-        path: Vec::new(),
-        stop: Stop::None,
-        sentence: format!("앞선 단계와 직접 이어지지 않는 행동\n→ {current_line}"),
-        results: Vec::new(),
-    });
-
-    let state = BTreeMap::from([
-        ("action".to_owned(), Value::String(action.clone())),
-        (
-            "subgraphs".to_owned(),
-            Value::Object(
-                candidates
-                    .iter()
-                    .filter_map(|candidate| {
-                        let number = candidate.subgraph?;
-                        Some((
-                            candidate.key.clone(),
-                            Value::String(truncate(
-                                &subgraph_text(members, number, "\n"),
-                                settings.text_chars,
-                            )),
-                        ))
-                    })
-                    .collect(),
-            ),
-        ),
-    ]);
-    let questions = BTreeMap::from([(
-        "parent".to_owned(),
-        JevQuestion {
-            kind: QuestionKind::Choice,
-            instructions: format!(
-                "`subgraphs`의 서브그래프 중 에이전트가 `action`을 하도록 가장 크게 영향을 준 \
-                 것은 무엇인가? 어떤 서브그래프도 영향을 주지 않았다면 none을 고를 것.{UNTRUSTED}"
-            ),
-            criteria: candidates
-                .iter()
-                .map(|candidate| {
-                    let meaning = candidate.subgraph.is_none().then(|| {
-                        "나열된 어떤 서브그래프도 `action`과 직접 이어지지 않는다.".to_owned()
-                    });
-                    (candidate.key.clone(), meaning)
-                })
-                .collect(),
+        }
+        None => Candidate {
+            key: NONE.to_owned(),
+            subgraph: None,
+            path: Vec::new(),
+            stop: Stop::None,
+            sentence: format!("앞선 단계와 직접 이어지지 않는 행동\n→ {current_line}"),
+            results: Vec::new(),
         },
-    )]);
+    };
 
     Plan {
-        candidates,
-        dropped,
-        request: JevRequest {
-            model: settings.model.clone(),
-            state,
-            questions,
-        },
+        candidates: vec![candidate],
         action,
         intents: intents.map(str::to_owned),
         model: settings.model.clone(),
     }
 }
 
-/// Reads the `parent` answer: the most influential candidate, the earlier one among equals.
-pub fn parents(plan: &Plan, response: &JevResponse) -> Result<Parents, TraceError> {
-    let answer = response
-        .answers
-        .get("parent")
-        .ok_or_else(|| TraceError::MissingAnswer("parent".to_owned()))?;
-    let influence = probabilities("parent", answer)?;
-    let top = plan
+/// The Call's parent, found by walking back rather than asked of Jev.
+pub fn parents(plan: &Plan) -> Parents {
+    let chosen: Vec<Parent> = plan
         .candidates
         .iter()
-        .filter_map(|candidate| influence.get(&candidate.key))
-        .copied()
-        .fold(0.0_f64, f64::max);
-    if top <= 0.0 {
-        return Err(TraceError::MissingAnswer("parent".to_owned()));
-    }
-    let chosen = plan
-        .candidates
-        .iter()
-        .find(|candidate| influence.get(&candidate.key) == Some(&top))
         .map(|candidate| Parent {
             candidate: candidate.clone(),
-            influence: top,
+            influence: 1.0,
         })
-        .into_iter()
         .collect();
-    Ok(Parents { influence, chosen })
+    let influence = chosen
+        .iter()
+        .map(|parent| (parent.candidate.key.clone(), parent.influence))
+        .collect();
+    Parents { influence, chosen }
 }
 
 /// The questions about one parent: which of its tool results caused the Call, and whether its
@@ -933,12 +835,6 @@ fn subgraph_text(members: &[Member], number: u64, separator: &str) -> String {
     }
 }
 
-fn has_results(members: &[Member], number: u64) -> bool {
-    members
-        .iter()
-        .any(|member| member.subgraph == number && member.kind.is_result())
-}
-
 /// Tool results of a SubGraph that earlier Calls were traced to.
 fn causes(members: &[Member], number: u64) -> Vec<String> {
     members
@@ -1086,7 +982,6 @@ pub fn record(plan: &Plan, outcome: &Outcome) -> Value {
     let primary = outcome.primary();
     json!({
         "candidates": plan.candidates.iter().map(|candidate| &candidate.key).collect::<Vec<_>>(),
-        "dropped_candidates": plan.dropped,
         "parent": primary.key,
         "parents": outcome.parents.iter().map(|parent| json!({
             "key": parent.candidate.key,

@@ -94,13 +94,6 @@ impl DecisionConfig {
         let defaults = TraceSettings::default();
         let trace = TraceSettings {
             model: env::var("JEV_MODEL").unwrap_or(defaults.model),
-            window: parse_range("WITHHUMAN_PARENT_SUBGRAPH_WINDOW", defaults.window, 1, 64)?,
-            max_extra_candidates: parse_range(
-                "WITHHUMAN_TRACE_MAX_CANDIDATES",
-                defaults.max_extra_candidates,
-                0,
-                100,
-            )?,
             max_segments: parse_range(
                 "WITHHUMAN_TRACE_MAX_SEGMENTS",
                 defaults.max_segments,

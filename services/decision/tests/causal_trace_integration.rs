@@ -27,8 +27,8 @@ struct FakeJev {
     requests: Arc<Mutex<Vec<Received>>>,
 }
 
-/// Answers like Jev would for an injected instruction in SubGraph 1: s1 influenced the Call,
-/// its first tool result caused it, and the chain through s1 departs from the intent.
+/// Answers like Jev would for an injected instruction in SubGraph 1: its first tool result
+/// caused the Call, and the chain through s1 departs from the intent.
 async fn systemone(
     State(jev): State<FakeJev>,
     headers: HeaderMap,
@@ -45,20 +45,7 @@ async fn systemone(
     let mut answers = serde_json::Map::new();
     for (id, question) in request["questions"].as_object().unwrap() {
         let options: Vec<&String> = question["criteria"].as_object().unwrap().keys().collect();
-        let answer = if id == "parent" {
-            let probabilities: serde_json::Map<String, Value> = options
-                .iter()
-                .map(|key| {
-                    let p = if *key == "s1" {
-                        0.8
-                    } else {
-                        0.2 / (options.len() - 1) as f64
-                    };
-                    ((*key).clone(), json!(p))
-                })
-                .collect();
-            json!({"choice": "s1", "probabilities": probabilities})
-        } else if id.starts_with("segment_") {
+        let answer = if id.starts_with("segment_") {
             let probabilities: serde_json::Map<String, Value> = options
                 .iter()
                 .enumerate()
@@ -276,9 +263,9 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
     // The agent learns neither the intent nor the path it was judged by.
     assert!(!decision["reason"].as_str().unwrap().contains("README 요약"));
 
-    // First the parent, then one request about it, the most influential one (s1).
+    // The parent, s1, is the nearest SubGraph with a tool result; Jev is asked only about it.
     let requests = jev.requests.lock().unwrap().clone();
-    assert_eq!(requests.len(), 2, "{requests:?}");
+    assert_eq!(requests.len(), 1, "{requests:?}");
     for (authorization, request) in &requests {
         assert_eq!(authorization.as_deref(), Some("Bearer test-key"));
         assert_eq!(request["model"], "jev-1.14.0");
@@ -295,16 +282,7 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
             .cloned()
             .collect()
     };
-    let (_, first) = &requests[0];
-    let mut subgraphs: Vec<&String> = first["state"]["subgraphs"]
-        .as_object()
-        .unwrap()
-        .keys()
-        .collect();
-    subgraphs.sort();
-    assert_eq!(subgraphs, ["s0", "s1"]);
-    assert_eq!(questions(first), ["parent"]);
-    let (_, request) = &requests[1];
+    let (_, request) = &requests[0];
     assert_eq!(questions(request), ["intent_s1", "segment_s1"]);
     assert_eq!(request["state"]["intents"], "1. README 요약 (현재 턴)");
     // The paragraph hidden on the page leads the tool result Jev weighs.
@@ -356,7 +334,7 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
 
     // Deciding the same Call again replaces its cause edges instead of adding more.
     send(&client, &deciding, "PreToolUse", call).await;
-    assert_eq!(jev.requests.lock().unwrap().len(), 4);
+    assert_eq!(jev.requests.lock().unwrap().len(), 2);
     let again: Value = cypher(
         "MATCH (call:Call {session_id:$s, order:7}) \
          OPTIONAL MATCH (call)-[next:NEXT {kind:'cause'}]->(cause) \
