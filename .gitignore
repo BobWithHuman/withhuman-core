@@ -1,3 +1,4 @@
 /target
 deploy/docker/.env
 /.env
+__pycache__/
