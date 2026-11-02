@@ -1,0 +1,15 @@
+# The E2E suite calls the services directly; a deployment reaches them only through Caddy and
+# AgentGateway, so their ports are published here, on loopback, for the suite alone.
+services:
+  decision:
+    ports:
+      - "127.0.0.1:8082:8082"
+  generator:
+    ports:
+      - "127.0.0.1:8081:8081"
+  collector:
+    ports:
+      - "127.0.0.1:8080:8080"
+  mcp-fixture:
+    ports:
+      - "127.0.0.1:8090:8090"

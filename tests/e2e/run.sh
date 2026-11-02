@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 compose_file="$repo_dir/deploy/docker/compose.yaml"
-compose=(docker compose --file "$compose_file")
+compose=(docker compose --file "$compose_file" --file "$repo_dir/tests/e2e/compose.ports.yaml")
 gateway_url=${AGENTGATEWAY_URL:-http://localhost:3000}
 decision_url=${DECISION_URL:-http://localhost:8082}
 fixture_url=${MCP_FIXTURE_URL:-http://localhost:8090}
