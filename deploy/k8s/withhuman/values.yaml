@@ -1,0 +1,94 @@
+# Commit SHA of the images to run, shared by every service so a release names one build.
+imageTag: ""
+imagePullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# The Secret is created outside the chart. It holds the keys `neo4j-password`, `jev-api-key` and
+# `redis-url`.
+existingSecret: withhuman
+
+# Neo4j runs outside the cluster.
+neo4j:
+  httpUrl: ""
+  boltUrl: ""
+  user: neo4j
+  database: neo4j
+
+# Applies deploy/docker/neo4j/schema.cypher before each install and upgrade.
+schema:
+  enabled: true
+  image: neo4j:5.26.0
+
+collector:
+  image: ghcr.io/bobwithhuman/withhuman-collector
+  replicaCount: 2
+  resources:
+    requests: { cpu: 100m, memory: 64Mi }
+    limits: { memory: 256Mi }
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 60
+  mode: shadow # record, shadow or enforce
+  onFailure: closed # open or closed
+  ask: ask # deny or ask
+  decisionTimeoutMs: 4200
+  intentCapture: "on" # on or off
+  # `hook` applies verdicts on MCP tools at the PreToolUse Hook, so a tool that does not pass
+  # through AgentGateway is enforced too.
+  mcpEnforce: hook
+
+generator:
+  image: ghcr.io/bobwithhuman/withhuman-generator
+  replicaCount: 2
+  resources:
+    requests: { cpu: 100m, memory: 64Mi }
+    limits: { memory: 256Mi }
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 60
+
+decision:
+  image: ghcr.io/bobwithhuman/withhuman-decision
+  replicaCount: 2
+  resources:
+    requests: { cpu: 100m, memory: 64Mi }
+    limits: { memory: 256Mi }
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 60
+  environment: production # development, test or production
+  provider: jev # jev or mock
+  jevUrl: https://api.typesafe.ai
+  jevTimeoutMs: 3000
+  intentBlockThreshold: 0.5
+
+agentgateway:
+  image: cr.agentgateway.dev/agentgateway:v1.6.0
+  replicaCount: 2
+  resources:
+    requests: { cpu: 100m, memory: 64Mi }
+    limits: { memory: 256Mi }
+  # MCP servers served through the gateway, as `{name, url}`. Their tool calls pass the extAuthz
+  # check. Left empty, the gateway serves Hooks only.
+  mcpTargets: []
+
+ingress:
+  enabled: false
+  className: ""
+  host: ""
+  annotations: {}
+  tls: []
+
+# Time for load balancers to stop sending a terminating Pod new requests.
+preStopSleepSeconds: 5
+terminationGracePeriodSeconds: 30
+
+# Lets only the service that calls an engine service reach it. Needs a CNI that enforces them.
+networkPolicy:
+  enabled: true

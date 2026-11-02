@@ -4,6 +4,7 @@ pub mod chunking;
 pub mod hidden;
 pub mod intent;
 pub mod origin;
+pub mod shutdown;
 pub mod tokens;
 
 /// The label expression matching every node a hook event creates, for Cypher patterns such as
