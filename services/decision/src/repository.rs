@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use withhuman_contracts::decisions::{DecisionRequest, DecisionResponse};
 
 use crate::{
-    DecisionConfig,
+    DecisionConfig, check,
     trace::{
         self, CallInfo, Member, MemberKind, Paragraph, ParentKey, TOKEN_KINDS, TraceGraph, Turn,
     },
@@ -40,7 +40,9 @@ RETURN true AS written";
 // slot mentioned it — and whether the Call mentions that value too; every parent earlier Calls
 // of a SubGraph chose; and every user prompt before the Call with the first intent the agent
 // stated after it (and before the next prompt): an Intent node, or a Message that stated it
-// before intents had nodes of their own. The prompt itself is not read.
+// before intents had nodes of their own; the earlier SubGraphs holding a tool result; the
+// directory the Call was made in; and the latest prompt's payload, whose text only the check
+// of the Call against the request sees.
 const TRACE_GRAPH: &str = concat!(
     "\
 MATCH (call:Call {session_id: $session_id, seq: $call_seq}) \
@@ -88,7 +90,11 @@ RETURN call.order, call.subgraph, call.payload_json, \
             ORDER BY request.order } AS turns, \
   COLLECT { MATCH (result:Segment|Error {session_id: $session_id}) \
             WHERE result.subgraph < call.subgraph AND result.order < call.order \
-            RETURN DISTINCT result.subgraph } AS results"
+            RETURN DISTINCT result.subgraph } AS results, \
+  call.cwd, \
+  COLLECT { MATCH (request:Request {session_id: $session_id}) \
+            WHERE request.order < call.order \
+            RETURN request.payload_json ORDER BY request.order DESC LIMIT 1 }[0] AS prompt"
 );
 
 // The session's tool results before the Call that name the file, oldest first: `$path` is the
@@ -444,34 +450,33 @@ impl DecisionRepository for Neo4jDecisionRepository {
             .get("tool_input")
             .cloned()
             .unwrap_or(Value::Null);
-        let prior = match (tool_name.as_str(), tool_input.get("file_path")) {
-            ("Write", Some(Value::String(path))) => {
-                let data = self
-                    .execute(
-                        FILE_RESULTS,
-                        json!({
-                            "session_id": request.session_id,
-                            "call_order": order,
-                            "path": Value::String(path.clone()).to_string(),
-                        }),
-                    )
-                    .await?;
-                let results: Vec<Value> =
-                    data.values.iter().map(|row| payload(row.first())).collect();
-                trace::last_seen_content(&results, path)
-            }
-            _ => None,
+        let mut call = CallInfo {
+            seq: request.call_seq,
+            order,
+            subgraph,
+            agent_id: row.get(7).and_then(Value::as_str).map(str::to_owned),
+            tool_name,
+            tool_input,
+            prior: None,
+            cwd: row.get(10).and_then(Value::as_str).map(str::to_owned),
         };
+        // A file the Call writes whole is shown as its change to what the session last saw.
+        if let Some(path) = check::written_path(&call) {
+            let data = self
+                .execute(
+                    FILE_RESULTS,
+                    json!({
+                        "session_id": request.session_id,
+                        "call_order": order,
+                        "path": Value::String(path.clone()).to_string(),
+                    }),
+                )
+                .await?;
+            let results: Vec<Value> = data.values.iter().map(|row| payload(row.first())).collect();
+            call.prior = trace::last_seen_content(&results, &path);
+        }
         Ok(TraceGraph {
-            call: CallInfo {
-                seq: request.call_seq,
-                order,
-                subgraph,
-                agent_id: row.get(7).and_then(Value::as_str).map(str::to_owned),
-                tool_name,
-                tool_input,
-                prior,
-            },
+            call,
             subgraphs,
             hidden: numbers(row.get(4)),
             tokens,
@@ -484,6 +489,11 @@ impl DecisionRepository for Neo4jDecisionRepository {
                     subgraph: pair.get(2).and_then(Value::as_u64),
                 })
                 .collect(),
+            prompt: payload(row.get(11))
+                .get("prompt")
+                .and_then(Value::as_str)
+                .filter(|prompt| !prompt.is_empty())
+                .map(str::to_owned),
         })
     }
 

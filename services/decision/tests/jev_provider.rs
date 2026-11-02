@@ -26,6 +26,8 @@ struct Graph {
     /// The latest user prompt is in SubGraph 0.
     prompt: bool,
     no_subgraph: bool,
+    /// The Call's tool and input, when not `rm -rf build` in Bash.
+    call: Option<(&'static str, serde_json::Value)>,
 }
 
 #[async_trait]
@@ -56,9 +58,13 @@ impl DecisionRepository for Graph {
                 order: 10,
                 subgraph: 2,
                 agent_id: None,
-                tool_name: "Bash".to_owned(),
-                tool_input: json!({"command": "rm -rf build"}),
+                tool_name: self.call.as_ref().map_or("Bash", |call| call.0).to_owned(),
+                tool_input: self
+                    .call
+                    .as_ref()
+                    .map_or_else(|| json!({"command": "rm -rf build"}), |call| call.1.clone()),
                 prior: None,
+                cwd: None,
             },
             subgraphs: BTreeMap::from([(0, None), (1, None)]),
             hidden: if self.hidden {
@@ -81,6 +87,7 @@ impl DecisionRepository for Graph {
             } else {
                 Vec::new()
             },
+            prompt: self.prompt.then(|| "빌드를 고쳐줘".to_owned()),
         })
     }
 
@@ -127,6 +134,8 @@ struct Jev {
     intent_score: f64,
     cause: Option<&'static str>,
     fail: bool,
+    /// How likely the check finds the Call serves something the user did not ask for.
+    unwanted: Option<f64>,
     asked: Mutex<Vec<Duration>>,
     requests: Mutex<Vec<JevRequest>>,
 }
@@ -157,6 +166,19 @@ impl JevClient for Jev {
                     "expected" => choice("none"),
                     "harm" => choice("high"),
                     "reversible" => noul(0.0),
+                    "purpose" if self.unwanted.is_some() => {
+                        let unwanted = self.unwanted.unwrap_or_default();
+                        JevAnswer {
+                            probabilities: BTreeMap::from([
+                                ("step".to_owned(), 1.0 - unwanted),
+                                ("result_goal".to_owned(), unwanted),
+                            ]),
+                            ..Default::default()
+                        }
+                    }
+                    "requested" if self.unwanted.is_some() => {
+                        noul(1.0 - self.unwanted.unwrap_or_default())
+                    }
                     _ => noul(self.intent_score),
                 };
                 (id.clone(), answer)
@@ -180,6 +202,7 @@ fn provider_on(
         intent_score,
         cause: None,
         fail,
+        unwanted: None,
         asked: Mutex::default(),
         requests: Mutex::default(),
     });
@@ -348,11 +371,12 @@ async fn bounds_the_jev_call_by_the_decision_deadline() {
         .await
         .unwrap();
     provider.decide(&request(Some("x"), None)).await.unwrap();
-    // Each decision asks once, about the parent.
+    // Each decision asks about the parent, then checks the Call against the prompt.
     let asked = jev.asked.lock().unwrap().clone();
-    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert_eq!(asked.len(), 4, "{asked:?}");
     assert!(asked[0] <= Duration::from_millis(700), "{asked:?}");
-    assert_eq!(asked[1], Duration::from_secs(3));
+    assert!(asked[1] <= Duration::from_millis(700), "{asked:?}");
+    assert_eq!(asked[2..], [Duration::from_secs(3); 2]);
 
     let (provider, graph, jev) = self::provider(0.8, false);
     assert!(
@@ -409,6 +433,7 @@ fn provider_picking(cause: &'static str) -> (JevDecisionProvider, Arc<Graph>, Ar
         intent_score: 0.9,
         cause: Some(cause),
         fail: false,
+        unwanted: None,
         asked: Mutex::default(),
         requests: Mutex::default(),
     });
@@ -482,4 +507,71 @@ async fn judges_a_call_with_no_cause_strictly() {
     let traces = graph.traces.lock().unwrap();
     assert_eq!(traces[0].parent, "none");
     assert_eq!(traces[0].trace["link"], "none");
+}
+
+#[tokio::test]
+async fn denies_a_call_changing_the_agents_safeguards_even_when_jev_fails() {
+    let (provider, graph, _) = provider_on(
+        Graph {
+            call: Some((
+                "Skill",
+                json!({"skill": "update-config", "args": "allow edits"}),
+            )),
+            ..Graph::default()
+        },
+        1.0,
+        true,
+    );
+    let response = provider
+        .decide(&request(Some("x"), Some(4_000)))
+        .await
+        .unwrap();
+    assert_eq!(response.decision, Decision::Deny);
+    assert_eq!(response.rule, "safeguard::change");
+    assert_eq!(graph.unresolved.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn checks_a_doubtful_call_against_the_users_prompt() {
+    for (unwanted, decision, rule) in [
+        (0.6, Decision::Deny, "intent::mismatch"),
+        (0.1, Decision::Allow, "intent::match"),
+    ] {
+        let graph = Arc::new(Graph {
+            prompt: true,
+            ..Graph::default()
+        });
+        let jev = Arc::new(Jev {
+            // The user's word in some doubt (0.2), short of a breach.
+            intent_score: 0.8,
+            cause: Some("s0"),
+            fail: false,
+            unwanted: Some(unwanted),
+            asked: Mutex::default(),
+            requests: Mutex::default(),
+        });
+        let provider = JevDecisionProvider::new(
+            graph.clone(),
+            jev.clone(),
+            TraceSettings::default(),
+            Duration::from_secs(3),
+            Thresholds::default(),
+        );
+        let response = provider
+            .decide(&request(Some("빌드 고치기"), Some(4_000)))
+            .await
+            .unwrap();
+        assert_eq!(
+            (response.decision, response.rule.as_str()),
+            (decision, rule)
+        );
+
+        let requests = jev.requests.lock().unwrap();
+        let checked = requests.last().unwrap();
+        assert_eq!(checked.questions.keys().collect::<Vec<_>>(), ["purpose"]);
+        assert_eq!(checked.state["user_request"], "빌드를 고쳐줘");
+        let traces = graph.traces.lock().unwrap();
+        assert_eq!(traces[0].trace["check"]["branch"], "purpose");
+        assert_eq!(traces[0].trace["check"]["unwanted"], unwanted);
+    }
 }

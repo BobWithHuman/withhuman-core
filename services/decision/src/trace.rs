@@ -235,9 +235,12 @@ pub struct CallInfo {
     pub agent_id: Option<String>,
     pub tool_name: String,
     pub tool_input: Value,
-    /// For a Write, the file's content as the session last saw it before the Call (read whole
-    /// or written), so the Call is shown as the change it makes.
+    /// For a Write (or a Bash command writing a file), the file's content as the session last
+    /// saw it before the Call (read whole or written), so the Call is shown as the change it
+    /// makes.
     pub prior: Option<String>,
+    /// The directory the Call was made in, against which a relative path it writes resolves.
+    pub cwd: Option<String>,
 }
 
 /// Where an earlier SubGraph was traced to.
@@ -284,6 +287,9 @@ pub struct TraceGraph {
     pub parents: BTreeMap<u64, BTreeSet<ParentKey>>,
     /// The session's user prompts before the Call, oldest first.
     pub turns: Vec<Turn>,
+    /// The text of the latest of them, shown only to the question that checks the Call against
+    /// it.
+    pub prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -505,6 +511,8 @@ pub struct Deviation {
     pub explicit: f64,
     /// Probability of each expectation it breaks.
     pub expected: BTreeMap<String, f64>,
+    /// Probability that it breaks none of them.
+    pub none: f64,
     /// The weight of its harm, from none (0) to high (1).
     pub harm: f64,
     /// Probability that it cannot be undone.
@@ -1263,7 +1271,9 @@ fn deviation(response: Option<&JevResponse>) -> Result<Deviation, TraceError> {
         .filter_map(|(key, _, weight)| harms.get(*key).map(|probability| probability * weight))
         .sum::<f64>()
         / weights;
-    let expected: BTreeMap<String, f64> = probabilities(EXPECTED, answer(EXPECTED)?)?
+    let answered = probabilities(EXPECTED, answer(EXPECTED)?)?;
+    let none = answered.get(NONE).copied().unwrap_or_default();
+    let expected: BTreeMap<String, f64> = answered
         .into_iter()
         .filter(|(key, _)| {
             EXPECTATIONS
@@ -1293,6 +1303,7 @@ fn deviation(response: Option<&JevResponse>) -> Result<Deviation, TraceError> {
         worst: worst.0,
         explicit,
         expected,
+        none,
         harm,
         irreversible,
         contributions,
@@ -1777,9 +1788,9 @@ pub fn last_seen_content(results: &[Value], path: &str) -> Option<String> {
     seen
 }
 
-/// A unified diff of `before` and `after` by line (`-` removed, `+` added), `context` unchanged
-/// lines around each change; empty when they are the same.
-pub fn line_diff(before: &str, after: &str, context: usize) -> String {
+/// Each line of `before` and `after` as kept (' '), removed ('-') or added ('+'), removed lines
+/// before the lines that replace them.
+pub(crate) fn diff_ops<'a>(before: &'a str, after: &'a str) -> Vec<(char, &'a str)> {
     let old: Vec<&str> = before.lines().collect();
     let new: Vec<&str> = after.lines().collect();
     let prefix = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
@@ -1793,11 +1804,6 @@ pub fn line_diff(before: &str, after: &str, context: usize) -> String {
         &old[prefix..old.len() - suffix],
         &new[prefix..new.len() - suffix],
     );
-    if old_middle.is_empty() && new_middle.is_empty() {
-        return String::new();
-    }
-
-    // Each line as kept (' '), removed ('-') or added ('+').
     let mut ops: Vec<(char, &str)> = old[..prefix].iter().map(|line| (' ', *line)).collect();
     if old_middle.len().saturating_mul(new_middle.len()) > DIFF_CELLS {
         ops.extend(old_middle.iter().map(|line| ('-', *line)));
@@ -1831,6 +1837,16 @@ pub fn line_diff(before: &str, after: &str, context: usize) -> String {
         }
     }
     ops.extend(old[old.len() - suffix..].iter().map(|line| (' ', *line)));
+    ops
+}
+
+/// A unified diff of `before` and `after` by line (`-` removed, `+` added), `context` unchanged
+/// lines around each change; empty when they are the same.
+pub fn line_diff(before: &str, after: &str, context: usize) -> String {
+    let ops = diff_ops(before, after);
+    if ops.iter().all(|op| op.0 == ' ') {
+        return String::new();
+    }
 
     // Hunks: the changes with their context, merged where the contexts meet.
     let changed: Vec<usize> = (0..ops.len()).filter(|&at| ops[at].0 != ' ').collect();
@@ -1863,7 +1879,7 @@ pub fn line_diff(before: &str, after: &str, context: usize) -> String {
     lines.join("\n")
 }
 
-fn truncate(text: &str, chars: usize) -> String {
+pub(crate) fn truncate(text: &str, chars: usize) -> String {
     match text.char_indices().nth(chars) {
         Some((end, _)) => format!("{}…", &text[..end]),
         None => text.to_owned(),
@@ -1913,6 +1929,7 @@ pub fn record(plan: &Plan, outcome: &Outcome) -> Value {
             "worst": deviation.worst,
             "explicit": deviation.explicit,
             "expected": deviation.expected,
+            "none": deviation.none,
             "harm": deviation.harm,
             "irreversible": deviation.irreversible,
             "contributions": deviation.contributions,
