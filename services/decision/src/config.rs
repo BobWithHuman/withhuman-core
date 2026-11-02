@@ -100,6 +100,13 @@ impl DecisionConfig {
                 1,
                 64,
             )?,
+            max_causes: parse_range("WITHHUMAN_TRACE_MAX_CAUSES", defaults.max_causes, 1, 200)?,
+            cause_chars: parse_range(
+                "WITHHUMAN_TRACE_CAUSE_CHARS",
+                defaults.cause_chars,
+                1_000,
+                100_000,
+            )?,
             text_chars: parse_range(
                 "WITHHUMAN_TRACE_TEXT_CHARS",
                 defaults.text_chars,

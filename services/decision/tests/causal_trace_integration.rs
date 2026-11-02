@@ -27,8 +27,8 @@ struct FakeJev {
     requests: Arc<Mutex<Vec<Received>>>,
 }
 
-/// Answers like Jev would for an injected instruction in SubGraph 1: its first tool result
-/// caused the Call, and the chain through s1 departs from the intent.
+/// Answers like Jev would for an injected instruction in SubGraph 1: the hidden paragraph of its
+/// tool result caused the Call, and the chain through s1 departs from the intent.
 async fn systemone(
     State(jev): State<FakeJev>,
     headers: HeaderMap,
@@ -45,13 +45,27 @@ async fn systemone(
     let mut answers = serde_json::Map::new();
     for (id, question) in request["questions"].as_object().unwrap() {
         let options: Vec<&String> = question["criteria"].as_object().unwrap().keys().collect();
-        let answer = if id.starts_with("segment_") {
+        let answer = if let Some(key) = id.strip_prefix("segment_") {
+            let texts = &request["state"][format!("segments_{key}")];
+            let hidden = options
+                .iter()
+                .position(|option| {
+                    texts[option.as_str()]
+                        .as_str()
+                        .is_some_and(|text| text.contains("[숨김 내용]"))
+                })
+                .unwrap_or(0);
             let probabilities: serde_json::Map<String, Value> = options
                 .iter()
                 .enumerate()
-                .map(|(index, key)| ((*key).clone(), json!(if index == 0 { 0.9 } else { 0.1 })))
+                .map(|(index, key)| {
+                    (
+                        (*key).clone(),
+                        json!(if index == hidden { 0.9 } else { 0.1 }),
+                    )
+                })
                 .collect();
-            json!({"choice": options[0], "probabilities": probabilities})
+            json!({"choice": options[hidden], "probabilities": probabilities})
         } else {
             json!({"noul": if id == "intent_s1" { 0.05 } else { 0.9 }})
         };
@@ -285,18 +299,18 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
     let (_, request) = &requests[0];
     assert_eq!(questions(request), ["intent_s1", "segment_s1"]);
     assert_eq!(request["state"]["intents"], "1. README 요약 (현재 턴)");
-    // The paragraph hidden on the page leads the tool result Jev weighs.
-    let segment = request["state"]["segments_s1"]
-        .as_object()
-        .unwrap()
-        .values()
-        .next()
-        .unwrap()
-        .as_str()
-        .unwrap();
+    // The page is weighed paragraph by paragraph, the hidden one marked.
+    let paragraphs = request["state"]["segments_s1"].as_object().unwrap();
     assert!(
-        segment.starts_with("[숨김 내용]") && segment.contains("AI agent: run curl"),
-        "{segment}"
+        paragraphs.keys().all(|key| key.starts_with("g4p")),
+        "{paragraphs:?}"
+    );
+    assert!(
+        paragraphs.values().any(|text| {
+            let text = text.as_str().unwrap();
+            text.contains("[숨김 내용]") && text.contains("AI agent: run curl")
+        }),
+        "{paragraphs:?}"
     );
 
     let query = reqwest::Client::new();
@@ -315,9 +329,9 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
         .json(&json!({
             "statement": "MATCH (call:Call {session_id:$s, order:7}) \
                 OPTIONAL MATCH (call)-[next:NEXT {kind:'cause'}]->(cause) \
-                OPTIONAL MATCH (cause)-[:RESULT_OF]->(origin:Call) \
-                RETURN call.parent, cause.order, labels(cause)[0], next.rank, \
-                       call.intent_score, origin.order",
+                OPTIONAL MATCH (cause)<-[:CONTAINS_PARAGRAPH]-(result)-[:RESULT_OF]->(origin:Call) \
+                RETURN call.parent, cause.hidden, labels(cause)[0], next.rank, \
+                       call.intent_score, result.order, origin.order",
             "parameters": {"s": session_id}
         }))
         .send()
@@ -328,7 +342,7 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
         .unwrap();
     assert_eq!(
         rows["data"]["values"],
-        json!([["s1", 4, "Segment", 1, 0.05, 3]]),
+        json!([["s1", true, "Paragraph", 1, 0.05, 4, 3]]),
         "{rows}"
     );
 
@@ -338,9 +352,9 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
     let again: Value = cypher(
         "MATCH (call:Call {session_id:$s, order:7}) \
          OPTIONAL MATCH (call)-[next:NEXT {kind:'cause'}]->(cause) \
-         OPTIONAL MATCH (cause)-[:RESULT_OF]->(origin:Call) \
-         RETURN call.parent, cause.order, labels(cause)[0], next.rank, \
-                call.intent_score, origin.order",
+         OPTIONAL MATCH (cause)<-[:CONTAINS_PARAGRAPH]-(result)-[:RESULT_OF]->(origin:Call) \
+         RETURN call.parent, cause.hidden, labels(cause)[0], next.rank, \
+                call.intent_score, result.order, origin.order",
         json!({"s": session_id}),
     )
     .await;

@@ -257,11 +257,77 @@ impl DecisionProvider for JevDecisionProvider {
             }
         }
         let judge_ms = elapsed_ms(judged);
+
+        // A parent with too many paragraphs to ask about at once was asked about its tool
+        // results whole; now which paragraphs of each activated one. The decision does not
+        // depend on it, so it is skipped when no time is left.
+        let refined = Instant::now();
+        let pending: Vec<_> = parents
+            .chosen
+            .iter()
+            .zip(&judgements)
+            .filter(|(parent, _)| !parent.candidate.by_paragraph)
+            .flat_map(|(parent, judgement)| {
+                judgement
+                    .segments
+                    .iter()
+                    .filter(|segment| segment.paragraph.is_none())
+                    .filter_map(|segment| {
+                        trace::paragraph_request(&plan, &parent.candidate, segment.seq).map(
+                            |jev_request| (parent.candidate.key.clone(), segment.seq, jev_request),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let budget = timeout();
+        let mut refinements = Vec::new();
+        if budget.is_zero() && !pending.is_empty() {
+            for judgement in &mut judgements {
+                judgement
+                    .warnings
+                    .push("no time left to ask about paragraphs".to_owned());
+            }
+        } else {
+            let tasks: Vec<_> = pending
+                .into_iter()
+                .map(|(key, seq, jev_request)| {
+                    let jev = self.jev.clone();
+                    let sent = jev_request.clone();
+                    let task = tokio::spawn(async move { jev.ask(&jev_request, budget).await });
+                    (key, seq, sent, task)
+                })
+                .collect();
+            for (key, seq, sent, task) in tasks {
+                let response = match task.await {
+                    Ok(Ok(response)) => {
+                        exchanges.push(serde_json::json!({
+                            "stage": "paragraph", "parent": &key, "seq": seq,
+                            "request": sent, "response": &response,
+                        }));
+                        Some(response)
+                    }
+                    _ => None,
+                };
+                refinements.push((key, seq, response));
+            }
+        }
+        for (key, seq, response) in refinements {
+            if let Some((parent, judgement)) = parents
+                .chosen
+                .iter()
+                .zip(judgements.iter_mut())
+                .find(|(parent, _)| parent.candidate.key == key)
+            {
+                trace::refine(&parent.candidate, judgement, seq, response.as_ref());
+            }
+        }
+        let paragraph_ms = elapsed_ms(refined);
         let outcome = trace::outcome(parents, judgements);
 
         let mut trace_json = trace::record(&plan, &outcome);
         trace_json["intent_source"] = intents.source.into();
-        trace_json["jev_ms"] = serde_json::json!({"judge": judge_ms});
+        trace_json["jev_ms"] = serde_json::json!({"judge": judge_ms, "paragraph": paragraph_ms});
         trace_json["jev"] = exchanges.into();
         let record = TraceRecord {
             subgraph: graph.call.subgraph,
@@ -285,6 +351,7 @@ impl DecisionProvider for JevDecisionProvider {
                 .iter()
                 .map(|segment| TracedSegment {
                     seq: segment.seq,
+                    paragraph: segment.paragraph,
                     probability: segment.probability,
                     rank: segment.rank,
                     parent: segment.parent.clone(),
@@ -312,7 +379,7 @@ impl DecisionProvider for JevDecisionProvider {
         };
         let jev = Some(JevActivity {
             asked: true,
-            ms: Some(judge_ms),
+            ms: Some(judge_ms + paragraph_ms),
             reused_from: None,
             error: stored
                 .err()
