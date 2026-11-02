@@ -13,13 +13,12 @@ kubectl create secret generic withhuman \
   --from-literal=redis-url=redis://...
 ```
 
-Set `neo4j.httpUrl`, `neo4j.boltUrl` and `ingress.host` in the environment's values file.
-
-## Installing
+Each environment's values live in the `withhuman-gitops` repository, and Argo CD installs the chart
+from there. To install by hand, pass the same values:
 
 ```sh
 helm upgrade --install withhuman deploy/k8s/withhuman \
-  -f deploy/k8s/withhuman/values-staging.yaml \
+  -f <environment-values.yaml> \
   --set imageTag=<commit-sha>
 ```
 

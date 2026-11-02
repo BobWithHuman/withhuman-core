@@ -1,5 +1,7 @@
 {{- $tag := required "imageTag is required" .Values.imageTag -}}
 {{- $ports := dict "collector" 8080 "generator" 8081 "decision" 8082 -}}
+{{- /* Argo CD updates a service after the one it calls, so a new caller never meets an old callee. */ -}}
+{{- $waves := dict "decision" "1" "generator" "2" "collector" "3" -}}
 {{- range $component := list "collector" "generator" "decision" }}
 {{- $values := index $.Values $component }}
 {{- $port := index $ports $component }}
@@ -12,6 +14,8 @@ metadata:
   name: {{ $name }}
   labels:
     {{- include "withhuman.labels" $context | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: {{ index $waves $component | quote }}
 spec:
   {{- if not $values.autoscaling.enabled }}
   replicas: {{ $values.replicaCount }}
