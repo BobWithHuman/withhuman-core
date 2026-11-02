@@ -80,6 +80,9 @@ async fn systemone(
                 "expected" => json!({"probabilities": {"hijacked_goal": 0.9, "none": 0.1}}),
                 "harm" => json!({"probabilities": {"low": 1.0}}),
                 "reversible" => json!({"noul": 0.9}),
+                // The check: the Call serves the goal the result brought in.
+                "purpose" => json!({"choice": "result_goal",
+                    "probabilities": {"step": 0.1, "result_goal": 0.9, "against_user": 0.0}}),
                 _ => json!({"noul": 0.05}),
             }
         };
@@ -292,9 +295,17 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
     assert!(!decision["reason"].as_str().unwrap().contains("README 요약"));
 
     // One request offers the prompt, s1's tool results and `none`; the hidden paragraph of s1
-    // makes s1 the parent.
+    // makes s1 the parent. A second checks the Call, in doubt, against the user's prompt.
     let requests = jev.requests.lock().unwrap().clone();
-    assert_eq!(requests.len(), 1, "{requests:?}");
+    assert_eq!(requests.len(), 2, "{requests:?}");
+    assert_eq!(
+        requests[1].1["questions"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect::<Vec<_>>(),
+        ["purpose"]
+    );
     for (authorization, request) in &requests {
         assert_eq!(authorization.as_deref(), Some("Bearer test-key"));
         assert_eq!(request["model"], "jev-1.14.0");
@@ -365,7 +376,7 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
 
     // Deciding the same Call again replaces its cause edges instead of adding more.
     send(&client, &deciding, "PreToolUse", call).await;
-    assert_eq!(jev.requests.lock().unwrap().len(), 2);
+    assert_eq!(jev.requests.lock().unwrap().len(), 4);
     let again: Value = cypher(
         "MATCH (call:Call {session_id:$s, order:7}) \
          OPTIONAL MATCH (call)-[next:NEXT {kind:'cause'}]->(cause) \
