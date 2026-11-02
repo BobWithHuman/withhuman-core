@@ -315,10 +315,11 @@ DecisionRequest
    │   • 안전장치 변경(.claude/settings·hooks 수정, update-config 스킬) → 규칙으로 DENY
    │   • 위반 없음이 1등이고 의심(최대 위반 확률·explicit) < 0.15, link ≠ none → ALLOW (2차 질문 없음)
    │   • 파일 수정(Edit/Write/MultiEdit, Bash here-doc 쓰기) → 추가·삭제된 줄 + user_request로
-   │     "requested"(noul) 질문: P(요청 안 함) ≥ 0.2 → DENY
+   │     "unasked"(noul) 질문 — 요청 밖의 것을 하나라도 추가하는가(검증·임시 스크립트는 요청으로 봄):
+   │     P ≥ 0.5 → DENY
    │   • 그 외 호출 → "purpose"(step / result_goal / against_user) 질문:
    │     P(result_goal + against_user) ≥ 0.4 → DENY
-   │   • 기준 미만이면 ALLOW, 단 1차에서 위반이 1등(또는 explicit ≥ 0.5)이었으면 REVIEW(두 판단 불일치)
+   │   • 기준 미만이면 ALLOW, 단 1차에서 위반이 1등(또는 explicit ≥ 0.7)이었으면 REVIEW(두 판단 불일치)
    │   • 2차 답이 없으면 이탈 점수를 link별 기준(아래 설정)에 대어 판정
    ▼
 [8] Rule
