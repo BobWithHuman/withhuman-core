@@ -1,0 +1,139 @@
+{{- $values := .Values.agentgateway -}}
+{{- $context := dict "root" $ "component" "agentgateway" -}}
+{{- $name := printf "%s-agentgateway" (include "withhuman.fullname" .) -}}
+{{- $collector := printf "%s-collector" (include "withhuman.fullname" .) -}}
+{{- define "withhuman.agentgatewayConfig" -}}
+gateways:
+  default:
+    port: 3000
+
+routes:
+  - name: claude-hooks
+    matches:
+      - path:
+          pathPrefix: /v1/hooks
+    backends:
+      - host: {{ .collector }}:8080
+{{- if .targets }}
+
+mcp:
+  policies:
+    extAuthz:
+      conditional:
+        - condition: has(mcp.tool)
+          host: {{ .collector }}:9000
+          protocol:
+            grpc: {}
+          failureMode: deny
+          includeRequestBody:
+            maxRequestBytes: 1048576
+            allowPartialMessage: false
+            packAsBytes: true
+  targets:
+    {{- range .targets }}
+    - name: {{ .name }}
+      mcp:
+        host: {{ .url }}
+    {{- end }}
+{{- end }}
+{{- end -}}
+{{- $config := include "withhuman.agentgatewayConfig" (dict "collector" $collector "targets" $values.mcpTargets) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "withhuman.labels" $context | nindent 4 }}
+data:
+  config.yaml: |
+    {{- $config | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "withhuman.labels" $context | nindent 4 }}
+spec:
+  replicas: {{ $values.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      {{- include "withhuman.selectorLabels" $context | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "withhuman.labels" $context | nindent 8 }}
+      annotations:
+        # A config change rolls the gateway.
+        checksum/config: {{ $config | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      {{- include "withhuman.topologySpread" $context | nindent 6 }}
+      containers:
+        - name: agentgateway
+          image: {{ $values.image | quote }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          args: [-f, /etc/agentgateway/config.yaml]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          ports:
+            - name: http
+              containerPort: 3000
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            {{- toYaml $values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/agentgateway
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $name }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "withhuman.labels" $context | nindent 4 }}
+spec:
+  selector:
+    {{- include "withhuman.selectorLabels" $context | nindent 4 }}
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+{{- if gt (int $values.replicaCount) 1 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "withhuman.labels" $context | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "withhuman.selectorLabels" $context | nindent 6 }}
+{{- end }}

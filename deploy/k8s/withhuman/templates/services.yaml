@@ -1,0 +1,141 @@
+{{- $tag := required "imageTag is required" .Values.imageTag -}}
+{{- $ports := dict "collector" 8080 "generator" 8081 "decision" 8082 -}}
+{{- range $component := list "collector" "generator" "decision" }}
+{{- $values := index $.Values $component }}
+{{- $port := index $ports $component }}
+{{- $context := dict "root" $ "component" $component }}
+{{- $name := printf "%s-%s" (include "withhuman.fullname" $) $component }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "withhuman.labels" $context | nindent 4 }}
+spec:
+  {{- if not $values.autoscaling.enabled }}
+  replicas: {{ $values.replicaCount }}
+  {{- end }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      {{- include "withhuman.selectorLabels" $context | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "withhuman.labels" $context | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ $.Values.terminationGracePeriodSeconds }}
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      {{- include "withhuman.topologySpread" $context | nindent 6 }}
+      containers:
+        - name: {{ $component }}
+          image: {{ printf "%s:%s" $values.image $tag | quote }}
+          imagePullPolicy: {{ $.Values.imagePullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          ports:
+            - name: http
+              containerPort: {{ $port }}
+            {{- if eq $component "collector" }}
+            - name: grpc
+              containerPort: 9000
+            {{- end }}
+          env:
+            {{- include (printf "withhuman.env.%s" $component) $ | nindent 12 }}
+          # Generator and Decision report Neo4j through /healthz. A Neo4j outage takes them out of
+          # rotation, but restarting them cannot repair it, so liveness only checks the port.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          lifecycle:
+            preStop:
+              exec:
+                command: [sleep, {{ $.Values.preStopSleepSeconds | quote }}]
+          resources:
+            {{- toYaml $values.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "withhuman.labels" $context | nindent 4 }}
+spec:
+  selector:
+    {{- include "withhuman.selectorLabels" $context | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $port }}
+      targetPort: http
+    {{- if eq $component "collector" }}
+    - name: grpc
+      port: 9000
+      targetPort: grpc
+      appProtocol: grpc
+    {{- end }}
+{{- if $values.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "withhuman.labels" $context | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ $name }}
+  minReplicas: {{ $values.autoscaling.minReplicas }}
+  maxReplicas: {{ $values.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ $values.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}
+{{- if or $values.autoscaling.enabled (gt (int $values.replicaCount) 1) }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "withhuman.labels" $context | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "withhuman.selectorLabels" $context | nindent 6 }}
+{{- end }}
+{{- end }}

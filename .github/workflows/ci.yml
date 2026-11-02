@@ -85,6 +85,32 @@ jobs:
         # Serialize test binaries so concurrent schema DDL cannot deadlock Neo4j.
         run: cargo nextest run --no-tests=pass --test-threads=1
 
+  helm:
+    name: Helm Chart
+    runs-on: ubuntu-latest
+    env:
+      CHART: deploy/k8s/withhuman
+      CHART_VALUES: >-
+        --set imageTag=ci
+        --set neo4j.httpUrl=http://neo4j:7474
+        --set neo4j.boltUrl=bolt://neo4j:7687
+        --set ingress.host=withhuman.test
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Lint chart
+        run: helm lint "$CHART" $CHART_VALUES
+
+      - name: Render every environment
+        run: |
+          for values in values values-staging values-prod; do
+            helm template withhuman "$CHART" -f "$CHART/$values.yaml" $CHART_VALUES >/dev/null
+          done
+
   cargo-deny:
     name: Cargo Deny
     runs-on: ubuntu-latest

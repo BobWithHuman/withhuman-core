@@ -1,0 +1,30 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- /* The engine services have no authentication of their own, so only their caller reaches them. */ -}}
+{{- $callers := dict "collector" "agentgateway" "generator" "collector" "decision" "generator" -}}
+{{- $ports := dict "collector" (list 8080 9000) "generator" (list 8081) "decision" (list 8082) -}}
+{{- range $component := list "collector" "generator" "decision" }}
+{{- $context := dict "root" $ "component" $component }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "withhuman.fullname" $ }}-{{ $component }}
+  labels:
+    {{- include "withhuman.labels" $context | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "withhuman.selectorLabels" $context | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "withhuman.selectorLabels" (dict "root" $ "component" (index $callers $component)) | nindent 14 }}
+      ports:
+        {{- range index $ports $component }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+{{- end }}
+{{- end }}
