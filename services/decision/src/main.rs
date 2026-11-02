@@ -29,10 +29,6 @@ async fn main() -> io::Result<()> {
         listener,
         app(DecisionService::from_shared(repository, provider)),
     )
-    .with_graceful_shutdown(shutdown_signal())
+    .with_graceful_shutdown(withhuman_common::shutdown::shutdown_signal())
     .await
-}
-
-async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
 }

@@ -28,10 +28,6 @@ async fn main() -> io::Result<()> {
         listener,
         app(GeneratorService::with_decision(repository, decision)),
     )
-    .with_graceful_shutdown(shutdown_signal())
+    .with_graceful_shutdown(withhuman_common::shutdown::shutdown_signal())
     .await
-}
-
-async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
 }
