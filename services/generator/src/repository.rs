@@ -476,9 +476,10 @@ impl Neo4jRepository {
         statement: &str,
         parameters: Value,
     ) -> Result<QueryData, RepositoryError> {
+        let statement = format!("{}{statement}", withhuman_common::CYPHER_OPTIONS);
         let mut attempt = 1;
         loop {
-            match self.execute_once(statement, &parameters).await {
+            match self.execute_once(&statement, &parameters).await {
                 Err(error) if is_transient(&error) && attempt < TRANSIENT_ATTEMPTS => {
                     tokio::time::sleep(retry_delay(attempt)).await;
                     attempt += 1;
