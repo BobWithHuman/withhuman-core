@@ -261,9 +261,10 @@ impl Neo4jDecisionRepository {
         statement: &str,
         parameters: Value,
     ) -> Result<QueryData, RepositoryError> {
+        let statement = format!("{}{statement}", withhuman_common::CYPHER_OPTIONS);
         let mut attempt = 1;
         loop {
-            match self.execute_once(statement, &parameters).await {
+            match self.execute_once(&statement, &parameters).await {
                 Err(RepositoryError::Query(message))
                     if message.starts_with("Neo.TransientError.")
                         && attempt < TRANSIENT_ATTEMPTS =>
