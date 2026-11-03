@@ -358,6 +358,12 @@ RETURN last_order, agents, \
             RETURN r.subgraph ORDER BY r.order DESC LIMIT 1 }[0] AS request"
 );
 
+// Every commit merges its Session, so a session without one has committed nothing. Collectors
+// ask for the cursor of each session they have no state for, mostly new ones; this answers them
+// without planning SESSION_CURSOR, which can take longer than the Collector waits.
+const SESSION_EXISTS: &str = "\
+MATCH (:Session {session_id: $session_id}) RETURN true AS exists LIMIT 1";
+
 const TOOL_CALL: &str = "\
 MATCH (call:Call {session_id: $session_id, tool_use_id: $tool_use_id}) \
 RETURN call.payload_json ORDER BY call.order DESC LIMIT 1";
@@ -766,9 +772,16 @@ impl GraphRepository for Neo4jRepository {
     }
 
     async fn session_cursor(&self, session_id: &str) -> Result<SessionCursor, RepositoryError> {
-        let data = self
-            .execute(SESSION_CURSOR, json!({"session_id": session_id}))
-            .await?;
+        let parameters = json!({"session_id": session_id});
+        if self
+            .execute(SESSION_EXISTS, parameters.clone())
+            .await?
+            .values
+            .is_empty()
+        {
+            return Ok(SessionCursor::default());
+        }
+        let data = self.execute(SESSION_CURSOR, parameters).await?;
         let row = data
             .values
             .first()
