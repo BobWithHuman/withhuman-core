@@ -395,7 +395,8 @@ DecisionRequest
 - 기동 순서(healthcheck 기반 `depends_on`): `neo4j` → `neo4j-bootstrap`(스키마) → `decision` → `generator` → (`redis`) → `collector` → `agentgateway`.
 - 이미지: 멀티스테이지(`rust:1.85-bookworm` 빌드 → `debian:bookworm-slim` 런타임), 비루트 UID `65532`, 바이너리 1개/컨테이너.
 - Neo4j 메모리: heap 512m / pagecache 512m (기본).
-- 클라이언트 프로비저닝: `deploy/client/setup.sh <team>` → `~/.config/withhuman/client-id`(`team/uuid`) 생성 및 `WITHHUMAN_CLIENT_ID` export, PreToolUse command 훅을 `~/.config/withhuman/hooks/`에 설치(python3 3.8+ 필요), `deploy/client/settings.json`을 Claude Code 설정에 병합(HTTP 훅 9개 + PreToolUse command 훅 1개).
+- 클라이언트 프로비저닝 (프로젝트 폴더별, 권장): Claude Code를 실행할 폴더에서 macOS·Linux는 `curl -fsSL …/deploy/client/setup-project.sh | bash -s -- <team>`, Windows는 `irm …/deploy/client/setup-project.ps1 | iex`. 둘 다 `configure.py`를 실행해 사용자 설정(`~/.claude/settings.json`)과 프로젝트 설정에서 이전 WithHuman 훅을 지우고(나머지 설정은 유지, 바뀐 파일은 `.bak-<시각>`으로 보관) 프로젝트 `.claude/settings.json`에 HTTP 훅 9개 + PreToolUse command 훅(`.claude/hooks/pre-tool-use.py`, 그 Python의 절대 경로로 실행)을 쓰고, 기기별 client ID(`~/.config/withhuman/client-id`)를 새 셸에 `WITHHUMAN_CLIENT_ID`로 설정(macOS·Linux: 셸 프로필, Windows: 사용자 환경 변수). Python 3.8+ 필요.
+- 클라이언트 프로비저닝 (기기 전체): `deploy/client/setup.sh <team>` → `~/.config/withhuman/client-id`(`team/uuid`) 생성 및 `WITHHUMAN_CLIENT_ID` export, PreToolUse command 훅을 `~/.config/withhuman/hooks/`에 설치(python3 3.8+ 필요), `deploy/client/settings.json`을 Claude Code 설정에 병합(HTTP 훅 9개 + PreToolUse command 훅 1개).
 - 비밀: `.env`(JEV_API_KEY 등), `NEO4J_PASSWORD`.
 
 ---
