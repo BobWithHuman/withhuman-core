@@ -1,0 +1,144 @@
+#!/bin/bash
+# Brings the engine to the state /etc/withhuman/base.env names. The boot unit and the update timer
+# both call this, so one path applies a change and repairs a stopped stack.
+#
+# The checked-out commit is the single source of truth: the Service Images workflow tags every
+# image with its full commit SHA, so resolving the configured ref also selects the images.
+#
+# Secrets are exported into Compose's environment and never written to disk. Compose reads
+# ${VAR} from the process environment, and bash owns the quoting of base.env, so no value has to
+# survive two parsers with different rules.
+#
+# Usage: withhuman-apply [down]
+set -euo pipefail
+
+BASE_ENV=/etc/withhuman/base.env
+CHECKOUT=/opt/withhuman/core
+COMPOSE_FILE=$CHECKOUT/deploy/single-node/compose.yaml
+
+log() { printf '%s withhuman-apply: %s\n' "$(date -u +%FT%TZ)" "$*"; }
+die() { log "ERROR: $*" >&2; exit 1; }
+
+# Stopping needs no secrets, only enough for Compose to interpolate the file it is taking down.
+if [[ ${1:-up} == down ]]; then
+  log "stopping the stack"
+  IMAGE_TAG=stopping NEO4J_PASSWORD=stopping docker compose --file "$COMPOSE_FILE" down
+  exit 0
+fi
+
+[[ -r $BASE_ENV ]] || die "$BASE_ENV is missing; the instance did not finish its first boot"
+# Terraform writes this file with shell quoting, and bash is its only reader.
+set -a
+# shellcheck source=/dev/null
+. "$BASE_ENV"
+set +a
+
+: "${AWS_REGION:?AWS_REGION is required in base.env}"
+: "${ENGINE_SECRET_ARN:?ENGINE_SECRET_ARN is required in base.env}"
+: "${SOURCE_REF:?SOURCE_REF is required in base.env}"
+
+# ── 1. Resolve the configured ref to one commit ────────────────────────────────
+# Accepts a branch, a tag or a raw SHA, so a deployment can track main or pin a release.
+git -C "$CHECKOUT" fetch --tags --force --prune origin
+commit=$(
+  git -C "$CHECKOUT" rev-parse --verify --quiet "refs/remotes/origin/$SOURCE_REF^{commit}" ||
+    git -C "$CHECKOUT" rev-parse --verify --quiet "refs/tags/$SOURCE_REF^{commit}" ||
+    git -C "$CHECKOUT" rev-parse --verify --quiet "$SOURCE_REF^{commit}"
+) || die "cannot resolve SOURCE_REF '$SOURCE_REF' in withhuman-core"
+
+previous=$(git -C "$CHECKOUT" rev-parse HEAD 2>/dev/null || echo none)
+
+# The image build runs after the merge, so a commit can be resolvable while only some of its images
+# are pushed. Converging then pulls part of the stack and fails on the rest, which would leave the
+# host mid-upgrade. Waiting one timer interval costs nothing, so an incomplete build is a clean
+# no-op rather than a failure: the host keeps serving whatever it already runs.
+images_published() {
+  local image
+  while read -r image; do
+    # Only the service images carry the commit; Neo4j, Redis and the gateway are pinned upstream.
+    [[ $image == *:$commit ]] || continue
+    if ! docker manifest inspect "$image" >/dev/null 2>&1; then
+      log "$image is not published yet"
+      return 1
+    fi
+  done < <(
+    NEO4J_PASSWORD=probe IMAGE_TAG=$commit \
+      docker compose --file "$COMPOSE_FILE" config --images
+  )
+}
+
+if ! images_published; then
+  log "the build for $commit is incomplete; staying at $previous until the next run"
+  exit 0
+fi
+
+git -C "$CHECKOUT" -c advice.detachedHead=false checkout --force "$commit"
+if [[ $previous == "$commit" ]]; then
+  log "already at $commit; reconciling in case the stack drifted"
+else
+  log "moving from $previous to $commit"
+fi
+
+# ── 2. Refresh this script and the units from the checkout ────────────────────
+# An update that changes the glue applies itself. The rename keeps the running copy's inode open,
+# so replacing this file mid-run is safe. Units are reloaded but never restarted from here: this
+# script runs inside withhuman.service, which must not restart itself.
+units_changed=false
+install_if_changed() {
+  local src=$1 dest=$2 mode=$3
+  cmp --silent "$src" "$dest" 2>/dev/null && return 0
+  install -m "$mode" "$src" "$dest.new"
+  mv "$dest.new" "$dest"
+  log "updated $dest"
+  return 1
+}
+install_if_changed "$CHECKOUT/deploy/single-node/withhuman-apply" \
+  /usr/local/bin/withhuman-apply 0755 || true
+for unit in withhuman.service withhuman-update.service withhuman-update.timer; do
+  install_if_changed "$CHECKOUT/deploy/single-node/$unit" "/etc/systemd/system/$unit" 0644 ||
+    units_changed=true
+done
+if [[ $units_changed == true ]]; then
+  systemctl daemon-reload
+  log "reloaded the systemd units; the new definitions take effect on the next run"
+fi
+
+# ── 3. Read the secrets this host is allowed to read ──────────────────────────
+secret_value() {
+  aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id "$1" \
+    --query SecretString --output text
+}
+
+NEO4J_PASSWORD=$(secret_value "$ENGINE_SECRET_ARN" | jq -re '.["neo4j-password"]') ||
+  die "the engine secret has no neo4j-password key"
+export NEO4J_PASSWORD
+
+JEV_API_KEY=""
+if [[ ${DECISION_PROVIDER:-jev} == jev ]]; then
+  [[ -n ${JEV_SECRET_ARN:-} ]] || die "DECISION_PROVIDER is jev but JEV_SECRET_ARN is unset"
+  JEV_API_KEY=$(secret_value "$JEV_SECRET_ARN") || die \
+    "cannot read the Jev secret. Set its value first:
+     aws secretsmanager put-secret-value --secret-id $JEV_SECRET_ARN --secret-string '<key>'"
+  [[ -n $JEV_API_KEY ]] || die "the Jev secret is empty"
+fi
+export JEV_API_KEY
+
+export IMAGE_TAG=$commit
+
+# ── 4. Pull and converge ─────────────────────────────────────────────────────
+if [[ -n ${REGISTRY_SECRET_ARN:-} ]]; then
+  creds=$(secret_value "$REGISTRY_SECRET_ARN") || die "cannot read the registry secret"
+  jq -re .password <<<"$creds" | docker login "${IMAGE_REGISTRY_HOST:-ghcr.io}" \
+    --username "$(jq -re .username <<<"$creds")" --password-stdin
+fi
+
+log "pulling images at $commit"
+docker compose --file "$COMPOSE_FILE" pull --quiet
+
+log "converging the stack"
+docker compose --file "$COMPOSE_FILE" up --detach --wait --remove-orphans
+
+# Keeps the disk from filling with superseded images; the running ones are never touched.
+docker image prune --force --filter 'until=168h' >/dev/null
+
+log "the engine is running at $commit"

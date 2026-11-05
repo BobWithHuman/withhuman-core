@@ -1,0 +1,160 @@
+# The engine on one host, for the single-node deployment profile. deploy/docker/compose.yaml builds
+# from the working tree for development and the E2E suite; this file pulls published images and
+# leaves out the MCP fixture. Only the gateway takes a host port, so Neo4j and Redis are reachable
+# on the Compose network alone.
+#
+# withhuman-apply(8) writes the variables below to /etc/withhuman/engine.env before calling Compose.
+name: withhuman
+
+services:
+  neo4j:
+    image: ${NEO4J_IMAGE:-neo4j:5.26.0}
+    restart: unless-stopped
+    environment:
+      # Takes effect on an empty database only; a rotated password is applied with cypher-shell.
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?NEO4J_PASSWORD is required}
+      NEO4J_server_memory_heap_initial__size: ${NEO4J_HEAP_SIZE:-1g}
+      NEO4J_server_memory_heap_max__size: ${NEO4J_HEAP_SIZE:-1g}
+      NEO4J_server_memory_pagecache_size: ${NEO4J_PAGECACHE_SIZE:-1g}
+    volumes:
+      - neo4j-data:/data
+      - neo4j-logs:/logs
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          cypher-shell --address bolt://localhost:7687 --username neo4j
+          --password "$${NEO4J_AUTH#*/}" 'RETURN 1' >/dev/null 2>&1
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    networks: [engine]
+
+  # Shared Collector state: session orders and verdicts. Append-only persistence keeps session
+  # orders across a restart.
+  redis:
+    image: ${REDIS_IMAGE:-redis:7.4-alpine}
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+    networks: [engine]
+
+  # Applies the schema before the services start, on every boot and every update, the way the
+  # chart's schema Job does.
+  neo4j-bootstrap:
+    image: ${NEO4J_IMAGE:-neo4j:5.26.0}
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    environment:
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?NEO4J_PASSWORD is required}
+    volumes:
+      - ../docker/neo4j:/bootstrap:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        cypher-shell --address bolt://neo4j:7687 --username neo4j
+        --password "$${NEO4J_PASSWORD}" --file /bootstrap/schema.cypher
+    restart: "no"
+    networks: [engine]
+
+  decision:
+    image: ${IMAGE_REGISTRY:-ghcr.io/bobwithhuman}/withhuman-decision:${IMAGE_TAG:?IMAGE_TAG is required}
+    restart: unless-stopped
+    environment:
+      DECISION_ADDR: 0.0.0.0:8082
+      WITHHUMAN_ENV: ${WITHHUMAN_ENV:-production}
+      DECISION_PROVIDER: ${DECISION_PROVIDER:-jev}
+      JEV_URL: ${JEV_URL:-https://api.typesafe.ai}
+      JEV_TIMEOUT_MS: ${JEV_TIMEOUT_MS:-3000}
+      JEV_API_KEY: ${JEV_API_KEY:-}
+      WITHHUMAN_INTENT_BLOCK_THRESHOLD: ${WITHHUMAN_INTENT_BLOCK_THRESHOLD:-0.5}
+      NEO4J_URL: http://neo4j:7474
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?NEO4J_PASSWORD is required}
+      NEO4J_DATABASE: neo4j
+    depends_on:
+      neo4j-bootstrap:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8082/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+    networks: [engine]
+
+  generator:
+    image: ${IMAGE_REGISTRY:-ghcr.io/bobwithhuman}/withhuman-generator:${IMAGE_TAG:?IMAGE_TAG is required}
+    restart: unless-stopped
+    environment:
+      GENERATOR_ADDR: 0.0.0.0:8081
+      DECISION_URL: http://decision:8082
+      NEO4J_URL: http://neo4j:7474
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?NEO4J_PASSWORD is required}
+      NEO4J_DATABASE: neo4j
+    depends_on:
+      decision:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8081/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+    networks: [engine]
+
+  collector:
+    image: ${IMAGE_REGISTRY:-ghcr.io/bobwithhuman}/withhuman-collector:${IMAGE_TAG:?IMAGE_TAG is required}
+    restart: unless-stopped
+    environment:
+      COLLECTOR_ADDR: 0.0.0.0:8080
+      COLLECTOR_EXT_AUTHZ_ADDR: 0.0.0.0:9000
+      GENERATOR_URL: http://generator:8081
+      REDIS_URL: redis://redis:6379
+      WITHHUMAN_MODE: ${WITHHUMAN_MODE:-shadow}
+      WITHHUMAN_ON_FAILURE: ${WITHHUMAN_ON_FAILURE:-closed}
+      WITHHUMAN_ASK: ${WITHHUMAN_ASK:-ask}
+      WITHHUMAN_DECISION_TIMEOUT_MS: ${WITHHUMAN_DECISION_TIMEOUT_MS:-4200}
+      WITHHUMAN_INTENT_CAPTURE: ${WITHHUMAN_INTENT_CAPTURE:-on}
+      WITHHUMAN_MCP_ENFORCE: ${WITHHUMAN_MCP_ENFORCE:-hook}
+    depends_on:
+      generator:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [engine]
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+
+  # The only service with a host port. The security group lets the load balancer alone reach it.
+  agentgateway:
+    image: ${AGENTGATEWAY_IMAGE:-cr.agentgateway.dev/agentgateway:v1.6.0}
+    restart: unless-stopped
+    command: ["-f", "/config.yaml"]
+    ports:
+      - "${GATEWAY_BIND:-0.0.0.0}:${GATEWAY_PORT:-3000}:3000"
+    volumes:
+      - ./agentgateway.yaml:/config.yaml:ro
+    depends_on:
+      collector:
+        condition: service_healthy
+    networks: [engine]
+
+volumes:
+  neo4j-data:
+  neo4j-logs:
+  redis-data:
+
+networks:
+  engine:
+    name: withhuman-engine
