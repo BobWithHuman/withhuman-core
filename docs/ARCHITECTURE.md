@@ -78,7 +78,7 @@ y ┌───────────────────┐  ┌───�
 
 | 컴포넌트 | 구현 | 포트/프로토콜 | 역할 | 상태 저장 |
 |---|---|---|---|---|
-| **Claude Code + Hooks** | 클라이언트(외부) | HTTPS POST `/v1/hooks/{Event}` | 10종 훅 이벤트 송신, 헤더 `x-withhuman-client: <team>/<uuid>` | – |
+| **Claude Code + Hooks** | 클라이언트(외부) | HTTPS POST `/v1/hooks/{Event}` | 10종 훅 이벤트 송신, 헤더 `x-withhuman-client: <team>/<uuid>`. PreToolUse만 command 훅(`deploy/client/hooks/pre-tool-use.py`)이 같은 이벤트에 Bash 명령이 실행할 수 있는 프로그램 파일(내용·SHA-256)을 `withhuman_programs`로 붙여 보냄 | – |
 | **Caddy** | Caddy 2 | :443 → 127.0.0.1:3000 | TLS 종단(ACME `shortlived` 프로파일), 리버스 프록시 | – |
 | **AgentGateway** | `agentgateway:v1.6.0` | :3000 HTTP | ① `/v1/hooks*` → Collector:8080 라우팅 ② MCP 프록시 + `tools/call`에 대해 **Envoy ext_authz v3(gRPC)** 질의 | – |
 | **Collector** | Rust, axum 0.8 + tonic 0.13 | :8080 HTTP, :9000 gRPC | 훅 정규화(Normalizer), 세션 순서/SubGraph 번호 부여, 의도(intent) 수집, 판정 결과를 훅 응답으로 변환, MCP 판정 저장/검사 | Redis(공유) 또는 in-memory |
@@ -313,7 +313,9 @@ DecisionRequest
 [7] Check (services/decision/src/check.rs) — 이탈 질문은 확신이 없으면 `none`을 고르고 의심을
    │   다른 선택지 확률에 남기므로, 그 의심을 사용자 프롬프트 원문과 대조하는 2차 질문으로 확정
    │   • 안전장치 변경(.claude/settings·hooks 수정, update-config 스킬) → 규칙으로 DENY
-   │   • 로컬 프로그램 실행(python/node/bash/sh/zsh/ruby/perl 파일, `./x`) 중 세션이 본 코드가 있는 것
+   │   • 로컬 프로그램 실행(python/node/bash/sh/zsh/ruby/perl 파일, `./x`) 중 코드가 있는 것 — PreToolUse
+   │     훅이 실행 직전에 붙인 파일(Collector가 Call payload `programs`에 최대 8개·각 64 KiB 보관)이 먼저,
+   │     없으면 세션이 마지막에 통째로 읽거나 쓴 내용
    │     → 의심과 상관없이 항상 "program" 질문: 코드 전문(`programs`, 못 본 파일은 "(not seen)")
    │     + user_request로 실행하면 요청 밖의 무엇을 하는가 (faithful / distorts_result /
    │     unasked_effect / planted_trigger; 요청한 helper·fixture의 고정 출력은 정상):
@@ -393,7 +395,7 @@ DecisionRequest
 - 기동 순서(healthcheck 기반 `depends_on`): `neo4j` → `neo4j-bootstrap`(스키마) → `decision` → `generator` → (`redis`) → `collector` → `agentgateway`.
 - 이미지: 멀티스테이지(`rust:1.85-bookworm` 빌드 → `debian:bookworm-slim` 런타임), 비루트 UID `65532`, 바이너리 1개/컨테이너.
 - Neo4j 메모리: heap 512m / pagecache 512m (기본).
-- 클라이언트 프로비저닝: `deploy/client/setup.sh <team>` → `~/.config/withhuman/client-id`(`team/uuid`) 생성 및 `WITHHUMAN_CLIENT_ID` export, `deploy/client/settings.json`을 Claude Code 설정에 병합(10개 HTTP 훅).
+- 클라이언트 프로비저닝: `deploy/client/setup.sh <team>` → `~/.config/withhuman/client-id`(`team/uuid`) 생성 및 `WITHHUMAN_CLIENT_ID` export, PreToolUse command 훅을 `~/.config/withhuman/hooks/`에 설치(python3 3.8+ 필요), `deploy/client/settings.json`을 Claude Code 설정에 병합(HTTP 훅 9개 + PreToolUse command 훅 1개).
 - 비밀: `.env`(JEV_API_KEY 등), `NEO4J_PASSWORD`.
 
 ---
