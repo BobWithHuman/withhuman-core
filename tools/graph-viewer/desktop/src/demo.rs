@@ -37,6 +37,7 @@ impl Demo {
         self.data["nodes"][session].get(seq.to_string()).cloned().unwrap_or(Value::Null)
     }
 
+    #[allow(dead_code)] // 조건 비교 화면(3단계)이 쓴다.
     pub fn calls(&self, sessions: &[String]) -> Value {
         let found: Map<String, Value> = sessions
             .iter()

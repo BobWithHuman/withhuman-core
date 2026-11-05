@@ -1,14 +1,16 @@
-//! The app's state, and the page's `/api/...` requests answered as `server.py` answers them.
+//! The app's data source: Neo4j or the demo graph, chosen by the settings. The screens call
+//! these functions directly and get typed answers.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use crate::demo::Demo;
 use crate::graph::{ApiError, Neo4j};
+use crate::model::{GraphData, NodeDetail, Session};
 use crate::settings::{Change, Public, Settings};
 
 pub struct Backend {
@@ -25,13 +27,14 @@ pub struct Probe {
     pub ms: u128,
 }
 
+/// The folder the app keeps its files in.
+pub fn config_dir() -> PathBuf {
+    dirs::config_dir().unwrap_or_else(std::env::temp_dir).join("dev.withhuman.viewer")
+}
+
 impl Backend {
-    /// Settings live where the Tauri build kept them, so switching builds keeps the connection.
     pub fn load() -> Self {
-        let path = dirs::config_dir()
-            .unwrap_or_else(std::env::temp_dir)
-            .join("dev.withhuman.viewer")
-            .join("settings.json");
+        let path = config_dir().join("settings.json");
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(30))
@@ -40,37 +43,49 @@ impl Backend {
         Self { client, settings: Mutex::new(Settings::load(&path)), path, demo: Mutex::new(Demo::load()) }
     }
 
-    pub async fn handle(&self, method: &str, path: &str) -> Result<Value, ApiError> {
-        let (route, query) = path.split_once('?').unwrap_or((path, ""));
-        let query: HashMap<String, String> = query
-            .split('&')
-            .filter_map(|pair| pair.split_once('='))
-            .map(|(k, v)| (decode(k), decode(v)))
-            .collect();
-        let arg = |key: &str| query.get(key).cloned().ok_or_else(|| ApiError::new(400, format!("{key}가 없습니다.")));
-        let settings = self.settings.lock().expect("settings lock").clone();
+    fn current(&self) -> Settings {
+        self.settings.lock().expect("settings lock").clone()
+    }
 
-        if settings.demo {
-            let mut demo = self.demo.lock().expect("demo lock");
-            return match (method, route) {
-                ("GET", "/api/sessions") => Ok(demo.sessions()),
-                ("GET", "/api/graph") => demo.graph(&arg("session")?),
-                ("GET", "/api/node") => Ok(demo.node(&arg("session")?, seq(&arg("seq")?)?)),
-                ("GET", "/api/calls") => Ok(demo.calls(&list(&arg("sessions")?))),
-                ("DELETE", "/api/session") => demo.delete(&arg("session")?),
-                _ => Err(ApiError::new(404, "not found")),
-            };
-        }
+    pub async fn sessions(&self) -> Result<Vec<Session>, String> {
+        let settings = self.current();
+        let value = if settings.demo {
+            Ok(self.demo.lock().expect("demo lock").sessions())
+        } else {
+            Neo4j { client: &self.client, settings: &settings }.sessions().await
+        };
+        typed(value)
+    }
 
-        let db = Neo4j { client: &self.client, settings: &settings };
-        match (method, route) {
-            ("GET", "/api/sessions") => db.sessions().await,
-            ("GET", "/api/graph") => db.graph(&arg("session")?).await,
-            ("GET", "/api/node") => db.node(&arg("session")?, seq(&arg("seq")?)?).await,
-            ("GET", "/api/calls") => db.calls(&list(&arg("sessions")?)).await,
-            ("DELETE", "/api/session") => db.delete_session(&arg("session")?).await,
-            _ => Err(ApiError::new(404, "not found")),
-        }
+    pub async fn graph(&self, session: &str) -> Result<GraphData, String> {
+        let settings = self.current();
+        let value = if settings.demo {
+            self.demo.lock().expect("demo lock").graph(session)
+        } else {
+            Neo4j { client: &self.client, settings: &settings }.graph(session).await
+        };
+        typed(value)
+    }
+
+    pub async fn node(&self, session: &str, seq: i64) -> Result<Option<NodeDetail>, String> {
+        let settings = self.current();
+        let value = if settings.demo {
+            Ok(self.demo.lock().expect("demo lock").node(session, seq))
+        } else {
+            Neo4j { client: &self.client, settings: &settings }.node(session, seq).await
+        };
+        typed(value)
+    }
+
+    /// Deletes a session for good; returns how many nodes went with it.
+    pub async fn delete(&self, session: &str) -> Result<i64, String> {
+        let settings = self.current();
+        let value = if settings.demo {
+            self.demo.lock().expect("demo lock").delete(session)
+        } else {
+            Neo4j { client: &self.client, settings: &settings }.delete_session(session).await
+        };
+        value.map(|v| v["deleted"].as_i64().unwrap_or(0)).map_err(|e| e.error)
     }
 
     pub fn settings(&self) -> Public {
@@ -111,49 +126,7 @@ impl Backend {
     }
 }
 
-fn seq(text: &str) -> Result<i64, ApiError> {
-    text.parse().map_err(|_| ApiError::new(400, "seq는 정수여야 합니다."))
-}
-
-fn list(text: &str) -> Vec<String> {
-    text.split(',').filter(|s| !s.is_empty()).map(str::to_owned).collect()
-}
-
-/// Percent-decoding for the query strings the page builds with `encodeURIComponent`.
-fn decode(text: &str) -> String {
-    let bytes = text.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let escaped = (bytes[i] == b'%')
-            .then(|| bytes.get(i + 1..i + 3))
-            .flatten()
-            .filter(|hex| hex.iter().all(u8::is_ascii_hexdigit))
-            .and_then(|hex| std::str::from_utf8(hex).ok())
-            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
-        match (escaped, bytes[i]) {
-            (Some(byte), _) => {
-                out.push(byte);
-                i += 3;
-                continue;
-            }
-            (None, b'+') => out.push(b' '),
-            (None, byte) => out.push(byte),
-        }
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::decode;
-
-    #[test]
-    fn decodes_what_encode_uri_component_makes() {
-        assert_eq!(decode("a%2Cb"), "a,b");
-        assert_eq!(decode("%ED%95%9C"), "한");
-        assert_eq!(decode("100%"), "100%");
-        assert_eq!(decode("%zz"), "%zz");
-    }
+fn typed<T: DeserializeOwned>(value: Result<Value, ApiError>) -> Result<T, String> {
+    let value = value.map_err(|e| e.error)?;
+    serde_json::from_value(value).map_err(|e| format!("응답 형식이 예상과 다릅니다: {e}"))
 }
