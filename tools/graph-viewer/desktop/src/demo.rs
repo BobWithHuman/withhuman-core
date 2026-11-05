@@ -64,3 +64,25 @@ impl Demo {
         Ok(json!({"deleted": deleted}))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Demo;
+
+    #[test]
+    fn fixture_answers_every_session() {
+        let demo = Demo::load();
+        let sessions = demo.sessions();
+        let sessions = sessions.as_array().expect("sessions list");
+        assert!(!sessions.is_empty(), "mock/fixture.json has sessions");
+        for s in sessions {
+            let id = s["id"].as_str().unwrap();
+            let graph = demo.graph(id).expect("graph");
+            let nodes = graph["nodes"].as_array().unwrap();
+            assert_eq!(nodes.len() as i64, s["nodes"].as_i64().unwrap());
+            let seq = nodes[0]["props"]["seq"].as_i64().unwrap();
+            assert_eq!(demo.node(id, seq)["kind"], nodes[0]["kind"]);
+            assert!(graph["edges"].as_array().unwrap().iter().any(|e| e["props"]["kind"] == "cause"));
+        }
+    }
+}
