@@ -1,0 +1,2 @@
+# Copy to backend.hcl and set the bucket printed by infra/aws/bootstrap.
+bucket = "withhuman-tfstate-<account-id>"

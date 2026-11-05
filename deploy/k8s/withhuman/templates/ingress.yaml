@@ -14,9 +14,10 @@ spec:
   {{- with .Values.ingress.className }}
   ingressClassName: {{ . }}
   {{- end }}
-  {{- with .Values.ingress.tls }}
+  {{- with .Values.ingress.tlsSecretName }}
   tls:
-    {{- toYaml . | nindent 4 }}
+    - hosts: [{{ $.Values.ingress.host | quote }}]
+      secretName: {{ . }}
   {{- end }}
   rules:
     - host: {{ required "ingress.host is required" .Values.ingress.host | quote }}

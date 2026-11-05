@@ -1,0 +1,16 @@
+secretStore:
+  name: cloud-secrets
+  # The External Secrets provider block of the cloud.
+  provider: {}
+
+certificates:
+  email: ""
+  server: https://acme-v02.api.letsencrypt.org/directory
+  ingressClass: traefik
+
+gitops:
+  url: ""
+  # Secret in the cloud's store holding the GitOps repository's read-only deploy key.
+  secretKey: ""
+  path: apps
+  include: ""

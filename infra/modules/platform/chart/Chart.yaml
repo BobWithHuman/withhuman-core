@@ -1,0 +1,5 @@
+apiVersion: v2
+name: platform-config
+description: Cluster-wide secret store, certificate issuer and Argo CD bootstrap for WithHuman
+type: application
+version: 0.1.0

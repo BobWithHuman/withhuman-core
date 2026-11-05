@@ -1,0 +1,71 @@
+apiVersion: external-secrets.io/v1
+kind: ClusterSecretStore
+metadata:
+  name: {{ .Values.secretStore.name }}
+spec:
+  provider:
+    {{- required "secretStore.provider is required" .Values.secretStore.provider | toYaml | nindent 4 }}
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt
+spec:
+  acme:
+    email: {{ required "certificates.email is required" .Values.certificates.email | quote }}
+    server: {{ .Values.certificates.server | quote }}
+    privateKeySecretRef:
+      name: letsencrypt-account
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: {{ .Values.certificates.ingressClass }}
+---
+# Argo CD reads the GitOps repository with a deploy key kept in the cloud's secret store.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: gitops-repository
+  namespace: {{ .Release.Namespace }}
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: {{ .Values.secretStore.name }}
+  target:
+    name: gitops-repository
+    template:
+      metadata:
+        labels:
+          argocd.argoproj.io/secret-type: repository
+      data:
+        type: git
+        url: {{ required "gitops.url is required" .Values.gitops.url | quote }}
+        sshPrivateKey: {{ "{{ .key }}" | quote }}
+  data:
+    - secretKey: key
+      remoteRef:
+        key: {{ required "gitops.secretKey is required" .Values.gitops.secretKey | quote }}
+---
+# Applies this cluster's Applications from the GitOps repository, so the repository alone decides
+# what the cluster runs.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: {{ .Release.Namespace }}
+spec:
+  project: default
+  source:
+    repoURL: {{ .Values.gitops.url | quote }}
+    targetRevision: main
+    path: {{ .Values.gitops.path }}
+    directory:
+      include: {{ required "gitops.include is required" .Values.gitops.include | quote }}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: {{ .Release.Namespace }}
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

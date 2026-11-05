@@ -3,9 +3,17 @@ imageTag: ""
 imagePullPolicy: IfNotPresent
 imagePullSecrets: []
 
-# The Secret is created outside the chart. It holds the keys `neo4j-password`, `jev-api-key` and
-# `redis-url`.
+# The Secret holds the keys `neo4j-password`, `jev-api-key` and `redis-url`. Create it outside the
+# chart, or have `externalSecret` build it from the cluster's secret store.
 existingSecret: withhuman
+
+externalSecret:
+  enabled: false
+  # ClusterSecretStore set up with the cluster (infra/modules/platform).
+  storeName: cloud-secrets
+  refreshInterval: 1h
+  # External Secrets `data` entries: each Secret key and where it comes from.
+  data: []
 
 # Neo4j runs outside the cluster.
 neo4j:
@@ -83,7 +91,8 @@ ingress:
   className: ""
   host: ""
   annotations: {}
-  tls: []
+  # Secret holding the host's TLS certificate; set to serve HTTPS, such as one cert-manager issues.
+  tlsSecretName: ""
 
 # Time for load balancers to stop sending a terminating Pod new requests.
 preStopSleepSeconds: 5
