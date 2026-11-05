@@ -1,0 +1,30 @@
+[package]
+name = "withhuman-viewer"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.85"
+description = "Desktop viewer for the WithHuman execution graph, built with Dioxus"
+
+# Builds on its own: Dioxus and its webview stay out of the services' lockfile.
+[workspace]
+
+[[bin]]
+name = "withhuman-viewer"
+path = "src/main.rs"
+
+[dependencies]
+dioxus = { version = "0.7.10", features = ["desktop"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+regex = "1"
+base64 = "0.22"
+dirs = "6"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
