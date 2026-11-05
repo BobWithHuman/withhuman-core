@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Sets up WithHuman for Claude Code in a project folder, replacing any earlier WithHuman setup.
 
-usage: configure.py [--project DIR] [--team NAME] [--server URL] [--hook FILE] [--no-persist]
+usage: configure.py --server URL [--project DIR] [--team NAME] [--hook FILE] [--no-persist]
+
+WithHuman is self-hosted, so --server (or WITHHUMAN_SERVER) has no default: it is the address of
+the engine this device reports to, and every hook below is written against it.
 
 1. Takes every WithHuman hook out of the user's Claude Code settings (~/.claude/settings.json)
    and the project's own (.claude/settings.json, .claude/settings.local.json), so an earlier
@@ -28,7 +31,6 @@ import sys
 import uuid
 from pathlib import Path
 
-SERVER = "https://54.252.92.35"
 EVENTS = [
     "SessionStart",
     "UserPromptSubmit",
@@ -175,7 +177,11 @@ def main():
     parser = argparse.ArgumentParser(description="Set up WithHuman for Claude Code in a project.")
     parser.add_argument("--project", default=os.getcwd(), help="project folder (default: here)")
     parser.add_argument("--team", default="default", help="team part of a new client ID")
-    parser.add_argument("--server", default=SERVER, help="WithHuman engine address")
+    parser.add_argument(
+        "--server",
+        default=os.environ.get("WITHHUMAN_SERVER"),
+        help="WithHuman engine address, such as http://127.0.0.1:3000 or https://withhuman.example.com",
+    )
     parser.add_argument("--hook", default=str(Path(__file__).resolve().parent / "hooks" / HOOK_NAME))
     parser.add_argument("--no-persist", action="store_true", help="leave shell profiles alone")
     args = parser.parse_args()
@@ -183,6 +189,18 @@ def main():
         sys.exit("WithHuman's hook needs Python 3.8 or later")
     if not re.fullmatch(r"[A-Za-z0-9._-]+", args.team):
         sys.exit(f"team must match [A-Za-z0-9._-]+: {args.team}")
+    # No default: pointing a device at someone else's engine would ship this project's prompts
+    # and commands there, so the address is always the operator's own choice.
+    if not args.server:
+        sys.exit(
+            "--server is required (or set WITHHUMAN_SERVER): the address of your own engine.\n"
+            "  local Compose host:  http://127.0.0.1:3000\n"
+            "  EC2 single node:     https://<the single-node domain_name>\n"
+            "  EKS deployment:      https://<the Ingress host>"
+        )
+    args.server = args.server.rstrip("/")
+    if not re.fullmatch(r"https?://[^\s/]+(/[^\s]*)?", args.server):
+        sys.exit(f"--server must be an http(s) URL: {args.server}")
     hook_source = Path(args.hook)
     if not hook_source.is_file():
         sys.exit(f"hook not found: {hook_source}")

@@ -2,14 +2,26 @@
 # Sets up WithHuman for Claude Code in the current folder (macOS, Linux), replacing any earlier
 # WithHuman setup. Run it in the folder you start Claude Code in:
 #
-#   curl -fsSL https://raw.githubusercontent.com/BobWithHuman/withhuman-core/main/deploy/client/setup-project.sh | bash -s -- [team]
+#   WITHHUMAN_SERVER=https://withhuman.example.com \
+#     curl -fsSL https://raw.githubusercontent.com/BobWithHuman/withhuman-core/main/deploy/client/setup-project.sh | bash -s -- [team]
 #
-# From a checkout it uses the checkout's files; otherwise it fetches them from WITHHUMAN_REF
-# (default: main). See configure.py for what it changes.
+# WITHHUMAN_SERVER is the address of your own engine; WithHuman is self-hosted, so there is no
+# default. From a checkout it uses the checkout's files; otherwise it fetches them from
+# WITHHUMAN_REF (default: main). See configure.py for what it changes.
 set -euo pipefail
 
 team=${1:-default}
 ref=${WITHHUMAN_REF:-main}
+
+if [ -z "${WITHHUMAN_SERVER:-}" ]; then
+  cat >&2 <<'USAGE'
+WITHHUMAN_SERVER is required: the address of your own WithHuman engine.
+  local Compose host:  http://127.0.0.1:3000
+  EC2 single node:     https://<the single-node domain_name>
+  EKS deployment:      https://<the Ingress host>
+USAGE
+  exit 1
+fi
 base="https://raw.githubusercontent.com/BobWithHuman/withhuman-core/$ref/deploy/client"
 
 python=""
@@ -30,12 +42,12 @@ if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
   here=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 fi
 if [ -n "$here" ] && [ -f "$here/configure.py" ] && [ -f "$here/hooks/pre-tool-use.py" ]; then
-  "$python" "$here/configure.py" --project "$PWD" --team "$team"
+  "$python" "$here/configure.py" --project "$PWD" --team "$team" --server "$WITHHUMAN_SERVER"
 else
   tmp=$(mktemp -d)
   trap 'rm -rf "$tmp"' EXIT
   mkdir -p "$tmp/hooks"
   curl -fsSL "$base/configure.py" -o "$tmp/configure.py"
   curl -fsSL "$base/hooks/pre-tool-use.py" -o "$tmp/hooks/pre-tool-use.py"
-  "$python" "$tmp/configure.py" --project "$PWD" --team "$team"
+  "$python" "$tmp/configure.py" --project "$PWD" --team "$team" --server "$WITHHUMAN_SERVER"
 fi
