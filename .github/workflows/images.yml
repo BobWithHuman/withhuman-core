@@ -168,15 +168,31 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Every image carries its full commit SHA, which is what a deployment pins; a version tag
-      # adds the version. This is the one place the tag policy lives, since the build jobs push
-      # untagged.
+      # Every image carries its full commit SHA, which is what a deployment pins. On top of that,
+      # one moving tag per channel: `edge` follows main for the personal Compose profile, and a
+      # release moves `latest` and the minor series. This is the one place the tag policy lives,
+      # since the build jobs push untagged.
+      #
+      # Only `edge` and the SHA exist until the first release, so `latest` is absent rather than
+      # pointing at an untagged build of main.
       - name: Create the manifest lists
         run: |
           set -euo pipefail
           tags=("$GITHUB_SHA")
           case "$GITHUB_REF" in
-            refs/tags/v*) tags+=("${GITHUB_REF#refs/tags/v}") ;;
+            refs/heads/main)
+              tags+=("edge")
+              ;;
+            refs/tags/v*)
+              version="${GITHUB_REF#refs/tags/v}"
+              tags+=("$version")
+              # The trigger's v*.*.* glob also matches v1.0.0-rc1, and a prerelease must not take
+              # `latest` -- nor produce a `1.0.0-rc` series from stripping the last component.
+              # No major tag while the version is 0.x: a 0.y bump is breaking under semver.
+              if [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                tags+=("${version%.*}" "latest")
+              fi
+              ;;
           esac
 
           for service in collector generator decision; do

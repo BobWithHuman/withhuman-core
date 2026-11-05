@@ -12,7 +12,7 @@ is suitable for one user on the same machine.
 git clone https://github.com/BobWithHuman/withhuman-core.git
 cd withhuman-core
 cp .env.example .env
-# Set IMAGE_TAG to a published full commit SHA and replace both secrets in .env.
+# Replace both secrets in .env. IMAGE_TAG already follows main.
 docker compose up --detach --wait
 curl --fail http://127.0.0.1:3000/healthz
 ```
@@ -20,6 +20,15 @@ curl --fail http://127.0.0.1:3000/healthz
 The Compose profile pulls published amd64 or arm64 images automatically. It does not compile the
 Rust workspace, so `--build` is unnecessary. Neo4j and Redis data live in named Docker volumes;
 `docker compose down` preserves them and `docker compose down --volumes` deletes them.
+
+`IMAGE_TAG` defaults to `edge`, which follows `main`. Compose reuses the image it already has, so
+an update is a pull:
+
+```sh
+docker compose pull && docker compose up --detach --wait
+```
+
+Set `IMAGE_TAG` to a release (`0.1.0`) or a full commit SHA to stay on one build instead.
 
 Configure a Claude Code project against the local gateway:
 
