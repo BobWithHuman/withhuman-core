@@ -282,6 +282,27 @@ impl Neo4jDecisionRepository {
         Ok(repository)
     }
 
+    /// The content the session last saw of the file at `path` before the Call at `call_order`.
+    async fn last_seen(
+        &self,
+        session_id: &str,
+        call_order: u64,
+        path: &str,
+    ) -> Result<Option<String>, RepositoryError> {
+        let data = self
+            .execute(
+                FILE_RESULTS,
+                json!({
+                    "session_id": session_id,
+                    "call_order": call_order,
+                    "path": Value::String(path.to_owned()).to_string(),
+                }),
+            )
+            .await?;
+        let results: Vec<Value> = data.values.iter().map(|row| payload(row.first())).collect();
+        Ok(trace::last_seen_content(&results, path))
+    }
+
     async fn execute(
         &self,
         statement: &str,
@@ -459,22 +480,17 @@ impl DecisionRepository for Neo4jDecisionRepository {
             tool_name,
             tool_input,
             prior: None,
+            programs: BTreeMap::new(),
             cwd: row.get(10).and_then(Value::as_str).map(str::to_owned),
         };
         // A file the Call writes whole is shown as its change to what the session last saw.
         if let Some(path) = check::written_path(&call) {
-            let data = self
-                .execute(
-                    FILE_RESULTS,
-                    json!({
-                        "session_id": request.session_id,
-                        "call_order": order,
-                        "path": Value::String(path.clone()).to_string(),
-                    }),
-                )
-                .await?;
-            let results: Vec<Value> = data.values.iter().map(|row| payload(row.first())).collect();
-            call.prior = trace::last_seen_content(&results, &path);
+            call.prior = self.last_seen(&request.session_id, order, &path).await?;
+        }
+        // A program the Call runs is judged by its code, as the session last saw it.
+        for path in check::run_paths(&call) {
+            let code = self.last_seen(&request.session_id, order, &path).await?;
+            call.programs.insert(path, code);
         }
         Ok(TraceGraph {
             call,

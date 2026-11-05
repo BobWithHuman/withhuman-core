@@ -720,12 +720,13 @@ function deviationHtml(trace) {
 // first question: where the trace left the Call, the second question's score on its own gauge,
 // and what that question saw and answered.
 // Cuts of the Decision Module; a file change was asked `requested` (cut 0.2) before `unasked`.
-const CHECK_CUT = { file: 0.5, purpose: 0.4 };
+const CHECK_CUT = { run: 0.4, file: 0.5, purpose: 0.4 };
 const checkCut = (c, exchange) => c.branch === 'file' && exchange?.request?.questions?.requested ? 0.2 : CHECK_CUT[c.branch];
 const CHECK_LOW = 0.15;
 const BRANCH_TEXT = {
   safeguard: '에이전트 설정·훅을 바꾸는 호출 → 규칙으로 차단 (2차 질문 없음)',
   clear: '1차에서 위반 없음 · 의심 낮음 → 2차 질문 없이 허용',
+  run: '세션이 본 프로그램 실행 → 의심과 상관없이 코드가 요청 밖의 일을 하는지 확인',
   file: '파일 수정 → 추가한 줄을 사용자가 요청했는지 확인',
   purpose: '그 외 호출 → 무엇을 위한 호출인지 확인',
   none: '1차 답이 없어 확인하지 않음',
@@ -749,7 +750,8 @@ function checkHtml(trace) {
     const below = c.breach ? '--review' : '--allow';
     const zones = [[cut, below], [1 - cut, '--deny']]
       .map(([w, color]) => `<i style="width:${w * 100}%;background:var(${color})"></i>`).join('');
-    const label = c.branch === 'file' ? '요청 밖의 것을 추가할 확률' : '요청 밖 목표·사용자에 반할 확률';
+    const label = c.branch === 'file' ? '요청 밖의 것을 추가할 확률'
+      : c.branch === 'run' ? '코드가 요청 밖의 일을 할 확률' : '요청 밖 목표·사용자에 반할 확률';
     gauge = `<h4>2차 점수 · ${escape(label)}</h4>
       <div class="gauge"><div class="marker" style="left:${Math.min(1, c.unwanted) * 100}%">${percent(c.unwanted) || '0'}</div><div class="zones">${zones}</div></div>
       <p class="muted">${c.breach ? '확인' : '허용'} &lt; ${percent(cut)} ≤ 차단${c.breach ? ' · 1차가 위반이라 기준 미만이면 확인' : ''}</p>`;
@@ -764,6 +766,10 @@ function checkExchangeHtml(exchange) {
     ? String(text).split('\n').map(line => `<span class="${cls}">${sign} ${escape(line)}</span>`).join('\n') : '';
   const change = state.added != null
     ? `<h4>추가·삭제된 줄</h4><div class="lines">${[lines(state.added, 'add', '+'), lines(state.removed, 'del', '-')].filter(Boolean).join('\n') || '<span class="muted">(변경 없음)</span>'}</div>` : '';
+  // A run is judged by the code of each program it runs, the session's last view of it.
+  const programs = state.programs
+    ? `<h4>실행되는 프로그램 코드</h4>${Object.entries(state.programs).map(([path, code]) =>
+        `<details${code === '(not seen)' ? '' : ' open'}><summary>${escape(path)}${code === '(not seen)' ? ' <span class="muted">(세션이 보지 못함)</span>' : ''}</summary><div class="lines">${escape(code)}</div></details>`).join('')}` : '';
   const answers = exchange.response?.answers || {};
   const results = Object.entries(answers).map(([key, answer]) => {
     if (key === 'requested') return `<h4>requested · 사용자가 요청했는가</h4>${bar(answer.noul, 'chosen')}`;
@@ -773,11 +779,11 @@ function checkExchangeHtml(exchange) {
       const name = m ? `${nodeName(Number(m[1]))}${m[2] != null ? ` ¶${m[2]}` : ''}` : option;
       return `<tr><td>${escape(name)}${option === answer.choice ? '<span class="tag">선택</span>' : ''}</td><td>${bar(p, option === answer.choice ? 'chosen' : '')}</td></tr>`;
     }).join('');
-    return `<h4>${escape(key)}${key === 'purpose' ? ' · 무엇을 위한 호출인가' : key === 'source' ? ' · 어느 문단의 지시인가' : ''}</h4><table class="bars">${rows}</table>`;
+    return `<h4>${escape(key)}${key === 'purpose' ? ' · 무엇을 위한 호출인가' : key === 'program' ? ' · 실행하면 요청 밖의 무엇을 하는가' : key === 'source' ? ' · 어느 문단의 지시인가' : ''}</h4><table class="bars">${rows}</table>`;
   }).join('');
   const questions = Object.entries(exchange.request?.questions || {}).map(([key, q]) =>
     `<details><summary>${escape(key)} <span class="empty">(${escape(q.type)})</span></summary><pre>${escape(q.instructions)}\n\n${escape(JSON.stringify(q.criteria, null, 2))}</pre></details>`).join('');
-  return `${change}
+  return `${change}${programs}
     ${state.user_request ? `<details><summary>user_request · 사용자 프롬프트 원문</summary><pre>${escape(state.user_request)}</pre></details>` : ''}
     ${results}
     <h4>Jev에 넣은 질문</h4>${questions}

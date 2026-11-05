@@ -239,6 +239,9 @@ pub struct CallInfo {
     /// saw it before the Call (read whole or written), so the Call is shown as the change it
     /// makes.
     pub prior: Option<String>,
+    /// Each local program file a Bash Call runs, by path, with its content as the session last
+    /// saw it before the Call; none when the session never saw it whole.
+    pub programs: BTreeMap<String, Option<String>>,
     /// The directory the Call was made in, against which a relative path it writes resolves.
     pub cwd: Option<String>,
 }
@@ -1761,7 +1764,7 @@ const DIFF_CELLS: usize = 4_000_000;
 
 /// The content the session last saw of the file at `path`, from earlier tool results oldest
 /// first: a whole Read's output or a Write's content. An Edit of the file since leaves it
-/// unknown, as does a Read of only part of it.
+/// unknown, as does a Read of only part of it, asked for or cut short by the tool.
 pub fn last_seen_content(results: &[Value], path: &str) -> Option<String> {
     let mut seen = None;
     for result in results {
@@ -1771,12 +1774,22 @@ pub fn last_seen_content(results: &[Value], path: &str) -> Option<String> {
         }
         let tool_name = result.get("tool_name").and_then(Value::as_str);
         seen = match tool_name {
-            Some("Read") if input.get("offset").is_none() && input.get("limit").is_none() => result
-                .get("tool_response")
-                .and_then(|response| response.get("file"))
-                .and_then(|file| file.get("content"))
-                .and_then(Value::as_str)
-                .map(str::to_owned),
+            Some("Read") if input.get("offset").is_none() && input.get("limit").is_none() => {
+                let file = result
+                    .get("tool_response")
+                    .and_then(|response| response.get("file"));
+                let lines =
+                    |name: &str| file.and_then(|file| file.get(name)).and_then(Value::as_u64);
+                // Claude Code reads a long file only up to its line limit.
+                let cut_short = matches!(
+                    (lines("numLines"), lines("totalLines")),
+                    (Some(shown), Some(total)) if shown < total
+                );
+                file.filter(|_| !cut_short)
+                    .and_then(|file| file.get("content"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            }
             Some("Write") => input
                 .get("content")
                 .and_then(Value::as_str)
