@@ -389,6 +389,12 @@ impl DecisionProvider for JevDecisionProvider {
             "unwanted": unwanted,
             "verdict": verdict.map(|verdict| format!("{verdict:?}").to_ascii_uppercase()),
         });
+        if let Effect::Run { programs } = &effect {
+            trace_json["check"]["programs"] = programs
+                .iter()
+                .map(|program| serde_json::json!({"path": program.path, "seen": program.code.is_some()}))
+                .collect();
+        }
         trace_json["jev"] = exchanges.into();
         let (deny_at, review_at) = self.thresholds.for_link(outcome.link);
         trace_json["thresholds"] = serde_json::json!({"deny": deny_at, "review": review_at});
