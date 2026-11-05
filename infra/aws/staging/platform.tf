@@ -67,9 +67,11 @@ module "platform" {
       region  = var.region
     }
   }
-  acme_email               = var.acme_email
-  acme_server              = var.acme_server
-  gitops_deploy_key_secret = aws_secretsmanager_secret.gitops_deploy_key.name
+  acme_email  = var.acme_email
+  acme_server = var.acme_server
+  # The GitOps repository is public, so Argo CD reads it over https without credentials. Point this
+  # back at aws_secretsmanager_secret.gitops_deploy_key.name if the repository returns to private.
+  gitops_deploy_key_secret = ""
   gitops_apps_include      = "${var.environment}.yaml"
 
   # Nodes must run before charts install, and External Secrets needs its role at start.

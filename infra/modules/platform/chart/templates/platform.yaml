@@ -20,8 +20,10 @@ spec:
       - http01:
           ingress:
             ingressClassName: {{ .Values.certificates.ingressClass }}
+{{- if .Values.gitops.secretKey }}
 ---
-# Argo CD reads the GitOps repository with a deploy key kept in the cloud's secret store.
+# Argo CD reads the GitOps repository with a deploy key kept in the cloud's secret store. A public
+# repository over https needs none, so this renders only when a secret is named.
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
@@ -45,7 +47,8 @@ spec:
   data:
     - secretKey: key
       remoteRef:
-        key: {{ required "gitops.secretKey is required" .Values.gitops.secretKey | quote }}
+        key: {{ .Values.gitops.secretKey | quote }}
+{{- end }}
 ---
 # Applies this cluster's Applications from the GitOps repository, so the repository alone decides
 # what the cluster runs.
