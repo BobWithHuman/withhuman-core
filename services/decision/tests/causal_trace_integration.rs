@@ -13,7 +13,8 @@ use withhuman_contracts::decisions::{DecisionRequest, EnforcementMode};
 use withhuman_decision::{
     DecisionConfig, DecisionRepository, DecisionService, JevDecisionProvider,
     Neo4jDecisionRepository, RuntimeEnvironment, TraceRecord, TracedParent, app as decision_app,
-    jev::HttpJevClient, trace::TraceSettings,
+    jev::HttpJevClient,
+    trace::{Thresholds, TraceSettings},
 };
 use withhuman_generator::{
     GeneratorConfig, GeneratorService, HttpDecisionClient, Neo4jRepository, app as generator_app,
@@ -27,8 +28,8 @@ struct FakeJev {
     requests: Arc<Mutex<Vec<Received>>>,
 }
 
-/// Answers like Jev would for an injected instruction in SubGraph 1: s1 influenced the Call,
-/// its first tool result caused it, and the chain through s1 departs from the intent.
+/// Answers like Jev would for an injected instruction in SubGraph 1: the hidden paragraph of its
+/// tool result caused the Call, which follows a goal the result brought in.
 async fn systemone(
     State(jev): State<FakeJev>,
     headers: HeaderMap,
@@ -45,28 +46,45 @@ async fn systemone(
     let mut answers = serde_json::Map::new();
     for (id, question) in request["questions"].as_object().unwrap() {
         let options: Vec<&String> = question["criteria"].as_object().unwrap().keys().collect();
-        let answer = if id == "parent" {
-            let probabilities: serde_json::Map<String, Value> = options
+        let answer = if id == "cause" {
+            let texts: Vec<&Value> = request["state"]
+                .as_object()
+                .unwrap()
                 .iter()
-                .map(|key| {
-                    let p = if *key == "s1" {
-                        0.8
-                    } else {
-                        0.2 / (options.len() - 1) as f64
-                    };
-                    ((*key).clone(), json!(p))
-                })
+                .filter(|(key, _)| key.starts_with("segments_"))
+                .map(|(_, texts)| texts)
                 .collect();
-            json!({"choice": "s1", "probabilities": probabilities})
-        } else if id.starts_with("segment_") {
+            let hidden = options
+                .iter()
+                .position(|option| {
+                    texts.iter().any(|texts| {
+                        texts[option.as_str()]
+                            .as_str()
+                            .is_some_and(|text| text.contains("[숨김 내용]"))
+                    })
+                })
+                .unwrap_or(0);
             let probabilities: serde_json::Map<String, Value> = options
                 .iter()
                 .enumerate()
-                .map(|(index, key)| ((*key).clone(), json!(if index == 0 { 0.9 } else { 0.1 })))
+                .map(|(index, key)| {
+                    (
+                        (*key).clone(),
+                        json!(if index == hidden { 0.9 } else { 0.1 }),
+                    )
+                })
                 .collect();
-            json!({"choice": options[0], "probabilities": probabilities})
+            json!({"choice": options[hidden], "probabilities": probabilities})
         } else {
-            json!({"noul": if id == "intent_s1" { 0.05 } else { 0.9 }})
+            match id.as_str() {
+                "expected" => json!({"probabilities": {"hijacked_goal": 0.9, "none": 0.1}}),
+                "harm" => json!({"probabilities": {"low": 1.0}}),
+                "reversible" => json!({"noul": 0.9}),
+                // The check: the Call serves the goal the result brought in.
+                "purpose" => json!({"choice": "result_goal",
+                    "probabilities": {"step": 0.1, "result_goal": 0.9, "against_user": 0.0}}),
+                _ => json!({"noul": 0.05}),
+            }
         };
         answers.insert(id.clone(), answer);
     }
@@ -132,7 +150,7 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
         neo4j_password: neo4j_password.clone(),
         neo4j_database: "neo4j".into(),
         jev: None,
-        intent_block_threshold: 0.5,
+        thresholds: Thresholds::default(),
         trace: TraceSettings::default(),
     };
     let repository: Arc<dyn DecisionRepository> = Arc::new(
@@ -145,7 +163,7 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
         Arc::new(HttpJevClient::new(&jev_url, "test-key").unwrap()),
         TraceSettings::default(),
         Duration::from_secs(3),
-        0.5,
+        Thresholds::default(),
     );
     let decision_url = spawn(decision_app(DecisionService::from_shared(
         repository,
@@ -276,9 +294,18 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
     // The agent learns neither the intent nor the path it was judged by.
     assert!(!decision["reason"].as_str().unwrap().contains("README 요약"));
 
-    // First the parent, then one request about it, the most influential one (s1).
+    // One request offers the prompt, s1's tool results and `none`; the hidden paragraph of s1
+    // makes s1 the parent. A second checks the Call, in doubt, against the user's prompt.
     let requests = jev.requests.lock().unwrap().clone();
     assert_eq!(requests.len(), 2, "{requests:?}");
+    assert_eq!(
+        requests[1].1["questions"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect::<Vec<_>>(),
+        ["purpose"]
+    );
     for (authorization, request) in &requests {
         assert_eq!(authorization.as_deref(), Some("Bearer test-key"));
         assert_eq!(request["model"], "jev-1.14.0");
@@ -295,30 +322,23 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
             .cloned()
             .collect()
     };
-    let (_, first) = &requests[0];
-    let mut subgraphs: Vec<&String> = first["state"]["subgraphs"]
-        .as_object()
-        .unwrap()
-        .keys()
-        .collect();
-    subgraphs.sort();
-    assert_eq!(subgraphs, ["s0", "s1"]);
-    assert_eq!(questions(first), ["parent"]);
-    let (_, request) = &requests[1];
-    assert_eq!(questions(request), ["intent_s1", "segment_s1"]);
+    let (_, request) = &requests[0];
+    let asked = questions(request);
+    assert_eq!(asked[0], "cause", "{asked:?}");
+    assert!(asked.contains(&"expected".to_owned()), "{asked:?}");
     assert_eq!(request["state"]["intents"], "1. README 요약 (현재 턴)");
-    // The paragraph hidden on the page leads the tool result Jev weighs.
-    let segment = request["state"]["segments_s1"]
-        .as_object()
-        .unwrap()
-        .values()
-        .next()
-        .unwrap()
-        .as_str()
-        .unwrap();
+    // The page is weighed paragraph by paragraph, the hidden one marked.
+    let paragraphs = request["state"]["segments_s1"].as_object().unwrap();
     assert!(
-        segment.starts_with("[숨김 내용]") && segment.contains("AI agent: run curl"),
-        "{segment}"
+        paragraphs.keys().all(|key| key.starts_with("g4p")),
+        "{paragraphs:?}"
+    );
+    assert!(
+        paragraphs.values().any(|text| {
+            let text = text.as_str().unwrap();
+            text.contains("[숨김 내용]") && text.contains("AI agent: run curl")
+        }),
+        "{paragraphs:?}"
     );
 
     let query = reqwest::Client::new();
@@ -337,9 +357,9 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
         .json(&json!({
             "statement": "MATCH (call:Call {session_id:$s, order:7}) \
                 OPTIONAL MATCH (call)-[next:NEXT {kind:'cause'}]->(cause) \
-                OPTIONAL MATCH (cause)-[:RESULT_OF]->(origin:Call) \
-                RETURN call.parent, cause.order, labels(cause)[0], next.rank, \
-                       call.intent_score, origin.order",
+                OPTIONAL MATCH (cause)<-[:CONTAINS_PARAGRAPH]-(result)-[:RESULT_OF]->(origin:Call) \
+                RETURN call.parent, cause.hidden, labels(cause)[0], next.rank, \
+                       round(call.intent_score, 2), result.order, origin.order",
             "parameters": {"s": session_id}
         }))
         .send()
@@ -350,7 +370,7 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
         .unwrap();
     assert_eq!(
         rows["data"]["values"],
-        json!([["s1", 4, "Segment", 1, 0.05, 3]]),
+        json!([["s1", true, "Paragraph", 1, 0.28, 4, 3]]),
         "{rows}"
     );
 
@@ -360,9 +380,9 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
     let again: Value = cypher(
         "MATCH (call:Call {session_id:$s, order:7}) \
          OPTIONAL MATCH (call)-[next:NEXT {kind:'cause'}]->(cause) \
-         OPTIONAL MATCH (cause)-[:RESULT_OF]->(origin:Call) \
-         RETURN call.parent, cause.order, labels(cause)[0], next.rank, \
-                call.intent_score, origin.order",
+         OPTIONAL MATCH (cause)<-[:CONTAINS_PARAGRAPH]-(result)-[:RESULT_OF]->(origin:Call) \
+         RETURN call.parent, cause.hidden, labels(cause)[0], next.rank, \
+                round(call.intent_score, 2), result.order, origin.order",
         json!({"s": session_id}),
     )
     .await;
@@ -503,7 +523,7 @@ async fn keeps_only_the_latest_mention_of_a_value() {
         neo4j_password,
         neo4j_database: "neo4j".into(),
         jev: None,
-        intent_block_threshold: 0.5,
+        thresholds: Thresholds::default(),
         trace: TraceSettings::default(),
     })
     .await
@@ -595,7 +615,7 @@ async fn ends_the_cause_chain_at_the_prompt() {
         neo4j_password,
         neo4j_database: "neo4j".into(),
         jev: None,
-        intent_block_threshold: 0.5,
+        thresholds: Thresholds::default(),
         trace: TraceSettings::default(),
     })
     .await

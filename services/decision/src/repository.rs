@@ -11,8 +11,10 @@ use serde_json::{Value, json};
 use withhuman_contracts::decisions::{DecisionRequest, DecisionResponse};
 
 use crate::{
-    DecisionConfig,
-    trace::{CallInfo, Member, MemberKind, ParentKey, TOKEN_KINDS, TraceGraph, Turn},
+    DecisionConfig, check,
+    trace::{
+        self, CallInfo, Member, MemberKind, Paragraph, ParentKey, TOKEN_KINDS, TraceGraph, Turn,
+    },
 };
 
 const VERIFY_GRAPH: &str = "\
@@ -38,7 +40,9 @@ RETURN true AS written";
 // slot mentioned it — and whether the Call mentions that value too; every parent earlier Calls
 // of a SubGraph chose; and every user prompt before the Call with the first intent the agent
 // stated after it (and before the next prompt): an Intent node, or a Message that stated it
-// before intents had nodes of their own. The prompt itself is not read.
+// before intents had nodes of their own; the earlier SubGraphs holding a tool result; the
+// directory the Call was made in; and the latest prompt's payload, whose text only the check
+// of the Call against the request sees.
 const TRACE_GRAPH: &str = concat!(
     "\
 MATCH (call:Call {session_id: $session_id, seq: $call_seq}) \
@@ -83,11 +87,25 @@ RETURN call.order, call.subgraph, call.payload_json, \
                                 AND stated.order < until AND stated.order < call.order \
                               RETURN stated.intent ORDER BY stated.order LIMIT 1 }[0], \
                     request.subgraph] \
-            ORDER BY request.order } AS turns"
+            ORDER BY request.order } AS turns, \
+  COLLECT { MATCH (result:Segment|Error {session_id: $session_id}) \
+            WHERE result.subgraph < call.subgraph AND result.order < call.order \
+            RETURN DISTINCT result.subgraph } AS results, \
+  call.cwd, \
+  COLLECT { MATCH (request:Request {session_id: $session_id}) \
+            WHERE request.order < call.order \
+            RETURN request.payload_json ORDER BY request.order DESC LIMIT 1 }[0] AS prompt"
 );
 
-// Tool results also bring the paragraphs hidden where they appeared, and whether a later Call
-// was traced to them. ConfigChanges stand where Calls do, Errors where Segments do. A prompt's
+// The session's tool results before the Call that name the file, oldest first: `$path` is the
+// file's path as JSON writes it, quotes included.
+const FILE_RESULTS: &str = "\
+MATCH (result:Segment {session_id: $session_id}) \
+WHERE result.order < $call_order AND result.payload_json CONTAINS $path \
+RETURN result.payload_json ORDER BY result.order";
+
+// Tool results also bring their paragraphs, whether each was hidden where it appeared, and
+// whether a later Call was traced to the result or a paragraph. ConfigChanges stand where Calls do, Errors where Segments do. A prompt's
 // SubGraph holds its Request and the Intent stated for it.
 const SUBGRAPH_MEMBERS: &str = "\
 UNWIND $numbers AS number \
@@ -95,15 +113,19 @@ MATCH (:SubGraph {session_id: $session_id, number: number}) \
       -[:MEMBER]->(node:Request|Intent|Message|Call|ConfigChange|Segment|Error) \
 WHERE node.order < $call_order \
 RETURN number, node.seq, node.order, labels(node)[0], node.payload_json, \
-  COLLECT { MATCH (node)-[:CONTAINS_PARAGRAPH]->(paragraph:Paragraph {hidden: true}) \
-            RETURN paragraph.text ORDER BY paragraph.index } AS hidden, \
+  COLLECT { MATCH (node)-[:CONTAINS_PARAGRAPH]->(paragraph:Paragraph) \
+            RETURN [paragraph.index, paragraph.text, coalesce(paragraph.hidden, false), \
+                    EXISTS { MATCH (effect)-[:NEXT {kind: 'cause'}]->(paragraph) \
+                             WHERE effect.order < $call_order }] \
+            ORDER BY paragraph.index } AS paragraphs, \
   EXISTS { MATCH (effect)-[:NEXT {kind: 'cause'}]->(node) \
            WHERE effect.order < $call_order } AS caused \
 ORDER BY number, node.order";
 
 // Takes the Session lock first like Generator commits, so the two never deadlock. The Call gets
-// a NEXT edge (marked `kind: 'cause'`, apart from the order chain) to each activated tool result
-// of the SubGraph it was traced to, or to the Request when that is a prompt's SubGraph. Pointing from the Call up
+// a NEXT edge (marked `kind: 'cause'`, apart from the order chain) to each activated paragraph
+// or tool result of the SubGraph it was traced to, or to the Request when that is a prompt's
+// SubGraph. A paragraph leads to its result through `CONTAINS_PARAGRAPH`. Pointing from the Call up
 // to its causes, and each result up to its Call (`RESULT_OF`), they lead from a Call back to the
 // prompt. A repeated decision of the same Call replaces its edges, and the SubGraph keeps the
 // parents of its latest Call.
@@ -136,7 +158,9 @@ CALL (call) { \
 } \
 CALL (call) { \
   UNWIND $segments AS segment \
-  MATCH (source:Segment|Error {session_id: $session_id, seq: segment.seq}) \
+  MATCH (result:Segment|Error {session_id: $session_id, seq: segment.seq}) \
+  OPTIONAL MATCH (result)-[:CONTAINS_PARAGRAPH]->(paragraph:Paragraph {index: segment.paragraph}) \
+  WITH call, segment, coalesce(paragraph, result) AS source \
   MERGE (call)-[edge:NEXT {kind: 'cause', call_seq: $call_seq}]->(source) \
   SET edge.probability = segment.probability, edge.rank = segment.rank, \
       edge.parent = segment.parent \
@@ -184,6 +208,8 @@ pub struct TracedParent {
 pub struct TracedSegment {
     /// The tool result's node seq.
     pub seq: u64,
+    /// The paragraph of the tool result, or none for the result whole.
+    pub paragraph: Option<u64>,
     pub probability: f64,
     pub rank: usize,
     /// The parent whose result it is.
@@ -415,26 +441,48 @@ impl DecisionRepository for Neo4jDecisionRepository {
             };
             parents.entry(number).or_default().insert(parent);
         }
+        let order = number(row.first(), "call order")?;
+        let tool_name = call_payload
+            .get("tool_name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let tool_input = call_payload
+            .get("tool_input")
+            .cloned()
+            .unwrap_or(Value::Null);
+        let mut call = CallInfo {
+            seq: request.call_seq,
+            order,
+            subgraph,
+            agent_id: row.get(7).and_then(Value::as_str).map(str::to_owned),
+            tool_name,
+            tool_input,
+            prior: None,
+            cwd: row.get(10).and_then(Value::as_str).map(str::to_owned),
+        };
+        // A file the Call writes whole is shown as its change to what the session last saw.
+        if let Some(path) = check::written_path(&call) {
+            let data = self
+                .execute(
+                    FILE_RESULTS,
+                    json!({
+                        "session_id": request.session_id,
+                        "call_order": order,
+                        "path": Value::String(path.clone()).to_string(),
+                    }),
+                )
+                .await?;
+            let results: Vec<Value> = data.values.iter().map(|row| payload(row.first())).collect();
+            call.prior = trace::last_seen_content(&results, &path);
+        }
         Ok(TraceGraph {
-            call: CallInfo {
-                seq: request.call_seq,
-                order: number(row.first(), "call order")?,
-                subgraph,
-                agent_id: row.get(7).and_then(Value::as_str).map(str::to_owned),
-                tool_name: call_payload
-                    .get("tool_name")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-                tool_input: call_payload
-                    .get("tool_input")
-                    .cloned()
-                    .unwrap_or(Value::Null),
-            },
+            call,
             subgraphs,
             hidden: numbers(row.get(4)),
             tokens,
             shared_tokens,
+            results: numbers(row.get(9)),
             parents,
             turns: pairs(row.get(8))
                 .map(|pair| Turn {
@@ -442,6 +490,11 @@ impl DecisionRepository for Neo4jDecisionRepository {
                     subgraph: pair.get(2).and_then(Value::as_u64),
                 })
                 .collect(),
+            prompt: payload(row.get(11))
+                .get("prompt")
+                .and_then(Value::as_str)
+                .filter(|prompt| !prompt.is_empty())
+                .map(str::to_owned),
         })
     }
 
@@ -470,13 +523,15 @@ impl DecisionRepository for Neo4jDecisionRepository {
                     order: row.get(2)?.as_u64()?,
                     kind: MemberKind::from_node_type(row.get(3)?.as_str()?)?,
                     payload: payload(row.get(4)),
-                    hidden: row
-                        .get(5)
-                        .and_then(Value::as_array)
-                        .into_iter()
-                        .flatten()
-                        .filter_map(Value::as_str)
-                        .map(str::to_owned)
+                    paragraphs: pairs(row.get(5))
+                        .filter_map(|values| {
+                            Some(Paragraph {
+                                index: values.first()?.as_u64()?,
+                                text: values.get(1)?.as_str()?.to_owned(),
+                                hidden: values.get(2).and_then(Value::as_bool).unwrap_or_default(),
+                                caused: values.get(3).and_then(Value::as_bool).unwrap_or_default(),
+                            })
+                        })
                         .collect(),
                     caused: row.get(6).and_then(Value::as_bool).unwrap_or_default(),
                 })
@@ -495,6 +550,7 @@ impl DecisionRepository for Neo4jDecisionRepository {
             .map(|segment| {
                 json!({
                     "seq": segment.seq,
+                    "paragraph": segment.paragraph,
                     "probability": segment.probability,
                     "rank": segment.rank,
                     "parent": segment.parent,

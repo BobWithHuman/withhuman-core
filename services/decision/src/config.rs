@@ -2,7 +2,7 @@ use std::{env, io, net::SocketAddr, time::Duration};
 
 use withhuman_contracts::decisions::Decision;
 
-use crate::trace::TraceSettings;
+use crate::trace::{Thresholds, TraceSettings};
 
 const DEFAULT_BIND_ADDRESS: &str = "0.0.0.0:8082";
 const DEFAULT_NEO4J_URL: &str = "http://neo4j:7474";
@@ -28,8 +28,8 @@ pub struct DecisionConfig {
     pub neo4j_database: String,
     /// Set when `DECISION_PROVIDER=jev`.
     pub jev: Option<JevSettings>,
-    /// A Call is denied when 1 − P(its chain of events serves the stated intent) exceeds this.
-    pub intent_block_threshold: f64,
+    /// Deviations at which a Call is denied or reviewed, by what it follows from.
+    pub thresholds: Thresholds,
     pub trace: TraceSettings,
 }
 
@@ -85,27 +85,22 @@ impl DecisionConfig {
                 "unsupported DECISION_PROVIDER `{provider}`"
             )));
         };
-        let intent_block_threshold = parse_env("WITHHUMAN_INTENT_BLOCK_THRESHOLD", 0.5_f64)?;
-        if !(0.0..=1.0).contains(&intent_block_threshold) {
-            return Err(invalid(
-                "WITHHUMAN_INTENT_BLOCK_THRESHOLD must be between 0 and 1",
-            ));
-        }
+        let thresholds = thresholds()?;
         let defaults = TraceSettings::default();
         let trace = TraceSettings {
             model: env::var("JEV_MODEL").unwrap_or(defaults.model),
-            window: parse_range("WITHHUMAN_PARENT_SUBGRAPH_WINDOW", defaults.window, 1, 64)?,
-            max_extra_candidates: parse_range(
-                "WITHHUMAN_TRACE_MAX_CANDIDATES",
-                defaults.max_extra_candidates,
-                0,
-                100,
-            )?,
             max_segments: parse_range(
                 "WITHHUMAN_TRACE_MAX_SEGMENTS",
                 defaults.max_segments,
                 1,
                 64,
+            )?,
+            max_causes: parse_range("WITHHUMAN_TRACE_MAX_CAUSES", defaults.max_causes, 1, 200)?,
+            cause_chars: parse_range(
+                "WITHHUMAN_TRACE_CAUSE_CHARS",
+                defaults.cause_chars,
+                1_000,
+                100_000,
             )?,
             text_chars: parse_range(
                 "WITHHUMAN_TRACE_TEXT_CHARS",
@@ -152,10 +147,39 @@ impl DecisionConfig {
             neo4j_password,
             neo4j_database: env::var("NEO4J_DATABASE").unwrap_or_else(|_| "neo4j".into()),
             jev,
-            intent_block_threshold,
+            thresholds,
             trace,
         })
     }
+}
+
+/// The deviation thresholds, each between 0 and 1 and none reviewing above where it denies.
+fn thresholds() -> io::Result<Thresholds> {
+    let defaults = Thresholds::default();
+    let thresholds = Thresholds {
+        deny: parse_range("WITHHUMAN_DEVIATION_DENY", defaults.deny, 0.0, 1.0)?,
+        review: parse_range("WITHHUMAN_DEVIATION_REVIEW", defaults.review, 0.0, 1.0)?,
+        untrusted_deny: parse_range(
+            "WITHHUMAN_UNTRUSTED_DEVIATION_DENY",
+            defaults.untrusted_deny,
+            0.0,
+            1.0,
+        )?,
+        untrusted_review: parse_range(
+            "WITHHUMAN_UNTRUSTED_DEVIATION_REVIEW",
+            defaults.untrusted_review,
+            0.0,
+            1.0,
+        )?,
+    };
+    if thresholds.review > thresholds.deny
+        || thresholds.untrusted_review > thresholds.untrusted_deny
+    {
+        return Err(invalid(
+            "a deviation review threshold must not exceed its deny threshold",
+        ));
+    }
+    Ok(thresholds)
 }
 
 fn parse_env<T>(name: &str, default: T) -> io::Result<T>
