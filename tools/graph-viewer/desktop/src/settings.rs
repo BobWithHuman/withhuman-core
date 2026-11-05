@@ -1,7 +1,8 @@
-//! Where the viewer finds Neo4j, kept in the app's config folder between launches.
+//! Where the viewer finds Neo4j, kept in the app's config folder between launches. The
+//! password is kept in the system keychain, never in the file.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -11,6 +12,8 @@ pub struct Settings {
     pub neo4j_url: String,
     pub database: String,
     pub user: String,
+    /// Read from a file written before the keychain was used, so it can be moved there.
+    #[serde(skip_serializing)]
     pub password: String,
     /// Reads the bundled demo graph instead of Neo4j.
     pub demo: bool,
@@ -51,7 +54,30 @@ pub struct Change {
     pub demo: bool,
 }
 
+/// The system keychain entry for one Neo4j account.
+mod keychain {
+    const SERVICE: &str = "dev.withhuman.viewer";
+
+    fn entry(account: &str) -> Option<keyring::Entry> {
+        keyring::Entry::new(SERVICE, account).ok()
+    }
+
+    pub fn get(account: &str) -> Option<String> {
+        entry(account)?.get_password().ok()
+    }
+
+    pub fn set(account: &str, password: &str) -> Result<(), String> {
+        let entry = entry(account).ok_or("키체인을 열지 못했습니다.")?;
+        entry.set_password(password).map_err(|e| format!("비밀번호를 키체인에 저장하지 못했습니다: {e}"))
+    }
+}
+
 impl Settings {
+    /// The keychain account: the same user on another server is another password.
+    fn account(&self) -> String {
+        format!("{}@{}/{}", self.user, self.neo4j_url, self.database)
+    }
+
     pub fn public(&self, path: &Path) -> Public {
         Public {
             neo4j_url: self.neo4j_url.clone(),
@@ -80,18 +106,39 @@ impl Settings {
         })
     }
 
-    /// `VIEWER_MOCK=1` opens the demo whatever was saved, without changing the file.
+    /// Reads the file and the password from the keychain. A password still in the file is
+    /// moved to the keychain and taken out of the file. `VIEWER_MOCK=1` opens the demo
+    /// whatever was saved, without changing the file.
     pub fn load(path: &Path) -> Self {
-        let mut settings: Self =
-            fs::read_to_string(path).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
+        let file = fs::read_to_string(path).ok().and_then(|text| serde_json::from_str::<Self>(&text).ok());
+        let mut settings = match file {
+            Some(mut saved) => {
+                if !saved.password.is_empty() && keychain::set(&saved.account(), &saved.password).is_ok() {
+                    let _ = saved.write(path);
+                } else if let Some(password) = keychain::get(&saved.account()) {
+                    saved.password = password;
+                } else if saved.password.is_empty() {
+                    saved.password = Self::default().password;
+                }
+                saved
+            }
+            None => Self::default(),
+        };
         if std::env::var("VIEWER_MOCK").is_ok_and(|v| v == "1") {
             settings.demo = true;
         }
         settings
     }
 
-    /// Saves the settings readable by this user only, since they hold the password.
-    pub fn save(&self, path: &PathBuf) -> Result<(), String> {
+    /// Saves the password to the keychain and the rest to the file.
+    pub fn save(&self, path: &Path) -> Result<(), String> {
+        if !self.password.is_empty() && keychain::get(&self.account()).as_deref() != Some(&self.password) {
+            keychain::set(&self.account(), &self.password)?;
+        }
+        self.write(path)
+    }
+
+    fn write(&self, path: &Path) -> Result<(), String> {
         if let Some(folder) = path.parent() {
             fs::create_dir_all(folder).map_err(|e| e.to_string())?;
         }
@@ -103,5 +150,20 @@ impl Settings {
             fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Settings;
+
+    #[test]
+    fn the_file_never_holds_the_password() {
+        let settings = Settings { password: "secret".into(), ..Settings::default() };
+        let text = serde_json::to_string(&settings).unwrap();
+        assert!(!text.contains("secret"));
+        // An old file with a password still reads, so the password can be moved.
+        let old: Settings = serde_json::from_str(r#"{"neo4j_url":"http://x","password":"old"}"#).unwrap();
+        assert_eq!(old.password, "old");
     }
 }

@@ -105,7 +105,7 @@ label.check { display: inline-flex; gap: 6px; align-items: center; white-space: 
 .actions { display: flex; gap: 8px; align-items: center; justify-content: flex-end; flex-wrap: wrap; }
 .notice .actions { justify-content: flex-start; }
 
-.inspector { width: 380px; flex: none; display: flex; flex-direction: column; min-height: 0; background: var(--panel);
+.inspector { flex: none; display: flex; flex-direction: column; min-height: 0; background: var(--panel);
              border-left: 1px solid var(--line); }
 .empty-state { padding: 24px 18px; }
 .inspector-head { padding: 14px 16px 10px; display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
@@ -154,3 +154,8 @@ table.props td:first-child { color: var(--muted); width: 34%; }
 .status.ok { color: var(--allow); }
 .status.error { color: var(--deny); }
 .sheet .path { flex: 1; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.splitter { width: 5px; margin: 0 -2px; flex: none; cursor: col-resize; position: relative; z-index: 5; }
+.splitter:hover, .resizing .splitter { background: var(--accent); opacity: .5; }
+.resizing { cursor: col-resize; }
+.resizing .canvas, .resizing .inspector { pointer-events: none; }
+.sheet-backdrop:focus { outline: none; }

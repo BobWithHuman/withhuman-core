@@ -132,9 +132,10 @@ pub fn Inspector() -> Element {
         });
     });
 
+    let width = (state.inspector_width)();
     let graph = (state.graph)();
     let Load::Ready(model) = graph else {
-        return rsx! { aside { class: "inspector" } };
+        return rsx! { aside { class: "inspector", style: "width: {width}px" } };
     };
     let body = match (state.selected)() {
         Selection::None => rsx! {
@@ -146,7 +147,7 @@ pub fn Inspector() -> Element {
         Selection::Node(seq) => rsx! { NodeView { key: "{seq}", model: model.clone(), seq, detail } },
         Selection::Edge { call, to, .. } => rsx! { EdgeView { model: model.clone(), call, to, detail } },
     };
-    rsx! { aside { class: "inspector", {body} } }
+    rsx! { aside { class: "inspector", style: "width: {width}px", {body} } }
 }
 
 #[component]

@@ -13,6 +13,17 @@ pub struct Prefs {
     pub pinned: Vec<String>,
     pub last_session: Option<String>,
     pub flow_view: bool,
+    pub inspector_width: Option<f64>,
+    pub window: Option<WindowPlace>,
+}
+
+/// Where the window was, in logical points.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct WindowPlace {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
 }
 
 fn path() -> PathBuf {

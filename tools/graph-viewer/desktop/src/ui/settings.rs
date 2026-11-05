@@ -63,7 +63,18 @@ pub fn SettingsSheet() -> Element {
     let hint = if current.has_password { "비워 두면 저장된 비밀번호 유지" } else { "" };
 
     rsx! {
-        div { class: "sheet-backdrop", onclick: move |_| state.settings_open.set(false),
+        div {
+            class: "sheet-backdrop",
+            tabindex: "-1",
+            onmounted: move |e| async move {
+                let _ = e.set_focus(true).await;
+            },
+            onkeydown: move |e| {
+                if e.key() == Key::Escape {
+                    state.settings_open.set(false);
+                }
+            },
+            onclick: move |_| state.settings_open.set(false),
             div { class: "sheet", onclick: move |e| e.stop_propagation(),
                 h2 { "데이터 연결" }
                 div { class: "choice",
