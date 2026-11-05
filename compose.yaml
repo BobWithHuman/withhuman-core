@@ -1,7 +1,7 @@
-# The engine on one host, for the single-node deployment profile. deploy/docker/compose.yaml builds
-# from the working tree for development and the E2E suite; this file pulls published images and
-# leaves out the MCP fixture. Only the gateway takes a host port, so Neo4j and Redis are reachable
-# on the Compose network alone.
+# The engine for personal Docker hosts and the Terraform-managed single-node EC2 profile.
+# deploy/docker/compose.yaml remains the development and E2E profile that builds from source.
+# This file pulls published images and leaves out the MCP fixture. Only the gateway takes a host
+# port, so Neo4j and Redis are reachable on the Compose network alone.
 #
 # withhuman-apply writes the variables below to its process environment before calling Compose.
 name: withhuman
@@ -56,7 +56,7 @@ services:
     environment:
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:?NEO4J_PASSWORD is required}
     volumes:
-      - ../docker/neo4j:/bootstrap:ro
+      - ./deploy/docker/neo4j:/bootstrap:ro
     entrypoint: ["/bin/sh", "-c"]
     command:
       - >-
@@ -144,7 +144,7 @@ services:
     ports:
       - "${GATEWAY_BIND:-0.0.0.0}:${GATEWAY_PORT:-3000}:3000"
     volumes:
-      - ./agentgateway.yaml:/config.yaml:ro
+      - ./deploy/single-node/agentgateway.yaml:/config.yaml:ro
     depends_on:
       collector:
         condition: service_healthy
