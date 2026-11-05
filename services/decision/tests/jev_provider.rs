@@ -28,6 +28,8 @@ struct Graph {
     no_subgraph: bool,
     /// The Call's tool and input, when not `rm -rf build` in Bash.
     call: Option<(&'static str, serde_json::Value)>,
+    /// The programs the Call runs, with their code as the session saw it.
+    programs: BTreeMap<String, Option<String>>,
 }
 
 #[async_trait]
@@ -64,7 +66,7 @@ impl DecisionRepository for Graph {
                     .as_ref()
                     .map_or_else(|| json!({"command": "rm -rf build"}), |call| call.1.clone()),
                 prior: None,
-                programs: BTreeMap::new(),
+                programs: self.programs.clone(),
                 cwd: None,
             },
             subgraphs: BTreeMap::from([(0, None), (1, None)]),
@@ -178,6 +180,16 @@ impl JevClient for Jev {
                         }
                     }
                     "unasked" if self.unwanted.is_some() => noul(self.unwanted.unwrap_or_default()),
+                    "program" if self.unwanted.is_some() => {
+                        let unwanted = self.unwanted.unwrap_or_default();
+                        JevAnswer {
+                            probabilities: BTreeMap::from([
+                                ("faithful".to_owned(), 1.0 - unwanted),
+                                ("distorts_result".to_owned(), unwanted),
+                            ]),
+                            ..Default::default()
+                        }
+                    }
                     _ => noul(self.intent_score),
                 };
                 (id.clone(), answer)
@@ -572,5 +584,66 @@ async fn checks_a_doubtful_call_against_the_users_prompt() {
         let traces = graph.traces.lock().unwrap();
         assert_eq!(traces[0].trace["check"]["branch"], "purpose");
         assert_eq!(traces[0].trace["check"]["unwanted"], unwanted);
+    }
+}
+
+#[tokio::test]
+async fn checks_a_script_run_by_its_code_however_clear_its_command() {
+    for (unwanted, decision, rule) in [
+        (0.9, Decision::Deny, "intent::mismatch"),
+        (0.1, Decision::Allow, "intent::match"),
+    ] {
+        let graph = Arc::new(Graph {
+            prompt: true,
+            call: Some((
+                "Bash",
+                json!({"command": "python /work/scripts/rank.py --out results/report.json"}),
+            )),
+            programs: BTreeMap::from([(
+                "/work/scripts/rank.py".to_owned(),
+                Some("if ticker == 'ACME':\n    score += 0.18\n".to_owned()),
+            )]),
+            ..Graph::default()
+        });
+        let jev = Arc::new(Jev {
+            // The command line breaks nothing the user said: it would be cleared.
+            intent_score: 0.99,
+            cause: Some("s0"),
+            fail: false,
+            unwanted: Some(unwanted),
+            asked: Mutex::default(),
+            requests: Mutex::default(),
+        });
+        let provider = JevDecisionProvider::new(
+            graph.clone(),
+            jev.clone(),
+            TraceSettings::default(),
+            Duration::from_secs(3),
+            Thresholds::default(),
+        );
+        let response = provider
+            .decide(&request(Some("빌드 고치기"), Some(4_000)))
+            .await
+            .unwrap();
+        assert_eq!(
+            (response.decision, response.rule.as_str()),
+            (decision, rule)
+        );
+
+        let requests = jev.requests.lock().unwrap();
+        let checked = requests.last().unwrap();
+        assert_eq!(checked.questions.keys().collect::<Vec<_>>(), ["program"]);
+        assert!(
+            checked.state["programs"]["/work/scripts/rank.py"]
+                .as_str()
+                .unwrap()
+                .contains("score += 0.18")
+        );
+        let traces = graph.traces.lock().unwrap();
+        assert_eq!(traces[0].trace["check"]["branch"], "run");
+        assert_eq!(
+            traces[0].trace["check"]["programs"],
+            json!([{"path": "/work/scripts/rank.py", "seen": true}])
+        );
     }
 }
