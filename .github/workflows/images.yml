@@ -16,8 +16,9 @@ concurrency:
   group: images-${{ github.ref }}
   cancel-in-progress: false
 
-env:
-  IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/withhuman
+# IMAGE_PREFIX is resolved per job rather than here: the registry rejects a mixed-case repository
+# name, and github.repository_owner carries the organisation's own casing. A workflow-level env
+# cannot run an expression over it, so each job lowercases it into its own environment first.
 
 jobs:
   # One job per architecture, each on a runner of that architecture: the services are compiled
@@ -42,6 +43,13 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
+
+      - name: Resolve the image prefix
+        # ghcr.io rejects a mixed-case repository name. metadata-action used to lowercase this on
+        # the way through; the builds now name the image directly, so it is lowercased here.
+        run: |
+          owner=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          echo "IMAGE_PREFIX=ghcr.io/$owner/withhuman" >> "$GITHUB_ENV"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -139,6 +147,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: Resolve the image prefix
+        # ghcr.io rejects a mixed-case repository name. metadata-action used to lowercase this on
+        # the way through; the builds now name the image directly, so it is lowercased here.
+        run: |
+          owner=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          echo "IMAGE_PREFIX=ghcr.io/$owner/withhuman" >> "$GITHUB_ENV"
+
       - name: Download the digests
         uses: actions/download-artifact@v4
         with:
