@@ -106,7 +106,36 @@ jobs:
         run: helm lint "$CHART" $CHART_VALUES
 
       - name: Render chart
-        run: helm template withhuman "$CHART" $CHART_VALUES --set ingress.enabled=true >/dev/null
+        run: |
+          helm template withhuman "$CHART" $CHART_VALUES --set ingress.enabled=true >/dev/null
+          helm template withhuman "$CHART" $CHART_VALUES --set externalSecret.enabled=true \
+            --set 'externalSecret.data[0].secretKey=k' --set 'externalSecret.data[0].remoteRef.key=k' >/dev/null
+
+      - name: Lint platform chart
+        run: |
+          helm lint infra/modules/platform/chart \
+            --set secretStore.provider.fake.data[0].key=k --set certificates.email=ops@example.com \
+            --set gitops.url=git@example.com:r.git --set gitops.secretKey=k --set gitops.include=staging.yaml
+
+  terraform:
+    name: Terraform
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Check formatting
+        run: terraform fmt -recursive -check infra
+
+      - name: Validate every root
+        run: |
+          for root in infra/modules/platform infra/aws/bootstrap infra/aws/modules/neo4j infra/aws/staging; do
+            terraform -chdir="$root" init -backend=false -input=false
+            terraform -chdir="$root" validate
+          done
 
   cargo-deny:
     name: Cargo Deny
