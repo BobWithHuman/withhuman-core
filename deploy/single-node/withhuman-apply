@@ -15,7 +15,7 @@ set -euo pipefail
 BASE_ENV=/etc/withhuman/base.env
 BOOTSTRAP_ENV=/etc/withhuman/bootstrap.env
 CHECKOUT=/opt/withhuman/core
-COMPOSE_FILE=$CHECKOUT/deploy/single-node/compose.yaml
+COMPOSE_FILE=$CHECKOUT/compose.yaml
 
 log() { printf '%s withhuman-apply: %s\n' "$(date -u +%FT%TZ)" "$*"; }
 die() { log "ERROR: $*" >&2; exit 1; }

@@ -99,6 +99,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      - name: Render personal Compose profile
+        run: docker compose --env-file .env.example config --quiet
+
       - name: Install Helm
         uses: azure/setup-helm@v4
 

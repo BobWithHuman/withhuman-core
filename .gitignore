@@ -1,6 +1,5 @@
 /target
 deploy/docker/.env
-deploy/single-node/.env
 /.env
 __pycache__/
 
