@@ -319,7 +319,7 @@ pub fn run_paths(call: &CallInfo) -> Vec<String> {
             }
             Some(_) => {
                 if let Some(program) = program(&words) {
-                    let path = resolve(cwd.as_deref(), &program);
+                    let path = normalize_path(&resolve(cwd.as_deref(), &program));
                     if !paths.contains(&path) {
                         paths.push(path);
                     }
@@ -329,6 +329,41 @@ pub fn run_paths(call: &CallInfo) -> Vec<String> {
         }
     }
     paths
+}
+
+/// `path` with `.` and `..` steps and repeated separators taken out, without asking the file
+/// system, so the same file reached two ways is named alike; a Windows path is kept as is.
+pub fn normalize_path(path: &str) -> String {
+    if !path.starts_with('/') {
+        return path.to_owned();
+    }
+    let mut steps: Vec<&str> = Vec::new();
+    for step in path.split('/') {
+        match step {
+            "" | "." => {}
+            ".." => {
+                steps.pop();
+            }
+            step => steps.push(step),
+        }
+    }
+    format!("/{}", steps.join("/"))
+}
+
+/// The program files a Call's hook attached, by normalized path: the files as they were just
+/// before the Call, which the Collector keeps in the Call payload's `programs`.
+pub fn attached_programs(payload: &Value) -> BTreeMap<String, String> {
+    payload
+        .get("programs")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|program| {
+            let path = program.get("path")?.as_str()?;
+            let content = program.get("content")?.as_str()?;
+            Some((normalize_path(path), content.to_owned()))
+        })
+        .collect()
 }
 
 /// The program file one simple command runs, as written.

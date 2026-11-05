@@ -487,9 +487,14 @@ impl DecisionRepository for Neo4jDecisionRepository {
         if let Some(path) = check::written_path(&call) {
             call.prior = self.last_seen(&request.session_id, order, &path).await?;
         }
-        // A program the Call runs is judged by its code, as the session last saw it.
+        // A program the Call runs is judged by its code: as the hook read it just before the
+        // Call, or else as the session last saw it.
+        let attached = check::attached_programs(&call_payload);
         for path in check::run_paths(&call) {
-            let code = self.last_seen(&request.session_id, order, &path).await?;
+            let code = match attached.get(&path) {
+                Some(code) => Some(code.clone()),
+                None => self.last_seen(&request.session_id, order, &path).await?,
+            };
             call.programs.insert(path, code);
         }
         Ok(TraceGraph {
