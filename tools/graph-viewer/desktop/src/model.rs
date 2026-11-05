@@ -24,11 +24,20 @@ pub struct Session {
 impl Session {
     /// The last part of the working folder, whether it uses / or \.
     pub fn folder(&self) -> String {
-        self.cwd.as_deref().unwrap_or("").split(['/', '\\']).rfind(|s| !s.is_empty()).unwrap_or("").to_owned()
+        self.cwd
+            .as_deref()
+            .unwrap_or("")
+            .split(['/', '\\'])
+            .rfind(|s| !s.is_empty())
+            .unwrap_or("")
+            .to_owned()
     }
 
     pub fn title(&self) -> &str {
-        self.prompt.as_deref().or(self.intent.as_deref()).unwrap_or("")
+        self.prompt
+            .as_deref()
+            .or(self.intent.as_deref())
+            .unwrap_or("")
     }
 
     pub fn flagged(&self) -> bool {
@@ -146,5 +155,8 @@ pub struct Token {
 
 /// A JSON document stored as a string property; anything unreadable reads as nothing.
 pub fn parse_json(value: Option<&Value>) -> Value {
-    value.and_then(Value::as_str).and_then(|s| serde_json::from_str(s).ok()).unwrap_or(Value::Null)
+    value
+        .and_then(Value::as_str)
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(Value::Null)
 }

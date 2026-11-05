@@ -44,7 +44,9 @@ pub fn SettingsSheet() -> Element {
             status.set(Status::Busy);
             spawn(async move {
                 status.set(match backend.test(change).await {
-                    Ok(Probe { sessions, ms }) => Status::Ok(format!("연결됨 · 세션 {sessions}개 · {ms}ms")),
+                    Ok(Probe { sessions, ms }) => {
+                        Status::Ok(format!("연결됨 · 세션 {sessions}개 · {ms}ms"))
+                    }
                     Err(e) => Status::Err(e),
                 });
             });
@@ -60,7 +62,11 @@ pub fn SettingsSheet() -> Element {
         Err(e) => status.set(Status::Err(e)),
     };
     let busy = status() == Status::Busy;
-    let hint = if current.has_password { "비워 두면 저장된 비밀번호 유지" } else { "" };
+    let hint = if current.has_password {
+        "비워 두면 저장된 비밀번호 유지"
+    } else {
+        ""
+    };
 
     rsx! {
         div {

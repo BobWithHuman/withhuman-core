@@ -29,7 +29,9 @@ pub struct Probe {
 
 /// The folder the app keeps its files in.
 pub fn config_dir() -> PathBuf {
-    dirs::config_dir().unwrap_or_else(std::env::temp_dir).join("dev.withhuman.viewer")
+    dirs::config_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("dev.withhuman.viewer")
 }
 
 impl Backend {
@@ -40,7 +42,12 @@ impl Backend {
             .timeout(Duration::from_secs(30))
             .build()
             .expect("HTTP client");
-        Self { client, settings: Mutex::new(Settings::load(&path)), path, demo: Mutex::new(Demo::load()) }
+        Self {
+            client,
+            settings: Mutex::new(Settings::load(&path)),
+            path,
+            demo: Mutex::new(Demo::load()),
+        }
     }
 
     fn current(&self) -> Settings {
@@ -52,7 +59,12 @@ impl Backend {
         let value = if settings.demo {
             Ok(self.demo.lock().expect("demo lock").sessions())
         } else {
-            Neo4j { client: &self.client, settings: &settings }.sessions().await
+            Neo4j {
+                client: &self.client,
+                settings: &settings,
+            }
+            .sessions()
+            .await
         };
         typed(value)
     }
@@ -62,7 +74,12 @@ impl Backend {
         let value = if settings.demo {
             self.demo.lock().expect("demo lock").graph(session)
         } else {
-            Neo4j { client: &self.client, settings: &settings }.graph(session).await
+            Neo4j {
+                client: &self.client,
+                settings: &settings,
+            }
+            .graph(session)
+            .await
         };
         typed(value)
     }
@@ -72,7 +89,12 @@ impl Backend {
         let value = if settings.demo {
             Ok(self.demo.lock().expect("demo lock").node(session, seq))
         } else {
-            Neo4j { client: &self.client, settings: &settings }.node(session, seq).await
+            Neo4j {
+                client: &self.client,
+                settings: &settings,
+            }
+            .node(session, seq)
+            .await
         };
         typed(value)
     }
@@ -83,13 +105,23 @@ impl Backend {
         let value = if settings.demo {
             self.demo.lock().expect("demo lock").delete(session)
         } else {
-            Neo4j { client: &self.client, settings: &settings }.delete_session(session).await
+            Neo4j {
+                client: &self.client,
+                settings: &settings,
+            }
+            .delete_session(session)
+            .await
         };
-        value.map(|v| v["deleted"].as_i64().unwrap_or(0)).map_err(|e| e.error)
+        value
+            .map(|v| v["deleted"].as_i64().unwrap_or(0))
+            .map_err(|e| e.error)
     }
 
     pub fn settings(&self) -> Public {
-        self.settings.lock().expect("settings lock").public(&self.path)
+        self.settings
+            .lock()
+            .expect("settings lock")
+            .public(&self.path)
     }
 
     pub fn save(&self, change: Change) -> Result<Public, String> {
@@ -103,7 +135,10 @@ impl Backend {
     /// Switches between the demo graph and Neo4j, keeping the connection as it is.
     pub fn set_demo(&self, demo: bool) -> Result<Public, String> {
         let mut settings = self.settings.lock().expect("settings lock");
-        let next = Settings { demo, ..settings.clone() };
+        let next = Settings {
+            demo,
+            ..settings.clone()
+        };
         next.save(&self.path)?;
         *settings = next;
         Ok(settings.public(&self.path))
@@ -113,16 +148,30 @@ impl Backend {
     pub async fn test(&self, change: Change) -> Result<Probe, String> {
         let candidate = self.settings.lock().expect("settings lock").apply(change)?;
         let started = Instant::now();
-        let db = Neo4j { client: &self.client, settings: &candidate };
+        let db = Neo4j {
+            client: &self.client,
+            settings: &candidate,
+        };
         let rows = db
-            .cypher("MATCH (s:Session) RETURN count(s) AS sessions", "READ", json!({}))
+            .cypher(
+                "MATCH (s:Session) RETURN count(s) AS sessions",
+                "READ",
+                json!({}),
+            )
             .await
             .map_err(|e| match e.status {
                 401 => "사용자 이름이나 비밀번호가 맞지 않습니다.".to_owned(),
                 _ => e.error,
             })?;
-        let sessions = rows.first().and_then(|r| r.get("sessions")).and_then(Value::as_i64).unwrap_or(0);
-        Ok(Probe { sessions, ms: started.elapsed().as_millis() })
+        let sessions = rows
+            .first()
+            .and_then(|r| r.get("sessions"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        Ok(Probe {
+            sessions,
+            ms: started.elapsed().as_millis(),
+        })
     }
 }
 

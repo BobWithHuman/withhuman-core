@@ -18,7 +18,9 @@ fn local(ms: i64) -> Option<chrono::DateTime<Local>> {
 
 /// "오늘", "어제", or the date, for the heading above a day's sessions.
 fn day_label(ms: i64) -> String {
-    let Some(at) = local(ms) else { return "날짜 없음".into() };
+    let Some(at) = local(ms) else {
+        return "날짜 없음".into();
+    };
     let today = Local::now().date_naive();
     let day = at.date_naive();
     if day == today {
@@ -37,16 +39,23 @@ fn day_label(ms: i64) -> String {
 }
 
 fn hhmm(ms: i64) -> String {
-    local(ms).map(|t| t.format("%H:%M").to_string()).unwrap_or_default()
+    local(ms)
+        .map(|t| t.format("%H:%M").to_string())
+        .unwrap_or_default()
 }
 
 fn matches(s: &Session, query: &str) -> bool {
     let query = query.trim().to_lowercase();
     query.is_empty()
-        || [s.prompt.as_deref(), s.intent.as_deref(), s.cwd.as_deref(), Some(s.id.as_str())]
-            .into_iter()
-            .flatten()
-            .any(|text| text.to_lowercase().contains(&query))
+        || [
+            s.prompt.as_deref(),
+            s.intent.as_deref(),
+            s.cwd.as_deref(),
+            Some(s.id.as_str()),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|text| text.to_lowercase().contains(&query))
 }
 
 #[component]
@@ -60,7 +69,11 @@ pub fn Sidebar() -> Element {
     let Load::Ready(list) = (state.sessions)() else {
         return rsx! { aside { class: "sidebar" } };
     };
-    let folders: BTreeSet<String> = list.iter().map(Session::folder).filter(|f| !f.is_empty()).collect();
+    let folders: BTreeSet<String> = list
+        .iter()
+        .map(Session::folder)
+        .filter(|f| !f.is_empty())
+        .collect();
     let prefs = state.prefs.read().clone();
     let shown: Vec<&Session> = list
         .iter()
@@ -68,7 +81,11 @@ pub fn Sidebar() -> Element {
         .filter(|s| folder().is_empty() || s.folder() == folder())
         .filter(|s| !flagged() || s.flagged())
         .collect();
-    let pinned: Vec<&Session> = shown.iter().copied().filter(|s| prefs.is_pinned(&s.id)).collect();
+    let pinned: Vec<&Session> = shown
+        .iter()
+        .copied()
+        .filter(|s| prefs.is_pinned(&s.id))
+        .collect();
     let mut days: Vec<(String, Vec<&Session>)> = Vec::new();
     for s in shown.iter().copied().filter(|s| !prefs.is_pinned(&s.id)) {
         let label = day_label(s.created_at.unwrap_or(0));
@@ -172,7 +189,10 @@ fn SessionItem(session: Session, pinned: bool, message: Signal<Option<(bool, Str
                         }
                         state.reload += 1;
                         let short: String = s.id.chars().take(8).collect();
-                        message.set(Some((false, format!("세션 {short}을 삭제했습니다 (노드 {deleted}개)."))));
+                        message.set(Some((
+                            false,
+                            format!("세션 {short}을 삭제했습니다 (노드 {deleted}개)."),
+                        )));
                     }
                     Err(e) => message.set(Some((true, format!("삭제하지 못했습니다: {e}")))),
                 }

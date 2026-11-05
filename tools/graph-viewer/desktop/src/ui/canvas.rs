@@ -29,7 +29,10 @@ fn highlight(model: &Model, selection: &Selection) -> serde_json::Value {
             json!({"select": format!("n{seq}"), "nodes": chain.nodes, "edges": chain.edges})
         }
         Selection::Edge { call, to, id } => {
-            let h = Highlight { nodes: vec![format!("n{call}"), format!("n{to}")], edges: vec![id.clone()] };
+            let h = Highlight {
+                nodes: vec![format!("n{call}"), format!("n{to}")],
+                edges: vec![id.clone()],
+            };
             json!({"select": id, "nodes": h.nodes, "edges": h.edges})
         }
     }
@@ -47,7 +50,9 @@ pub fn Canvas() -> Element {
         while let Ok(event) = eval.recv::<Event>().await {
             match event {
                 Event::Node { seq } => state.selected.set(Selection::Node(seq)),
-                Event::Edge { call, to, id } => state.selected.set(Selection::Edge { call, to, id }),
+                Event::Edge { call, to, id } => {
+                    state.selected.set(Selection::Edge { call, to, id })
+                }
                 Event::Blank => state.selected.set(Selection::None),
             }
         }
@@ -75,7 +80,8 @@ pub fn Canvas() -> Element {
     use_effect(move || {
         let selection = (state.selected)();
         if let Load::Ready(model) = &*state.graph.peek() {
-            let _ = eval.send(json!({"type": "highlight", "highlight": highlight(model, &selection)}));
+            let _ =
+                eval.send(json!({"type": "highlight", "highlight": highlight(model, &selection)}));
         }
     });
 
@@ -100,7 +106,11 @@ pub fn Toolbar() -> Element {
     let mut state = use_context::<AppState>();
     let view = (state.view)();
     let status = match &*state.graph.read() {
-        Load::Ready(model) => format!("노드 {} · 서브그래프 {}", model.nodes.len(), model.subgraph_count()),
+        Load::Ready(model) => format!(
+            "노드 {} · 서브그래프 {}",
+            model.nodes.len(),
+            model.subgraph_count()
+        ),
         _ => String::new(),
     };
     rsx! {

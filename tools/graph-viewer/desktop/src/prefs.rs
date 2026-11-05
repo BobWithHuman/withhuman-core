@@ -32,7 +32,10 @@ fn path() -> PathBuf {
 
 impl Prefs {
     pub fn load() -> Self {
-        fs::read_to_string(path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+        fs::read_to_string(path())
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default()
     }
 
     /// Best effort: losing a pin is not worth interrupting the user.

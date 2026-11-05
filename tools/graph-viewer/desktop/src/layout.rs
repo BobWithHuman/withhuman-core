@@ -38,7 +38,12 @@ pub struct Cause {
 
 impl Cause {
     pub fn id(&self) -> String {
-        format!("c{}-{}-{}", self.from, self.via, self.paragraph.map(|p| p.to_string()).unwrap_or_default())
+        format!(
+            "c{}-{}-{}",
+            self.from,
+            self.via,
+            self.paragraph.map(|p| p.to_string()).unwrap_or_default()
+        )
     }
 }
 
@@ -95,16 +100,24 @@ pub struct Highlight {
 impl Model {
     pub fn build(data: &GraphData) -> Self {
         let nodes = data.nodes.clone();
-        let index: HashMap<i64, usize> = nodes.iter().enumerate().map(|(i, n)| (n.seq(), i)).collect();
+        let index: HashMap<i64, usize> = nodes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.seq(), i))
+            .collect();
         let mut call_of = HashMap::new();
         let mut previous = HashMap::new();
         let mut call_order = Vec::new();
         for e in &data.edges {
-            let (Some(source), Some(target)) = (e.source, e.target) else { continue };
-            if e.kind == "RESULT_OF" && index.contains_key(&target)
-                && call_of.insert(source, target).is_none() {
-                    call_order.push(source);
-                }
+            let (Some(source), Some(target)) = (e.source, e.target) else {
+                continue;
+            };
+            if e.kind == "RESULT_OF"
+                && index.contains_key(&target)
+                && call_of.insert(source, target).is_none()
+            {
+                call_order.push(source);
+            }
             if e.kind == "NEXT" && !e.is_cause() {
                 previous.insert(target, source);
             }
@@ -113,7 +126,11 @@ impl Model {
         for result in call_order {
             results_of.entry(call_of[&result]).or_default().push(result);
         }
-        let shown = |seq: i64| index.get(&seq).is_some_and(|&i| !HIDDEN.contains(&nodes[i].kind.as_str()));
+        let shown = |seq: i64| {
+            index
+                .get(&seq)
+                .is_some_and(|&i| !HIDDEN.contains(&nodes[i].kind.as_str()))
+        };
         let rep = |seq: i64| {
             let mut seq = seq;
             for _ in 0..=50 {
@@ -129,8 +146,14 @@ impl Model {
         };
         let mut flows = Vec::new();
         let mut seen = HashSet::new();
-        for e in data.edges.iter().filter(|e| e.kind == "NEXT" && !e.is_cause()) {
-            let (Some(a), Some(b)) = (e.source.and_then(rep), e.target.and_then(rep)) else { continue };
+        for e in data
+            .edges
+            .iter()
+            .filter(|e| e.kind == "NEXT" && !e.is_cause())
+        {
+            let (Some(a), Some(b)) = (e.source.and_then(rep), e.target.and_then(rep)) else {
+                continue;
+            };
             if a != b && seen.insert((a, b)) {
                 flows.push((a, b));
             }
@@ -160,7 +183,17 @@ impl Model {
             subgraph_parent.insert(number, s.parent().unwrap_or("").to_owned());
         }
         let shown_list = nodes.iter().map(Node::seq).filter(|&s| shown(s)).collect();
-        Self { nodes, index, call_of, results_of, group_of, subgraph_parent, shown: shown_list, flows, causes }
+        Self {
+            nodes,
+            index,
+            call_of,
+            results_of,
+            group_of,
+            subgraph_parent,
+            shown: shown_list,
+            flows,
+            causes,
+        }
     }
 
     pub fn node(&self, seq: i64) -> Option<&Node> {
@@ -191,10 +224,17 @@ impl Model {
         let mut calls: Vec<i64> = list
             .iter()
             .copied()
-            .filter(|&s| !is(s, LEAD) && !(is(s, RESULT) && self.call_of.get(&s).is_some_and(|c| in_area.contains(c))))
+            .filter(|&s| {
+                !is(s, LEAD)
+                    && !(is(s, RESULT) && self.call_of.get(&s).is_some_and(|c| in_area.contains(c)))
+            })
             .collect();
         calls.sort_by_key(|&s| node(s).order());
-        let call_x = if leads.is_empty() { 0.0 } else { W + COLUMN_GAP };
+        let call_x = if leads.is_empty() {
+            0.0
+        } else {
+            W + COLUMN_GAP
+        };
         let result_x = call_x + W + COLUMN_GAP;
         let rows: Vec<(i64, Vec<i64>)> = calls
             .iter()
@@ -229,30 +269,54 @@ impl Model {
         } else {
             call_x
         } + W;
-        Area { items, width, height }
+        Area {
+            items,
+            width,
+            height,
+        }
     }
 
     fn areas(&self) -> BTreeMap<AreaKey, Area> {
         let mut lists: BTreeMap<AreaKey, Vec<i64>> = BTreeMap::new();
         for &seq in &self.shown {
-            let key = self.group_of.get(&seq).map_or(AreaKey::Loose, |&n| AreaKey::Number(n));
+            let key = self
+                .group_of
+                .get(&seq)
+                .map_or(AreaKey::Loose, |&n| AreaKey::Number(n));
             lists.entry(key).or_default().push(seq);
         }
-        lists.into_iter().map(|(key, list)| (key, self.arrange(&list))).collect()
+        lists
+            .into_iter()
+            .map(|(key, list)| (key, self.arrange(&list)))
+            .collect()
     }
 
-    fn area_elements(&self, key: &AreaKey, area: &Area, left: f64, top: f64, out: &mut Vec<Element>) {
+    fn area_elements(
+        &self,
+        key: &AreaKey,
+        area: &Area,
+        left: f64,
+        top: f64,
+        out: &mut Vec<Element>,
+    ) {
         let (id, label) = match key {
             AreaKey::Number(n) => (format!("g{n}"), format!("S{n}")),
             AreaKey::Loose => ("gloose".to_owned(), "서브그래프 없음".to_owned()),
         };
-        out.push(Element { group: "nodes", data: json!({"id": id, "area": true, "label": label}), position: None });
+        out.push(Element {
+            group: "nodes",
+            data: json!({"id": id, "area": true, "label": label}),
+            position: None,
+        });
         for &(seq, x, y) in &area.items {
             let node = self.node(seq).expect("placed node");
             out.push(Element {
                 group: "nodes",
                 data: node_data(node, &id),
-                position: Some(Position { x: left + x, y: top + y }),
+                position: Some(Position {
+                    x: left + x,
+                    y: top + y,
+                }),
             });
         }
     }
@@ -266,7 +330,11 @@ impl Model {
     }
 
     fn cause_edges(&self, on_screen: &HashSet<i64>, out: &mut Vec<Element>) {
-        for c in self.causes.iter().filter(|c| on_screen.contains(&c.from) && on_screen.contains(&c.to)) {
+        for c in self
+            .causes
+            .iter()
+            .filter(|c| on_screen.contains(&c.from) && on_screen.contains(&c.to))
+        {
             let label = format!(
                 "{}{}",
                 c.paragraph.map(|p| format!("¶{p} ")).unwrap_or_default(),
@@ -336,17 +404,31 @@ impl Model {
                 by_order.insert(number);
             }
         }
-        let mut children: BTreeMap<i64, Vec<i64>> = numbers.iter().map(|&n| (n, Vec::new())).collect();
+        let mut children: BTreeMap<i64, Vec<i64>> =
+            numbers.iter().map(|&n| (n, Vec::new())).collect();
         let mut pairs: Vec<(i64, i64)> = parent_of.iter().map(|(&c, &p)| (c, p)).collect();
         pairs.sort();
         for (child, parent) in pairs {
             children.get_mut(&parent).expect("parent area").push(child);
         }
-        let roots: Vec<i64> = numbers.iter().copied().filter(|n| !parent_of.contains_key(n)).collect();
+        let roots: Vec<i64> = numbers
+            .iter()
+            .copied()
+            .filter(|n| !parent_of.contains_key(n))
+            .collect();
 
         // A subtree is as wide as its children side by side, or its own area.
-        fn measure(n: i64, areas: &BTreeMap<i64, Area>, children: &BTreeMap<i64, Vec<i64>>, width: &mut HashMap<i64, f64>) -> f64 {
-            let kids: f64 = children[&n].iter().map(|&c| measure(c, areas, children, width) + GAP_X).sum::<f64>() - GAP_X;
+        fn measure(
+            n: i64,
+            areas: &BTreeMap<i64, Area>,
+            children: &BTreeMap<i64, Vec<i64>>,
+            width: &mut HashMap<i64, f64>,
+        ) -> f64 {
+            let kids: f64 = children[&n]
+                .iter()
+                .map(|&c| measure(c, areas, children, width) + GAP_X)
+                .sum::<f64>()
+                - GAP_X;
             let w = areas[&n].width.max(kids);
             width.insert(n, w);
             w
@@ -359,17 +441,30 @@ impl Model {
             depth: HashMap<i64, usize>,
             left: HashMap<i64, f64>,
         }
-        fn place(n: i64, start: f64, level: usize, areas: &BTreeMap<i64, Area>, children: &BTreeMap<i64, Vec<i64>>, width: &HashMap<i64, f64>, out: &mut Placed) {
+        fn place(
+            n: i64,
+            start: f64,
+            level: usize,
+            areas: &BTreeMap<i64, Area>,
+            children: &BTreeMap<i64, Vec<i64>>,
+            width: &HashMap<i64, f64>,
+            out: &mut Placed,
+        ) {
             out.depth.insert(n, level);
-            out.left.insert(n, start + (width[&n] - areas[&n].width) / 2.0);
-            let kids_width: f64 = children[&n].iter().map(|c| width[c] + GAP_X).sum::<f64>() - GAP_X;
+            out.left
+                .insert(n, start + (width[&n] - areas[&n].width) / 2.0);
+            let kids_width: f64 =
+                children[&n].iter().map(|c| width[c] + GAP_X).sum::<f64>() - GAP_X;
             let mut x = start + (width[&n] - kids_width) / 2.0;
             for &c in &children[&n] {
                 place(c, x, level + 1, areas, children, width, out);
                 x += width[&c] + GAP_X;
             }
         }
-        let mut placed = Placed { depth: HashMap::new(), left: HashMap::new() };
+        let mut placed = Placed {
+            depth: HashMap::new(),
+            left: HashMap::new(),
+        };
         let mut x = 0.0;
         for &root in &roots {
             place(root, x, 0, &areas, &children, &width, &mut placed);
@@ -388,15 +483,25 @@ impl Model {
 
         let mut out = Vec::new();
         for &n in &numbers {
-            self.area_elements(&AreaKey::Number(n), &areas[&n], placed.left[&n], level_top[placed.depth[&n]], &mut out);
+            self.area_elements(
+                &AreaKey::Number(n),
+                &areas[&n],
+                placed.left[&n],
+                level_top[placed.depth[&n]],
+                &mut out,
+            );
         }
-        let on_screen: HashSet<i64> = areas.values().flat_map(|a| a.items.iter().map(|i| i.0)).collect();
+        let on_screen: HashSet<i64> = areas
+            .values()
+            .flat_map(|a| a.items.iter().map(|i| i.0))
+            .collect();
         for &(from_seq, to_seq) in &self.flows {
             if !on_screen.contains(&from_seq) || !on_screen.contains(&to_seq) {
                 continue;
             }
             let (from, to) = (area_of(from_seq), area_of(to_seq));
-            let joins = from == to || to.is_some_and(|t| by_order.contains(&t) && parent_of.get(&t).copied() == from);
+            let joins = from == to
+                || to.is_some_and(|t| by_order.contains(&t) && parent_of.get(&t).copied() == from);
             if joins {
                 out.push(Self::flow_edge(from_seq, to_seq));
             }
@@ -503,9 +608,20 @@ pub fn label(node: &Node) -> String {
         "Request" => format!("{} {}", icon("Request"), clip(&text(&s.prompt), 26)),
         "Intent" => format!("{} {}", icon("Intent"), clip(&text(&s.intent), 26)),
         "Message" => format!("{} {}", icon("Message"), clip(&text(&s.text), 26)),
-        "Call" => clip(&format!("{} {}", if tool.is_empty() { "Call" } else { &tool }, text(&s.brief)), 28),
+        "Call" => clip(
+            &format!(
+                "{} {}",
+                if tool.is_empty() { "Call" } else { &tool },
+                text(&s.brief)
+            ),
+            28,
+        ),
         "Segment" => format!("{} {}", icon("Segment"), clip(&format!("{tool} 결과"), 26)),
-        "Error" => format!("{} {}", icon("Error"), clip(&format!("{tool} 오류 {}", text(&s.error)), 26)),
+        "Error" => format!(
+            "{} {}",
+            icon("Error"),
+            clip(&format!("{tool} 오류 {}", text(&s.error)), 26)
+        ),
         "ConfigChange" => format!("{} {}", icon("ConfigChange"), clip(&text(&s.file_path), 24)),
         kind => format!("{} {kind}", icon(kind)).trim().to_owned(),
     }
@@ -514,7 +630,11 @@ pub fn label(node: &Node) -> String {
 /// Whitespace folded to single spaces, cut to `n` characters with an ellipsis.
 pub fn clip(text: &str, n: usize) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.chars().count() > n { format!("{}…", flat.chars().take(n).collect::<String>()) } else { flat }
+    if flat.chars().count() > n {
+        format!("{}…", flat.chars().take(n).collect::<String>())
+    } else {
+        flat
+    }
 }
 
 /// A probability with at most two decimals and no trailing zeros.
@@ -546,7 +666,10 @@ mod tests {
     fn places_the_injection_session_like_the_page() {
         let model = fixture("demo-injection-0001");
         let tree = model.elements(View::Tree);
-        assert_eq!(tree.iter().filter(|e| e.data.get("seq").is_some()).count(), 16);
+        assert_eq!(
+            tree.iter().filter(|e| e.data.get("seq").is_some()).count(),
+            16
+        );
         assert_eq!(ids(&tree, "flow").len(), 12);
         assert_eq!(ids(&tree, "cause").len(), 7);
         let flow = model.elements(View::Flow);
@@ -557,7 +680,13 @@ mod tests {
     #[test]
     fn tree_hangs_subgraphs_under_their_parent() {
         let tree = fixture("demo-injection-0001").elements(View::Tree);
-        let y = |seq: i64| tree.iter().find(|e| e.data["seq"] == seq).and_then(|e| e.position).unwrap().y;
+        let y = |seq: i64| {
+            tree.iter()
+                .find(|e| e.data["seq"] == seq)
+                .and_then(|e| e.position)
+                .unwrap()
+                .y
+        };
         // S1's prompt above S2's denied Edit, above S4's closing message.
         assert!(y(1) < y(7));
         assert!(y(7) < y(16));

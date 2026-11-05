@@ -25,7 +25,16 @@ fn main() {
         .with_title("WithHuman Viewer")
         .with_inner_size(LogicalSize::new(1440.0, 900.0))
         .with_min_inner_size(LogicalSize::new(1000.0, 620.0));
-    let head = format!("<meta charset=\"utf-8\"><style>{}</style><script>{CYTOSCAPE}</script>", ui::CSS);
-    let config = Config::new().with_window(window).with_menu(menu::build()).with_custom_head(head);
-    dioxus::LaunchBuilder::desktop().with_cfg(config).with_context(backend).launch(ui::App);
+    let head = format!(
+        "<meta charset=\"utf-8\"><style>{}</style><script>{CYTOSCAPE}</script>",
+        ui::CSS
+    );
+    let config = Config::new()
+        .with_window(window)
+        .with_menu(menu::build())
+        .with_custom_head(head);
+    dioxus::LaunchBuilder::desktop()
+        .with_cfg(config)
+        .with_context(backend)
+        .launch(ui::App);
 }

@@ -33,7 +33,11 @@ pub enum Selection {
     None,
     Node(i64),
     /// A cause edge, from a Call to what it was traced to.
-    Edge { call: i64, to: i64, id: String },
+    Edge {
+        call: i64,
+        to: i64,
+        id: String,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -87,7 +91,11 @@ impl AppState {
 pub fn App() -> Element {
     let backend = use_context::<Arc<Backend>>();
     let prefs = use_hook(Prefs::load);
-    let view = if prefs.flow_view { View::Flow } else { View::Tree };
+    let view = if prefs.flow_view {
+        View::Flow
+    } else {
+        View::Tree
+    };
     let width = prefs.inspector_width.unwrap_or(INSPECTOR_WIDTH.1);
     let mut state = use_context_provider(|| AppState {
         public: Signal::new(backend.settings()),
@@ -178,7 +186,9 @@ fn use_menu(backend: Arc<Backend>, mut state: AppState) {
             state.refresh += 1;
         }
         menu::SEARCH => {
-            document::eval("const s = document.getElementById('session-search'); s?.focus(); s?.select();");
+            document::eval(
+                "const s = document.getElementById('session-search'); s?.focus(); s?.select();",
+            );
         }
         menu::TREE => state.view.set(View::Tree),
         menu::FLOW => state.view.set(View::Flow),
@@ -195,13 +205,18 @@ fn use_window_place(mut state: AppState) {
     use dioxus::desktop::{LogicalPosition, LogicalSize};
 
     use_hook(move || {
-        let Some(place) = state.prefs.peek().window else { return };
+        let Some(place) = state.prefs.peek().window else {
+            return;
+        };
         let window = dioxus::desktop::window();
         let on_screen = window.available_monitors().any(|m| {
             let scale = m.scale_factor();
             let at = m.position().to_logical::<f64>(scale);
             let size = m.size().to_logical::<f64>(scale);
-            place.x + 80.0 > at.x && place.x < at.x + size.width - 80.0 && place.y >= at.y - 10.0 && place.y < at.y + size.height - 80.0
+            place.x + 80.0 > at.x
+                && place.x < at.x + size.width - 80.0
+                && place.y >= at.y - 10.0
+                && place.y < at.y + size.height - 80.0
         });
         window.set_inner_size(LogicalSize::new(place.width, place.height));
         if on_screen {
@@ -211,7 +226,13 @@ fn use_window_place(mut state: AppState) {
 
     let mut moves = use_signal(|| 0u64);
     dioxus::desktop::use_wry_event_handler(move |event, _| {
-        if !matches!(event, Event::WindowEvent { event: WindowEvent::Moved(_) | WindowEvent::Resized(_), .. }) {
+        if !matches!(
+            event,
+            Event::WindowEvent {
+                event: WindowEvent::Moved(_) | WindowEvent::Resized(_),
+                ..
+            }
+        ) {
             return;
         }
         moves += 1;
@@ -226,10 +247,17 @@ fn use_window_place(mut state: AppState) {
                 return;
             }
             let scale = window.scale_factor();
-            let (Ok(at), size) = (window.outer_position(), window.inner_size()) else { return };
+            let (Ok(at), size) = (window.outer_position(), window.inner_size()) else {
+                return;
+            };
             let at = at.to_logical::<f64>(scale);
             let size = size.to_logical::<f64>(scale);
-            let place = WindowPlace { x: at.x, y: at.y, width: size.width, height: size.height };
+            let place = WindowPlace {
+                x: at.x,
+                y: at.y,
+                width: size.width,
+                height: size.height,
+            };
             if state.prefs.peek().window != Some(place) {
                 state.prefs.write().window = Some(place);
             }
@@ -251,8 +279,16 @@ fn use_loaders(backend: Arc<Backend>, mut state: AppState) {
             match found {
                 Ok(list) => {
                     // Keep the open session; else the last one opened, else the newest.
-                    let open = current.peek().clone().filter(|id| list.iter().any(|s| &s.id == id));
-                    let last = state.prefs.peek().last_session.clone().filter(|id| list.iter().any(|s| &s.id == id));
+                    let open = current
+                        .peek()
+                        .clone()
+                        .filter(|id| list.iter().any(|s| &s.id == id));
+                    let last = state
+                        .prefs
+                        .peek()
+                        .last_session
+                        .clone()
+                        .filter(|id| list.iter().any(|s| &s.id == id));
                     let pick = open.or(last).or_else(|| list.first().map(|s| s.id.clone()));
                     if *current.peek() != pick {
                         current.set(pick);

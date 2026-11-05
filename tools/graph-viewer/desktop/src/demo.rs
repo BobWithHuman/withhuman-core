@@ -30,25 +30,41 @@ impl Demo {
     }
 
     pub fn graph(&self, session: &str) -> Result<Value, ApiError> {
-        self.data["graphs"].get(session).cloned().ok_or_else(|| ApiError::new(404, "세션을 찾지 못했습니다."))
+        self.data["graphs"]
+            .get(session)
+            .cloned()
+            .ok_or_else(|| ApiError::new(404, "세션을 찾지 못했습니다."))
     }
 
     pub fn node(&self, session: &str, seq: i64) -> Value {
-        self.data["nodes"][session].get(seq.to_string()).cloned().unwrap_or(Value::Null)
+        self.data["nodes"][session]
+            .get(seq.to_string())
+            .cloned()
+            .unwrap_or(Value::Null)
     }
 
     #[allow(dead_code)] // 조건 비교 화면(3단계)이 쓴다.
     pub fn calls(&self, sessions: &[String]) -> Value {
         let found: Map<String, Value> = sessions
             .iter()
-            .map(|s| (s.clone(), self.data["calls"].get(s).cloned().unwrap_or_else(|| json!([]))))
+            .map(|s| {
+                (
+                    s.clone(),
+                    self.data["calls"]
+                        .get(s)
+                        .cloned()
+                        .unwrap_or_else(|| json!([])),
+                )
+            })
             .collect();
         Value::Object(found)
     }
 
     /// Forgets a session until the app restarts, with the same refusal as Neo4j for an active one.
     pub fn delete(&mut self, session: &str) -> Result<Value, ApiError> {
-        let list = self.data["sessions"].as_array_mut().ok_or_else(|| ApiError::new(500, "데모 데이터가 손상됐습니다."))?;
+        let list = self.data["sessions"]
+            .as_array_mut()
+            .ok_or_else(|| ApiError::new(500, "데모 데이터가 손상됐습니다."))?;
         let index = list
             .iter()
             .position(|s| s["id"] == session)
@@ -56,7 +72,9 @@ impl Demo {
         let s = &list[index];
         check_idle(s["last_at"].as_i64().or_else(|| s["created_at"].as_i64()))?;
         list.remove(index);
-        let deleted = self.data["graphs"][session]["nodes"].as_array().map_or(0, Vec::len);
+        let deleted = self.data["graphs"][session]["nodes"]
+            .as_array()
+            .map_or(0, Vec::len);
         for key in ["graphs", "nodes", "calls"] {
             if let Some(map) = self.data[key].as_object_mut() {
                 map.remove(session);
@@ -83,7 +101,13 @@ mod tests {
             assert_eq!(nodes.len() as i64, s["nodes"].as_i64().unwrap());
             let seq = nodes[0]["props"]["seq"].as_i64().unwrap();
             assert_eq!(demo.node(id, seq)["kind"], nodes[0]["kind"]);
-            assert!(graph["edges"].as_array().unwrap().iter().any(|e| e["props"]["kind"] == "cause"));
+            assert!(
+                graph["edges"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|e| e["props"]["kind"] == "cause")
+            );
         }
     }
 }

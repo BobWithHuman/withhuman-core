@@ -84,7 +84,8 @@ pub fn build() -> Menu {
         ],
     )
     .expect("window menu");
-    menu.append_items(&[&app, &edit, &view, &window]).expect("menu bar");
+    menu.append_items(&[&app, &edit, &view, &window])
+        .expect("menu bar");
     menu
 }
 
@@ -94,7 +95,14 @@ mod tests {
 
     #[test]
     fn shortcuts_parse() {
-        for s in ["CmdOrCtrl+Comma", "CmdOrCtrl+F", "CmdOrCtrl+1", "CmdOrCtrl+2", "CmdOrCtrl+0", "CmdOrCtrl+R"] {
+        for s in [
+            "CmdOrCtrl+Comma",
+            "CmdOrCtrl+F",
+            "CmdOrCtrl+1",
+            "CmdOrCtrl+2",
+            "CmdOrCtrl+0",
+            "CmdOrCtrl+R",
+        ] {
             assert!(Accelerator::from_str(s).is_ok(), "{s}");
         }
     }

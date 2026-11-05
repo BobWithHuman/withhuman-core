@@ -22,7 +22,8 @@ pub struct Settings {
 impl Default for Settings {
     /// The same defaults as `server.py`, so a local `deploy/docker` stack answers out of the box.
     fn default() -> Self {
-        let env = |key: &str, fallback: &str| std::env::var(key).unwrap_or_else(|_| fallback.to_owned());
+        let env =
+            |key: &str, fallback: &str| std::env::var(key).unwrap_or_else(|_| fallback.to_owned());
         Self {
             neo4j_url: env("NEO4J_URL", "http://127.0.0.1:7474"),
             database: env("NEO4J_DATABASE", "neo4j"),
@@ -68,7 +69,9 @@ mod keychain {
 
     pub fn set(account: &str, password: &str) -> Result<(), String> {
         let entry = entry(account).ok_or("키체인을 열지 못했습니다.")?;
-        entry.set_password(password).map_err(|e| format!("비밀번호를 키체인에 저장하지 못했습니다: {e}"))
+        entry
+            .set_password(password)
+            .map_err(|e| format!("비밀번호를 키체인에 저장하지 못했습니다: {e}"))
     }
 }
 
@@ -110,10 +113,14 @@ impl Settings {
     /// moved to the keychain and taken out of the file. `VIEWER_MOCK=1` opens the demo
     /// whatever was saved, without changing the file.
     pub fn load(path: &Path) -> Self {
-        let file = fs::read_to_string(path).ok().and_then(|text| serde_json::from_str::<Self>(&text).ok());
+        let file = fs::read_to_string(path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<Self>(&text).ok());
         let mut settings = match file {
             Some(mut saved) => {
-                if !saved.password.is_empty() && keychain::set(&saved.account(), &saved.password).is_ok() {
+                if !saved.password.is_empty()
+                    && keychain::set(&saved.account(), &saved.password).is_ok()
+                {
                     let _ = saved.write(path);
                 } else if let Some(password) = keychain::get(&saved.account()) {
                     saved.password = password;
@@ -132,7 +139,9 @@ impl Settings {
 
     /// Saves the password to the keychain and the rest to the file.
     pub fn save(&self, path: &Path) -> Result<(), String> {
-        if !self.password.is_empty() && keychain::get(&self.account()).as_deref() != Some(&self.password) {
+        if !self.password.is_empty()
+            && keychain::get(&self.account()).as_deref() != Some(&self.password)
+        {
             keychain::set(&self.account(), &self.password)?;
         }
         self.write(path)
@@ -147,7 +156,8 @@ impl Settings {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+                .map_err(|e| e.to_string())?;
         }
         Ok(())
     }
@@ -159,11 +169,15 @@ mod tests {
 
     #[test]
     fn the_file_never_holds_the_password() {
-        let settings = Settings { password: "secret".into(), ..Settings::default() };
+        let settings = Settings {
+            password: "secret".into(),
+            ..Settings::default()
+        };
         let text = serde_json::to_string(&settings).unwrap();
         assert!(!text.contains("secret"));
         // An old file with a password still reads, so the password can be moved.
-        let old: Settings = serde_json::from_str(r#"{"neo4j_url":"http://x","password":"old"}"#).unwrap();
+        let old: Settings =
+            serde_json::from_str(r#"{"neo4j_url":"http://x","password":"old"}"#).unwrap();
         assert_eq!(old.password, "old");
     }
 }

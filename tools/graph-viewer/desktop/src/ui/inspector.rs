@@ -60,14 +60,18 @@ fn verdict_text(decision: &str) -> &str {
 fn subgraph_name(key: &str) -> String {
     match key {
         "none" | "" => "해당 없음".into(),
-        k if k.starts_with('s') && k[1..].chars().all(|c| c.is_ascii_digit()) => format!("S{}", &k[1..]),
+        k if k.starts_with('s') && k[1..].chars().all(|c| c.is_ascii_digit()) => {
+            format!("S{}", &k[1..])
+        }
         k => k.to_owned(),
     }
 }
 
 /// "#7 Edit src/app.py": a node by its number and caption.
 fn node_name(model: &Model, seq: i64) -> String {
-    model.node(seq).map_or_else(|| format!("#{seq}"), |n| format!("#{seq} {}", label(n)))
+    model
+        .node(seq)
+        .map_or_else(|| format!("#{seq}"), |n| format!("#{seq} {}", label(n)))
 }
 
 /// The shares of the Jev cause answer: the prompt, a tool result, or neither.
@@ -84,8 +88,16 @@ fn cause_shares(trace: &Value) -> Option<[(&'static str, f64); 3]> {
     let mut shares = [("request", 0.0), ("segment", 0.0), ("none", 0.0)];
     for (option, p) in probabilities {
         let p = p.as_f64().unwrap_or(0.0);
-        let is_segment = option.strip_prefix('g').is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit()));
-        let slot = if is_segment { 1 } else if option == "none" { 2 } else { 0 };
+        let is_segment = option
+            .strip_prefix('g')
+            .is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit()));
+        let slot = if is_segment {
+            1
+        } else if option == "none" {
+            2
+        } else {
+            0
+        };
         shares[slot].1 += p;
     }
     Some(shares)
@@ -122,7 +134,8 @@ pub fn Inspector() -> Element {
         let backend = backend.clone();
         spawn(async move {
             let found = backend.node(&session, seq).await;
-            if !matches!(&*state.selected.peek(), Selection::Node(s) | Selection::Edge { to: s, .. } if *s == seq) {
+            if !matches!(&*state.selected.peek(), Selection::Node(s) | Selection::Edge { to: s, .. } if *s == seq)
+            {
                 return;
             }
             detail.set(Some(match found {
@@ -144,26 +157,48 @@ pub fn Inspector() -> Element {
                 p { class: "muted", "Call을 누르면 그 Call이 어디서 비롯됐는지 원인선이 빨갛게 이어집니다. 원인선을 누르면 원인이 된 문단을 봅니다." }
             }
         },
-        Selection::Node(seq) => rsx! { NodeView { key: "{seq}", model: model.clone(), seq, detail } },
-        Selection::Edge { call, to, .. } => rsx! { EdgeView { model: model.clone(), call, to, detail } },
+        Selection::Node(seq) => {
+            rsx! { NodeView { key: "{seq}", model: model.clone(), seq, detail } }
+        }
+        Selection::Edge { call, to, .. } => {
+            rsx! { EdgeView { model: model.clone(), call, to, detail } }
+        }
     };
     rsx! { aside { class: "inspector", style: "width: {width}px", {body} } }
 }
 
 #[component]
-fn NodeView(model: Arc<Model>, seq: i64, detail: Signal<Option<Load<Option<NodeDetail>>>>) -> Element {
+fn NodeView(
+    model: Arc<Model>,
+    seq: i64,
+    detail: Signal<Option<Load<Option<NodeDetail>>>>,
+) -> Element {
     let Some(node) = model.node(seq).cloned() else {
         return rsx! { p { class: "muted", "이 노드는 그래프에 없습니다." } };
     };
     let is_call = node.decision().is_some() || node.props.contains_key("trace_error");
-    let mut tab = use_signal(move || if is_call { Tab::Verdict } else { Tab::Paragraphs });
+    let mut tab = use_signal(move || {
+        if is_call {
+            Tab::Verdict
+        } else {
+            Tab::Paragraphs
+        }
+    });
     let trace = parse_json(node.props.get("trace_json"));
     let tabs: Vec<(Tab, &str)> = if is_call {
-        vec![(Tab::Verdict, "판정"), (Tab::Cause, "원인"), (Tab::Paragraphs, "문단"), (Tab::Props, "속성")]
+        vec![
+            (Tab::Verdict, "판정"),
+            (Tab::Cause, "원인"),
+            (Tab::Paragraphs, "문단"),
+            (Tab::Props, "속성"),
+        ]
     } else {
         vec![(Tab::Paragraphs, "문단"), (Tab::Props, "속성")]
     };
-    let subgraph = model.subgraph_of(seq).map(|n| format!("S{n}")).unwrap_or_default();
+    let subgraph = model
+        .subgraph_of(seq)
+        .map(|n| format!("S{n}"))
+        .unwrap_or_default();
     rsx! {
         div { class: "inspector-head",
             span { class: "kind", "#{seq} {node.kind}" }
@@ -190,7 +225,13 @@ fn NodeView(model: Arc<Model>, seq: i64, detail: Signal<Option<Load<Option<NodeD
 
 #[component]
 fn Verdict(fields: serde_json::Map<String, Value>, trace: Value) -> Element {
-    let text = |key: &str| fields.get(key).and_then(Value::as_str).unwrap_or("").to_owned();
+    let text = |key: &str| {
+        fields
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned()
+    };
     let decision = text("decision");
     let rule = text("decision_rule");
     let reason = text("decision_reason");
@@ -248,7 +289,13 @@ fn Cause(model: Arc<Model>, trace: Value) -> Element {
         .as_array()
         .map(|list| {
             list.iter()
-                .filter_map(|x| Some((x["seq"].as_i64()?, x["paragraph"].as_i64(), x["probability"].as_f64())))
+                .filter_map(|x| {
+                    Some((
+                        x["seq"].as_i64()?,
+                        x["paragraph"].as_i64(),
+                        x["probability"].as_f64(),
+                    ))
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -294,16 +341,28 @@ fn Cause(model: Arc<Model>, trace: Value) -> Element {
 }
 
 #[component]
-fn Paragraphs(model: Arc<Model>, seq: i64, detail: Signal<Option<Load<Option<NodeDetail>>>>, only: Option<i64>) -> Element {
+fn Paragraphs(
+    model: Arc<Model>,
+    seq: i64,
+    detail: Signal<Option<Load<Option<NodeDetail>>>>,
+    only: Option<i64>,
+) -> Element {
     let state = use_context::<AppState>();
     let causes = model.paragraph_causes(seq);
     let d = match detail() {
         Some(Load::Ready(Some(d))) => d,
         Some(Load::Failed(e)) => return rsx! { p { class: "error", "{e}" } },
-        Some(Load::Ready(None)) => return rsx! { p { class: "muted", "이 노드의 기록을 찾지 못했습니다." } },
+        Some(Load::Ready(None)) => {
+            return rsx! { p { class: "muted", "이 노드의 기록을 찾지 못했습니다." } };
+        }
         _ => return rsx! { p { class: "muted", "불러오는 중…" } },
     };
-    let paragraphs: Vec<_> = d.paragraphs.iter().filter(|p| only.is_none() || p.index == only).cloned().collect();
+    let paragraphs: Vec<_> = d
+        .paragraphs
+        .iter()
+        .filter(|p| only.is_none() || p.index == only)
+        .cloned()
+        .collect();
     if paragraphs.is_empty() && d.tokens.is_empty() {
         return rsx! { p { class: "muted", "문단이 없습니다." } };
     }
@@ -354,7 +413,10 @@ fn token_value(value: &Value) -> String {
 }
 
 #[component]
-fn Props(detail: Signal<Option<Load<Option<NodeDetail>>>>, fallback: serde_json::Map<String, Value>) -> Element {
+fn Props(
+    detail: Signal<Option<Load<Option<NodeDetail>>>>,
+    fallback: serde_json::Map<String, Value>,
+) -> Element {
     let props = match detail() {
         Some(Load::Ready(Some(d))) => d.props,
         _ => fallback,
@@ -391,19 +453,37 @@ fn PropValue(name: String, value: Value) -> Element {
     match &value {
         Value::Number(n) if name.ends_with("_at") => {
             let at = n.as_i64().and_then(chrono::DateTime::from_timestamp_millis);
-            let local = at.map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string()).unwrap_or_default();
+            let local = at
+                .map(|t| {
+                    t.with_timezone(&chrono::Local)
+                        .format("%Y-%m-%d %H:%M:%S")
+                        .to_string()
+                })
+                .unwrap_or_default();
             rsx! { "{n} " span { class: "muted", "({local})" } }
         }
         Value::String(s) => rsx! { pre { class: "inline", "{s}" } },
-        Value::Object(_) | Value::Array(_) => rsx! { pre { "{serde_json::to_string_pretty(&value).unwrap_or_default()}" } },
+        Value::Object(_) | Value::Array(_) => {
+            rsx! { pre { "{serde_json::to_string_pretty(&value).unwrap_or_default()}" } }
+        }
         other => rsx! { "{other}" },
     }
 }
 
 #[component]
-fn EdgeView(model: Arc<Model>, call: i64, to: i64, detail: Signal<Option<Load<Option<NodeDetail>>>>) -> Element {
+fn EdgeView(
+    model: Arc<Model>,
+    call: i64,
+    to: i64,
+    detail: Signal<Option<Load<Option<NodeDetail>>>>,
+) -> Element {
     let state = use_context::<AppState>();
-    let causes: Vec<_> = model.causes.iter().filter(|c| c.from == call && c.to == to).cloned().collect();
+    let causes: Vec<_> = model
+        .causes
+        .iter()
+        .filter(|c| c.from == call && c.to == to)
+        .cloned()
+        .collect();
     let paragraph = causes.iter().find_map(|c| c.paragraph);
     let probability = causes.iter().find_map(|c| c.probability);
     let (m1, m2) = (model.clone(), model.clone());
