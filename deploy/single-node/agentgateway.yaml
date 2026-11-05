@@ -9,6 +9,12 @@ gateways:
     port: 3000
 
 routes:
+  - name: health
+    matches:
+      - path:
+          pathPrefix: /healthz
+    backends:
+      - host: collector:8080
   - name: claude-hooks
     matches:
       - path:

@@ -1,0 +1,5 @@
+domain_name    = "withhuman.example.com"
+route53_zone_id = "Z0123456789EXAMPLE"
+
+# Track main for automatic updates, or pin a release tag/commit for stability.
+source_ref = "main"

@@ -20,14 +20,13 @@ install -d -m 0700 /etc/withhuman
 git clone "${repository_url}" /opt/withhuman/core
 git -C /opt/withhuman/core -c advice.detachedHead=false checkout --force "${source_ref}"
 
-# Terraform owns this file; withhuman-apply reads it and never writes it.
-cat > /etc/withhuman/base.env <<'BASE_ENV'
-# Written by Terraform (infra/aws/modules/single-node) and read by withhuman-apply, which sources
-# it, adds the secrets and the resolved image tag to its own environment, and hands that to Compose.
-# Secrets are never written to disk, so this file holds nothing sensitive.
-${base_env}
-BASE_ENV
-chmod 0600 /etc/withhuman/base.env
+# Stable bootstrap coordinates only. Runtime settings live in Parameter Store and withhuman-apply
+# refreshes them before every convergence.
+cat > /etc/withhuman/bootstrap.env <<'BOOTSTRAP_ENV'
+AWS_REGION='${aws_region}'
+CONFIG_PARAMETER_NAME='${config_parameter_name}'
+BOOTSTRAP_ENV
+chmod 0600 /etc/withhuman/bootstrap.env
 
 install -m 0755 /opt/withhuman/core/deploy/single-node/withhuman-apply /usr/local/bin/withhuman-apply
 for unit in withhuman.service withhuman-update.service withhuman-update.timer; do

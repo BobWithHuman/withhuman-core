@@ -13,6 +13,7 @@
 set -euo pipefail
 
 BASE_ENV=/etc/withhuman/base.env
+BOOTSTRAP_ENV=/etc/withhuman/bootstrap.env
 CHECKOUT=/opt/withhuman/core
 COMPOSE_FILE=$CHECKOUT/deploy/single-node/compose.yaml
 
@@ -26,16 +27,40 @@ if [[ ${1:-up} == down ]]; then
   exit 0
 fi
 
-[[ -r $BASE_ENV ]] || die "$BASE_ENV is missing; the instance did not finish its first boot"
+[[ -r $BOOTSTRAP_ENV ]] || die "$BOOTSTRAP_ENV is missing; the instance did not finish its first boot"
 # Terraform writes this file with shell quoting, and bash is its only reader.
 set -a
 # shellcheck source=/dev/null
-. "$BASE_ENV"
+. "$BOOTSTRAP_ENV"
 set +a
 
 : "${AWS_REGION:?AWS_REGION is required in base.env}"
+: "${CONFIG_PARAMETER_NAME:?CONFIG_PARAMETER_NAME is required in bootstrap.env}"
+
+# Terraform owns the non-secret runtime settings in Parameter Store. Refreshing them on every run
+# means changing a ref, schedule-independent setting, or resource size does not replace the EC2
+# instance or rely on cloud-init running twice.
+aws ssm get-parameter --region "$AWS_REGION" --name "$CONFIG_PARAMETER_NAME" \
+  --query Parameter.Value --output text >"$BASE_ENV.new" || die "cannot read $CONFIG_PARAMETER_NAME"
+chmod 0600 "$BASE_ENV.new"
+mv "$BASE_ENV.new" "$BASE_ENV"
+# shellcheck source=/dev/null
+. "$BASE_ENV"
+
 : "${ENGINE_SECRET_ARN:?ENGINE_SECRET_ARN is required in base.env}"
 : "${SOURCE_REF:?SOURCE_REF is required in base.env}"
+
+if [[ -n ${UPDATE_SCHEDULE:-} ]]; then
+  schedule=/etc/systemd/system/withhuman-update.timer.d/schedule.conf
+  schedule_content=$(printf '[Timer]\nOnCalendar=\nOnCalendar=%s\n' "$UPDATE_SCHEDULE")
+  if [[ ! -r $schedule ]] || [[ $(<"$schedule") != "$schedule_content" ]]; then
+    install -d /etc/systemd/system/withhuman-update.timer.d
+    printf '%s' "$schedule_content" >"$schedule"
+    systemctl daemon-reload
+    systemctl try-restart withhuman-update.timer || true
+    log "updated the polling schedule to $UPDATE_SCHEDULE"
+  fi
+fi
 
 # ── 1. Resolve the configured ref to one commit ────────────────────────────────
 # Accepts a branch, a tag or a raw SHA, so a deployment can track main or pin a release.
@@ -47,6 +72,17 @@ commit=$(
 ) || die "cannot resolve SOURCE_REF '$SOURCE_REF' in withhuman-core"
 
 previous=$(git -C "$CHECKOUT" rev-parse HEAD 2>/dev/null || echo none)
+
+# A private registry must be authenticated before manifest inspection as well as before pulling.
+secret_value() {
+  aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id "$1" \
+    --query SecretString --output text
+}
+if [[ -n ${REGISTRY_SECRET_ARN:-} ]]; then
+  creds=$(secret_value "$REGISTRY_SECRET_ARN") || die "cannot read the registry secret"
+  jq -re .password <<<"$creds" | docker login "${IMAGE_REGISTRY_HOST:-ghcr.io}" \
+    --username "$(jq -re .username <<<"$creds")" --password-stdin
+fi
 
 # The image build runs after the merge, so a commit can be resolvable while only some of its images
 # are pushed. Converging then pulls part of the stack and fails on the rest, which would leave the
@@ -104,11 +140,6 @@ if [[ $units_changed == true ]]; then
 fi
 
 # ── 3. Read the secrets this host is allowed to read ──────────────────────────
-secret_value() {
-  aws secretsmanager get-secret-value --region "$AWS_REGION" --secret-id "$1" \
-    --query SecretString --output text
-}
-
 NEO4J_PASSWORD=$(secret_value "$ENGINE_SECRET_ARN" | jq -re '.["neo4j-password"]') ||
   die "the engine secret has no neo4j-password key"
 export NEO4J_PASSWORD
@@ -126,17 +157,20 @@ export JEV_API_KEY
 export IMAGE_TAG=$commit
 
 # ── 4. Pull and converge ─────────────────────────────────────────────────────
-if [[ -n ${REGISTRY_SECRET_ARN:-} ]]; then
-  creds=$(secret_value "$REGISTRY_SECRET_ARN") || die "cannot read the registry secret"
-  jq -re .password <<<"$creds" | docker login "${IMAGE_REGISTRY_HOST:-ghcr.io}" \
-    --username "$(jq -re .username <<<"$creds")" --password-stdin
-fi
-
 log "pulling images at $commit"
 docker compose --file "$COMPOSE_FILE" pull --quiet
 
 log "converging the stack"
-docker compose --file "$COMPOSE_FILE" up --detach --wait --remove-orphans
+if ! docker compose --file "$COMPOSE_FILE" up --detach --wait --remove-orphans; then
+  [[ $previous != none && $previous != "$commit" ]] || die "the stack failed to converge at $commit"
+  log "update failed; rolling back to $previous"
+  git -C "$CHECKOUT" -c advice.detachedHead=false checkout --force "$previous"
+  export IMAGE_TAG=$previous
+  docker compose --file "$COMPOSE_FILE" pull --quiet
+  docker compose --file "$COMPOSE_FILE" up --detach --wait --remove-orphans ||
+    die "rollback to $previous also failed"
+  die "update to $commit failed; the stack is serving $previous"
+fi
 
 # Keeps the disk from filling with superseded images; the running ones are never touched.
 docker image prune --force --filter 'until=168h' >/dev/null

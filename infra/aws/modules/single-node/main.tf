@@ -33,6 +33,7 @@ locals {
       JEV_SECRET_ARN       = var.jev_secret_arn
       REGISTRY_SECRET_ARN  = var.registry_secret_arn
       SOURCE_REF           = var.source_ref
+      UPDATE_SCHEDULE      = var.update_schedule
       IMAGE_REGISTRY       = var.image_registry
       GATEWAY_PORT         = tostring(var.gateway_port)
       NEO4J_HEAP_SIZE      = var.neo4j_heap_size
@@ -63,7 +64,7 @@ resource "aws_security_group" "engine" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "gateway_from_group" {
-  for_each = toset(var.ingress_security_group_ids)
+  for_each = { for index, id in var.ingress_security_group_ids : tostring(index) => id }
 
   security_group_id            = aws_security_group.engine.id
   referenced_security_group_id = each.value
@@ -74,7 +75,7 @@ resource "aws_vpc_security_group_ingress_rule" "gateway_from_group" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "gateway_from_cidr" {
-  for_each = toset(var.ingress_cidr_blocks)
+  for_each = { for index, cidr in var.ingress_cidr_blocks : tostring(index) => cidr }
 
   security_group_id = aws_security_group.engine.id
   cidr_ipv4         = each.value
@@ -118,6 +119,30 @@ resource "aws_iam_role_policy" "secrets" {
   })
 }
 
+resource "aws_ssm_parameter" "config" {
+  name        = "/withhuman/${var.name}/config"
+  description = "Non-secret runtime configuration of ${var.name}"
+  type        = "String"
+  value = join("\n", [
+    for key in sort(keys(local.base_env)) :
+    "${key}='${replace(local.base_env[key], "'", "'\\''")}'"
+    if local.base_env[key] != ""
+  ])
+}
+
+resource "aws_iam_role_policy" "config" {
+  name = "read-engine-config"
+  role = aws_iam_role.engine.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["ssm:GetParameter"]
+      Resource = aws_ssm_parameter.config.arn
+    }]
+  })
+}
+
 resource "aws_iam_instance_profile" "engine" {
   name_prefix = "${var.name}-"
   role        = aws_iam_role.engine.name
@@ -143,16 +168,12 @@ resource "aws_instance" "engine" {
   }
 
   user_data = templatefile("${path.module}/user-data.sh", {
-    repository_url  = var.source_repository_url
-    source_ref      = var.source_ref
-    compose_version = var.compose_version
-    update_schedule = var.update_schedule
-    # Written as shell assignments, each value single-quoted so an embedded space survives.
-    base_env = join("\n", [
-      for key in sort(keys(local.base_env)) :
-      "${key}='${replace(local.base_env[key], "'", "'\\''")}'"
-      if local.base_env[key] != ""
-    ])
+    repository_url        = var.source_repository_url
+    source_ref            = "main"
+    compose_version       = var.compose_version
+    update_schedule       = "daily"
+    aws_region            = data.aws_region.current.region
+    config_parameter_name = aws_ssm_parameter.config.name
   })
 
   tags = { Name = var.name }
@@ -161,6 +182,12 @@ resource "aws_instance" "engine" {
     # A newer AMI must not replace the instance and the data on its root volume.
     ignore_changes = [ami]
   }
+
+  depends_on = [
+    aws_iam_role_policy.config,
+    aws_iam_role_policy.secrets,
+    aws_iam_role_policy_attachment.ssm,
+  ]
 }
 
 resource "aws_iam_role" "snapshots" {
