@@ -545,7 +545,30 @@ fn names_a_file_reached_two_ways_alike() {
     assert_eq!(normalize_path("/repo/a/../b/./c.py"), "/repo/b/c.py");
     assert_eq!(normalize_path("/repo//b/"), "/repo/b");
     assert_eq!(normalize_path("/.."), "/");
+    // Windows: however the separators are written, the drive in upper case.
     assert_eq!(normalize_path("C:\\repo\\x.py"), "C:\\repo\\x.py");
+    assert_eq!(
+        normalize_path("c:\\Users\\me\\proj\\scripts/../tools/./x.py"),
+        "C:\\Users\\me\\proj\\tools\\x.py"
+    );
+    assert_eq!(normalize_path("D:/work//run.py"), "D:\\work\\run.py");
+    assert_eq!(normalize_path("scripts/x.py"), "scripts/x.py");
+}
+
+#[test]
+fn finds_a_program_run_on_windows_as_the_hook_names_it() {
+    let mut bash = call(
+        "Bash",
+        json!({"command": "cd skill && python scripts/run.py"}),
+    );
+    bash.cwd = Some("C:\\Users\\me\\proj".to_owned());
+    // The path Python's os.path.normpath gives the hook for the same file.
+    assert_eq!(
+        run_paths(&bash),
+        ["C:\\Users\\me\\proj\\skill\\scripts\\run.py"]
+    );
+    bash.tool_input = json!({"command": "C:/tools/check.sh"});
+    assert_eq!(run_paths(&bash), ["C:\\tools\\check.sh"]);
 }
 
 #[test]

@@ -332,13 +332,19 @@ pub fn run_paths(call: &CallInfo) -> Vec<String> {
 }
 
 /// `path` with `.` and `..` steps and repeated separators taken out, without asking the file
-/// system, so the same file reached two ways is named alike; a Windows path is kept as is.
+/// system, so the same file reached two ways is named alike. A Windows path (`C:\…`, often
+/// joined with `/` as a command writes it) comes out with `\` and an upper-case drive.
 pub fn normalize_path(path: &str) -> String {
-    if !path.starts_with('/') {
+    let windows = path.as_bytes().get(1) == Some(&b':') && path.as_bytes()[0].is_ascii_alphabetic();
+    let (root, rest, separator) = if windows {
+        (path[..2].to_ascii_uppercase(), &path[2..], '\\')
+    } else if path.starts_with('/') {
+        (String::new(), path, '/')
+    } else {
         return path.to_owned();
-    }
+    };
     let mut steps: Vec<&str> = Vec::new();
-    for step in path.split('/') {
+    for step in rest.split(['/', '\\']) {
         match step {
             "" | "." => {}
             ".." => {
@@ -347,7 +353,7 @@ pub fn normalize_path(path: &str) -> String {
             step => steps.push(step),
         }
     }
-    format!("/{}", steps.join("/"))
+    format!("{root}{separator}{}", steps.join(&separator.to_string()))
 }
 
 /// The program files a Call's hook attached, by normalized path: the files as they were just
@@ -393,9 +399,10 @@ fn program(words: &[String]) -> Option<String> {
             .is_some_and(|version| version.chars().all(|c| c.is_ascii_digit() || c == '.'))
     });
     if !interpreter {
+        let absolute = command.starts_with('/') || command.get(1..2) == Some(":");
         let by_path = command.starts_with("./")
             || command.starts_with("../")
-            || (command.starts_with('/')
+            || (absolute
                 && SCRIPT_EXTENSIONS
                     .iter()
                     .any(|extension| command.ends_with(extension)));
