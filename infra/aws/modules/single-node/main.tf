@@ -18,7 +18,7 @@ terraform {
 }
 
 data "aws_ssm_parameter" "al2023" {
-  name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
+  name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-${var.architecture}"
 }
 
 data "aws_region" "current" {}
@@ -35,6 +35,7 @@ locals {
       SOURCE_REF           = var.source_ref
       UPDATE_SCHEDULE      = var.update_schedule
       IMAGE_REGISTRY       = var.image_registry
+      IMAGE_REGISTRY_HOST  = split("/", var.image_registry)[0]
       GATEWAY_PORT         = tostring(var.gateway_port)
       NEO4J_HEAP_SIZE      = var.neo4j_heap_size
       NEO4J_PAGECACHE_SIZE = var.neo4j_pagecache_size
@@ -167,10 +168,16 @@ resource "aws_instance" "engine" {
     tags        = { Snapshot = var.name }
   }
 
+  # cloud-init runs this on the first boot only, and a later change to user_data stops and starts
+  # the instance without re-running it (user_data_replace_on_change stays false). So only the
+  # coordinates that never move are templated in. source_ref and update_schedule are deliberately
+  # literal here: both live in Parameter Store, and withhuman-apply applies them -- and corrects the
+  # timer's drop-in -- on every run, so changing either takes effect without touching the host.
   user_data = templatefile("${path.module}/user-data.sh", {
     repository_url        = var.source_repository_url
     source_ref            = "main"
     compose_version       = var.compose_version
+    compose_arch          = var.architecture == "arm64" ? "aarch64" : "x86_64"
     update_schedule       = "daily"
     aws_region            = data.aws_region.current.region
     config_parameter_name = aws_ssm_parameter.config.name

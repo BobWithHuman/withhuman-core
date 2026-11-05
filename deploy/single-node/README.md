@@ -5,8 +5,7 @@ commit-SHA images published by the Service Images workflow instead of building t
 
 ## Local Docker host
 
-From the repository root, copy `.env.example` to `.env`, fill the secrets and choose a published
-full commit SHA, then run:
+From the repository root, copy `.env.example` to `.env`, fill the secrets, then run:
 
 ```sh
 cp .env.example .env

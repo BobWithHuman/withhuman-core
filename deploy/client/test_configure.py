@@ -11,15 +11,20 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 CONFIGURE = HERE / "configure.py"
 
-OLD_HTTP = {"type": "http", "url": "https://54.252.92.35/v1/hooks/PreToolUse",
+SERVER = "https://withhuman.example.com"
+# An earlier setup pointed at a different engine; it still has to be recognised and replaced.
+OLD_HTTP = {"type": "http", "url": "https://old.example.com/v1/hooks/PreToolUse",
             "headers": {"x-withhuman-client": "$WITHHUMAN_CLIENT_ID"}}
 OTHER = {"type": "command", "command": "echo mine"}
 
 
 class ConfigureTest(unittest.TestCase):
     def setUp(self):
-        self.home = Path(tempfile.mkdtemp())
-        self.project = Path(tempfile.mkdtemp())
+        # Resolved, because configure.py resolves --project: on macOS the temporary directory is
+        # /var/folders/... through a symlink to /private/var/folders/..., and comparing the two
+        # spellings fails on nothing real.
+        self.home = Path(tempfile.mkdtemp()).resolve()
+        self.project = Path(tempfile.mkdtemp()).resolve()
         (self.home / ".claude").mkdir()
         (self.project / ".claude").mkdir()
 
@@ -29,10 +34,16 @@ class ConfigureTest(unittest.TestCase):
     def read(self, path):
         return json.loads(path.read_text())
 
-    def configure(self, *extra):
+    def configure(self, *extra, server=SERVER):
+        # WITHHUMAN_SERVER is dropped so the developer's own environment cannot stand in for the
+        # address under test, nor hide a missing one.
         env = {**os.environ, "HOME": str(self.home), "SHELL": "/bin/zsh"}
+        env.pop("WITHHUMAN_SERVER", None)
+        arguments = ["--project", str(self.project), "--team", "lab"]
+        if server is not None:
+            arguments += ["--server", server]
         return subprocess.run(
-            [sys.executable, str(CONFIGURE), "--project", str(self.project), "--team", "lab", *extra],
+            [sys.executable, str(CONFIGURE), *arguments, *extra],
             capture_output=True, text=True, env=env, timeout=30,
         )
 
@@ -69,11 +80,11 @@ class ConfigureTest(unittest.TestCase):
         hook = self.project / ".claude" / "hooks" / "pre-tool-use.py"
         self.assertEqual(command["type"], "command")
         self.assertEqual(command["command"], f'"{Path(sys.executable).as_posix()}" "{hook.as_posix()}" '
-                                             "https://54.252.92.35/v1/hooks/PreToolUse")
+                                             f"{SERVER}/v1/hooks/PreToolUse")
         self.assertTrue(os.access(hook, os.X_OK))
         self.assertEqual(hook.read_text(), (HERE / "hooks" / "pre-tool-use.py").read_text())
         post = settings["hooks"]["PostToolUse"][0]["hooks"][0]
-        self.assertEqual(post["url"], "https://54.252.92.35/v1/hooks/PostToolUse")
+        self.assertEqual(post["url"], f"{SERVER}/v1/hooks/PostToolUse")
         self.assertEqual(post["headers"], {"x-withhuman-client": "$WITHHUMAN_CLIENT_ID"})
 
         # Each file changed was kept as it was.
@@ -112,6 +123,31 @@ class ConfigureTest(unittest.TestCase):
     def test_leaves_the_profile_alone_when_asked(self):
         self.assertEqual(self.configure("--no-persist").returncode, 0)
         self.assertFalse((self.home / ".zshrc").exists())
+
+    def test_refuses_to_guess_the_engine_address(self):
+        """WithHuman is self-hosted: no default server, so no device reports to someone else's."""
+        result = self.configure(server=None)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--server is required", result.stderr)
+        self.assertFalse((self.project / ".claude" / "settings.json").exists())
+
+    def test_takes_the_address_from_the_environment(self):
+        env = {**os.environ, "HOME": str(self.home), "SHELL": "/bin/zsh",
+               "WITHHUMAN_SERVER": "http://127.0.0.1:3000/"}
+        result = subprocess.run(
+            [sys.executable, str(CONFIGURE), "--project", str(self.project), "--team", "lab"],
+            capture_output=True, text=True, env=env, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        settings = self.read(self.project / ".claude" / "settings.json")
+        # The trailing slash is dropped rather than doubled into the hook URLs.
+        self.assertEqual(settings["hooks"]["PostToolUse"][0]["hooks"][0]["url"],
+                         "http://127.0.0.1:3000/v1/hooks/PostToolUse")
+
+    def test_rejects_an_address_that_is_not_a_url(self):
+        result = self.configure(server="withhuman.example.com")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must be an http(s) URL", result.stderr)
 
 
 if __name__ == "__main__":

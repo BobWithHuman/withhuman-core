@@ -41,6 +41,12 @@ variable "instance_type" {
   default = "m7i-flex.large"
 }
 
+variable "architecture" {
+  description = "x86_64, or arm64 for a Graviton instance_type. Must match instance_type."
+  type        = string
+  default     = "x86_64"
+}
+
 variable "volume_size" {
   type    = number
   default = 100

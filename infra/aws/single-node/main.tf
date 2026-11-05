@@ -92,6 +92,7 @@ module "engine" {
   source_ref                  = var.source_ref
   update_schedule             = var.update_schedule
   instance_type               = var.instance_type
+  architecture                = var.architecture
   volume_size                 = var.volume_size
   collector_mode              = var.collector_mode
   engine_settings             = var.engine_settings

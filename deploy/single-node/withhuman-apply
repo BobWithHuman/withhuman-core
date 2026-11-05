@@ -34,7 +34,7 @@ set -a
 . "$BOOTSTRAP_ENV"
 set +a
 
-: "${AWS_REGION:?AWS_REGION is required in base.env}"
+: "${AWS_REGION:?AWS_REGION is required in bootstrap.env}"
 : "${CONFIG_PARAMETER_NAME:?CONFIG_PARAMETER_NAME is required in bootstrap.env}"
 
 # Terraform owns the non-secret runtime settings in Parameter Store. Refreshing them on every run
@@ -44,8 +44,13 @@ aws ssm get-parameter --region "$AWS_REGION" --name "$CONFIG_PARAMETER_NAME" \
   --query Parameter.Value --output text >"$BASE_ENV.new" || die "cannot read $CONFIG_PARAMETER_NAME"
 chmod 0600 "$BASE_ENV.new"
 mv "$BASE_ENV.new" "$BASE_ENV"
+# Exported, not just set: Compose interpolates ${VAR} from the process environment, so a plain
+# source would leave every setting here as a shell variable and silently fall back to the
+# Compose file's defaults -- a collector_mode of enforce would come up as shadow.
+set -a
 # shellcheck source=/dev/null
 . "$BASE_ENV"
+set +a
 
 : "${ENGINE_SECRET_ARN:?ENGINE_SECRET_ARN is required in base.env}"
 : "${SOURCE_REF:?SOURCE_REF is required in base.env}"
@@ -119,7 +124,6 @@ fi
 # An update that changes the glue applies itself. The rename keeps the running copy's inode open,
 # so replacing this file mid-run is safe. Units are reloaded but never restarted from here: this
 # script runs inside withhuman.service, which must not restart itself.
-units_changed=false
 install_if_changed() {
   local src=$1 dest=$2 mode=$3
   cmp --silent "$src" "$dest" 2>/dev/null && return 0
@@ -128,16 +132,21 @@ install_if_changed() {
   log "updated $dest"
   return 1
 }
-install_if_changed "$CHECKOUT/deploy/single-node/withhuman-apply" \
-  /usr/local/bin/withhuman-apply 0755 || true
-for unit in withhuman.service withhuman-update.service withhuman-update.timer; do
-  install_if_changed "$CHECKOUT/deploy/single-node/$unit" "/etc/systemd/system/$unit" 0644 ||
-    units_changed=true
-done
-if [[ $units_changed == true ]]; then
-  systemctl daemon-reload
-  log "reloaded the systemd units; the new definitions take effect on the next run"
-fi
+# A rollback calls this again, so the glue on disk always belongs to the commit being served.
+refresh_glue() {
+  local units_changed=false unit
+  install_if_changed "$CHECKOUT/deploy/single-node/withhuman-apply" \
+    /usr/local/bin/withhuman-apply 0755 || true
+  for unit in withhuman.service withhuman-update.service withhuman-update.timer; do
+    install_if_changed "$CHECKOUT/deploy/single-node/$unit" "/etc/systemd/system/$unit" 0644 ||
+      units_changed=true
+  done
+  if [[ $units_changed == true ]]; then
+    systemctl daemon-reload
+    log "reloaded the systemd units; the new definitions take effect on the next run"
+  fi
+}
+refresh_glue
 
 # ── 3. Read the secrets this host is allowed to read ──────────────────────────
 NEO4J_PASSWORD=$(secret_value "$ENGINE_SECRET_ARN" | jq -re '.["neo4j-password"]') ||
@@ -165,6 +174,8 @@ if ! docker compose --file "$COMPOSE_FILE" up --detach --wait --remove-orphans; 
   [[ $previous != none && $previous != "$commit" ]] || die "the stack failed to converge at $commit"
   log "update failed; rolling back to $previous"
   git -C "$CHECKOUT" -c advice.detachedHead=false checkout --force "$previous"
+  # Step 2 already replaced the script and the units with the failed commit's copies.
+  refresh_glue
   export IMAGE_TAG=$previous
   docker compose --file "$COMPOSE_FILE" pull --quiet
   docker compose --file "$COMPOSE_FILE" up --detach --wait --remove-orphans ||

@@ -8,7 +8,7 @@ dnf install -y docker git jq
 # AL2023 packages the engine but not the Compose plugin, so the release binary is installed by hand.
 install -d /usr/local/lib/docker/cli-plugins
 curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
-  "https://github.com/docker/compose/releases/download/${compose_version}/docker-compose-linux-x86_64"
+  "https://github.com/docker/compose/releases/download/${compose_version}/docker-compose-linux-${compose_arch}"
 chmod 0755 /usr/local/lib/docker/cli-plugins/docker-compose
 
 systemctl enable --now docker

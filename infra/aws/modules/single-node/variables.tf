@@ -103,6 +103,29 @@ variable "instance_type" {
   default     = "m7i-flex.large"
 }
 
+variable "architecture" {
+  description = <<-EOT
+    CPU architecture of instance_type. It picks the AL2023 AMI and the Compose plugin's build, and
+    the service images are published for both, so a Graviton instance_type only needs arm64 here.
+  EOT
+  type        = string
+  default     = "x86_64"
+
+  validation {
+    condition     = contains(["x86_64", "arm64"], var.architecture)
+    error_message = "architecture must be x86_64 or arm64."
+  }
+
+  validation {
+    # A silent mismatch would leave the host unable to run its own images, so the family's
+    # Graviton marker is checked against the architecture rather than discovered on first boot.
+    condition = (
+      can(regex("^[a-z]+[0-9]+g[a-z]*(-[a-z]+)?\\.", var.instance_type)) == (var.architecture == "arm64")
+    )
+    error_message = "architecture does not match instance_type: Graviton families (m7g, c8g, t4g) need arm64, the rest x86_64."
+  }
+}
+
 variable "volume_size" {
   description = "Root volume size in GiB; it holds the Neo4j store and the Redis append-only file."
   type        = number

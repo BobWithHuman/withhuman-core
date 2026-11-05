@@ -9,3 +9,5 @@ __pycache__/
 *.tfstate.*
 *.tfplan
 infra/**/backend.hcl
+# Holds the CIDRs allowed to reach a cluster's API; only the .example is carried.
+infra/**/terraform.tfvars
