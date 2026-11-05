@@ -1,0 +1,32 @@
+# yaml-language-server: $schema=https://agentgateway.dev/schema/config
+#
+# Hooks only, which is what the chart's default `mcpTargets: []` renders too. Add an entry under
+# `mcp.targets` to serve an MCP server through the gateway; its tool calls then pass the extAuthz
+# check against the Collector.
+
+gateways:
+  default:
+    port: 3000
+
+routes:
+  - name: claude-hooks
+    matches:
+      - path:
+          pathPrefix: /v1/hooks
+    backends:
+      - host: collector:8080
+
+mcp:
+  policies:
+    extAuthz:
+      conditional:
+        - condition: has(mcp.tool)
+          host: collector:9000
+          protocol:
+            grpc: {}
+          failureMode: deny
+          includeRequestBody:
+            maxRequestBytes: 1048576
+            allowPartialMessage: false
+            packAsBytes: true
+  targets: []

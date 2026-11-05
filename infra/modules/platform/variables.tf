@@ -27,13 +27,15 @@ variable "acme_server" {
 }
 
 variable "gitops_repository_url" {
-  type    = string
-  default = "git@github.com:BobWithHuman/withhuman-gitops.git"
+  description = "An https:// URL needs no credentials while the repository is public; an SSH URL needs gitops_deploy_key_secret."
+  type        = string
+  default     = "https://github.com/BobWithHuman/withhuman-gitops.git"
 }
 
 variable "gitops_deploy_key_secret" {
-  description = "Secret in the cloud's secret store holding the read-only deploy key of the GitOps repository."
+  description = "Secret in the cloud's secret store holding the read-only deploy key of the GitOps repository. Leave empty for a repository Argo CD reads without credentials."
   type        = string
+  default     = ""
 }
 
 variable "gitops_apps_path" {

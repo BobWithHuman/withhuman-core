@@ -18,18 +18,27 @@ concurrency:
 
 env:
   IMAGE_PREFIX: ghcr.io/${{ github.repository_owner }}/withhuman
-  # Every image carries its full commit SHA; a version tag adds the version.
-  IMAGE_TAGS: |
-    type=sha,format=long,prefix=
-    type=semver,pattern={{version}}
 
 jobs:
-  publish:
-    name: Build and push service images
-    runs-on: ubuntu-latest
+  # One job per architecture, each on a runner of that architecture: the services are compiled
+  # machine code, so a container cannot paper over the instruction set. Building arm64 on an amd64
+  # runner would mean compiling the whole workspace under QEMU, which costs several times as long;
+  # two native jobs in parallel cost about what one did.
+  #
+  # Neither job writes a tag. Both push the same tag would race, each overwriting the other, so
+  # they push by digest and the merge job below collects the digests under one tag.
+  build:
+    name: Build the ${{ matrix.arch }} images
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
-    # The Dockerfile compiles every service before selecting one, so one job builds all the
-    # images: the first compiles, and the others reuse its layers.
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -44,70 +53,140 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Describe the Collector image
-        id: collector
+      # Tags are the merge job's business, but the OCI labels belong on each build. All three
+      # images carry the same ones -- among them org.opencontainers.image.source, which is what
+      # ties a GHCR package back to this repository -- so one step describes them all.
+      - name: Describe the images
+        id: labels
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.IMAGE_PREFIX }}-collector
-          tags: ${{ env.IMAGE_TAGS }}
+          images: ${{ env.IMAGE_PREFIX }}
+          tags: type=sha,format=long,prefix=
 
+      # The Dockerfile compiles every service before selecting one, so the first build compiles and
+      # the rest reuse its layers. The cache is per architecture; one shared scope would have each
+      # job evicting the other's layers.
       - name: Build and push the Collector image
+        id: collector
         uses: docker/build-push-action@v6
         with:
           context: .
           file: deploy/docker/Dockerfile
           build-args: BINARY=withhuman-collector
-          push: true
-          tags: ${{ steps.collector.outputs.tags }}
-          labels: ${{ steps.collector.outputs.labels }}
-          cache-from: type=gha,scope=service-images
-          cache-to: type=gha,scope=service-images,mode=max
+          labels: ${{ steps.labels.outputs.labels }}
+          outputs: type=image,name=${{ env.IMAGE_PREFIX }}-collector,push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=service-images-${{ matrix.arch }}
+          cache-to: type=gha,scope=service-images-${{ matrix.arch }},mode=max
           provenance: true
           sbom: true
 
-      - name: Describe the Generator image
-        id: generator
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE_PREFIX }}-generator
-          tags: ${{ env.IMAGE_TAGS }}
-
       - name: Build and push the Generator image
+        id: generator
         uses: docker/build-push-action@v6
         with:
           context: .
           file: deploy/docker/Dockerfile
           build-args: BINARY=withhuman-generator
-          push: true
-          tags: ${{ steps.generator.outputs.tags }}
-          labels: ${{ steps.generator.outputs.labels }}
-          cache-from: type=gha,scope=service-images
+          labels: ${{ steps.labels.outputs.labels }}
+          outputs: type=image,name=${{ env.IMAGE_PREFIX }}-generator,push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=service-images-${{ matrix.arch }}
           provenance: true
           sbom: true
 
-      - name: Describe the Decision image
-        id: decision
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE_PREFIX }}-decision
-          tags: ${{ env.IMAGE_TAGS }}
-
       - name: Build and push the Decision image
+        id: decision
         uses: docker/build-push-action@v6
         with:
           context: .
           file: deploy/docker/Dockerfile
           build-args: BINARY=withhuman-decision
-          push: true
-          tags: ${{ steps.decision.outputs.tags }}
-          labels: ${{ steps.decision.outputs.labels }}
-          cache-from: type=gha,scope=service-images
+          labels: ${{ steps.labels.outputs.labels }}
+          outputs: type=image,name=${{ env.IMAGE_PREFIX }}-decision,push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=service-images-${{ matrix.arch }}
           provenance: true
           sbom: true
 
+      # The merge job reads these back as one file per service and architecture.
+      - name: Hand the digests to the merge job
+        env:
+          ARCH: ${{ matrix.arch }}
+          COLLECTOR: ${{ steps.collector.outputs.digest }}
+          GENERATOR: ${{ steps.generator.outputs.digest }}
+          DECISION: ${{ steps.decision.outputs.digest }}
+        run: |
+          set -euo pipefail
+          test -n "$COLLECTOR" && test -n "$GENERATOR" && test -n "$DECISION"
+          mkdir -p digests
+          printf '%s' "$COLLECTOR" > "digests/collector-$ARCH"
+          printf '%s' "$GENERATOR" > "digests/generator-$ARCH"
+          printf '%s' "$DECISION" > "digests/decision-$ARCH"
+
+      - name: Upload the digests
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.arch }}
+          path: digests/
+          retention-days: 1
+          if-no-files-found: error
+
+  # Collects each service's per-architecture digests into one manifest list and puts the tags on
+  # that. A pull then resolves to the right architecture on its own, the way the images this stack
+  # depends on already do. Publishing is atomic: a tag never names only one architecture, so a
+  # failure in either build job leaves the previous tags in place rather than a half-published one.
+  merge:
+    name: Publish the multi-architecture tags
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download the digests
+        uses: actions/download-artifact@v4
+        with:
+          path: digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Every image carries its full commit SHA, which is what a deployment pins; a version tag
+      # adds the version. This is the one place the tag policy lives, since the build jobs push
+      # untagged.
+      - name: Create the manifest lists
+        run: |
+          set -euo pipefail
+          tags=("$GITHUB_SHA")
+          case "$GITHUB_REF" in
+            refs/tags/v*) tags+=("${GITHUB_REF#refs/tags/v}") ;;
+          esac
+
+          for service in collector generator decision; do
+            image="$IMAGE_PREFIX-$service"
+            sources=()
+            for file in digests/"$service"-*; do
+              sources+=("$image@$(cat "$file")")
+            done
+            test "${#sources[@]}" -eq 2 || {
+              echo "::error::$service has ${#sources[@]} architectures, expected 2"
+              exit 1
+            }
+
+            arguments=()
+            for tag in "${tags[@]}"; do
+              arguments+=(--tag "$image:$tag")
+            done
+
+            docker buildx imagetools create "${arguments[@]}" "${sources[@]}"
+            docker buildx imagetools inspect "$image:${tags[0]}"
+          done
+
   deploy-staging:
     name: Point staging at the new images
-    needs: publish
+    needs: merge
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
