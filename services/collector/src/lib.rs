@@ -13,7 +13,8 @@ pub use ext_authz::ExtAuthzService;
 pub use http::{CollectorService, TrustedHookContext, app, app_with_transport};
 pub use intent::{INTENT_INSTRUCTION, INTENT_REMINDER, INTENT_REQUIRED};
 pub use normalize::{
-    MESSAGE_INCOMPLETE_FLAG, NormalizeError, NormalizedEvent, Normalizer, RESUME_ORDER_GAP,
+    MAX_PROGRAM_BYTES, MAX_PROGRAMS, MESSAGE_INCOMPLETE_FLAG, NormalizeError, NormalizedEvent,
+    Normalizer, RESUME_ORDER_GAP,
 };
 pub use state::{
     InMemorySessionStore, IntentAsk, MessageFragment, RedisSessionStore, SessionSnapshot,

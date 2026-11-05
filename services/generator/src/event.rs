@@ -348,16 +348,19 @@ where
         _ => "external",
     };
     // A result repeats its Call's input; those values belong to the Call, so the result only
-    // indexes what the tool returned.
-    let token_source = match event_name {
-        "PostToolUse" | "PostToolUseFailure" => {
-            let mut payload = serde_json::to_value(&envelope.payload)
-                .map_err(|error| RepositoryError::InvalidEvent(error.to_string()))?;
-            if let Some(fields) = payload.as_object_mut() {
-                fields.remove("tool_input");
-            }
-            payload.to_string()
+    // indexes what the tool returned. The program files a Call's hook attached were not written
+    // by the agent, so they are not the Call's values either.
+    let without = |field: &str| -> Result<String, RepositoryError> {
+        let mut payload = serde_json::to_value(&envelope.payload)
+            .map_err(|error| RepositoryError::InvalidEvent(error.to_string()))?;
+        if let Some(fields) = payload.as_object_mut() {
+            fields.remove(field);
         }
+        Ok(payload.to_string())
+    };
+    let token_source = match event_name {
+        "PostToolUse" | "PostToolUseFailure" => without("tool_input")?,
+        "PreToolUse" if original_payload_json.contains("\"programs\"") => without("programs")?,
         _ => original_payload_json,
     };
     extract_tokens(&token_source, payload_slot, &mut tokens);

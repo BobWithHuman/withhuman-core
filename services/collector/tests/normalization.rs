@@ -5,15 +5,16 @@ use std::{collections::BTreeMap, sync::Arc};
 use async_trait::async_trait;
 use serde_json::json;
 use withhuman_collector::{
-    GeneratorError, GeneratorTransport, InMemorySessionStore, MESSAGE_INCOMPLETE_FLAG,
-    NormalizeError, NormalizedEvent, Normalizer, SessionStore, TrustedHookContext,
+    GeneratorError, GeneratorTransport, InMemorySessionStore, MAX_PROGRAM_BYTES, MAX_PROGRAMS,
+    MESSAGE_INCOMPLETE_FLAG, NormalizeError, NormalizedEvent, Normalizer, SessionStore,
+    TrustedHookContext,
 };
 use withhuman_contracts::{
     decisions::EnforcementMode,
     events::{EventResponse, SessionCursor, SidePending},
     hooks::{
-        MessageDisplayRequest, PostToolUseRequest, PreToolUseRequest, SessionStartRequest,
-        UserPromptSubmitRequest,
+        MessageDisplayRequest, PostToolUseRequest, PreToolUseRequest, ProgramFile,
+        SessionStartRequest, UserPromptSubmitRequest,
     },
 };
 
@@ -151,6 +152,7 @@ async fn restores_tool_input_and_preserves_tool_correlation() {
                 prompt_id: Some("prompt-1".to_owned()),
                 agent_id: Some("agent-1".to_owned()),
                 agent_type: Some("main".to_owned()),
+                withhuman_programs: Vec::new(),
             },
             100,
             EnforcementMode::Enforce,
@@ -191,6 +193,73 @@ async fn restores_tool_input_and_preserves_tool_correlation() {
         post.payload.tool_input,
         Some(json!({"command": "cargo test"}))
     );
+}
+
+#[tokio::test]
+async fn keeps_the_programs_the_hook_attached_with_the_call_within_limits() {
+    let program = |path: &str, content: String| ProgramFile {
+        path: path.to_owned(),
+        content,
+        sha256: Some("ab".repeat(32)),
+        size: Some(10),
+        truncated: false,
+    };
+    let mut programs = vec![
+        program("scripts/relative.py", "dropped".to_owned()),
+        // Cut at a character boundary past the limit.
+        program("/repo/big.py", "é".repeat(MAX_PROGRAM_BYTES)),
+    ];
+    programs.extend((0..MAX_PROGRAMS).map(|n| program(&format!("/repo/{n}.py"), "x".to_owned())));
+    let event = Normalizer::default()
+        .pre_tool_use(
+            &context(),
+            PreToolUseRequest {
+                session_id: "session-1".to_owned(),
+                hook_event_name: None,
+                tool_name: "Bash".to_owned(),
+                tool_input: json!({"command": "python /repo/big.py"}),
+                tool_use_id: "tool-1".to_owned(),
+                cwd: Some("/repo".to_owned()),
+                prompt_id: None,
+                agent_id: None,
+                agent_type: None,
+                withhuman_programs: programs,
+            },
+            100,
+            EnforcementMode::Enforce,
+            Some(4_000),
+        )
+        .await
+        .unwrap();
+    let NormalizedEvent::PreToolUse(pre) = event else {
+        panic!("expected PreToolUse");
+    };
+    let kept = pre.event.payload.additional_fields["programs"]
+        .as_array()
+        .unwrap();
+    assert_eq!(kept.len(), MAX_PROGRAMS);
+    assert_eq!(kept[0]["path"], "/repo/big.py");
+    assert_eq!(kept[0]["truncated"], true);
+    let content = kept[0]["content"].as_str().unwrap();
+    assert!(content.len() <= MAX_PROGRAM_BYTES && content.len() > MAX_PROGRAM_BYTES - 2);
+    assert_eq!(kept[1]["path"], "/repo/0.py");
+    assert!(kept[1].get("truncated").is_none());
+
+    // Claude Code's own event attaches nothing.
+    let plain: PreToolUseRequest = serde_json::from_value(json!({
+        "session_id": "session-2", "tool_name": "Bash", "tool_input": {"command": "ls"},
+        "tool_use_id": "tool-2"
+    }))
+    .unwrap();
+    assert!(plain.withhuman_programs.is_empty());
+    let NormalizedEvent::PreToolUse(pre) = Normalizer::default()
+        .pre_tool_use(&context(), plain, 100, EnforcementMode::Enforce, None)
+        .await
+        .unwrap()
+    else {
+        panic!("expected PreToolUse");
+    };
+    assert!(pre.event.payload.additional_fields.is_empty());
 }
 
 #[tokio::test]
