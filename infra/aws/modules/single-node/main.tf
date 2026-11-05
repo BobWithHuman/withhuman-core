@@ -168,10 +168,11 @@ resource "aws_instance" "engine" {
     tags        = { Snapshot = var.name }
   }
 
-  # Changing user_data replaces the instance and the data on its root volume, so only the
+  # cloud-init runs this on the first boot only, and a later change to user_data stops and starts
+  # the instance without re-running it (user_data_replace_on_change stays false). So only the
   # coordinates that never move are templated in. source_ref and update_schedule are deliberately
   # literal here: both live in Parameter Store, and withhuman-apply applies them -- and corrects the
-  # timer's drop-in -- on its first run, so changing either is an in-place update.
+  # timer's drop-in -- on every run, so changing either takes effect without touching the host.
   user_data = templatefile("${path.module}/user-data.sh", {
     repository_url        = var.source_repository_url
     source_ref            = "main"
