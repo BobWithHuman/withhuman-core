@@ -1022,4 +1022,15 @@ fn knows_a_file_by_its_last_whole_read_or_write() {
     );
     assert_eq!(last_seen_content(&[partial], path), None);
     assert_eq!(last_seen_content(&[other], path), None);
+
+    // A long file Claude Code read only up to its line limit.
+    let cut_short = |shown: u64| {
+        json!({"tool_name": "Read", "tool_input": {"file_path": "/repo/core.py"},
+               "tool_response": {"file": {"content": "head", "numLines": shown, "totalLines": 3000}}})
+    };
+    assert_eq!(last_seen_content(&[cut_short(2000)], path), None);
+    assert_eq!(
+        last_seen_content(&[cut_short(3000)], path).as_deref(),
+        Some("head")
+    );
 }
