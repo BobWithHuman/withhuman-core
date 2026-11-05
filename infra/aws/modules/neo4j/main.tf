@@ -38,8 +38,11 @@ resource "aws_security_group" "neo4j" {
 
 resource "aws_vpc_security_group_ingress_rule" "neo4j" {
   for_each = {
-    for pair in setproduct(var.client_security_group_ids, [7474, 7687]) :
-    "${pair[0]}-${pair[1]}" => { group = pair[0], port = pair[1] }
+    for pair in setproduct(range(length(var.client_security_group_ids)), [7474, 7687]) :
+    "${pair[0]}-${pair[1]}" => {
+      group = var.client_security_group_ids[pair[0]]
+      port  = pair[1]
+    }
   }
 
   security_group_id            = aws_security_group.neo4j.id
@@ -119,6 +122,11 @@ resource "aws_instance" "neo4j" {
     # A newer AMI must not replace the instance and its data.
     ignore_changes = [ami]
   }
+
+  depends_on = [
+    aws_iam_role_policy.password,
+    aws_iam_role_policy_attachment.ssm,
+  ]
 }
 
 resource "aws_iam_role" "snapshots" {

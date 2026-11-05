@@ -3,7 +3,7 @@
 # leaves out the MCP fixture. Only the gateway takes a host port, so Neo4j and Redis are reachable
 # on the Compose network alone.
 #
-# withhuman-apply(8) writes the variables below to /etc/withhuman/engine.env before calling Compose.
+# withhuman-apply writes the variables below to its process environment before calling Compose.
 name: withhuman
 
 services:
