@@ -228,6 +228,227 @@ pub fn written_path(call: &CallInfo) -> Option<String> {
     Some(resolve(call.cwd.as_deref(), &path))
 }
 
+/// Interpreters a Bash command runs a program file with; `python3.12` counts as `python`.
+const INTERPRETERS: &[&str] = &["python", "node", "bash", "sh", "zsh", "ruby", "perl"];
+/// Interpreter options that run code given inline or a module, not a file.
+const INLINE: &[&str] = &["-c", "-m", "-e", "-p", "--eval", "--print"];
+/// Interpreter options that take the next word as their value.
+const WITH_VALUE: &[&str] = &["-W", "-X", "-r", "--require", "--import", "-o", "-I"];
+/// Commands that run the rest of the line, with how many words of their own follow them.
+const WRAPPERS: &[(&str, usize)] = &[
+    ("env", 0),
+    ("sudo", 0),
+    ("nohup", 0),
+    ("time", 0),
+    ("exec", 0),
+    ("command", 0),
+    ("timeout", 1),
+];
+/// Extensions of a program run by its path, as `./run.sh` or `/opt/tool/run.py`.
+const SCRIPT_EXTENSIONS: &[&str] = &[".py", ".sh", ".js", ".mjs", ".cjs", ".ts", ".rb", ".pl"];
+
+/// The local program files a Bash command runs, each resolved against the directory it runs
+/// in (following a `cd` earlier in the command), in the order they run.
+pub fn run_paths(call: &CallInfo) -> Vec<String> {
+    if call.tool_name != "Bash" {
+        return Vec::new();
+    }
+    let Some(command) = call.tool_input.get("command").and_then(Value::as_str) else {
+        return Vec::new();
+    };
+    let mut cwd = call.cwd.clone();
+    let mut paths = Vec::new();
+    for words in simple_commands(&without_here_documents(command)) {
+        let words = without_redirections(words);
+        match words.first().map(String::as_str) {
+            Some("cd" | "pushd") => {
+                if let Some(directory) = words.get(1).filter(|word| !word.starts_with('-')) {
+                    cwd = Some(resolve(cwd.as_deref(), directory));
+                }
+            }
+            Some(_) => {
+                if let Some(program) = program(&words) {
+                    let path = resolve(cwd.as_deref(), &program);
+                    if !paths.contains(&path) {
+                        paths.push(path);
+                    }
+                }
+            }
+            None => {}
+        }
+    }
+    paths
+}
+
+/// The program file one simple command runs, as written.
+fn program(words: &[String]) -> Option<String> {
+    let mut words = words.iter().map(String::as_str).peekable();
+    // Variable assignments and wrappers before the command itself.
+    loop {
+        let word = *words.peek()?;
+        if is_assignment(word) {
+            words.next();
+        } else if let Some((_, own)) = WRAPPERS.iter().find(|(name, _)| *name == word) {
+            words.next();
+            while words.peek().is_some_and(|word| word.starts_with('-')) {
+                words.next();
+            }
+            for _ in 0..*own {
+                words.next();
+            }
+        } else {
+            break;
+        }
+    }
+    let command = words.next()?;
+    let name = command.rsplit('/').next().unwrap_or(command);
+    let interpreter = INTERPRETERS.iter().any(|interpreter| {
+        name.strip_prefix(interpreter)
+            .is_some_and(|version| version.chars().all(|c| c.is_ascii_digit() || c == '.'))
+    });
+    if !interpreter {
+        let by_path = command.starts_with("./")
+            || command.starts_with("../")
+            || (command.starts_with('/')
+                && SCRIPT_EXTENSIONS
+                    .iter()
+                    .any(|extension| command.ends_with(extension)));
+        return by_path.then(|| command.to_owned());
+    }
+    while let Some(word) = words.next() {
+        if INLINE.contains(&word) || word == "-" {
+            return None;
+        }
+        if WITH_VALUE.contains(&word) {
+            words.next();
+        } else if !word.starts_with('-') {
+            return Some(word.to_owned());
+        }
+    }
+    None
+}
+
+fn is_assignment(word: &str) -> bool {
+    word.split_once('=').is_some_and(|(name, _)| {
+        !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
+/// `command` without the bodies of its here-documents, which are data, not commands.
+fn without_here_documents(command: &str) -> String {
+    let mut kept = Vec::new();
+    let mut delimiter: Option<String> = None;
+    for line in command.lines() {
+        if let Some(end) = &delimiter {
+            if line.trim() == end {
+                delimiter = None;
+            }
+            continue;
+        }
+        kept.push(line);
+        if let Some(rest) = line.split("<<").nth(1).filter(|_| !line.contains("<<<")) {
+            delimiter = rest
+                .trim_start()
+                .trim_start_matches('-')
+                .split_whitespace()
+                .next()
+                .map(|word| word.trim_matches(|c| c == '\'' || c == '"').to_owned())
+                .filter(|word| !word.is_empty());
+        }
+    }
+    kept.join("\n")
+}
+
+/// The simple commands of a command line, each as its words with quotes removed: split at
+/// newlines, `;`, `&`, `&&`, `|` and `||`.
+fn simple_commands(command: &str) -> Vec<Vec<String>> {
+    let mut commands = Vec::new();
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut in_word = false;
+    let mut chars = command.chars().peekable();
+    let end_word = |word: &mut String, in_word: &mut bool, words: &mut Vec<String>| {
+        if *in_word {
+            words.push(std::mem::take(word));
+            *in_word = false;
+        }
+    };
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => {
+                in_word = true;
+                for c in chars.by_ref() {
+                    if c == '\'' {
+                        break;
+                    }
+                    word.push(c);
+                }
+            }
+            '"' => {
+                in_word = true;
+                while let Some(c) = chars.next() {
+                    match c {
+                        '"' => break,
+                        '\\' => {
+                            if let Some(c) = chars.next() {
+                                word.push(c);
+                            }
+                        }
+                        c => word.push(c),
+                    }
+                }
+            }
+            '\\' => {
+                if let Some(c) = chars.next() {
+                    if c != '\n' {
+                        in_word = true;
+                        word.push(c);
+                    }
+                }
+            }
+            // `2>&1` and `&>` redirect; any other `&` ends a command.
+            '&' if word.ends_with('>') || chars.peek() == Some(&'>') => {
+                in_word = true;
+                word.push(c);
+            }
+            ';' | '&' | '|' | '\n' => {
+                end_word(&mut word, &mut in_word, &mut words);
+                if !words.is_empty() {
+                    commands.push(std::mem::take(&mut words));
+                }
+            }
+            c if c.is_whitespace() => end_word(&mut word, &mut in_word, &mut words),
+            c => {
+                in_word = true;
+                word.push(c);
+            }
+        }
+    }
+    end_word(&mut word, &mut in_word, &mut words);
+    if !words.is_empty() {
+        commands.push(words);
+    }
+    commands
+}
+
+/// `words` without redirections (`> out`, `2>/dev/null`, `<<EOF`) and their targets.
+fn without_redirections(words: Vec<String>) -> Vec<String> {
+    let mut kept = Vec::new();
+    let mut words = words.into_iter();
+    while let Some(word) = words.next() {
+        let operator = word.trim_start_matches(|c: char| c.is_ascii_digit());
+        if operator.starts_with('>') || operator.starts_with('<') || operator.starts_with("&>") {
+            let bare = operator.trim_matches(|c| matches!(c, '<' | '>' | '&' | '-'));
+            if bare.is_empty() && !operator.ends_with('&') {
+                words.next();
+            }
+            continue;
+        }
+        kept.push(word);
+    }
+    kept
+}
+
 fn resolve(cwd: Option<&str>, path: &str) -> String {
     let windows_absolute = path.as_bytes().get(1) == Some(&b':');
     match cwd {

@@ -239,6 +239,9 @@ pub struct CallInfo {
     /// saw it before the Call (read whole or written), so the Call is shown as the change it
     /// makes.
     pub prior: Option<String>,
+    /// Each local program file a Bash Call runs, by path, with its content as the session last
+    /// saw it before the Call; none when the session never saw it whole.
+    pub programs: BTreeMap<String, Option<String>>,
     /// The directory the Call was made in, against which a relative path it writes resolves.
     pub cwd: Option<String>,
 }

@@ -64,6 +64,7 @@ impl DecisionRepository for Graph {
                     .as_ref()
                     .map_or_else(|| json!({"command": "rm -rf build"}), |call| call.1.clone()),
                 prior: None,
+                programs: BTreeMap::new(),
                 cwd: None,
             },
             subgraphs: BTreeMap::from([(0, None), (1, None)]),

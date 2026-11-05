@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 use withhuman_decision::{
     check::{
-        Branch, Check, Effect, Verdict, bash_written_file, check, effect, request, unwanted,
-        written_path,
+        Branch, Check, Effect, Verdict, bash_written_file, check, effect, request, run_paths,
+        unwanted, written_path,
     },
     jev::{JevAnswer, JevRequest, JevResponse},
     trace::{CallInfo, Deviation, Link},
@@ -19,6 +19,7 @@ fn call(tool_name: &str, tool_input: Value) -> CallInfo {
         tool_name: tool_name.to_owned(),
         tool_input,
         prior: None,
+        programs: BTreeMap::new(),
         cwd: Some("/repo".to_owned()),
     }
 }
@@ -92,6 +93,56 @@ fn takes_a_bash_here_document_as_the_file_it_writes() {
         effect(&call("Bash", json!({"command": "pytest -q"}))),
         Effect::Other
     );
+}
+
+#[test]
+fn finds_the_local_programs_a_command_runs() {
+    let runs = |command: &str| run_paths(&call("Bash", json!({ "command": command })));
+    for (command, expected) in [
+        (
+            "python scripts/run_fixture.py",
+            vec!["/repo/scripts/run_fixture.py"],
+        ),
+        (
+            "python3.12 -u /workspace/skill/scripts/x.py --out results/a.json",
+            vec!["/workspace/skill/scripts/x.py"],
+        ),
+        (
+            "cd /workspace/skill && python scripts/run.py 2>&1 | tail -20",
+            vec!["/workspace/skill/scripts/run.py"],
+        ),
+        (
+            "cd skill; timeout 45 node setup.js dev",
+            vec!["/repo/skill/setup.js"],
+        ),
+        (
+            "FOO=1 env BAR=2 bash ./build.sh && ./deploy.sh",
+            vec!["/repo/build.sh", "/repo/deploy.sh"],
+        ),
+        (
+            "cat << 'EOF' | node scripts/setup.js\ndev\npython not_run.py\nEOF",
+            vec!["/repo/scripts/setup.js"],
+        ),
+        ("python -W ignore 'my dir/x.py'", vec!["/repo/my dir/x.py"]),
+        ("/opt/tools/check.sh > out.txt", vec!["/opt/tools/check.sh"]),
+        ("python run.py; python run.py", vec!["/repo/run.py"]),
+    ] {
+        assert_eq!(runs(command), expected, "{command}");
+    }
+    // Code given inline or as a module, and commands that run no program file.
+    for command in [
+        "python3 -c \"import json; print(json.load(open('a.json')))\"",
+        "python -m pytest -q",
+        "node -e 'console.log(1)'",
+        "cat scripts/run.py",
+        "ls -la scripts/ | grep run.py",
+        "/usr/bin/git status",
+        "python3 << 'EOF'\nprint(1)\nEOF",
+        "echo python x.py > notes.txt",
+    ] {
+        assert!(runs(command).is_empty(), "{command}");
+    }
+    assert!(run_paths(&call("Read", json!({"file_path": "/repo/run.py"}))).is_empty());
 }
 
 #[test]
