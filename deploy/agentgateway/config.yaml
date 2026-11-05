@@ -1,5 +1,7 @@
 # yaml-language-server: $schema=https://agentgateway.dev/schema/config
 #
+# The gateway configuration the root compose.yaml mounts.
+#
 # Hooks only, which is what the chart's default `mcpTargets: []` renders too. Add an entry under
 # `mcp.targets` to serve an MCP server through the gateway; its tool calls then pass the extAuthz
 # check against the Collector.

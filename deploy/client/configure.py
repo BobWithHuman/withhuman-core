@@ -194,9 +194,8 @@ def main():
     if not args.server:
         sys.exit(
             "--server is required (or set WITHHUMAN_SERVER): the address of your own engine.\n"
-            "  local Compose host:  http://127.0.0.1:3000\n"
-            "  EC2 single node:     https://<the single-node domain_name>\n"
-            "  EKS deployment:      https://<the Ingress host>"
+            "  personal Docker host:  http://127.0.0.1:3000\n"
+            "  EKS deployment:        https://<the Ingress host>"
         )
     args.server = args.server.rstrip("/")
     if not re.fullmatch(r"https?://[^\s/]+(/[^\s]*)?", args.server):

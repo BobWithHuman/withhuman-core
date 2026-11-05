@@ -5,7 +5,7 @@ gateways:
     port: 3000
 
 routes:
-  # Same two routes as deploy/single-node/agentgateway.yaml, so a health check written against
+  # Same two routes as deploy/agentgateway/config.yaml, so a health check written against
   # one profile answers on the other.
   - name: health
     matches:
