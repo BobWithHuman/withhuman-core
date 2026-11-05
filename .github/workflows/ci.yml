@@ -135,7 +135,7 @@ jobs:
 
       - name: Validate every root
         run: |
-          for root in infra/modules/platform infra/aws/bootstrap infra/aws/modules/neo4j infra/aws/modules/single-node infra/aws/single-node infra/aws/staging; do
+          for root in infra/modules/platform infra/aws/bootstrap infra/aws/modules/neo4j infra/aws/staging; do
             terraform -chdir="$root" init -backend=false -input=false
             terraform -chdir="$root" validate
           done

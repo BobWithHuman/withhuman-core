@@ -1,9 +1,9 @@
-# The engine for personal Docker hosts and the Terraform-managed single-node EC2 profile.
+# The engine for a personal Docker host: the whole stack on one machine.
 # deploy/docker/compose.yaml remains the development and E2E profile that builds from source.
 # This file pulls published images and leaves out the MCP fixture. Only the gateway takes a host
 # port, so Neo4j and Redis are reachable on the Compose network alone.
 #
-# withhuman-apply writes the variables below to its process environment before calling Compose.
+# The variables below come from .env; see .env.example.
 name: withhuman
 
 services:
@@ -144,7 +144,7 @@ services:
     ports:
       - "${GATEWAY_BIND:-0.0.0.0}:${GATEWAY_PORT:-3000}:3000"
     volumes:
-      - ./deploy/single-node/agentgateway.yaml:/config.yaml:ro
+      - ./deploy/agentgateway/config.yaml:/config.yaml:ro
     depends_on:
       collector:
         condition: service_healthy

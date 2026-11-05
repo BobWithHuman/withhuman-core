@@ -1,7 +1,10 @@
 # Infrastructure
 
-Terraform for the infrastructure the WithHuman engine runs on. The engine itself is deployed by
-Argo CD with the Helm chart in `deploy/k8s/withhuman` and the values in `withhuman-gitops`.
+Terraform for the shared-cluster deployment. The engine itself is deployed by Argo CD with the
+Helm chart in `deploy/k8s/withhuman` and the values in `withhuman-gitops`.
+
+Nothing here is needed for a personal deployment: that one is the root `compose.yaml` on a single
+Docker host, with no cloud account involved. See the repository's README.
 
 The deployment stays portable across AWS, Azure and GCP: everything above the cluster (images, the
 chart, Argo CD) is the same on each cloud, and each cloud has its own directory here that provides
@@ -16,8 +19,6 @@ the same things:
 aws/
 ├── bootstrap/        S3 bucket for the Terraform state (once per account)
 ├── modules/neo4j/    Neo4j on EC2
-├── modules/single-node/  reusable EC2 + Compose host
-├── single-node/      personal HTTPS deployment on one EC2 instance
 └── staging/          shared EKS staging in ap-northeast-2
 ```
 
@@ -78,27 +79,6 @@ aws secretsmanager put-secret-value --secret-id "$(terraform output -raw gitops_
 Argo CD is not exposed; reach it with `kubectl -n argocd port-forward svc/argocd-server 8080:443`.
 Point the staging host's DNS record at the Traefik load balancer
 (`kubectl -n traefik get svc traefik`); cert-manager then issues its certificate.
-
-## AWS single node
-
-The personal profile runs the engine, Neo4j and Redis on one EC2 instance and puts an HTTPS
-Application Load Balancer in front of it. It requires a public Route 53 hosted zone. The host polls
-the configured branch, tag or commit with a systemd timer; it does not run Argo CD.
-
-```sh
-cd infra/aws/single-node
-cp backend.hcl.example backend.hcl
-cp terraform.tfvars.example terraform.tfvars
-# Fill in the state bucket, hostname and hosted-zone ID.
-terraform init -backend-config=backend.hcl
-terraform plan -out single-node.tfplan
-terraform apply single-node.tfplan
-aws secretsmanager put-secret-value --secret-id "$(terraform output -raw jev_secret_arn)" \
-  --secret-string '<jev-api-key>'
-```
-
-See `deploy/single-node/README.md` for local Compose use and how to start the service after setting
-the Jev key.
 
 ## Not yet covered
 

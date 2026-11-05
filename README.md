@@ -38,8 +38,6 @@ python3 deploy/client/configure.py \
   --hook "$PWD/deploy/client/hooks/pre-tool-use.py"
 ```
 
-See `deploy/single-node/README.md` for operations and the Terraform-managed AWS version.
-
 ## Development
 
 The development and E2E profile builds the services from the working tree and includes an MCP
@@ -52,11 +50,8 @@ docker compose --file deploy/docker/compose.yaml up --detach --build
 
 ## Deployment profiles
 
-- Personal local host: root `compose.yaml` and `.env`.
-- Personal AWS host: `infra/aws/single-node`; EC2 runs the same root `compose.yaml` and polls a
-  configured branch, tag or SHA without Argo CD.
-- Shared staging: `infra/aws/staging`; EKS runs the Helm chart through Argo CD and
+- Personal host: root `compose.yaml` and `.env`, the Docker deployment above. One machine, one user.
+- Shared cluster: `infra/aws/staging`; EKS runs the Helm chart through Argo CD and
   `withhuman-gitops`.
 
-Infrastructure instructions are in `infra/README.md`; architecture details are in
-`docs/ARCHITECTURE.md`.
+Infrastructure instructions are in `infra/README.md`.

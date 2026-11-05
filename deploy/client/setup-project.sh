@@ -16,9 +16,8 @@ ref=${WITHHUMAN_REF:-main}
 if [ -z "${WITHHUMAN_SERVER:-}" ]; then
   cat >&2 <<'USAGE'
 WITHHUMAN_SERVER is required: the address of your own WithHuman engine.
-  local Compose host:  http://127.0.0.1:3000
-  EC2 single node:     https://<the single-node domain_name>
-  EKS deployment:      https://<the Ingress host>
+  personal Docker host:  http://127.0.0.1:3000
+  EKS deployment:        https://<the Ingress host>
 USAGE
   exit 1
 fi
