@@ -85,6 +85,15 @@ impl Backend {
         Ok(settings.public(&self.path))
     }
 
+    /// Switches between the demo graph and Neo4j, keeping the connection as it is.
+    pub fn set_demo(&self, demo: bool) -> Result<Public, String> {
+        let mut settings = self.settings.lock().expect("settings lock");
+        let next = Settings { demo, ..settings.clone() };
+        next.save(&self.path)?;
+        *settings = next;
+        Ok(settings.public(&self.path))
+    }
+
     /// Tries settings from the form before they are saved: connects and counts the sessions.
     pub async fn test(&self, change: Change) -> Result<Probe, String> {
         let candidate = self.settings.lock().expect("settings lock").apply(change)?;

@@ -80,8 +80,14 @@ impl Settings {
         })
     }
 
+    /// `VIEWER_MOCK=1` opens the demo whatever was saved, without changing the file.
     pub fn load(path: &Path) -> Self {
-        fs::read_to_string(path).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+        let mut settings: Self =
+            fs::read_to_string(path).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default();
+        if std::env::var("VIEWER_MOCK").is_ok_and(|v| v == "1") {
+            settings.demo = true;
+        }
+        settings
     }
 
     /// Saves the settings readable by this user only, since they hold the password.

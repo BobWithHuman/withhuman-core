@@ -76,6 +76,21 @@ pub fn App() -> Element {
                 } else {
                     span { class: "source", title: "{p.neo4j_url}", "{p.neo4j_url} · {p.database} · {p.user}" }
                 }
+                button {
+                    class: if p.demo { "primary" } else { "" },
+                    title: if p.demo { "Neo4j로 돌아가기" } else { "Neo4j 없이 목업 데이터 보기" },
+                    onclick: {
+                        let backend = backend.clone();
+                        move |_| {
+                            let demo = !public().demo;
+                            if let Ok(next) = backend.set_demo(demo) {
+                                public.set(next);
+                                reload += 1;
+                            }
+                        }
+                    },
+                    if p.demo { "데모 끄기" } else { "데모 보기" }
+                }
                 button { onclick: move |_| reload += 1, "새로고침" }
                 button { onclick: move |_| open.toggle(), if open() { "닫기" } else { "설정" } }
             }
