@@ -131,6 +131,12 @@ async fn serves_collector_openapi_and_swagger_ui() {
 
     assert_eq!(document["openapi"], "3.1.0");
     assert!(document["paths"]["/v1/hooks/PreToolUse"]["post"].is_object());
+    // The programs the WithHuman command hook attaches are documented with the event.
+    assert!(
+        document["components"]["schemas"]["ProgramFile"]["properties"]["content"].is_object(),
+        "{}",
+        document["components"]["schemas"]["PreToolUseRequest"]
+    );
     assert_eq!(swagger.status(), StatusCode::OK);
 }
 

@@ -36,14 +36,8 @@
       {
         "hooks": [
           {
-            "type": "http",
-            "url": "https://54.252.92.35/v1/hooks/PreToolUse",
-            "headers": {
-              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID"
-            },
-            "allowedEnvVars": [
-              "WITHHUMAN_CLIENT_ID"
-            ]
+            "type": "command",
+            "command": "python3 \"$HOME/.config/withhuman/hooks/pre-tool-use.py\" https://54.252.92.35/v1/hooks/PreToolUse"
           }
         ]
       }

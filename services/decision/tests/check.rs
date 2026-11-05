@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 use withhuman_decision::{
     check::{
-        Branch, Check, Effect, NOT_SEEN, Program, Verdict, bash_written_file, check, effect,
-        request, run_paths, unwanted, written_path,
+        Branch, Check, Effect, NOT_SEEN, Program, Verdict, attached_programs, bash_written_file,
+        check, effect, normalize_path, request, run_paths, unwanted, written_path,
     },
     jev::{JevAnswer, JevRequest, JevResponse},
     trace::{CallInfo, Deviation, Link},
@@ -538,4 +538,52 @@ fn reads_how_likely_running_the_code_does_something_unasked() {
     assert!((got - 0.9).abs() < 1e-9, "{got}");
     assert_eq!(unwanted(Branch::Run, Some(&answer(&[]))), None);
     assert_eq!(unwanted(Branch::Run, None), None);
+}
+
+#[test]
+fn names_a_file_reached_two_ways_alike() {
+    assert_eq!(normalize_path("/repo/a/../b/./c.py"), "/repo/b/c.py");
+    assert_eq!(normalize_path("/repo//b/"), "/repo/b");
+    assert_eq!(normalize_path("/.."), "/");
+    // Windows: however the separators are written, the drive in upper case.
+    assert_eq!(normalize_path("C:\\repo\\x.py"), "C:\\repo\\x.py");
+    assert_eq!(
+        normalize_path("c:\\Users\\me\\proj\\scripts/../tools/./x.py"),
+        "C:\\Users\\me\\proj\\tools\\x.py"
+    );
+    assert_eq!(normalize_path("D:/work//run.py"), "D:\\work\\run.py");
+    assert_eq!(normalize_path("scripts/x.py"), "scripts/x.py");
+}
+
+#[test]
+fn finds_a_program_run_on_windows_as_the_hook_names_it() {
+    let mut bash = call(
+        "Bash",
+        json!({"command": "cd skill && python scripts/run.py"}),
+    );
+    bash.cwd = Some("C:\\Users\\me\\proj".to_owned());
+    // The path Python's os.path.normpath gives the hook for the same file.
+    assert_eq!(
+        run_paths(&bash),
+        ["C:\\Users\\me\\proj\\skill\\scripts\\run.py"]
+    );
+    bash.tool_input = json!({"command": "C:/tools/check.sh"});
+    assert_eq!(run_paths(&bash), ["C:\\tools\\check.sh"]);
+}
+
+#[test]
+fn reads_the_programs_the_hook_attached() {
+    let payload = json!({
+        "tool_name": "Bash",
+        "tool_input": {"command": "python scripts/run.py"},
+        "programs": [
+            {"path": "/repo/scripts/../scripts/run.py", "content": "print(1)\n", "sha256": "ab"},
+            {"path": "/repo/no-content.py"},
+        ],
+    });
+    assert_eq!(
+        attached_programs(&payload),
+        BTreeMap::from([("/repo/scripts/run.py".to_owned(), "print(1)\n".to_owned())])
+    );
+    assert!(attached_programs(&json!({"tool_name": "Bash"})).is_empty());
 }

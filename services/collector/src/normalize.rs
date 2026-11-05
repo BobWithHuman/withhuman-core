@@ -21,8 +21,9 @@ use withhuman_contracts::{
     },
     hooks::{
         ConfigChangeRequest, MessageDisplayRequest, PostToolBatchRequest,
-        PostToolUseFailureRequest, PostToolUseRequest, PreToolUseRequest, SessionStartRequest,
-        SubagentLifecycleRequest, ToolDescriptionsRequest, UserPromptSubmitRequest,
+        PostToolUseFailureRequest, PostToolUseRequest, PreToolUseRequest, ProgramFile,
+        SessionStartRequest, SubagentLifecycleRequest, ToolDescriptionsRequest,
+        UserPromptSubmitRequest,
     },
 };
 
@@ -375,7 +376,7 @@ impl Normalizer {
                 PreToolUsePayload {
                     tool_name: request.tool_name,
                     tool_input: request.tool_input,
-                    additional_fields: Default::default(),
+                    additional_fields: programs_field(request.withhuman_programs),
                 },
             ),
             mode,
@@ -773,6 +774,39 @@ impl Normalizer {
             },
         )))
     }
+}
+
+/// Program files kept with a Call, and bytes kept of each: the client's attachment is not
+/// trusted to be small.
+pub const MAX_PROGRAMS: usize = 8;
+pub const MAX_PROGRAM_BYTES: usize = 64 * 1024;
+
+/// The `programs` field of a PreToolUse payload: the program files the client attached, with
+/// an absolute path, at most [`MAX_PROGRAMS`] of them, each cut to [`MAX_PROGRAM_BYTES`].
+fn programs_field(programs: Vec<ProgramFile>) -> withhuman_contracts::events::AdditionalFields {
+    let kept: Vec<ProgramFile> = programs
+        .into_iter()
+        .filter(|program| program.path.starts_with('/') || program.path.get(1..2) == Some(":"))
+        .take(MAX_PROGRAMS)
+        .map(|mut program| {
+            if program.content.len() > MAX_PROGRAM_BYTES {
+                let mut end = MAX_PROGRAM_BYTES;
+                while !program.content.is_char_boundary(end) {
+                    end -= 1;
+                }
+                program.content.truncate(end);
+                program.truncated = true;
+            }
+            program
+        })
+        .collect();
+    let mut fields = withhuman_contracts::events::AdditionalFields::new();
+    if !kept.is_empty() {
+        if let Ok(value) = serde_json::to_value(kept) {
+            fields.insert("programs".to_owned(), value);
+        }
+    }
+    fields
 }
 
 /// A copy of `value` with sensitive values masked, for state the Collector keeps between Hooks.

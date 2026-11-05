@@ -319,7 +319,7 @@ pub fn run_paths(call: &CallInfo) -> Vec<String> {
             }
             Some(_) => {
                 if let Some(program) = program(&words) {
-                    let path = resolve(cwd.as_deref(), &program);
+                    let path = normalize_path(&resolve(cwd.as_deref(), &program));
                     if !paths.contains(&path) {
                         paths.push(path);
                     }
@@ -329,6 +329,47 @@ pub fn run_paths(call: &CallInfo) -> Vec<String> {
         }
     }
     paths
+}
+
+/// `path` with `.` and `..` steps and repeated separators taken out, without asking the file
+/// system, so the same file reached two ways is named alike. A Windows path (`C:\…`, often
+/// joined with `/` as a command writes it) comes out with `\` and an upper-case drive.
+pub fn normalize_path(path: &str) -> String {
+    let windows = path.as_bytes().get(1) == Some(&b':') && path.as_bytes()[0].is_ascii_alphabetic();
+    let (root, rest, separator) = if windows {
+        (path[..2].to_ascii_uppercase(), &path[2..], '\\')
+    } else if path.starts_with('/') {
+        (String::new(), path, '/')
+    } else {
+        return path.to_owned();
+    };
+    let mut steps: Vec<&str> = Vec::new();
+    for step in rest.split(['/', '\\']) {
+        match step {
+            "" | "." => {}
+            ".." => {
+                steps.pop();
+            }
+            step => steps.push(step),
+        }
+    }
+    format!("{root}{separator}{}", steps.join(&separator.to_string()))
+}
+
+/// The program files a Call's hook attached, by normalized path: the files as they were just
+/// before the Call, which the Collector keeps in the Call payload's `programs`.
+pub fn attached_programs(payload: &Value) -> BTreeMap<String, String> {
+    payload
+        .get("programs")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|program| {
+            let path = program.get("path")?.as_str()?;
+            let content = program.get("content")?.as_str()?;
+            Some((normalize_path(path), content.to_owned()))
+        })
+        .collect()
 }
 
 /// The program file one simple command runs, as written.
@@ -358,9 +399,10 @@ fn program(words: &[String]) -> Option<String> {
             .is_some_and(|version| version.chars().all(|c| c.is_ascii_digit() || c == '.'))
     });
     if !interpreter {
+        let absolute = command.starts_with('/') || command.get(1..2) == Some(":");
         let by_path = command.starts_with("./")
             || command.starts_with("../")
-            || (command.starts_with('/')
+            || (absolute
                 && SCRIPT_EXTENSIONS
                     .iter()
                     .any(|extension| command.ends_with(extension)));

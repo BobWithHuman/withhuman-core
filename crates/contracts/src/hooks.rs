@@ -70,6 +70,28 @@ pub struct PreToolUseRequest {
     pub agent_id: Option<String>,
     #[serde(default)]
     pub agent_type: Option<String>,
+    /// The local program files a Bash command may run, read by the WithHuman command hook
+    /// just before the Call, so the code a run executes can be judged; Claude Code's own event
+    /// has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub withhuman_programs: Vec<ProgramFile>,
+}
+
+/// A local program file as the client read it just before the Call.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+pub struct ProgramFile {
+    /// Absolute path.
+    pub path: String,
+    /// Its text, possibly cut short (`truncated`).
+    pub content: String,
+    /// SHA-256 of the whole file, in hex.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    /// Size of the whole file in bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
