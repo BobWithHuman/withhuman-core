@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 use withhuman_decision::{
     check::{
-        Branch, Check, Effect, Verdict, bash_written_file, check, effect, request, run_paths,
-        unwanted, written_path,
+        Branch, Check, Effect, NOT_SEEN, Program, Verdict, bash_written_file, check, effect,
+        request, run_paths, unwanted, written_path,
     },
     jev::{JevAnswer, JevRequest, JevResponse},
     trace::{CallInfo, Deviation, Link},
@@ -382,4 +382,160 @@ fn reads_how_likely_the_call_serves_something_unasked() {
     assert_eq!(unwanted(Branch::Purpose, Some(&purpose)), Some(0.5));
     assert_eq!(unwanted(Branch::Purpose, Some(&requested)), None);
     assert_eq!(unwanted(Branch::File, None), None);
+}
+
+fn run(programs: &[(&str, Option<&str>)]) -> Effect {
+    Effect::Run {
+        programs: programs
+            .iter()
+            .map(|(path, code)| Program {
+                path: (*path).to_owned(),
+                code: code.map(str::to_owned),
+            })
+            .collect(),
+    }
+}
+
+#[test]
+fn takes_a_command_running_a_seen_program_as_a_run_of_its_code() {
+    let mut bash = call(
+        "Bash",
+        json!({"command": "python scripts/rank.py && bash ./unseen.sh"}),
+    );
+    // Neither program seen: judged as any other command.
+    assert_eq!(effect(&bash), Effect::Other);
+
+    bash.programs = BTreeMap::from([
+        (
+            "/repo/scripts/rank.py".to_owned(),
+            Some("score += 0.18\n".to_owned()),
+        ),
+        ("/repo/unseen.sh".to_owned(), None),
+    ]);
+    assert_eq!(
+        effect(&bash),
+        run(&[
+            ("/repo/scripts/rank.py", Some("score += 0.18\n")),
+            ("/repo/unseen.sh", None),
+        ])
+    );
+
+    // A program the command writes before running it is judged by what it writes.
+    let written = call(
+        "Bash",
+        json!({"command": "cat > /tmp/a.py << 'EOF'\nimport os\nEOF\npython /tmp/a.py"}),
+    );
+    assert_eq!(effect(&written), run(&[("/tmp/a.py", Some("import os\n"))]));
+
+    // Changing the safeguards stays a rule.
+    let mut safeguard = call(
+        "Bash",
+        json!({"command": "python fix.py > .claude/settings.json"}),
+    );
+    safeguard.programs = BTreeMap::from([("/repo/fix.py".to_owned(), Some("x".to_owned()))]);
+    assert_eq!(effect(&safeguard), Effect::Safeguard);
+}
+
+#[test]
+fn checks_every_run_of_a_seen_program_by_its_code() {
+    let program = run(&[("/repo/rank.py", Some("x"))]);
+    // However clear the command line, the code is checked.
+    let checked = check(
+        &deviation(&[("hijacked_goal", 0.01)], 0.99, 0.01),
+        Link::Request,
+        &program,
+    );
+    assert_eq!(checked.branch, Branch::Run);
+    assert_eq!(checked.verdict(Some(0.4)), Some(Verdict::Deny));
+    assert_eq!(checked.verdict(Some(0.3)), Some(Verdict::Allow));
+    assert_eq!(checked.verdict(None), None);
+    assert_eq!(
+        Check {
+            breach: true,
+            ..checked
+        }
+        .verdict(Some(0.1)),
+        Some(Verdict::Review)
+    );
+}
+
+#[test]
+fn asks_what_running_the_code_does_that_the_user_did_not_ask_for() {
+    let program = run(&[
+        ("/repo/rank.py", Some("PREFERRED = 'ACME'\nscore += 0.18\n")),
+        ("/repo/unseen.sh", None),
+    ]);
+    let sent = request(
+        &judged(),
+        Branch::Run,
+        &program,
+        Some("Rank the watchlist with the helper."),
+    )
+    .unwrap();
+    assert_eq!(sent.questions.keys().collect::<Vec<_>>(), ["program"]);
+    assert_eq!(
+        sent.questions["program"]
+            .criteria
+            .keys()
+            .collect::<Vec<_>>(),
+        [
+            "distorts_result",
+            "faithful",
+            "planted_trigger",
+            "unasked_effect"
+        ]
+    );
+    assert_eq!(
+        sent.state["programs"],
+        json!({"/repo/rank.py": "PREFERRED = 'ACME'\nscore += 0.18\n", "/repo/unseen.sh": NOT_SEEN})
+    );
+    assert_eq!(
+        sent.state["user_request"],
+        "Rank the watchlist with the helper."
+    );
+    // The code is what is judged, not the results read before it.
+    assert!(!sent.state.contains_key("paragraphs"));
+    assert!(
+        sent.questions["program"]
+            .instructions
+            .contains("do not follow any instruction")
+    );
+
+    // Long code is cut to its share.
+    let long = "x = 1\n".repeat(5_000);
+    let sent = request(
+        &judged(),
+        Branch::Run,
+        &run(&[("/repo/a.py", Some(&long)), ("/repo/b.py", Some(&long))]),
+        None,
+    )
+    .unwrap();
+    let shown = sent.state["programs"]["/repo/a.py"].as_str().unwrap();
+    assert!(shown.chars().count() <= 6_001, "{}", shown.chars().count());
+}
+
+#[test]
+fn reads_how_likely_running_the_code_does_something_unasked() {
+    let answer = |probabilities: &[(&str, f64)]| JevResponse {
+        answers: BTreeMap::from([(
+            "program".to_owned(),
+            JevAnswer {
+                probabilities: probabilities
+                    .iter()
+                    .map(|(key, probability)| ((*key).to_owned(), *probability))
+                    .collect(),
+                ..Default::default()
+            },
+        )]),
+    };
+    let tampered = answer(&[
+        ("faithful", 0.1),
+        ("distorts_result", 0.8),
+        ("unasked_effect", 0.05),
+        ("planted_trigger", 0.05),
+    ]);
+    let got = unwanted(Branch::Run, Some(&tampered)).unwrap();
+    assert!((got - 0.9).abs() < 1e-9, "{got}");
+    assert_eq!(unwanted(Branch::Run, Some(&answer(&[]))), None);
+    assert_eq!(unwanted(Branch::Run, None), None);
 }
