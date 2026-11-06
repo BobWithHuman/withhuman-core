@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 compose_file="$repo_dir/deploy/docker/compose.yaml"
-project=${WITHHUMAN_E2E_PROJECT:-withhuman-e2e-$}
+project=${WITHHUMAN_E2E_PROJECT:-withhuman-e2e-$$}
 export WITHHUMAN_ENGINE_NETWORK="$project-engine"
 compose=(docker compose --project-name "$project" --file "$compose_file" --file "$repo_dir/tests/e2e/compose.ports.yaml")
 gateway_url=${AGENTGATEWAY_URL:-http://localhost:3000}
