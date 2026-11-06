@@ -60,6 +60,22 @@ and Secrets Manager.
 Staging uses one NAT gateway and one Valkey node. An existing legacy database VM is removed from
 Terraform management without destruction, so it can be backed up and kept during cutover.
 
+### Staging PostgreSQL cutover
+
+Image publication continues on `main`. Staging image promotions require the
+`STAGING_POSTGRES_READY=true` repository variable in `withhuman-core`. Leave it unset during
+the first PostgreSQL deployment.
+
+1. Prepare the private PostgreSQL endpoint and its `database-url` secret. Keep the existing
+   Neo4j deployment and credentials available for rollback. If its sessions must be retained,
+   pause graph writes and follow the export, import and verification steps in the
+   [repository README](../README.md#upgrading-an-existing-neo4j-deployment).
+2. In one `withhuman-gitops` change, pin the engine chart in `apps/staging.yaml` to the
+   PostgreSQL release commit, set `imageTag` in `envs/staging/values.yaml` to that published
+   image SHA, and map the `database-url` secret to the chart. Keep the Redis and Jev mappings.
+3. After Argo CD syncs, check the engine's health and confirm a new session and decision are
+   persisted. Set `STAGING_POSTGRES_READY=true` to resume automatic staging image promotions.
+
 ## Cluster add-ons
 
 `modules/platform` installs what the engine needs on any cloud: Argo CD, Traefik for Ingress,
