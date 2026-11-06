@@ -5,8 +5,8 @@ Decision run with Neo4j and Redis; AgentGateway is the single HTTP entry point.
 
 ## Personal Docker deployment
 
-Docker 24+ with the Compose plugin is required. The default binds the gateway to localhost, so it
-is suitable for one user on the same machine.
+Docker 24+ with the Compose plugin 2.20 or later is required. The default binds the gateway to
+localhost, so it is suitable for one user on the same machine.
 
 ```sh
 git clone https://github.com/BobWithHuman/withhuman-core.git
