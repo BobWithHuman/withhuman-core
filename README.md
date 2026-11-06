@@ -30,6 +30,23 @@ docker compose pull && docker compose up --detach --wait
 
 Set `IMAGE_TAG` to a release (`0.1.0`) or a full commit SHA to stay on one build instead.
 
+### PostgreSQL graph store (opt-in)
+
+Generator and Decision keep the execution graph in Neo4j by default. To keep it in PostgreSQL 16
+instead, set these in `.env` before `docker compose up`:
+
+```sh
+COMPOSE_PROFILES=postgres
+WITHHUMAN_GRAPH_STORE=postgres
+POSTGRES_PASSWORD=replace-with-a-long-random-password
+```
+
+The services create their tables on connect. Any `WITHHUMAN_GRAPH_STORE` other than `neo4j` or
+`postgres` stops them, so both always use the same store. Neo4j still starts but is unused. The
+graph viewer and `generator reindex-paragraphs` work with Neo4j only, and an existing Neo4j graph
+is not copied. Outside Compose, set `DATABASE_URL` (and optionally `DATABASE_POOL_SIZE`, default
+16) on both services.
+
 Configure a Claude Code project against the local gateway:
 
 ```sh
