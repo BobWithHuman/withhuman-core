@@ -1,4 +1,5 @@
 use std::{env, io, net::SocketAddr, time::Duration};
+use withhuman_common::graph_store::GraphStore;
 
 use withhuman_contracts::decisions::Decision;
 
@@ -121,11 +122,14 @@ impl DecisionConfig {
             "REVIEW" => Decision::Review,
             value => return Err(invalid(format!("unsupported MOCK_DECISION `{value}`"))),
         };
-        let neo4j_password =
-            env::var("NEO4J_PASSWORD").map_err(|_| invalid("NEO4J_PASSWORD must be configured"))?;
-        if neo4j_password.is_empty() {
-            return Err(invalid("NEO4J_PASSWORD must not be empty"));
-        }
+        // A Decision on PostgreSQL (`WITHHUMAN_GRAPH_STORE=postgres`) needs no Neo4j password.
+        let on_postgres = GraphStore::from_env()? == GraphStore::Postgres;
+        let neo4j_password = match env::var("NEO4J_PASSWORD") {
+            Ok(password) if !password.is_empty() => password,
+            Ok(_) if !on_postgres => return Err(invalid("NEO4J_PASSWORD must not be empty")),
+            Err(_) if !on_postgres => return Err(invalid("NEO4J_PASSWORD must be configured")),
+            _ => String::new(),
+        };
         let mock_delay = env::var("MOCK_DECISION_DELAY_MS")
             .unwrap_or_else(|_| "0".into())
             .parse::<u64>()

@@ -1,4 +1,5 @@
 use std::{env, io, net::SocketAddr};
+use withhuman_common::graph_store::GraphStore;
 
 const DEFAULT_BIND_ADDRESS: &str = "0.0.0.0:8081";
 const DEFAULT_NEO4J_URL: &str = "http://neo4j:7474";
@@ -22,11 +23,14 @@ impl GeneratorConfig {
             .unwrap_or_else(|_| DEFAULT_BIND_ADDRESS.to_owned())
             .parse()
             .map_err(|error| invalid(format!("invalid GENERATOR_ADDR: {error}")))?;
-        let neo4j_password =
-            env::var("NEO4J_PASSWORD").map_err(|_| invalid("NEO4J_PASSWORD must be configured"))?;
-        if neo4j_password.is_empty() {
-            return Err(invalid("NEO4J_PASSWORD must not be empty"));
-        }
+        // A Generator on PostgreSQL (`WITHHUMAN_GRAPH_STORE=postgres`) needs no Neo4j password.
+        let on_postgres = GraphStore::from_env()? == GraphStore::Postgres;
+        let neo4j_password = match env::var("NEO4J_PASSWORD") {
+            Ok(password) if !password.is_empty() => password,
+            Ok(_) if !on_postgres => return Err(invalid("NEO4J_PASSWORD must not be empty")),
+            Err(_) if !on_postgres => return Err(invalid("NEO4J_PASSWORD must be configured")),
+            _ => String::new(),
+        };
 
         Ok(Self {
             bind_address,
