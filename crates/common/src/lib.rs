@@ -1,6 +1,7 @@
 //! Shared technical infrastructure for WithHuman services.
 
 pub mod chunking;
+pub mod graph_store;
 pub mod hidden;
 pub mod intent;
 pub mod origin;
@@ -19,6 +20,10 @@ pub mod tokens;
 /// their statements at once, taking a second or more each, and timed out. The statements look
 /// a session up by indexed properties, so a plan made earlier stays good as the graph grows.
 pub const CYPHER_OPTIONS: &str = "CYPHER replan=skip ";
+
+/// The execution graph's tables in PostgreSQL. Every statement is idempotent, so each service
+/// applies it on connect, as `neo4j-bootstrap` applies `schema.cypher`.
+pub const POSTGRES_SCHEMA: &str = include_str!("../sql/postgres_schema.sql");
 
 #[macro_export]
 macro_rules! node_labels {

@@ -24,7 +24,7 @@ docker run --rm \
   --volume "$out_dir:/out" \
   --workdir /workspace \
   --env CARGO_TARGET_DIR=/target \
-  rust:1.85-bookworm \
+  rust:1.87-bookworm \
   sh -eu -c "cargo build --locked --release --package $binary \
     && cp /target/release/$binary /out/service \
     && chown $(id -u):$(id -g) /out/service"
