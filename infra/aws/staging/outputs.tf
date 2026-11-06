@@ -7,8 +7,13 @@ output "kubeconfig_command" {
 }
 
 output "database_url_secret_arn" {
-  description = "Set the PostgreSQL DSN by hand and map this secret to database-url in the engine chart."
+  description = "Holds the PostgreSQL DSN. Map this secret to database-url in the engine chart."
   value       = aws_secretsmanager_secret.postgres.arn
+}
+
+output "postgres_endpoint" {
+  description = "Private endpoint of the engine's PostgreSQL instance."
+  value       = aws_db_instance.postgres.endpoint
 }
 
 output "engine_secret_arn" {

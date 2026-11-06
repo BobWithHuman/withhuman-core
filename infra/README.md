@@ -11,9 +11,12 @@ chart, Argo CD) is the same on each cloud, and each cloud has its own directory 
 the same things:
 
 - a Kubernetes cluster whose nodes enforce NetworkPolicies
-- a private PostgreSQL endpoint provisioned separately and reachable from the cluster
+- a private PostgreSQL endpoint reachable from the cluster, given to the engine only as a DSN
 - a Redis-compatible store, given to the engine only as a URL
 - secrets for `database-url`, `redis-url` and the Jev API key
+
+Each cloud reaches those with its own managed services, which the engine never sees: on AWS, RDS
+for PostgreSQL and ElastiCache Valkey for Redis.
 
 ```text
 aws/
@@ -23,8 +26,8 @@ aws/
 
 ## AWS staging
 
-Requires Terraform 1.10 or later and AWS credentials that can manage VPC, EKS, EC2, IAM, ElastiCache
-and Secrets Manager.
+Requires Terraform 1.10 or later and AWS credentials that can manage VPC, EKS, EC2, IAM, RDS,
+ElastiCache and Secrets Manager.
 
 1. Create the state bucket, once per account:
 
@@ -53,12 +56,17 @@ and Secrets Manager.
      --secret-string '<jev-api-key>'
    ```
 
-5. Provision PostgreSQL on a private network reachable from the engine pods. Store its connection
-   string in the secret named by `database_url_secret_arn`. Map it to `database-url` in the chart's
-   `externalSecret.data` in withhuman-gitops before deploying the new engine images.
+5. Map the `database-url` secret to the chart's `externalSecret.data` in withhuman-gitops before
+   deploying the new engine images. Terraform creates the PostgreSQL instance in the private
+   subnets, generates its password and writes the DSN into the secret named by
+   `database_url_secret_arn`, so nothing is entered by hand here.
 
-Staging uses one NAT gateway and one Valkey node. An existing legacy database VM is removed from
-Terraform management without destruction, so it can be backed up and kept during cutover.
+Staging uses one NAT gateway, one Valkey node and one single-AZ PostgreSQL instance. Only the
+cluster's nodes reach the database: its security group allows 5432 from the node security group
+alone. Generator and Decision create their own schema on startup, so a fresh instance needs no
+seeding. The generated password lives in the Terraform state, as the Valkey URL does; the Jev key
+is the one secret Terraform never holds. An existing legacy database VM is removed from Terraform
+management without destruction, so it can be backed up and kept during cutover.
 
 ### Staging PostgreSQL cutover
 
@@ -66,9 +74,9 @@ Image publication continues on `main`. Staging image promotions require the
 `STAGING_POSTGRES_READY=true` repository variable in `withhuman-core`. Leave it unset during
 the first PostgreSQL deployment.
 
-1. Prepare the private PostgreSQL endpoint and its `database-url` secret. Keep the existing
-   Neo4j deployment and credentials available for rollback. If its sessions must be retained,
-   pause graph writes and follow the export, import and verification steps in the
+1. Apply Terraform to create the PostgreSQL instance and its `database-url` secret. Keep the
+   existing Neo4j deployment and credentials available for rollback. If its sessions must be
+   retained, pause graph writes and follow the export, import and verification steps in the
    [repository README](../README.md#upgrading-an-existing-neo4j-deployment).
 2. In one `withhuman-gitops` change, pin the engine chart in `apps/staging.yaml` to the
    PostgreSQL release commit, set `imageTag` in `envs/staging/values.yaml` to that published

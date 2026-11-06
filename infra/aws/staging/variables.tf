@@ -54,6 +54,29 @@ variable "node_desired_size" {
   default = 2
 }
 
+variable "postgres_version" {
+  description = "RDS PostgreSQL version; list the current ones with `aws rds describe-db-engine-versions --engine postgres`. A major version alone takes that version's current minor."
+  type        = string
+  default     = "16"
+}
+
+variable "postgres_instance_class" {
+  type    = string
+  default = "db.t4g.micro"
+}
+
+variable "postgres_allocated_storage" {
+  description = "GiB of storage. The AWS Free Tier allowance is 20 GiB of General Purpose storage."
+  type        = number
+  default     = 20
+}
+
+variable "postgres_backup_retention_days" {
+  description = "Days of automated backups; 0 disables them."
+  type        = number
+  default     = 7
+}
+
 variable "valkey_version" {
   type    = string
   default = "8.0"

@@ -109,8 +109,80 @@ removed {
 
 resource "aws_secretsmanager_secret" "postgres" {
   name                    = "${local.name}/database-url"
-  description             = "PostgreSQL URL of ${local.name}; set its value by hand"
+  description             = "PostgreSQL DSN of ${local.name}"
   recovery_window_in_days = var.secret_recovery_window_days
+}
+
+# PostgreSQL holds the execution graph. RDS rather than a database VM of our own: every cloud
+# provides this endpoint with its own managed service and the engine only ever sees the DSN below,
+# so the managed service stays a per-cloud detail.
+resource "aws_db_subnet_group" "postgres" {
+  name       = local.name
+  subnet_ids = module.vpc.private_subnets
+}
+
+resource "aws_security_group" "postgres" {
+  name_prefix = "${local.name}-postgres-"
+  description = "PostgreSQL for ${local.name}"
+  vpc_id      = module.vpc.vpc_id
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+
+resource "aws_vpc_security_group_ingress_rule" "postgres" {
+  security_group_id            = aws_security_group.postgres.id
+  referenced_security_group_id = module.eks.node_security_group_id
+  from_port                    = 5432
+  to_port                      = 5432
+  ip_protocol                  = "tcp"
+  description                  = "PostgreSQL from the engine services"
+}
+
+# No special characters: this password is embedded in the DSN string below.
+resource "random_password" "postgres" {
+  length  = 32
+  special = false
+}
+
+resource "aws_db_instance" "postgres" {
+  identifier     = local.name
+  engine         = "postgres"
+  engine_version = var.postgres_version
+  instance_class = var.postgres_instance_class
+
+  db_name  = "withhuman"
+  username = "withhuman"
+  password = random_password.postgres.result
+
+  allocated_storage = var.postgres_allocated_storage
+  storage_type      = "gp2"
+  storage_encrypted = true
+
+  db_subnet_group_name   = aws_db_subnet_group.postgres.name
+  vpc_security_group_ids = [aws_security_group.postgres.id]
+  publicly_accessible    = false
+  # One instance keeps staging cheap, as the single NAT gateway and the single Valkey node do.
+  multi_az = false
+
+  backup_retention_period    = var.postgres_backup_retention_days
+  copy_tags_to_snapshot      = true
+  auto_minor_version_upgrade = true
+
+  # Generator and Decision create their own schema on startup, so nothing seeds this instance.
+  #
+  # No final snapshot: staging is meant to be destroyed and recreated under the same names, and a
+  # snapshot named after this identifier would make the next destroy fail.
+  skip_final_snapshot = true
+  deletion_protection = false
+}
+
+# A plain connection string rather than a JSON document, like the Jev key: the chart's
+# ExternalSecret reads this secret without naming a property.
+resource "aws_secretsmanager_secret_version" "postgres" {
+  secret_id     = aws_secretsmanager_secret.postgres.id
+  secret_string = "postgres://${aws_db_instance.postgres.username}:${random_password.postgres.result}@${aws_db_instance.postgres.address}:${aws_db_instance.postgres.port}/${aws_db_instance.postgres.db_name}"
 }
 
 # Valkey speaks the Redis protocol under a BSD license.
