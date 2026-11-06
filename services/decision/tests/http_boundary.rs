@@ -43,7 +43,7 @@ async fn returns_and_persists_each_configured_mock_decision() {
 }
 
 #[tokio::test]
-async fn reports_missing_graph_and_unavailable_neo4j() {
+async fn reports_missing_graph_and_unavailable_graph_store() {
     let missing = app(DecisionService::new(
         FailingRepository(RepositoryError::NotFound),
         MockDecisionProvider::fixed(Decision::Allow),
@@ -151,7 +151,6 @@ fn production_runtime_rejects_the_mock_provider() {
     let output = Command::new(env!("CARGO_BIN_EXE_withhuman-decision"))
         .env("WITHHUMAN_ENV", "production")
         .env("DECISION_PROVIDER", "mock")
-        .env("NEO4J_PASSWORD", "unused")
         .output()
         .unwrap();
 

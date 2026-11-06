@@ -1,4 +1,4 @@
-//! Generator, Decision (Jev provider) and Neo4j together, with a scripted Jev server.
+//! Generator, Decision (Jev provider) and PostgreSQL together, with a scripted Jev server.
 
 use std::{
     collections::BTreeSet,
@@ -11,13 +11,13 @@ use axum::{Json, Router, extract::State, http::HeaderMap, routing};
 use serde_json::{Value, json};
 use withhuman_contracts::decisions::{DecisionRequest, EnforcementMode};
 use withhuman_decision::{
-    DecisionConfig, DecisionRepository, DecisionService, JevDecisionProvider,
-    Neo4jDecisionRepository, RuntimeEnvironment, TraceRecord, TracedParent, app as decision_app,
+    DecisionRepository, DecisionService, JevDecisionProvider, PgDecisionRepository, TraceRecord,
+    TracedParent, app as decision_app,
     jev::HttpJevClient,
     trace::{Thresholds, TraceSettings},
 };
 use withhuman_generator::{
-    GeneratorConfig, GeneratorService, HttpDecisionClient, Neo4jRepository, app as generator_app,
+    GeneratorConfig, GeneratorService, HttpDecisionClient, PgGraphRepository, app as generator_app,
 };
 
 /// The Authorization header and body of a request the fake Jev received.
@@ -115,13 +115,9 @@ async fn send(client: &reqwest::Client, base: &str, event: &str, body: Value) ->
 
 #[tokio::test]
 async fn traces_the_cause_and_denies_a_call_against_the_intent() {
-    let Some(neo4j_url) = std::env::var("NEO4J_INTEGRATION_URL").ok() else {
-        eprintln!("skipping Neo4j integration test; NEO4J_INTEGRATION_URL is unset");
+    let Ok(database_url) = std::env::var("POSTGRES_INTEGRATION_URL") else {
         return;
     };
-    let neo4j_user = std::env::var("NEO4J_INTEGRATION_USER").unwrap_or_else(|_| "neo4j".into());
-    let neo4j_password = std::env::var("NEO4J_INTEGRATION_PASSWORD")
-        .unwrap_or_else(|_| "withhuman-integration".into());
     let session_id = format!(
         "trace-it-{}-{}",
         process::id(),
@@ -138,23 +134,8 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
             .with_state(jev.clone()),
     )
     .await;
-    let decision_config = DecisionConfig {
-        bind_address: "127.0.0.1:0".parse().unwrap(),
-        environment: RuntimeEnvironment::Test,
-        provider: "jev".into(),
-        mock_decision: withhuman_contracts::decisions::Decision::Allow,
-        mock_reason: None,
-        mock_delay: Duration::ZERO,
-        neo4j_url: neo4j_url.clone(),
-        neo4j_user: neo4j_user.clone(),
-        neo4j_password: neo4j_password.clone(),
-        neo4j_database: "neo4j".into(),
-        jev: None,
-        thresholds: Thresholds::default(),
-        trace: TraceSettings::default(),
-    };
     let repository: Arc<dyn DecisionRepository> = Arc::new(
-        Neo4jDecisionRepository::connect(&decision_config)
+        PgDecisionRepository::connect(&database_url, 4)
             .await
             .unwrap(),
     );
@@ -173,13 +154,9 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
 
     let generator_config = GeneratorConfig {
         bind_address: "127.0.0.1:0".parse().unwrap(),
-        neo4j_url,
-        neo4j_user,
-        neo4j_password,
-        neo4j_database: "neo4j".into(),
         decision_url,
     };
-    let generator_repository = Neo4jRepository::connect(&generator_config).await.unwrap();
+    let generator_repository = PgGraphRepository::connect(&database_url, 4).await.unwrap();
     // History is written without decisions; the last Call goes through the Decision service.
     let history = spawn(generator_app(GeneratorService::new(
         generator_repository.clone(),
@@ -341,84 +318,49 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
         "{paragraphs:?}"
     );
 
-    let query = reqwest::Client::new();
-    let rows: Value = query
-        .post(format!(
-            "{}/db/neo4j/query/v2",
-            std::env::var("NEO4J_INTEGRATION_URL").unwrap()
-        ))
-        .basic_auth(
-            std::env::var("NEO4J_INTEGRATION_USER").unwrap_or_else(|_| "neo4j".into()),
-            Some(
-                std::env::var("NEO4J_INTEGRATION_PASSWORD")
-                    .unwrap_or_else(|_| "withhuman-integration".into()),
-            ),
-        )
-        .json(&json!({
-            "statement": "MATCH (call:Call {session_id:$s, order:7}) \
-                OPTIONAL MATCH (call)-[next:NEXT {kind:'cause'}]->(cause) \
-                OPTIONAL MATCH (cause)<-[:CONTAINS_PARAGRAPH]-(result)-[:RESULT_OF]->(origin:Call) \
-                RETURN call.parent, cause.hidden, labels(cause)[0], next.rank, \
-                       round(call.intent_score, 2), result.order, origin.order",
-            "parameters": {"s": session_id}
-        }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(
-        rows["data"]["values"],
-        json!([["s1", true, "Paragraph", 1, 0.28, 4, 3]]),
-        "{rows}"
-    );
+    let rows = cause_paragraph(&database_url, &session_id).await;
+    assert_eq!(rows, json!([["s1", true, "Paragraph", 1, 0.28, 4, 3]]));
 
     // Deciding the same Call again replaces its cause edges instead of adding more.
     send(&client, &deciding, "PreToolUse", call).await;
     assert_eq!(jev.requests.lock().unwrap().len(), 4);
-    let again: Value = cypher(
-        "MATCH (call:Call {session_id:$s, order:7}) \
-         OPTIONAL MATCH (call)-[next:NEXT {kind:'cause'}]->(cause) \
-         OPTIONAL MATCH (cause)<-[:CONTAINS_PARAGRAPH]-(result)-[:RESULT_OF]->(origin:Call) \
-         RETURN call.parent, cause.hidden, labels(cause)[0], next.rank, \
-                round(call.intent_score, 2), result.order, origin.order",
-        json!({"s": session_id}),
-    )
-    .await;
-    assert_eq!(again, rows["data"]["values"]);
+    assert_eq!(cause_paragraph(&database_url, &session_id).await, rows);
 }
 
-/// Neo4j settings from the integration environment, or `None` to skip.
-fn neo4j() -> Option<(String, String, String)> {
-    let url = std::env::var("NEO4J_INTEGRATION_URL").ok()?;
-    let user = std::env::var("NEO4J_INTEGRATION_USER").unwrap_or_else(|_| "neo4j".into());
-    let password = std::env::var("NEO4J_INTEGRATION_PASSWORD")
-        .unwrap_or_else(|_| "withhuman-integration".into());
-    Some((url, user, password))
-}
-
-async fn cypher(statement: &str, parameters: Value) -> Value {
-    let (url, user, password) = neo4j().unwrap();
-    let rows: Value = reqwest::Client::new()
-        .post(format!("{url}/db/neo4j/query/v2"))
-        .basic_auth(user, Some(password))
-        .json(&json!({"statement": statement, "parameters": parameters}))
-        .send()
-        .await
-        .unwrap()
-        .json()
+async fn postgres_query(database_url: &str, sql: &str, session: &str) -> Value {
+    let (client, connection) = tokio_postgres::connect(database_url, tokio_postgres::NoTls)
         .await
         .unwrap();
-    rows["data"]["values"].clone()
+    tokio::spawn(async move { connection.await.unwrap() });
+    Value::Array(
+        client
+            .query(sql, &[&session])
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| row.get(0))
+            .collect(),
+    )
+}
+
+async fn cause_paragraph(database_url: &str, session: &str) -> Value {
+    postgres_query(database_url, r#"
+        SELECT jsonb_build_array(c.parent, p.hidden, CASE WHEN p.seq IS NOT NULL THEN 'Paragraph' END,
+                                 e.rank, round(c.intent_score::numeric, 2), r."order", origin."order")
+        FROM nodes c
+        LEFT JOIN cause_edges e ON e.session_id = c.session_id AND e.call_seq = c.seq
+        LEFT JOIN paragraphs p ON p.session_id = e.session_id AND p.seq = e.target_seq AND p."index" = e.target_index
+        LEFT JOIN nodes r ON r.session_id = p.session_id AND r.seq = p.seq
+        LEFT JOIN nodes origin ON origin.session_id = r.session_id AND origin.tool_use_id = r.tool_use_id AND origin.kind = 'Call'
+        WHERE c.session_id = $1 AND c.kind = 'Call' AND c."order" = 7
+    "#, session).await
 }
 
 /// The same key mentioned by a message and later by a tool result counts once, in the latest
 /// SubGraph, whatever slot mentioned it; a Call that names it puts that SubGraph first.
 #[tokio::test]
 async fn keeps_only_the_latest_mention_of_a_value() {
-    let Some((neo4j_url, neo4j_user, neo4j_password)) = neo4j() else {
-        eprintln!("skipping Neo4j integration test; NEO4J_INTEGRATION_URL is unset");
+    let Ok(database_url) = std::env::var("POSTGRES_INTEGRATION_URL") else {
         return;
     };
     let session_id = format!(
@@ -429,16 +371,8 @@ async fn keeps_only_the_latest_mention_of_a_value() {
             .unwrap()
             .as_nanos()
     );
-    let generator_config = GeneratorConfig {
-        bind_address: "127.0.0.1:0".parse().unwrap(),
-        neo4j_url: neo4j_url.clone(),
-        neo4j_user: neo4j_user.clone(),
-        neo4j_password: neo4j_password.clone(),
-        neo4j_database: "neo4j".into(),
-        decision_url: "http://127.0.0.1:9".into(),
-    };
     let history = spawn(generator_app(GeneratorService::new(
-        Neo4jRepository::connect(&generator_config).await.unwrap(),
+        PgGraphRepository::connect(&database_url, 4).await.unwrap(),
     )))
     .await;
     let client = reqwest::Client::new();
@@ -511,23 +445,9 @@ async fn keeps_only_the_latest_mention_of_a_value() {
     )
     .await;
 
-    let repository = Neo4jDecisionRepository::connect(&DecisionConfig {
-        bind_address: "127.0.0.1:0".parse().unwrap(),
-        environment: RuntimeEnvironment::Test,
-        provider: "jev".into(),
-        mock_decision: withhuman_contracts::decisions::Decision::Allow,
-        mock_reason: None,
-        mock_delay: Duration::ZERO,
-        neo4j_url,
-        neo4j_user,
-        neo4j_password,
-        neo4j_database: "neo4j".into(),
-        jev: None,
-        thresholds: Thresholds::default(),
-        trace: TraceSettings::default(),
-    })
-    .await
-    .unwrap();
+    let repository = PgDecisionRepository::connect(&database_url, 4)
+        .await
+        .unwrap();
     let graph = repository
         .trace_graph(&DecisionRequest {
             session_id: session_id.clone(),
@@ -550,8 +470,7 @@ async fn keeps_only_the_latest_mention_of_a_value() {
 /// prompt's Request, so the chain of causes ends at what the user asked.
 #[tokio::test]
 async fn ends_the_cause_chain_at_the_prompt() {
-    let Some((neo4j_url, neo4j_user, neo4j_password)) = neo4j() else {
-        eprintln!("skipping Neo4j integration test; NEO4J_INTEGRATION_URL is unset");
+    let Ok(database_url) = std::env::var("POSTGRES_INTEGRATION_URL") else {
         return;
     };
     let session_id = format!(
@@ -563,16 +482,7 @@ async fn ends_the_cause_chain_at_the_prompt() {
             .as_nanos()
     );
     let history = spawn(generator_app(GeneratorService::new(
-        Neo4jRepository::connect(&GeneratorConfig {
-            bind_address: "127.0.0.1:0".parse().unwrap(),
-            neo4j_url: neo4j_url.clone(),
-            neo4j_user: neo4j_user.clone(),
-            neo4j_password: neo4j_password.clone(),
-            neo4j_database: "neo4j".into(),
-            decision_url: "http://127.0.0.1:9".into(),
-        })
-        .await
-        .unwrap(),
+        PgGraphRepository::connect(&database_url, 4).await.unwrap(),
     )))
     .await;
     let client = reqwest::Client::new();
@@ -603,23 +513,9 @@ async fn ends_the_cause_chain_at_the_prompt() {
     call["mode"] = json!("record");
     let call = send(&client, &history, "PreToolUse", call).await;
 
-    let repository = Neo4jDecisionRepository::connect(&DecisionConfig {
-        bind_address: "127.0.0.1:0".parse().unwrap(),
-        environment: RuntimeEnvironment::Test,
-        provider: "jev".into(),
-        mock_decision: withhuman_contracts::decisions::Decision::Allow,
-        mock_reason: None,
-        mock_delay: Duration::ZERO,
-        neo4j_url,
-        neo4j_user,
-        neo4j_password,
-        neo4j_database: "neo4j".into(),
-        jev: None,
-        thresholds: Thresholds::default(),
-        trace: TraceSettings::default(),
-    })
-    .await
-    .unwrap();
+    let repository = PgDecisionRepository::connect(&database_url, 4)
+        .await
+        .unwrap();
     repository
         .persist_trace(
             &DecisionRequest {
@@ -647,10 +543,14 @@ async fn ends_the_cause_chain_at_the_prompt() {
         .await
         .unwrap();
 
-    let cause = cypher(
-        "MATCH (call:Call {session_id:$s})-[next:NEXT {kind:'cause'}]->(cause) \
-         RETURN labels(cause)[0], cause.order, next.probability, next.parent",
-        json!({"s": session_id}),
+    let cause = postgres_query(
+        &database_url,
+        r#"
+        SELECT jsonb_build_array(n.kind, n."order", e.probability, e.parent)
+        FROM cause_edges e JOIN nodes n ON n.session_id = e.session_id AND n.seq = e.target_seq
+        WHERE e.session_id = $1 AND e.target_index = -1
+    "#,
+        &session_id,
     )
     .await;
     assert_eq!(cause, json!([["Request", 1, 0.9, "s0"]]));
@@ -660,8 +560,7 @@ async fn ends_the_cause_chain_at_the_prompt() {
 /// an older Read of it; without an attachment, by that Read; never seen, by nothing.
 #[tokio::test]
 async fn knows_a_run_program_by_its_attached_code_first() {
-    let Some((neo4j_url, neo4j_user, neo4j_password)) = neo4j() else {
-        eprintln!("skipping Neo4j integration test; NEO4J_INTEGRATION_URL is unset");
+    let Ok(database_url) = std::env::var("POSTGRES_INTEGRATION_URL") else {
         return;
     };
     let session_id = format!(
@@ -672,16 +571,8 @@ async fn knows_a_run_program_by_its_attached_code_first() {
             .unwrap()
             .as_nanos()
     );
-    let generator_config = GeneratorConfig {
-        bind_address: "127.0.0.1:0".parse().unwrap(),
-        neo4j_url: neo4j_url.clone(),
-        neo4j_user: neo4j_user.clone(),
-        neo4j_password: neo4j_password.clone(),
-        neo4j_database: "neo4j".into(),
-        decision_url: "http://127.0.0.1:9".into(),
-    };
     let history = spawn(generator_app(GeneratorService::new(
-        Neo4jRepository::connect(&generator_config).await.unwrap(),
+        PgGraphRepository::connect(&database_url, 4).await.unwrap(),
     )))
     .await;
     let client = reqwest::Client::new();
@@ -744,23 +635,9 @@ async fn knows_a_run_program_by_its_attached_code_first() {
     let with_hook = decide(4, attached).await;
     let without_hook = decide(5, run).await;
 
-    let repository = Neo4jDecisionRepository::connect(&DecisionConfig {
-        bind_address: "127.0.0.1:0".parse().unwrap(),
-        environment: RuntimeEnvironment::Test,
-        provider: "jev".into(),
-        mock_decision: withhuman_contracts::decisions::Decision::Allow,
-        mock_reason: None,
-        mock_delay: Duration::ZERO,
-        neo4j_url,
-        neo4j_user,
-        neo4j_password,
-        neo4j_database: "neo4j".into(),
-        jev: None,
-        thresholds: Thresholds::default(),
-        trace: TraceSettings::default(),
-    })
-    .await
-    .unwrap();
+    let repository = PgDecisionRepository::connect(&database_url, 4)
+        .await
+        .unwrap();
     let programs = |graph: withhuman_decision::trace::TraceGraph| graph.call.programs;
     assert_eq!(
         programs(repository.trace_graph(&with_hook).await.unwrap()),

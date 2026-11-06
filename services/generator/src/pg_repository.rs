@@ -1,8 +1,4 @@
-//! The execution graph in PostgreSQL: the same [`GraphRepository`] as [`Neo4jRepository`], with
-//! each step of its Cypher run as a statement of one transaction. The tables are
-//! `withhuman_common::POSTGRES_SCHEMA`.
-//!
-//! [`Neo4jRepository`]: crate::Neo4jRepository
+//! PostgreSQL storage for the execution graph.
 
 use std::time::Duration;
 
@@ -19,10 +15,10 @@ use withhuman_contracts::events::{
 use crate::{
     GeneratorEvent,
     event::GraphMutation,
-    repository::{GraphRepository, RepositoryError},
+    repository::{GraphRepository, ReindexReport, RepositoryError},
 };
 
-/// Commits of one session queue on its row, as Neo4j commits queue on `Session.commit_lock`.
+/// Commits of one session queue on its row.
 /// A session's first commits may race to create the row; ON CONFLICT makes the loser wait.
 const INSERT_SESSION: &str = "\
 INSERT INTO sessions (session_id, version, created_at) VALUES ($1::text, 0, $2::bigint) \
@@ -290,7 +286,7 @@ const TOOL_CALL: &str = "\
 SELECT payload_json FROM nodes WHERE session_id = $1::text AND kind = 'Call' \
 AND tool_use_id = $2::text ORDER BY \"order\" DESC LIMIT 1";
 
-/// Serialization failures and deadlocks are safe to run again, as Neo4j's transient errors.
+/// Serialization failures and deadlocks roll back the transaction, so they can be retried.
 const TRANSIENT_ATTEMPTS: u32 = 5;
 
 /// Taken while the schema is applied, so services starting together do not race on DDL.
@@ -316,6 +312,63 @@ impl PgGraphRepository {
             .get()
             .await
             .map_err(|error| RepositoryError::Unavailable(error.to_string()))
+    }
+
+    /// Rebuild paragraphs from committed events in one transaction.
+    pub async fn reindex_paragraphs(&self) -> Result<ReindexReport, RepositoryError> {
+        self.reindex_once().await.map_err(RepositoryError::from)
+    }
+
+    async fn reindex_once(&self) -> Result<ReindexReport, PgError> {
+        let mut client = self.client().await?;
+        let tx = client.transaction().await?;
+        // The paragraph index can change. Discard its old classifications and cause links
+        // together, keeping result-level edges and the original tokens from unmasked input.
+        tx.batch_execute(
+            "LOCK TABLE sessions, nodes, paragraphs, pending_paragraph_enrichments, cause_edges \
+             IN SHARE ROW EXCLUSIVE MODE; \
+             DELETE FROM cause_edges WHERE target_index >= 0; \
+             DELETE FROM pending_paragraph_enrichments; DELETE FROM paragraphs;",
+        )
+        .await?;
+        let mut report = ReindexReport {
+            scanned: 0,
+            reindexed: 0,
+        };
+        let mut after: Option<(String, i64)> = None;
+        loop {
+            let (session, order) = after
+                .as_ref()
+                .map_or((None, None), |(s, o)| (Some(s), Some(o)));
+            let rows = tx.query(
+                "SELECT session_id, \"order\", version, event_name, event_json FROM event_commits \
+                 WHERE has_node AND event_name NOT IN ('InstructionsLoaded', 'FileChanged') \
+                   AND ($1::text IS NULL OR (session_id, \"order\") > ($1, $2::bigint)) \
+                 ORDER BY session_id, \"order\" LIMIT 500",
+                &[&session, &order],
+            ).await?;
+            if rows.is_empty() {
+                break;
+            }
+            report.scanned += rows.len();
+            for row in rows {
+                let session: String = row.get(0);
+                let seq: i64 = row.get(2);
+                let mutation =
+                    GeneratorEvent::from_json(row.get(3), row.get(4))?.into_mutation()?;
+                if !mutation.paragraphs.is_empty() {
+                    tx.query(
+                        &prepared(&tx, STORE_PARAGRAPHS).await?,
+                        &[&session, &seq, &json!(mutation.paragraphs)],
+                    )
+                    .await?;
+                    report.reindexed += 1;
+                }
+                after = Some((session, row.get(1)));
+            }
+        }
+        tx.commit().await?;
+        Ok(report)
     }
 
     async fn commit_mutation(
@@ -703,7 +756,7 @@ pub(crate) async fn apply_schema(pool: &Pool) -> Result<(), RepositoryError> {
         .await
         .map_err(|error| RepositoryError::Unavailable(error.to_string()))?;
     let batch = format!(
-        "SELECT pg_advisory_lock({SCHEMA_LOCK}); {} SELECT pg_advisory_unlock({SCHEMA_LOCK});",
+        "SELECT pg_advisory_xact_lock({SCHEMA_LOCK}); {}",
         withhuman_common::POSTGRES_SCHEMA
     );
     client

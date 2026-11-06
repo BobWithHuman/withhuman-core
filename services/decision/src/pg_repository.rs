@@ -1,8 +1,4 @@
-//! The execution graph in PostgreSQL for Decision: the same [`DecisionRepository`] as
-//! [`Neo4jDecisionRepository`], reading and writing the tables of
-//! `withhuman_common::POSTGRES_SCHEMA` that the Generator's `PgGraphRepository` fills.
-//!
-//! [`Neo4jDecisionRepository`]: crate::Neo4jDecisionRepository
+//! PostgreSQL storage for the execution graph.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -28,7 +24,7 @@ SELECT 1 FROM sessions s JOIN nodes c ON c.session_id = s.session_id \
 WHERE s.session_id = $1::text AND c.kind = 'Call' AND c.seq = $2::bigint \
   AND s.version >= $3::bigint AND c.seq <= $3::bigint";
 
-// The verdict is kept on the Call itself; `decided_at` in milliseconds, as Neo4j's timestamp().
+// The verdict is kept on the Call itself with `decided_at` in milliseconds.
 const WRITE_DECISION: &str = "\
 UPDATE nodes c SET decision = $3::text, decision_reason = $4::text, decision_rule = $5::text, \
   decision_start = $6::text, decision_version = $7::bigint, decision_mode = $8::text, \
@@ -202,7 +198,7 @@ impl PgDecisionRepository {
             .client()
             .await?
             .batch_execute(&format!(
-                "SELECT pg_advisory_lock({SCHEMA_LOCK}); {} SELECT pg_advisory_unlock({SCHEMA_LOCK});",
+                "SELECT pg_advisory_xact_lock({SCHEMA_LOCK}); {}",
                 withhuman_common::POSTGRES_SCHEMA
             ))
             .await

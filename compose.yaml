@@ -1,34 +1,26 @@
 # The engine for a personal Docker host: the whole stack on one machine.
 # deploy/docker/compose.yaml remains the development and E2E profile that builds from source.
 # This file pulls published images and leaves out the MCP fixture. Only the gateway takes a host
-# port, so Neo4j and Redis are reachable on the Compose network alone.
+# port, so PostgreSQL and Redis are reachable on the Compose network alone.
 #
 # The variables below come from .env; see .env.example.
 name: withhuman
 
 services:
-  neo4j:
-    image: ${NEO4J_IMAGE:-neo4j:5.26.0}
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16.4}
     restart: unless-stopped
     environment:
-      # Takes effect on an empty database only; a rotated password is applied with cypher-shell.
-      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?NEO4J_PASSWORD is required}
-      NEO4J_server_memory_heap_initial__size: ${NEO4J_HEAP_SIZE:-1g}
-      NEO4J_server_memory_heap_max__size: ${NEO4J_HEAP_SIZE:-1g}
-      NEO4J_server_memory_pagecache_size: ${NEO4J_PAGECACHE_SIZE:-1g}
+      POSTGRES_USER: withhuman
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: withhuman
     volumes:
-      - neo4j-data:/data
-      - neo4j-logs:/logs
+      - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test:
-        - CMD-SHELL
-        - >-
-          cypher-shell --address bolt://localhost:7687 --username neo4j
-          --password "$${NEO4J_AUTH#*/}" 'RETURN 1' >/dev/null 2>&1
-      interval: 10s
-      timeout: 5s
-      retries: 30
-      start_period: 30s
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "withhuman", "-d", "withhuman"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
     networks: [engine]
 
   # Shared Collector state: session orders and verdicts. Append-only persistence keeps session
@@ -46,69 +38,22 @@ services:
       retries: 20
     networks: [engine]
 
-  # Opt-in graph store for Generator and Decision (WITHHUMAN_GRAPH_STORE=postgres with
-  # COMPOSE_PROFILES=postgres). They create its tables on connect, so it needs no bootstrap job.
-  postgres:
-    image: ${POSTGRES_IMAGE:-postgres:16.4}
-    profiles: ["postgres"]
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: withhuman
-      # Left empty, the image refuses to start rather than run without a password.
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
-      POSTGRES_DB: withhuman
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD", "pg_isready", "--username", "withhuman", "--dbname", "withhuman"]
-      interval: 10s
-      timeout: 3s
-      retries: 20
-    networks: [engine]
-
-  # Applies the schema before the services start, on every boot and every update, the way the
-  # chart's schema Job does.
-  neo4j-bootstrap:
-    image: ${NEO4J_IMAGE:-neo4j:5.26.0}
-    depends_on:
-      neo4j:
-        condition: service_healthy
-    environment:
-      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?NEO4J_PASSWORD is required}
-    volumes:
-      - ./deploy/docker/neo4j:/bootstrap:ro
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - >-
-        cypher-shell --address bolt://neo4j:7687 --username neo4j
-        --password "$${NEO4J_PASSWORD}" --file /bootstrap/schema.cypher
-    restart: "no"
-    networks: [engine]
-
   decision:
     image: ${IMAGE_REGISTRY:-ghcr.io/bobwithhuman}/withhuman-decision:${IMAGE_TAG:?IMAGE_TAG is required}
     restart: unless-stopped
     environment:
       DECISION_ADDR: 0.0.0.0:8082
+      DATABASE_URL: postgres://withhuman:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/withhuman
+      DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-16}
       WITHHUMAN_ENV: ${WITHHUMAN_ENV:-production}
       DECISION_PROVIDER: ${DECISION_PROVIDER:-jev}
       JEV_URL: ${JEV_URL:-https://api.typesafe.ai}
       JEV_TIMEOUT_MS: ${JEV_TIMEOUT_MS:-3000}
       JEV_API_KEY: ${JEV_API_KEY:-}
       WITHHUMAN_INTENT_BLOCK_THRESHOLD: ${WITHHUMAN_INTENT_BLOCK_THRESHOLD:-0.5}
-      WITHHUMAN_GRAPH_STORE: ${WITHHUMAN_GRAPH_STORE:-neo4j}
-      DATABASE_URL: postgres://withhuman:${POSTGRES_PASSWORD:-}@postgres:5432/withhuman
-      NEO4J_URL: http://neo4j:7474
-      NEO4J_USER: neo4j
-      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?NEO4J_PASSWORD is required}
-      NEO4J_DATABASE: neo4j
     depends_on:
-      neo4j-bootstrap:
-        condition: service_completed_successfully
-      # Present only with the postgres profile.
       postgres:
         condition: service_healthy
-        required: false
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8082/healthz"]
       interval: 10s
@@ -121,14 +66,12 @@ services:
     restart: unless-stopped
     environment:
       GENERATOR_ADDR: 0.0.0.0:8081
+      DATABASE_URL: postgres://withhuman:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/withhuman
+      DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-16}
       DECISION_URL: http://decision:8082
-      WITHHUMAN_GRAPH_STORE: ${WITHHUMAN_GRAPH_STORE:-neo4j}
-      DATABASE_URL: postgres://withhuman:${POSTGRES_PASSWORD:-}@postgres:5432/withhuman
-      NEO4J_URL: http://neo4j:7474
-      NEO4J_USER: neo4j
-      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?NEO4J_PASSWORD is required}
-      NEO4J_DATABASE: neo4j
     depends_on:
+      postgres:
+        condition: service_healthy
       decision:
         condition: service_healthy
     healthcheck:
@@ -179,8 +122,6 @@ services:
     networks: [engine]
 
 volumes:
-  neo4j-data:
-  neo4j-logs:
   postgres-data:
   redis-data:
 

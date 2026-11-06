@@ -79,22 +79,16 @@ module "eks" {
 
 # Secrets the chart's `withhuman` Secret is built from. The Jev key is set by hand, outside
 # Terraform, so it never enters the state.
-resource "random_password" "neo4j" {
-  length  = 32
-  special = false
-}
-
 resource "aws_secretsmanager_secret" "engine" {
   name                    = "${local.name}/engine"
-  description             = "Neo4j password and Redis URL of ${local.name}"
+  description             = "Redis URL of ${local.name}"
   recovery_window_in_days = var.secret_recovery_window_days
 }
 
 resource "aws_secretsmanager_secret_version" "engine" {
   secret_id = aws_secretsmanager_secret.engine.id
   secret_string = jsonencode({
-    neo4j-password = random_password.neo4j.result
-    redis-url      = "redis://${aws_elasticache_replication_group.valkey.primary_endpoint_address}:6379"
+    redis-url = "redis://${aws_elasticache_replication_group.valkey.primary_endpoint_address}:6379"
   })
 }
 
@@ -104,20 +98,19 @@ resource "aws_secretsmanager_secret" "jev" {
   recovery_window_in_days = var.secret_recovery_window_days
 }
 
-module "neo4j" {
-  source = "../modules/neo4j"
+# Preserve the old database VM and its resources for backup and rollback during the cutover.
+removed {
+  from = module.neo4j
 
-  name                      = "${local.name}-neo4j"
-  vpc_id                    = module.vpc.vpc_id
-  subnet_id                 = module.vpc.private_subnets[0]
-  client_security_group_ids = [module.eks.node_security_group_id]
-  password_secret_arn       = aws_secretsmanager_secret.engine.arn
-  instance_type             = var.neo4j_instance_type
-  heap_size                 = var.neo4j_heap_size
-  pagecache_size            = var.neo4j_pagecache_size
+  lifecycle {
+    destroy = false
+  }
+}
 
-  # The password must exist before the instance's first boot reads it.
-  depends_on = [aws_secretsmanager_secret_version.engine]
+resource "aws_secretsmanager_secret" "postgres" {
+  name                    = "${local.name}/database-url"
+  description             = "PostgreSQL URL of ${local.name}; set its value by hand"
+  recovery_window_in_days = var.secret_recovery_window_days
 }
 
 # Valkey speaks the Redis protocol under a BSD license.

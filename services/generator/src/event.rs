@@ -461,6 +461,7 @@ fn chunk_text(text: &str, source: &str, origin: Origin) -> Vec<ParagraphMutation
 }
 
 fn signed(value: u64, field: &str) -> Result<i64, RepositoryError> {
-    i64::try_from(value)
-        .map_err(|_| RepositoryError::InvalidEvent(format!("{field} exceeds Neo4j integer range")))
+    i64::try_from(value).map_err(|_| {
+        RepositoryError::InvalidEvent(format!("{field} exceeds PostgreSQL bigint range"))
+    })
 }

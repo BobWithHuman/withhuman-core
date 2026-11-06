@@ -1,12 +1,12 @@
 # WithHuman
 
 WithHuman records an agent's intent and checks tool calls against it. Collector, Generator and
-Decision run with Neo4j and Redis; AgentGateway is the single HTTP entry point.
+Decision run with PostgreSQL and Redis; AgentGateway is the single HTTP entry point.
 
 ## Personal Docker deployment
 
-Docker 24+ with the Compose plugin 2.20 or later is required. The default binds the gateway to
-localhost, so it is suitable for one user on the same machine.
+Docker 24+ with the Compose plugin 2.20 or later is required. Set `GATEWAY_BIND=127.0.0.1` for
+local-only access.
 
 ```sh
 git clone https://github.com/BobWithHuman/withhuman-core.git
@@ -18,7 +18,7 @@ curl --fail http://127.0.0.1:3000/healthz
 ```
 
 The Compose profile pulls published amd64 or arm64 images automatically. It does not compile the
-Rust workspace, so `--build` is unnecessary. Neo4j and Redis data live in named Docker volumes;
+Rust workspace, so `--build` is unnecessary. PostgreSQL and Redis data live in named Docker volumes;
 `docker compose down` preserves them and `docker compose down --volumes` deletes them.
 
 `IMAGE_TAG` defaults to `edge`, which follows `main`. Compose reuses the image it already has, so
@@ -30,22 +30,42 @@ docker compose pull && docker compose up --detach --wait
 
 Set `IMAGE_TAG` to a release (`0.1.0`) or a full commit SHA to stay on one build instead.
 
-### PostgreSQL graph store (opt-in)
+### PostgreSQL graph store
 
-Generator and Decision keep the execution graph in Neo4j by default. To keep it in PostgreSQL 16
-instead, set these in `.env` before `docker compose up`:
+PostgreSQL 16 starts with Compose. Set a URL-safe `POSTGRES_PASSWORD` in `.env`. Outside Compose,
+set `DATABASE_URL` (and optionally `DATABASE_POOL_SIZE`, default 16) on Generator and Decision.
+Both services initialize the schema on startup.
+
+If PostgreSQL was already enabled, use the same Compose project, volume and password.
+
+### Upgrading an existing Neo4j deployment
+
+1. Pause every writer to the old graph, including experiment stacks. Keep the old images, Compose
+   file and volumes for rollback, and take a Neo4j backup before changing the deployment.
+2. With the old Neo4j instance still readable, use its HTTP Query API to export a snapshot. Set
+   `NEO4J_URL`, `NEO4J_PASSWORD` and, if needed, `NEO4J_USER` and `NEO4J_DATABASE` in the shell.
+   Save the snapshot outside the repository with restricted access.
+3. Start only the new PostgreSQL service (`docker compose up -d --wait postgres`). Keep the engine
+   services stopped during import. Set `DATABASE_URL` to the fresh PostgreSQL target and run the
+   commands below. Run import and verify from the private database network. Install Psycopg 3 in
+   that environment (`python3 -m pip install "psycopg[binary]>=3.2,<4"`).
 
 ```sh
-COMPOSE_PROFILES=postgres
-WITHHUMAN_GRAPH_STORE=postgres
-POSTGRES_PASSWORD=replace-with-a-long-random-password
+python3 deploy/docker/scripts/migrate-neo4j.py export /private/path/graph.jsonl
+python3 deploy/docker/scripts/migrate-neo4j.py import /private/path/graph.jsonl
+python3 deploy/docker/scripts/migrate-neo4j.py verify /private/path/graph.jsonl
 ```
 
-The services create their tables on connect. Any `WITHHUMAN_GRAPH_STORE` other than `neo4j` or
-`postgres` stops them, so both always use the same store. Neo4j still starts but is unused. The
-graph viewer and `generator reindex-paragraphs` work with Neo4j only, and an existing Neo4j graph
-is not copied. Outside Compose, set `DATABASE_URL` (and optionally `DATABASE_POOL_SIZE`, default
-16) on both services.
+Import commits only after an exact row comparison and requires an empty target. Once verification
+passes, deploy matching PostgreSQL-only images and run `docker compose up -d --wait`. Check a new
+session and a decision before reopening traffic. Stop the old Neo4j service through its original
+Compose project and keep its volume and backup through the rollback window. If cutover fails before
+traffic resumes, restore the old stack. After new writes are accepted, back up PostgreSQL and
+reconcile those writes before rolling back.
+
+The PostgreSQL `reindex-paragraphs` command runs with the Generator and Decision stopped. It replaces
+paragraphs and removes their old classifications and paragraph-level cause links. It retains
+original token keys and result-level links.
 
 Configure a Claude Code project against the local gateway:
 

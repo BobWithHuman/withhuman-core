@@ -11,14 +11,13 @@ chart, Argo CD) is the same on each cloud, and each cloud has its own directory 
 the same things:
 
 - a Kubernetes cluster whose nodes enforce NetworkPolicies
-- a Neo4j that only the cluster's nodes reach
+- a private PostgreSQL endpoint provisioned separately and reachable from the cluster
 - a Redis-compatible store, given to the engine only as a URL
-- a secret holding `neo4j-password` and `redis-url`, and one holding the Jev API key
+- secrets for `database-url`, `redis-url` and the Jev API key
 
 ```text
 aws/
 ├── bootstrap/        S3 bucket for the Terraform state (once per account)
-├── modules/neo4j/    Neo4j on EC2
 └── staging/          shared EKS staging in ap-northeast-2
 ```
 
@@ -54,10 +53,12 @@ and Secrets Manager.
      --secret-string '<jev-api-key>'
    ```
 
-5. Put `neo4j_http_url` and `neo4j_bolt_url` into `envs/staging/values.yaml` of withhuman-gitops.
+5. Provision PostgreSQL on a private network reachable from the engine pods. Store its connection
+   string in the secret named by `database_url_secret_arn`. Map it to `database-url` in the chart's
+   `externalSecret.data` in withhuman-gitops before deploying the new engine images.
 
-Staging uses one NAT gateway and one Valkey node to keep costs down. Neo4j keeps its data on the
-instance's root volume, snapshotted daily for seven days; destroying the stack deletes it.
+Staging uses one NAT gateway and one Valkey node. An existing legacy database VM is removed from
+Terraform management without destruction, so it can be backed up and kept during cutover.
 
 ## Cluster add-ons
 

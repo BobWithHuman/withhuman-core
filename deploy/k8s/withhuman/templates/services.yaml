@@ -64,7 +64,7 @@ spec:
             {{- end }}
           env:
             {{- include (printf "withhuman.env.%s" $component) $ | nindent 12 }}
-          # Generator and Decision report Neo4j through /healthz. A Neo4j outage takes them out of
+          # Generator and Decision report PostgreSQL through /healthz. A PostgreSQL outage takes them out of
           # rotation, but restarting them cannot repair it, so liveness only checks the port.
           readinessProbe:
             httpGet:

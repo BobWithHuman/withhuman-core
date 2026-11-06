@@ -65,7 +65,7 @@ async fn rejects_missing_content_type_and_invalid_contracts() {
 }
 
 #[tokio::test]
-async fn health_reflects_neo4j_readiness() {
+async fn health_reflects_graph_store_readiness() {
     let healthy = app(GeneratorService::new(RecordingRepository::default()))
         .oneshot(Request::get("/healthz").body(Body::empty()).unwrap())
         .await
@@ -78,7 +78,7 @@ async fn health_reflects_neo4j_readiness() {
     let json: Value = serde_json::from_slice(&body).unwrap();
 
     assert_eq!(healthy.status(), StatusCode::OK);
-    assert_eq!(json["error"], "neo4j_unavailable");
+    assert_eq!(json["error"], "graph_store_unavailable");
 }
 
 #[tokio::test]

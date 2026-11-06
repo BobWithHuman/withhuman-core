@@ -41,6 +41,7 @@ resource "aws_iam_role_policy" "external_secrets" {
       Action = ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"]
       Resource = [
         aws_secretsmanager_secret.engine.arn,
+        aws_secretsmanager_secret.postgres.arn,
         aws_secretsmanager_secret.jev.arn,
         aws_secretsmanager_secret.gitops_deploy_key.arn,
       ]

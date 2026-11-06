@@ -10,11 +10,3 @@ acme_email = "ops@example.com"
 # The AWS Free Tier plan refuses instance types that are not free-tier eligible. m7i-flex.large
 # matches m7i.large's 2 vCPU / 8 GiB and is eligible; its CPU is burstable, which staging absorbs.
 node_instance_types = ["m7i-flex.large"]
-
-# Same Free Tier limit as the nodes: no eligible type carries 16 GiB, so Neo4j gets the 8 GiB
-# m7i-flex.large. Neo4j runs in Docker without a memory limit, so the kernel's OOM killer is the
-# only guard -- heap and page cache are sized to leave the host real headroom.
-#   8.0 GiB total - 2g heap - 3g page cache - ~0.5g JVM off-heap = ~2.5 GiB for AL2023 and Docker
-neo4j_instance_type  = "m7i-flex.large"
-neo4j_heap_size      = "2g"
-neo4j_pagecache_size = "3g"

@@ -1,31 +1,20 @@
 name: withhuman-core
 
 services:
-  neo4j:
-    image: neo4j:5.26.0
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16.4}
     restart: unless-stopped
     environment:
-      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-withhuman-e2e}
-      NEO4J_server_memory_heap_initial__size: ${NEO4J_HEAP_INITIAL_SIZE:-512m}
-      NEO4J_server_memory_heap_max__size: ${NEO4J_HEAP_MAX_SIZE:-512m}
-      NEO4J_server_memory_pagecache_size: ${NEO4J_PAGECACHE_SIZE:-512m}
-    ports:
-      - "127.0.0.1:${NEO4J_HTTP_PORT:-7474}:7474"
-      - "127.0.0.1:${NEO4J_BOLT_PORT:-7687}:7687"
+      POSTGRES_USER: withhuman
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-withhuman-e2e}
+      POSTGRES_DB: withhuman
     volumes:
-      - neo4j-data:/data
-      - neo4j-logs:/logs
-      - ./neo4j:/bootstrap:ro
+      - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test:
-        - CMD-SHELL
-        - >-
-          cypher-shell --address bolt://localhost:7687 --username neo4j
-          --password "$${NEO4J_AUTH#*/}" 'RETURN 1' >/dev/null 2>&1
-      interval: 5s
-      timeout: 5s
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "withhuman", "-d", "withhuman"]
+      interval: 3s
+      timeout: 3s
       retries: 20
-      start_period: 20s
     networks: [engine]
 
   # Shared Collector state (session orders, verdicts) so the Collector can run several
@@ -43,23 +32,6 @@ services:
       retries: 20
     networks: [engine]
 
-  neo4j-bootstrap:
-    image: neo4j:5.26.0
-    depends_on:
-      neo4j:
-        condition: service_healthy
-    environment:
-      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-withhuman-e2e}
-    volumes:
-      - ./neo4j:/bootstrap:ro
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - >-
-        cypher-shell --address bolt://neo4j:7687 --username neo4j
-        --password "$${NEO4J_PASSWORD}" --file /bootstrap/schema.cypher
-    restart: "no"
-    networks: [engine]
-
   decision:
     build:
       context: ../..
@@ -72,6 +44,8 @@ services:
         required: false
     environment:
       DECISION_ADDR: 0.0.0.0:8082
+      DATABASE_URL: postgres://withhuman:${POSTGRES_PASSWORD:-withhuman-e2e}@postgres:5432/withhuman
+      DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-16}
       WITHHUMAN_ENV: ${WITHHUMAN_ENV:-production}
       # `jev` traces each Call's cause through Jev and denies calls that depart from the
       # stated intent; the E2E suite runs `mock`, which answers MOCK_DECISION, in the test
@@ -88,13 +62,9 @@ services:
       WITHHUMAN_DEVIATION_REVIEW: ${WITHHUMAN_DEVIATION_REVIEW:-0.15}
       WITHHUMAN_UNTRUSTED_DEVIATION_DENY: ${WITHHUMAN_UNTRUSTED_DEVIATION_DENY:-0.3}
       WITHHUMAN_UNTRUSTED_DEVIATION_REVIEW: ${WITHHUMAN_UNTRUSTED_DEVIATION_REVIEW:-0.15}
-      NEO4J_URL: http://neo4j:7474
-      NEO4J_USER: neo4j
-      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-withhuman-e2e}
-      NEO4J_DATABASE: neo4j
     depends_on:
-      neo4j-bootstrap:
-        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8082/healthz"]
       interval: 3s
@@ -110,12 +80,12 @@ services:
         BINARY: withhuman-generator
     environment:
       GENERATOR_ADDR: 0.0.0.0:8081
-      NEO4J_URL: http://neo4j:7474
-      NEO4J_USER: neo4j
-      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-withhuman-e2e}
-      NEO4J_DATABASE: neo4j
+      DATABASE_URL: postgres://withhuman:${POSTGRES_PASSWORD:-withhuman-e2e}@postgres:5432/withhuman
+      DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-16}
       DECISION_URL: http://decision:8082
     depends_on:
+      postgres:
+        condition: service_healthy
       decision:
         condition: service_healthy
     healthcheck:
@@ -184,10 +154,9 @@ services:
     networks: [engine]
 
 volumes:
-  neo4j-data:
-  neo4j-logs:
+  postgres-data:
   redis-data:
 
 networks:
   engine:
-    name: withhuman-engine
+    name: ${WITHHUMAN_ENGINE_NETWORK:-withhuman-engine}

@@ -20,18 +20,14 @@ app.kubernetes.io/version: {{ .root.Values.imageTag | default .root.Chart.AppVer
 helm.sh/chart: {{ printf "%s-%s" .root.Chart.Name .root.Chart.Version }}
 {{- end -}}
 
-{{- define "withhuman.neo4jEnv" -}}
-- name: NEO4J_URL
-  value: {{ required "neo4j.httpUrl is required" .Values.neo4j.httpUrl | quote }}
-- name: NEO4J_USER
-  value: {{ .Values.neo4j.user | quote }}
-- name: NEO4J_DATABASE
-  value: {{ .Values.neo4j.database | quote }}
-- name: NEO4J_PASSWORD
+{{- define "withhuman.postgresEnv" -}}
+- name: DATABASE_URL
   valueFrom:
     secretKeyRef:
       name: {{ .Values.existingSecret }}
-      key: neo4j-password
+      key: database-url
+- name: DATABASE_POOL_SIZE
+  value: {{ .Values.postgres.poolSize | quote }}
 {{- end -}}
 
 {{- define "withhuman.env.collector" -}}
@@ -65,7 +61,7 @@ helm.sh/chart: {{ printf "%s-%s" .root.Chart.Name .root.Chart.Version }}
   value: 0.0.0.0:8081
 - name: DECISION_URL
   value: http://{{ include "withhuman.fullname" . }}-decision:8082
-{{ include "withhuman.neo4jEnv" . }}
+{{ include "withhuman.postgresEnv" . }}
 {{- end -}}
 
 {{- define "withhuman.env.decision" -}}
@@ -88,7 +84,7 @@ helm.sh/chart: {{ printf "%s-%s" .root.Chart.Name .root.Chart.Version }}
       name: {{ .Values.existingSecret }}
       key: jev-api-key
 {{- end }}
-{{ include "withhuman.neo4jEnv" . }}
+{{ include "withhuman.postgresEnv" . }}
 {{- end -}}
 
 {{/* Spreads a component's Pods across nodes and zones where the cluster allows it. */}}

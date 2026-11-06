@@ -3,7 +3,7 @@ imageTag: ""
 imagePullPolicy: IfNotPresent
 imagePullSecrets: []
 
-# The Secret holds the keys `neo4j-password`, `jev-api-key` and `redis-url`. Create it outside the
+# The Secret holds the keys `database-url`, `jev-api-key` and `redis-url`. Create it outside the
 # chart, or have `externalSecret` build it from the cluster's secret store.
 existingSecret: withhuman
 
@@ -15,17 +15,9 @@ externalSecret:
   # External Secrets `data` entries: each Secret key and where it comes from.
   data: []
 
-# Neo4j runs outside the cluster.
-neo4j:
-  httpUrl: ""
-  boltUrl: ""
-  user: neo4j
-  database: neo4j
-
-# Applies deploy/docker/neo4j/schema.cypher before each install and upgrade.
-schema:
-  enabled: true
-  image: neo4j:5.26.0
+# PostgreSQL runs outside the cluster. The DSN is read from the Secret above.
+postgres:
+  poolSize: 16
 
 collector:
   image: ghcr.io/bobwithhuman/withhuman-collector
