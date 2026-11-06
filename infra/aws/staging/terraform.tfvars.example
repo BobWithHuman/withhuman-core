@@ -10,3 +10,7 @@ acme_email = "ops@example.com"
 # The AWS Free Tier plan refuses instance types that are not free-tier eligible. m7i-flex.large
 # matches m7i.large's 2 vCPU / 8 GiB and is eligible; its CPU is burstable, which staging absorbs.
 node_instance_types = ["m7i-flex.large"]
+
+# The same Free Tier restriction applies to the database class. db.t4g.micro is eligible; check the
+# classes your plan offers with `aws rds describe-orderable-db-instance-options --engine postgres`.
+postgres_instance_class = "db.t4g.micro"
