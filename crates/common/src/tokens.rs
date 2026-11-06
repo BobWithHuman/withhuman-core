@@ -833,7 +833,7 @@ fn luhn_valid(digits: &str) -> bool {
             }
         })
         .sum();
-    !digits.is_empty() && sum % 10 == 0
+    !digits.is_empty() && sum.is_multiple_of(10)
 }
 
 /// Whether the number has the issuer prefix and a length a card network issues.
