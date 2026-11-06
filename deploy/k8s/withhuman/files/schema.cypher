@@ -1,1 +1,0 @@
-../../../docker/neo4j/schema.cypher

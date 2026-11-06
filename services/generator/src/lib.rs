@@ -10,4 +10,4 @@ pub use decision::{DecisionClient, DecisionError, HttpDecisionClient};
 pub use event::GeneratorEvent;
 pub use http::{GeneratorService, app};
 pub use pg_repository::PgGraphRepository;
-pub use repository::{GraphRepository, Neo4jRepository, ReindexReport, RepositoryError};
+pub use repository::{GraphRepository, ReindexReport, RepositoryError};

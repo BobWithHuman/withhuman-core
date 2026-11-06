@@ -6,22 +6,13 @@ output "kubeconfig_command" {
   value = "aws eks update-kubeconfig --region ${var.region} --name ${module.eks.cluster_name}"
 }
 
-output "neo4j_http_url" {
-  description = "neo4j.httpUrl in withhuman-gitops envs/staging/values.yaml."
-  value       = module.neo4j.http_url
-}
-
-output "neo4j_bolt_url" {
-  description = "neo4j.boltUrl in withhuman-gitops envs/staging/values.yaml."
-  value       = module.neo4j.bolt_url
-}
-
-output "neo4j_instance_id" {
-  value = module.neo4j.instance_id
+output "database_url_secret_arn" {
+  description = "Set the PostgreSQL DSN by hand and map this secret to database-url in the engine chart."
+  value       = aws_secretsmanager_secret.postgres.arn
 }
 
 output "engine_secret_arn" {
-  description = "Holds neo4j-password and redis-url."
+  description = "Holds redis-url."
   value       = aws_secretsmanager_secret.engine.arn
 }
 

@@ -218,7 +218,9 @@ jobs:
   deploy-staging:
     name: Point staging at the new images
     needs: merge
-    if: github.ref == 'refs/heads/main'
+    # The PostgreSQL cutover changes the chart and Secret along with the first image.
+    # Resume image-only promotions once that GitOps deployment has been verified.
+    if: github.ref == 'refs/heads/main' && vars.STAGING_POSTGRES_READY == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

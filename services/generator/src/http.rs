@@ -160,7 +160,7 @@ async fn health(State(service): State<GeneratorService>) -> Response {
         Err(_) => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ErrorResponse {
-                error: "neo4j_unavailable",
+                error: "graph_store_unavailable",
             }),
         )
             .into_response(),

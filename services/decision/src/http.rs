@@ -94,7 +94,7 @@ async fn health(State(service): State<DecisionService>) -> Response {
             service: "decision",
         })
         .into_response(),
-        Err(_) => error(StatusCode::SERVICE_UNAVAILABLE, "neo4j_unavailable"),
+        Err(_) => error(StatusCode::SERVICE_UNAVAILABLE, "graph_store_unavailable"),
     }
 }
 
@@ -128,7 +128,7 @@ async fn decide(
         Err(RepositoryError::NotFound) => {
             return error(StatusCode::NOT_FOUND, "graph_version_or_call_not_found");
         }
-        Err(_) => return error(StatusCode::SERVICE_UNAVAILABLE, "neo4j_unavailable"),
+        Err(_) => return error(StatusCode::SERVICE_UNAVAILABLE, "graph_store_unavailable"),
     }
     let left = || deadline.map(|deadline| deadline.saturating_sub(started.elapsed()));
 

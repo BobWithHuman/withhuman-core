@@ -7,22 +7,19 @@ use std::{
 use axum::{Json, Router, extract::State, routing::post};
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
+use tokio_postgres::{NoTls, types::ToSql};
 use withhuman_contracts::decisions::{CausalStart, Decision, DecisionRequest, DecisionResponse};
 use withhuman_generator::{
-    GeneratorConfig, GeneratorService, HttpDecisionClient, Neo4jRepository, app,
+    GeneratorConfig, GeneratorService, HttpDecisionClient, PgGraphRepository, app,
 };
 
 #[tokio::test]
 async fn persists_and_replays_execution_graph_through_real_http() {
-    let Some(neo4j_url) = std::env::var("NEO4J_INTEGRATION_URL").ok() else {
-        eprintln!("skipping Neo4j integration test; NEO4J_INTEGRATION_URL is unset");
+    let Ok(database_url) = std::env::var("POSTGRES_INTEGRATION_URL") else {
         return;
     };
-    let neo4j_user = std::env::var("NEO4J_INTEGRATION_USER").unwrap_or_else(|_| "neo4j".into());
-    let neo4j_password = std::env::var("NEO4J_INTEGRATION_PASSWORD")
-        .unwrap_or_else(|_| "withhuman-integration".into());
-    let query = QueryClient::new(&neo4j_url, &neo4j_user, &neo4j_password);
-    install_schema(&query).await;
+    let repository = PgGraphRepository::connect(&database_url, 4).await.unwrap();
+    let query = QueryClient::connect(&database_url).await;
 
     let session_id = format!(
         "generator-it-{}-{}",
@@ -42,13 +39,8 @@ async fn persists_and_replays_execution_graph_through_real_http() {
     .await;
     let config = GeneratorConfig {
         bind_address: "127.0.0.1:0".parse().unwrap(),
-        neo4j_url: neo4j_url.clone(),
-        neo4j_user,
-        neo4j_password,
-        neo4j_database: "neo4j".into(),
         decision_url,
     };
-    let repository = Neo4jRepository::connect(&config).await.unwrap();
     let decision = HttpDecisionClient::new(&config).unwrap();
     let generator_url =
         spawn_generator(GeneratorService::with_decision(repository, decision)).await;
@@ -135,45 +127,27 @@ async fn persists_and_replays_execution_graph_through_real_http() {
 
     let row = query
         .one(
-            "MATCH (s:Session {session_id:$session_id}) \
-             OPTIONAL MATCH (s)-[:COMMITTED]->(c:EventCommit) \
-             OPTIONAL MATCH (s)-[:CONTAINS]->(n) \
-             RETURN s.version, count(DISTINCT c), count(DISTINCT n)",
-            json!({"session_id":session_id}),
-        )
-        .await;
+            r#"SELECT jsonb_build_array(s.version, (SELECT count(*) FROM event_commits WHERE session_id = $1), (SELECT count(*) FROM nodes WHERE session_id = $1)) FROM sessions s WHERE s.session_id = $1"#,
+            &[&session_id],
+        ).await;
     assert_eq!(row, vec![json!(4), json!(4), json!(3)]);
     let labels = query
         .one(
-            "MATCH (:Session {session_id:$session_id})-[:CONTAINS]->(n) \
-             WITH n ORDER BY n.order RETURN collect([labels(n), n.type])",
-            json!({"session_id":session_id}),
-        )
-        .await;
-    assert_eq!(
-        labels[0],
-        json!([[["Request"], null], [["Call"], null], [["Segment"], null]])
-    );
+            r#"SELECT jsonb_build_array(jsonb_agg(kind ORDER BY "order")) FROM nodes WHERE session_id = $1"#,
+            &[&session_id],
+        ).await;
+    assert_eq!(labels[0], json!(["Request", "Call", "Segment"]));
     let edges = query
         .one(
-            "MATCH (s:Session {session_id:$session_id})-[:CONTAINS]->(n) \
-             OPTIONAL MATCH (n)-[next:NEXT]->() \
-             OPTIONAL MATCH (n)-[result:RESULT_OF]->() \
-             RETURN count(DISTINCT next), count(DISTINCT result)",
-            json!({"session_id":session_id}),
-        )
-        .await;
+            r#"SELECT jsonb_build_array(count(b.next_seq), (SELECT count(*) FROM nodes r JOIN nodes c USING (session_id, tool_use_id) WHERE r.session_id = $1 AND r.kind IN ('Segment', 'Error') AND c.kind = 'Call')) FROM nodes b WHERE b.session_id = $1"#,
+            &[&session_id],
+        ).await;
     assert_eq!(edges, vec![json!(2), json!(1)]);
     let enrichment = query
         .one(
-            "MATCH (request:Request {session_id:$session_id}) \
-             MATCH (segment:Segment {session_id:$session_id})-[:CONTAINS_PARAGRAPH]->(paragraph) \
-             RETURN request.continuation_choice, paragraph.instructs, paragraph.jev_ms, \
-                    [paragraph.session_id, paragraph.seq, paragraph.index], \
-                    EXISTS { (request)-[:CONTAINS_PARAGRAPH]->() }",
-            json!({"session_id":session_id}),
-        )
-        .await;
+            r#"SELECT jsonb_build_array(r.continuation_choice, p.instructs, p.jev_ms, jsonb_build_array(p.session_id, p.seq, p."index"), EXISTS (SELECT 1 FROM paragraphs rp WHERE rp.session_id = r.session_id AND rp.seq = r.seq)) FROM nodes r JOIN nodes s USING (session_id) JOIN paragraphs p ON p.session_id = s.session_id AND p.seq = s.seq WHERE r.session_id = $1 AND r.kind = 'Request' AND s.kind = 'Segment'"#,
+            &[&session_id],
+        ).await;
     assert_eq!(
         enrichment,
         vec![
@@ -186,11 +160,9 @@ async fn persists_and_replays_execution_graph_through_real_http() {
     );
     let tokens = query
         .one(
-            "MATCH (token:Token {session_id:$session_id,slot:'agent'}) \
-             RETURN count(token), collect(DISTINCT token.key_kind)",
-            json!({"session_id":session_id}),
-        )
-        .await;
+            r#"SELECT jsonb_build_array(count(*), jsonb_agg(DISTINCT key_kind)) FROM tokens WHERE session_id = $1 AND slot = 'agent'"#,
+            &[&session_id],
+        ).await;
     assert_eq!(tokens[0], json!(5));
     let mut token_kinds = tokens[1].as_array().unwrap().clone();
     token_kinds.sort_by_key(Value::to_string);
@@ -205,18 +177,7 @@ async fn persists_and_replays_execution_graph_through_real_http() {
         ]
     );
 
-    query
-        .one(
-            "MATCH (s:Session {session_id:$session_id}) \
-             OPTIONAL MATCH (s)-[:CONTAINS]->(n) \
-             OPTIONAL MATCH (c:EventCommit {session_id:$session_id}) \
-             OPTIONAL MATCH (p:Paragraph {session_id:$session_id}) \
-             OPTIONAL MATCH (t:Token {session_id:$session_id}) \
-             DETACH DELETE n, c, p, t, s \
-             RETURN true",
-            json!({"session_id":session_id}),
-        )
-        .await;
+    query.remove_session(&session_id).await;
 }
 
 #[tokio::test]
@@ -258,28 +219,21 @@ async fn links_out_of_order_events_by_order() {
 
     let next = query
         .one(
-            "MATCH (a {session_id:$session_id})-[:NEXT]->(b) \
-             WITH a, b ORDER BY a.order RETURN collect([a.order, b.order])",
-            json!({"session_id":session_id}),
-        )
-        .await;
+            r#"SELECT jsonb_build_array(jsonb_agg(jsonb_build_array(a."order", b."order") ORDER BY a."order")) FROM nodes b JOIN nodes a ON a.session_id = b.session_id AND a.seq = b.next_seq WHERE b.session_id = $1"#,
+            &[&session_id],
+        ).await;
     assert_eq!(next, vec![json!([[1, 2], [2, 3]])]);
     let agent = query
         .one(
-            "MATCH (a {session_id:$session_id})-[:AGENT_SEQUENCE]->(b) \
-             WITH a, b ORDER BY a.order RETURN collect([a.order, b.order])",
-            json!({"session_id":session_id}),
-        )
-        .await;
+            r#"SELECT jsonb_build_array(jsonb_agg(jsonb_build_array(a."order", b."order") ORDER BY a."order")) FROM nodes a JOIN nodes b ON a.session_id = b.session_id AND a.agent_id = b.agent_id AND b.sequence = a.sequence + 1 WHERE a.session_id = $1"#,
+            &[&session_id],
+        ).await;
     assert_eq!(agent, vec![json!([[1, 2], [2, 3]])]);
     let token = query
         .one(
-            "MATCH (t:Token {session_id:$session_id,key_kind:'url'}) \
-             MATCH (:Session {session_id:$session_id})-[:CONTAINS]->(n {seq:t.node_seq}) \
-             RETURN t.node_order, n.order",
-            json!({"session_id":session_id}),
-        )
-        .await;
+            r#"SELECT jsonb_build_array(t.node_order, n."order") FROM tokens t JOIN nodes n ON n.session_id = t.session_id AND n.seq = t.node_seq WHERE t.session_id = $1 AND t.key_kind = 'url'"#,
+            &[&session_id],
+        ).await;
     assert_eq!(token, vec![json!(2), json!(2)]);
 
     delete_session(&query, &session_id).await;
@@ -308,12 +262,9 @@ async fn post_steps(
 async fn shape(query: &QueryClient, session_id: &str) -> Value {
     query
         .one(
-            "MATCH (a {session_id:$session_id})-[next:NEXT]->(b) WHERE next.kind IS NULL \
-             WITH a, b, next ORDER BY b.order, a.order \
-             RETURN collect([a.order, b.order, next.via])",
-            json!({"session_id":session_id}),
-        )
-        .await[0]
+            r#"SELECT jsonb_build_array(jsonb_agg(jsonb_build_array(a."order", b."order", b.next_via) ORDER BY b."order")) FROM nodes b JOIN nodes a ON a.session_id = b.session_id AND a.seq = b.next_seq WHERE b.session_id = $1"#,
+            &[&session_id],
+        ).await[0]
         .clone()
 }
 
@@ -538,11 +489,9 @@ async fn relinks_a_subgraph_whose_message_or_call_arrives_late() {
     // The result committed before its Call still points back at it.
     let result_of = query
         .one(
-            "MATCH (s:Segment {session_id:$session_id})-[:RESULT_OF]->(c:Call) \
-             RETURN collect([s.order, c.order])",
-            json!({"session_id":session_id}),
-        )
-        .await;
+            r#"SELECT jsonb_build_array(jsonb_agg(jsonb_build_array(s."order", c."order"))) FROM nodes s JOIN nodes c USING (session_id, tool_use_id) WHERE s.session_id = $1 AND s.kind = 'Segment' AND c.kind = 'Call'"#,
+            &[&session_id],
+        ).await;
     assert_eq!(result_of, vec![json!([[4, 2]])]);
 
     delete_session(&query, &session_id).await;
@@ -576,11 +525,9 @@ async fn concurrent_out_of_order_events_form_one_chain() {
 
     let next = query
         .one(
-            "MATCH (a {session_id:$session_id})-[:NEXT]->(b) \
-             WITH a, b ORDER BY a.order RETURN collect([a.order, b.order])",
-            json!({"session_id":session_id}),
-        )
-        .await;
+            r#"SELECT jsonb_build_array(jsonb_agg(jsonb_build_array(a."order", b."order") ORDER BY a."order")) FROM nodes b JOIN nodes a ON a.session_id = b.session_id AND a.seq = b.next_seq WHERE b.session_id = $1"#,
+            &[&session_id],
+        ).await;
     let expected = (1..events).map(|order| json!([order, order + 1])).collect();
     assert_eq!(next, vec![Value::Array(expected)]);
 
@@ -794,10 +741,9 @@ async fn indexes_sensitive_tool_output_without_storing_it() {
 
     let rows = query
         .one(
-            "MATCH (n {session_id:$session_id})-[:MENTIONS_TOKEN]->(t:Token)              WITH t ORDER BY t.key_kind              RETURN collect([t.key_kind, t.category, t.slot, t.key STARTS WITH 'sha256:', t.decoded])",
-            json!({"session_id":session_id}),
-        )
-        .await;
+            r#"SELECT jsonb_build_array(jsonb_agg(jsonb_build_array(t.key_kind, t.category, t.slot, t.key LIKE 'sha256:%', t.decoded) ORDER BY t.key_kind)) FROM token_mentions m JOIN tokens t USING (session_id, key_kind, key, slot) WHERE m.session_id = $1"#,
+            &[&session_id],
+        ).await;
     let rows = rows[0].as_array().unwrap();
     assert!(rows.contains(&json!([
         "api_key",
@@ -815,15 +761,9 @@ async fn indexes_sensitive_tool_output_without_storing_it() {
     ])));
     let stored = query
         .one(
-            "MATCH (c:EventCommit {session_id:$session_id})-[:CREATED]->(n) \
-             OPTIONAL MATCH (n)-[:CONTAINS_PARAGRAPH]->(p:Paragraph) \
-             OPTIONAL MATCH (n)-[:MENTIONS_TOKEN]->(t:Token) \
-             WITH c, n, collect(DISTINCT p.text) AS paragraphs, \
-                  collect(DISTINCT t.key) + collect(DISTINCT t.decoded) AS tokens \
-             RETURN c.event_json, n.payload_json, paragraphs, tokens",
-            json!({"session_id":session_id}),
-        )
-        .await;
+            r#"SELECT jsonb_build_array(c.event_json, n.payload_json, (SELECT jsonb_agg(p.text) FROM paragraphs p WHERE p.session_id = n.session_id AND p.seq = n.seq), (SELECT jsonb_agg(jsonb_build_array(t.key, t.decoded)) FROM token_mentions m JOIN tokens t USING (session_id, key_kind, key, slot) WHERE m.session_id = n.session_id AND m.node_seq = n.seq)) FROM event_commits c JOIN nodes n USING (session_id, "order") WHERE n.session_id = $1"#,
+            &[&session_id],
+        ).await;
     let stored = Value::Array(stored).to_string();
     for secret in ["AKIAIOSFODNN7EXAMPLE", "s3cret", "plain-field-secret-1"] {
         assert!(!stored.contains(secret), "{secret} stored in {stored}");
@@ -874,12 +814,9 @@ async fn keeps_attached_programs_out_of_the_calls_tokens() {
 
     let rows = query
         .one(
-            "MATCH (c:Call {session_id:$session_id}) \
-             OPTIONAL MATCH (c)-[:MENTIONS_TOKEN]->(t:Token) \
-             RETURN c.payload_json, collect(t.decoded)",
-            json!({"session_id":session_id}),
-        )
-        .await;
+            r#"SELECT jsonb_build_array(c.payload_json, (SELECT coalesce(jsonb_agg(t.decoded), '[]') FROM token_mentions m JOIN tokens t USING (session_id, key_kind, key, slot) WHERE m.session_id = c.session_id AND m.node_seq = c.seq)) FROM nodes c WHERE c.session_id = $1 AND c.kind = 'Call'"#,
+            &[&session_id],
+        ).await;
     assert!(
         rows[0].as_str().unwrap().contains("collect.evil.example"),
         "{rows:?}"
@@ -919,13 +856,9 @@ async fn stores_the_intent_a_message_states() {
 
     let rows = query
         .one(
-            "MATCH (n:Message {session_id:$session_id}) \
-             WITH n ORDER BY n.order \
-             RETURN collect([n.intent, n.payload_json CONTAINS '[의도]', \
-                             EXISTS { (n)-[:CONTAINS_PARAGRAPH]->() }])",
-            json!({"session_id":session_id}),
-        )
-        .await;
+            r#"SELECT jsonb_build_array(jsonb_agg(jsonb_build_array(n.intent, strpos(n.payload_json, '[의도]') > 0, EXISTS (SELECT 1 FROM paragraphs p WHERE p.session_id = n.session_id AND p.seq = n.seq)) ORDER BY n."order")) FROM nodes n WHERE n.session_id = $1 AND n.kind = 'Message'"#,
+            &[&session_id],
+        ).await;
     assert_eq!(
         rows,
         vec![json!([
@@ -978,15 +911,9 @@ async fn keeps_the_intent_in_its_prompts_subgraph() {
 
     let rows = query
         .one(
-            "MATCH (g:SubGraph {session_id:$session_id})-[:MEMBER]->(n) \
-             WITH g, n ORDER BY g.number, n.order \
-             WITH collect([g.number, labels(n)[0], n.intent]) AS members \
-             RETURN members, \
-               COLLECT { MATCH (a {session_id:$session_id})-[r:NEXT]->(b) \
-                         RETURN [labels(a)[0], labels(b)[0], r.via] ORDER BY a.order } AS next",
-            json!({"session_id":session_id}),
-        )
-        .await;
+            r#"SELECT jsonb_build_array((SELECT jsonb_agg(jsonb_build_array(g.number, n.kind, n.intent) ORDER BY g.number, n."order") FROM subgraphs g JOIN nodes n ON g.session_id = n.session_id AND g.number = n.subgraph WHERE g.session_id = $1), (SELECT jsonb_agg(jsonb_build_array(a.kind, b.kind, b.next_via) ORDER BY a."order") FROM nodes b JOIN nodes a ON a.session_id = b.session_id AND a.seq = b.next_seq WHERE b.session_id = $1))"#,
+            &[&session_id],
+        ).await;
     assert_eq!(
         rows,
         vec![
@@ -1055,12 +982,9 @@ async fn marks_paragraphs_with_hidden_content() {
 
     let rows = query
         .one(
-            "MATCH ({session_id:$session_id, order:1})-[:CONTAINS_PARAGRAPH]->(p:Paragraph) \
-             WITH p ORDER BY p.index \
-             RETURN collect([p.hidden, p.hidden_rules])",
-            json!({"session_id":session_id}),
-        )
-        .await;
+            r#"SELECT jsonb_build_array(jsonb_agg(jsonb_build_array(p.hidden, p.hidden_rules) ORDER BY p."index")) FROM nodes n JOIN paragraphs p USING (session_id, seq) WHERE n.session_id = $1 AND n."order" = 1"#,
+            &[&session_id],
+        ).await;
     // The short hidden line absorbs the paragraph after it, as every short paragraph does.
     assert_eq!(
         rows,
@@ -1068,20 +992,11 @@ async fn marks_paragraphs_with_hidden_content() {
     );
     let workspace = query
         .one(
-            "MATCH ({session_id:$session_id, order:2})-[:CONTAINS_PARAGRAPH]->(p:Paragraph) \
-             RETURN collect(p.hidden)",
-            json!({"session_id":session_id}),
-        )
-        .await;
+            r#"SELECT jsonb_build_array(jsonb_agg(p.hidden ORDER BY p."index")) FROM nodes n JOIN paragraphs p USING (session_id, seq) WHERE n.session_id = $1 AND n."order" = 2"#,
+            &[&session_id],
+        ).await;
     assert_eq!(workspace, vec![json!([false, false])]);
 
-    query
-        .one(
-            "MATCH ({session_id:$session_id})-[:CONTAINS_PARAGRAPH]->(p:Paragraph) \
-             DETACH DELETE p RETURN true",
-            json!({"session_id":session_id}),
-        )
-        .await;
     delete_session(&query, &session_id).await;
 }
 
@@ -1123,12 +1038,9 @@ async fn follows_the_collector_origin_and_reads_tool_output_shapes() {
 
     let rows = query
         .one(
-            "MATCH (n {session_id:$session_id})-[:CONTAINS_PARAGRAPH]->(p:Paragraph) \
-             WITH n, p ORDER BY n.order, p.index \
-             RETURN collect([n.order, p.hidden, p.hidden_rules])",
-            json!({"session_id":session_id}),
-        )
-        .await;
+            r#"SELECT jsonb_build_array(jsonb_agg(jsonb_build_array(n."order", p.hidden, p.hidden_rules) ORDER BY n."order", p."index")) FROM nodes n JOIN paragraphs p USING (session_id, seq) WHERE n.session_id = $1"#,
+            &[&session_id],
+        ).await;
     assert_eq!(
         rows,
         vec![json!([
@@ -1138,13 +1050,6 @@ async fn follows_the_collector_origin_and_reads_tool_output_shapes() {
         ])]
     );
 
-    query
-        .one(
-            "MATCH ({session_id:$session_id})-[:CONTAINS_PARAGRAPH]->(p:Paragraph) \
-             DETACH DELETE p RETURN true",
-            json!({"session_id":session_id}),
-        )
-        .await;
     delete_session(&query, &session_id).await;
 }
 
@@ -1169,11 +1074,9 @@ async fn keeps_no_node_for_a_subagent_that_never_started() {
 
     let rows = query
         .one(
-            "MATCH (c:EventCommit {session_id:$session_id}) WITH c ORDER BY c.order \
-             RETURN collect([c.order, c.has_node, COUNT { (c)-[:CREATED]->() }])",
-            json!({"session_id":session_id}),
-        )
-        .await;
+            r#"SELECT jsonb_build_array(jsonb_agg(jsonb_build_array(c."order", c.has_node, (SELECT count(*) FROM nodes n WHERE n.session_id = c.session_id AND n.seq = c.version)) ORDER BY c."order")) FROM event_commits c WHERE c.session_id = $1"#,
+            &[&session_id],
+        ).await;
     assert_eq!(
         rows,
         vec![json!([[1, false, 0], [2, true, 1], [3, true, 1]])]
@@ -1183,24 +1086,11 @@ async fn keeps_no_node_for_a_subagent_that_never_started() {
 }
 
 async fn start_without_decision() -> Option<(QueryClient, String)> {
-    let Some(neo4j_url) = std::env::var("NEO4J_INTEGRATION_URL").ok() else {
-        eprintln!("skipping Neo4j integration test; NEO4J_INTEGRATION_URL is unset");
+    let Ok(database_url) = std::env::var("POSTGRES_INTEGRATION_URL") else {
         return None;
     };
-    let neo4j_user = std::env::var("NEO4J_INTEGRATION_USER").unwrap_or_else(|_| "neo4j".into());
-    let neo4j_password = std::env::var("NEO4J_INTEGRATION_PASSWORD")
-        .unwrap_or_else(|_| "withhuman-integration".into());
-    let query = QueryClient::new(&neo4j_url, &neo4j_user, &neo4j_password);
-    install_schema(&query).await;
-    let config = GeneratorConfig {
-        bind_address: "127.0.0.1:0".parse().unwrap(),
-        neo4j_url,
-        neo4j_user,
-        neo4j_password,
-        neo4j_database: "neo4j".into(),
-        decision_url: "http://127.0.0.1:9".into(),
-    };
-    let repository = Neo4jRepository::connect(&config).await.unwrap();
+    let repository = PgGraphRepository::connect(&database_url, 4).await.unwrap();
+    let query = QueryClient::connect(&database_url).await;
     Some((
         query,
         spawn_generator(GeneratorService::new(repository)).await,
@@ -1219,18 +1109,7 @@ fn unique_session(prefix: &str) -> String {
 }
 
 async fn delete_session(query: &QueryClient, session_id: &str) {
-    query
-        .one(
-            "MATCH (s:Session {session_id:$session_id}) \
-             OPTIONAL MATCH (s)-[:CONTAINS]->(n) \
-             OPTIONAL MATCH (c:EventCommit {session_id:$session_id}) \
-             OPTIONAL MATCH (p:Paragraph {session_id:$session_id}) \
-             OPTIONAL MATCH (t:Token {session_id:$session_id}) \
-             DETACH DELETE n, c, p, t, s \
-             RETURN true",
-            json!({"session_id":session_id}),
-        )
-        .await;
+    query.remove_session(session_id).await;
 }
 
 async fn post_event(client: &reqwest::Client, base_url: &str, event: &str, body: Value) -> Value {
@@ -1273,16 +1152,9 @@ async fn spawn_decision_server(
         let row = state
             .query
             .one(
-                "MATCH (call:Call {session_id:$session_id,seq:$call_seq}) \
-                 MATCH (commit:EventCommit {session_id:$session_id,version:$version}) \
-                 RETURN count(call), count(commit)",
-                json!({
-                    "session_id":state.expected_session,
-                    "call_seq":request.call_seq,
-                    "version":request.graph_version
-                }),
-            )
-            .await;
+            r#"SELECT jsonb_build_array((SELECT count(*) FROM nodes WHERE session_id = $1 AND seq = $2 AND kind = 'Call'), (SELECT count(*) FROM event_commits WHERE session_id = $1 AND version = $3))"#,
+            &[&state.expected_session, &i64::try_from(request.call_seq).unwrap(), &i64::try_from(request.graph_version).unwrap()],
+        ).await;
         assert_eq!(row, vec![json!(1), json!(1)]);
         *state.observation.lock().await = Some(request);
         Json(DecisionResponse {
@@ -1308,54 +1180,42 @@ async fn spawn_decision_server(
     format!("http://{address}")
 }
 
-async fn install_schema(query: &QueryClient) {
-    for statement in include_str!("../../../deploy/docker/neo4j/schema.cypher").split(';') {
-        let statement = statement.trim();
-        if !statement.is_empty() {
-            query.one(statement, json!({})).await;
-        }
-    }
-}
-
 #[derive(Clone)]
-struct QueryClient {
-    endpoint: String,
-    user: String,
-    password: String,
-    client: reqwest::Client,
-}
+struct QueryClient(Arc<tokio_postgres::Client>);
 
 impl QueryClient {
-    fn new(base_url: &str, user: &str, password: &str) -> Self {
-        Self {
-            endpoint: format!("{}/db/neo4j/query/v2", base_url.trim_end_matches('/')),
-            user: user.into(),
-            password: password.into(),
-            client: reqwest::Client::new(),
-        }
+    async fn connect(url: &str) -> Self {
+        let (client, connection) = tokio_postgres::connect(url, NoTls).await.unwrap();
+        tokio::spawn(async move { connection.await.unwrap() });
+        Self(Arc::new(client))
     }
 
-    async fn one(&self, statement: &str, parameters: Value) -> Vec<Value> {
-        let response = self
-            .client
-            .post(&self.endpoint)
-            .basic_auth(&self.user, Some(&self.password))
-            .json(&json!({"statement":statement,"parameters":parameters}))
-            .send()
-            .await
-            .unwrap();
-        let status = response.status();
-        let body: Value = response.json().await.unwrap();
-        assert!(status.is_success(), "Neo4j HTTP {status}: {body}");
-        assert!(
-            body.get("errors").is_none_or(|errors| errors == &json!([])),
-            "Neo4j query failed: {body}"
-        );
-        body["data"]["values"]
-            .as_array()
-            .and_then(|rows| rows.first())
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default()
+    async fn one(&self, sql: &str, params: &[&(dyn ToSql + Sync)]) -> Vec<Value> {
+        let row = self.0.query_one(sql, params).await.unwrap();
+        row.get::<_, Value>(0).as_array().unwrap().clone()
+    }
+
+    async fn remove_session(&self, session_id: &str) {
+        for table in [
+            "cause_edges",
+            "file_refs",
+            "token_mentions",
+            "tokens",
+            "paragraphs",
+            "subgraphs",
+            "nodes",
+            "event_commits",
+            "pending_paragraph_enrichments",
+            "pending_request_continuations",
+            "sessions",
+        ] {
+            self.0
+                .execute(
+                    &format!("DELETE FROM {table} WHERE session_id = $1"),
+                    &[&session_id],
+                )
+                .await
+                .unwrap();
+        }
     }
 }

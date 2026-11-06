@@ -44,16 +44,17 @@ jobs:
     name: Nextest
     runs-on: ubuntu-latest
     services:
-      neo4j:
-        image: neo4j:5.26.0
+      postgres:
+        image: postgres:16.4
         env:
-          NEO4J_AUTH: neo4j/withhuman-integration
+          POSTGRES_USER: withhuman
+          POSTGRES_PASSWORD: withhuman-integration
+          POSTGRES_DB: withhuman
         ports:
-          - 7474:7474
-          - 7687:7687
+          - 5432:5432
         options: >-
-          --health-cmd "wget --quiet --tries=1 --spider http://localhost:7474 || exit 1"
-          --health-interval 5s
+          --health-cmd "pg_isready -U withhuman -d withhuman"
+          --health-interval 3s
           --health-timeout 3s
           --health-retries 20
       redis:
@@ -77,12 +78,8 @@ jobs:
 
       - name: Run tests
         env:
-          NEO4J_INTEGRATION_URL: http://127.0.0.1:7474
-          NEO4J_INTEGRATION_USER: neo4j
-          NEO4J_INTEGRATION_PASSWORD: withhuman-integration
+          POSTGRES_INTEGRATION_URL: postgres://withhuman:withhuman-integration@127.0.0.1:5432/withhuman
           REDIS_INTEGRATION_URL: redis://127.0.0.1:6379
-        # Generator and Decision integration suites share the Neo4j service.
-        # Serialize test binaries so concurrent schema DDL cannot deadlock Neo4j.
         run: cargo nextest run --no-tests=pass --test-threads=1
 
   helm:
@@ -92,8 +89,6 @@ jobs:
       CHART: deploy/k8s/withhuman
       CHART_VALUES: >-
         --set imageTag=ci
-        --set neo4j.httpUrl=http://neo4j:7474
-        --set neo4j.boltUrl=bolt://neo4j:7687
         --set ingress.host=withhuman.test
     steps:
       - name: Checkout repository
@@ -135,7 +130,7 @@ jobs:
 
       - name: Validate every root
         run: |
-          for root in infra/modules/platform infra/aws/bootstrap infra/aws/modules/neo4j infra/aws/staging; do
+          for root in infra/modules/platform infra/aws/bootstrap infra/aws/staging; do
             terraform -chdir="$root" init -backend=false -input=false
             terraform -chdir="$root" validate
           done

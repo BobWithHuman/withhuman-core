@@ -3,13 +3,14 @@ set -euo pipefail
 
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 compose_file="$repo_dir/deploy/docker/compose.yaml"
-compose=(docker compose --file "$compose_file" --file "$repo_dir/tests/e2e/compose.ports.yaml")
+project=${WITHHUMAN_E2E_PROJECT:-withhuman-e2e-$$}
+export WITHHUMAN_ENGINE_NETWORK="$project-engine"
+compose=(docker compose --project-name "$project" --file "$compose_file" --file "$repo_dir/tests/e2e/compose.ports.yaml")
 gateway_url=${AGENTGATEWAY_URL:-http://localhost:3000}
 decision_url=${DECISION_URL:-http://localhost:8082}
 fixture_url=${MCP_FIXTURE_URL:-http://localhost:8090}
-neo4j_url=${NEO4J_URL:-http://localhost:7474}
 generator_url=${GENERATOR_URL:-http://localhost:8081}
-export NEO4J_PASSWORD=${NEO4J_PASSWORD:-withhuman-e2e}
+export POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-withhuman-e2e}
 export WITHHUMAN_ENV=test
 export DECISION_PROVIDER=mock
 # The suite checks how verdicts are enforced; it states no intents to wait for.
@@ -117,14 +118,10 @@ mcp_call() {
 }
 
 verdict_count() {
-  session_id=$1
-  curl --fail --silent --show-error \
-    --user "neo4j:$NEO4J_PASSWORD" \
-    "$neo4j_url/db/neo4j/query/v2" \
-    --header 'content-type: application/json' \
-    --data "$(jq -cn --arg session "$session_id" \
-      '{statement:"MATCH (c:Call {session_id: $session_id}) WHERE c.decision IS NOT NULL RETURN count(c) AS count",parameters:{session_id:$session}}')" \
-    | jq -r '.data.values[0][0]'
+  "${compose[@]}" exec -T postgres psql -X -U withhuman -d withhuman -At \
+    --set=ON_ERROR_STOP=1 --set=session_id="$1" <<'SQL'
+SELECT count(*) FROM nodes WHERE session_id = :'session_id' AND kind = 'Call' AND decision IS NOT NULL;
+SQL
 }
 
 printf 'Starting the complete E2E topology...\n'
@@ -196,5 +193,16 @@ first=$(curl --fail --silent "$generator_url/v1/events/SessionStart" \
 second=$(curl --fail --silent "$generator_url/v1/events/SessionStart" \
   --header 'content-type: application/json' --data "$duplicate_event")
 test "$first" = "$second"
+
+printf 'Verifying PostgreSQL outage and recovery...\n'
+start_session e2e-postgres-outage
+"${compose[@]}" stop postgres >/dev/null
+test "$(curl --silent --output /dev/null --write-out '%{http_code}' "$generator_url/healthz")" = 503
+outage_response=$(pre_tool e2e-postgres-outage Write internal-outage /tmp/outage)
+test "$(jq -r '.hookSpecificOutput.permissionDecision' <<<"$outage_response")" = deny
+"${compose[@]}" up --detach --wait postgres >/dev/null
+wait_for "$generator_url/healthz"
+wait_for "$decision_url/healthz"
+test "$(verdict_count e2e-allow)" -ge 1
 
 printf 'All WithHuman E2E scenarios passed.\n'

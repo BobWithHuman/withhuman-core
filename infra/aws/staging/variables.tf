@@ -54,22 +54,6 @@ variable "node_desired_size" {
   default = 2
 }
 
-variable "neo4j_instance_type" {
-  description = "16 GiB of memory leaves room for the heap and page cache."
-  type        = string
-  default     = "r7i.large"
-}
-
-variable "neo4j_heap_size" {
-  type    = string
-  default = "6g"
-}
-
-variable "neo4j_pagecache_size" {
-  type    = string
-  default = "6g"
-}
-
 variable "valkey_version" {
   type    = string
   default = "8.0"
