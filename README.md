@@ -102,12 +102,18 @@ protected until you do. Running the installer again updates the setup; with
 `python3 deploy/client/configure.py --agent codex --server <engine>` does the same.
 
 Codex cannot show a confirmation prompt, so a call that needs the user's confirmation (REVIEW)
-is blocked. Confirm in the conversation, then ask again.
+is blocked. Approving it in the conversation does not help: the same call is reviewed and
+blocked again. Make such a change yourself, or ask for a different change.
+
+The personal Compose stack starts with the engine's `WITHHUMAN_MODE=shadow`, which records
+verdicts but blocks nothing; set `WITHHUMAN_MODE=enforce` in `.env` for blocking. That engine
+setting (`record`, `shadow`, `enforce`) is separate from the hook's own `WITHHUMAN_MODE`
+(`enforce`, `observe`) in the environment Codex runs in.
 
 The hook sends Codex's events to the Collector's `/v1/hooks/codex/{event}` route, which turns
 them into the Claude Code hook requests the engine already judges. MCP calls are enforced by the
 hook rather than by AgentGateway. When the engine cannot be reached or does not answer in time,
-the hook blocks the call (`WITHHUMAN_MODE=observe` lets it through).
+the hook blocks the call (the hook's `WITHHUMAN_MODE=observe` lets it through).
 
 Known differences from Claude Code: the `[의도]` line Codex writes stays visible on screen, and
 configuration changes made outside the agent are not recorded (Codex has no ConfigChange hook).
