@@ -1,3 +1,4 @@
+pub mod codex;
 mod config;
 mod ext_authz;
 mod http;
