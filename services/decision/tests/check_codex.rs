@@ -379,3 +379,21 @@ fn recorded_calls_keep_their_safeguard_verdicts() {
     assert!(calls > 0);
     assert_eq!(lost, 0);
 }
+
+/// A shell read of a safeguard reaches the checks as Read (the Collector translates a plain
+/// one-file read): reading is no change. Anything more stays a shell call and is still caught.
+#[test]
+fn reading_a_safeguard_is_no_change_but_a_combined_write_is() {
+    let read = call_in(
+        "C:\\proj",
+        "Read",
+        json!({"file_path": "C:/proj/.codex/hooks.json"}),
+    );
+    assert_eq!(effect(&read), Effect::Other);
+    let combined = call_in(
+        "C:\\proj",
+        "PowerShell",
+        json!({"command": "Get-Content x; Set-Content .codex\\hooks.json '{}'"}),
+    );
+    assert_eq!(effect(&combined), Effect::Safeguard);
+}

@@ -152,6 +152,8 @@ pub fn translate(
                     hook_event_name: Some(HookEventName::PostToolUse),
                     tool_response: tool_response(
                         call.shell,
+                        &call.tool_name,
+                        &call.tool_input,
                         input.tool_response.unwrap_or(Value::Null),
                     ),
                     tool_name: call.tool_name,
@@ -250,6 +252,9 @@ pub fn translate_tool(
             .or_else(|| input.get("cmd"))
             .map(shell_command)
             .unwrap_or_default();
+        if let Some(read) = simple_read(&command, shell, cwd) {
+            return ("Read".to_owned(), read);
+        }
         return (shell.tool_name().to_owned(), json!({ "command": command }));
     }
     match name {
@@ -295,12 +300,183 @@ pub fn translate_tool(
     }
 }
 
-/// A shell result in the form Claude Code's shell tools report: Codex gives the output alone.
-fn tool_response(shell: bool, response: Value) -> Value {
+/// A shell result in the form Claude Code's tool reports it: a shell's `{stdout, stderr}`, or,
+/// for a command translated to `Read`, the file content as Read gives it. Codex gives the
+/// output alone.
+fn tool_response(shell: bool, tool_name: &str, tool_input: &Value, response: Value) -> Value {
+    if shell && tool_name == "Read" {
+        return read_response(tool_input, response);
+    }
     match response {
         Value::String(output) if shell => json!({ "stdout": output, "stderr": "" }),
         response => response,
     }
+}
+
+/// PowerShell's `Get-Content` and its aliases.
+const POWERSHELL_READERS: &[&str] = &["get-content", "gc", "cat", "type"];
+/// POSIX commands that print one file.
+const POSIX_READERS: &[&str] = &["cat", "head", "tail"];
+/// Characters that make a command more than one plain read: pipes, separators, redirections,
+/// subexpressions and variables, wildcards, escapes, arrays and splatting, comments, line
+/// breaks, home expansion.
+const NOT_PLAIN: &[char] = &[
+    '|', ';', '&', '>', '<', '`', '$', '(', ')', '{', '}', '*', '?', '[', ']', ',', '@', '#', '\n',
+    '\r', '~', '!',
+];
+
+/// The `Read` input for a shell command that only prints one file (`Get-Content -LiteralPath
+/// 'vendor\note.md'`, `cat notes.md`, `head -n 5 x`), with the path resolved against the
+/// directory it runs in; none for anything else, which stays a shell call. Reading a file this
+/// way is what Claude Code does with Read, so its result is classified (a vendored or outside
+/// file is external, so hidden content in it is looked for) and remembered the same way.
+///
+/// The path uses `/` separators: the engine judges paths by `/`-separated parts.
+pub fn simple_read(command: &str, shell: CodexShell, cwd: Option<&str>) -> Option<Value> {
+    if command.contains(NOT_PLAIN) || (shell == CodexShell::Posix && command.contains('\\')) {
+        return None;
+    }
+    let words = plain_words(command)?;
+    let (program, arguments) = words.split_first()?;
+    let program = program.to_ascii_lowercase();
+    let mut path: Option<String> = None;
+    let mut limit: Option<u64> = None;
+    let mut arguments = arguments.iter();
+    let number = |word: Option<&String>| word.and_then(|word| word.parse::<u64>().ok());
+    match shell {
+        CodexShell::PowerShell if POWERSHELL_READERS.contains(&program.as_str()) => {
+            while let Some(word) = arguments.next() {
+                if !word.starts_with('-') {
+                    set_path(&mut path, word)?;
+                    continue;
+                }
+                match word.to_ascii_lowercase().as_str() {
+                    "-path" | "-literalpath" => {
+                        let value = arguments.next().filter(|value| !value.starts_with('-'))?;
+                        set_path(&mut path, value)?;
+                    }
+                    "-raw" => {}
+                    "-encoding" => {
+                        arguments.next().filter(|value| !value.starts_with('-'))?;
+                    }
+                    "-totalcount" | "-head" | "-tail" => limit = Some(number(arguments.next())?),
+                    _ => return None,
+                }
+            }
+        }
+        CodexShell::Posix if POSIX_READERS.contains(&program.as_str()) => {
+            while let Some(word) = arguments.next() {
+                if !word.starts_with('-') {
+                    set_path(&mut path, word)?;
+                } else if program != "cat" && word == "-n" {
+                    limit = Some(number(arguments.next())?);
+                } else if program != "cat"
+                    && word.len() > 1
+                    && word[1..].bytes().all(|b| b.is_ascii_digit())
+                {
+                    limit = Some(word[1..].parse().ok()?);
+                } else {
+                    return None;
+                }
+            }
+        }
+        _ => return None,
+    }
+    let path = resolve(cwd, &path?).replace('\\', "/");
+    let mut read = json!({ "file_path": path });
+    if let Some(limit) = limit {
+        // A part of the file: the engine then does not take it as the whole content.
+        read["limit"] = json!(limit);
+    }
+    Some(read)
+}
+
+/// Takes `word` as the one file read; none when a file was already named.
+fn set_path(path: &mut Option<String>, word: &str) -> Option<()> {
+    if path.is_some() || word.is_empty() {
+        return None;
+    }
+    *path = Some(word.to_owned());
+    Some(())
+}
+
+/// The words of a command with quotes removed; none when a quote is left open.
+fn plain_words(command: &str) -> Option<Vec<String>> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut quoted = false;
+    let mut chars = command.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' | '"' => {
+                quoted = true;
+                loop {
+                    match chars.next() {
+                        Some(end) if end == c => break,
+                        Some(inner) => word.push(inner),
+                        None => return None,
+                    }
+                }
+            }
+            c if c.is_whitespace() => {
+                if !word.is_empty() || quoted {
+                    words.push(std::mem::take(&mut word));
+                }
+                quoted = false;
+            }
+            c => word.push(c),
+        }
+    }
+    if !word.is_empty() || quoted {
+        words.push(word);
+    }
+    Some(words)
+}
+
+/// A shell's output of a file as Read's result. Codex may wrap a command's output in run
+/// details (`Chunk ID: …`, `Wall time: …`, `Process exited with code …`, then `Output:`); only
+/// what follows `Output:` is the file.
+fn read_response(tool_input: &Value, response: Value) -> Value {
+    let text = match &response {
+        Value::String(text) => text.clone(),
+        Value::Object(fields) => match ["stdout", "output"]
+            .iter()
+            .find_map(|name| fields.get(*name).and_then(Value::as_str))
+        {
+            Some(text) => text.to_owned(),
+            None => return response,
+        },
+        _ => return response,
+    };
+    let details = [
+        "Chunk ID:",
+        "Wall time:",
+        "Exit code:",
+        "Process exited",
+        "Output:",
+    ];
+    let content = match text.split_once("Output:\n") {
+        Some((head, rest))
+            if details
+                .iter()
+                .any(|detail| head.trim_start().starts_with(detail))
+                || head.trim().is_empty() =>
+        {
+            rest.to_owned()
+        }
+        _ => text,
+    };
+    let lines = content.lines().count();
+    let mut file = json!({
+        "filePath": tool_input.get("file_path").cloned().unwrap_or(Value::Null),
+        "content": content,
+        "numLines": lines,
+        "startLine": 1,
+    });
+    if tool_input.get("limit").is_none() {
+        file["totalLines"] = json!(lines);
+    }
+    json!({ "type": "text", "file": file })
 }
 
 /// A command given as words joins into one line. A shell running a script (`bash -lc …`,
