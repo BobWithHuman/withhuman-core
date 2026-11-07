@@ -122,7 +122,7 @@ calls; if the engine cannot confirm an event, start a new session after restorin
 Native web operations without hooks are recorded afterward, using only transcript content.
 Subsequent input into an already-open shell and a hook that cannot start or is not trusted are
 outside this protection. `observe` records activity without enforcing protection.
-Verified on Windows with Codex CLI 0.154; macOS is not verified yet.
+Verified on Windows with Codex CLI 0.154 and 0.167; macOS is not verified yet.
 
 ## Development
 
