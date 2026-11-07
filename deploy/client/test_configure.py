@@ -1,6 +1,7 @@
 """Tests for configure.py: python3 -m unittest discover deploy/client"""
 
 import json
+import importlib.util
 import os
 import subprocess
 import sys
@@ -37,9 +38,11 @@ class ConfigureTest(unittest.TestCase):
     def configure(self, *extra, server=SERVER):
         # WITHHUMAN_SERVER is dropped so the developer's own environment cannot stand in for the
         # address under test, nor hide a missing one.
-        env = {**os.environ, "HOME": str(self.home), "SHELL": "/bin/zsh"}
+        env = {**os.environ, "HOME": str(self.home), "USERPROFILE": str(self.home), "SHELL": "/bin/zsh"}
         env.pop("WITHHUMAN_SERVER", None)
         arguments = ["--project", str(self.project), "--team", "lab"]
+        if os.name == "nt":
+            arguments.append("--no-persist")  # Never setx in a unit test.
         if server is not None:
             arguments += ["--server", server]
         return subprocess.run(
@@ -47,6 +50,7 @@ class ConfigureTest(unittest.TestCase):
             capture_output=True, text=True, env=env, timeout=30,
         )
 
+    @unittest.skipIf(os.name == "nt", "POSIX profile persistence; covered on Linux")
     def test_replaces_an_earlier_setup_and_keeps_everything_else(self):
         # User settings from an earlier setup.sh merge, beside the user's own hook and settings.
         self.write(self.home / ".claude" / "settings.json", {
@@ -100,6 +104,7 @@ class ConfigureTest(unittest.TestCase):
         self.assertEqual(profile.count("export WITHHUMAN_CLIENT_ID="), 1)
         self.assertIn(client_id, result.stdout)
 
+    @unittest.skipIf(os.name == "nt", "POSIX profile persistence; covered on Linux")
     def test_gives_the_same_result_when_run_again(self):
         self.assertEqual(self.configure().returncode, 0)
         settings = (self.project / ".claude" / "settings.json").read_text()
@@ -132,10 +137,10 @@ class ConfigureTest(unittest.TestCase):
         self.assertFalse((self.project / ".claude" / "settings.json").exists())
 
     def test_takes_the_address_from_the_environment(self):
-        env = {**os.environ, "HOME": str(self.home), "SHELL": "/bin/zsh",
+        env = {**os.environ, "HOME": str(self.home), "USERPROFILE": str(self.home), "SHELL": "/bin/zsh",
                "WITHHUMAN_SERVER": "http://127.0.0.1:3000/"}
         result = subprocess.run(
-            [sys.executable, str(CONFIGURE), "--project", str(self.project), "--team", "lab"],
+            [sys.executable, str(CONFIGURE), "--project", str(self.project), "--team", "lab", "--no-persist"],
             capture_output=True, text=True, env=env, timeout=30,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -148,6 +153,131 @@ class ConfigureTest(unittest.TestCase):
         result = self.configure(server="withhuman.example.com")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("must be an http(s) URL", result.stderr)
+
+
+    def test_uninstall_takes_out_only_withhuman(self):
+        self.write(self.project / ".claude" / "settings.json", {
+            "permissions": {"allow": ["Bash(ls:*)"]}, "hooks": {"Stop": [{"hooks": [OTHER]}]}})
+        self.assertEqual(self.configure("--no-persist").returncode, 0)
+        result = self.configure("--uninstall")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.read(self.project / ".claude" / "settings.json"), {
+            "permissions": {"allow": ["Bash(ls:*)"]}, "hooks": {"Stop": [{"hooks": [OTHER]}]}})
+        self.assertFalse((self.project / ".claude" / "hooks" / "pre-tool-use.py").exists())
+
+
+class CodexConfigureTest(unittest.TestCase):
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp()).resolve()
+        self.project = Path(tempfile.mkdtemp()).resolve()
+
+    def configure(self, *extra):
+        # USERPROFILE as well as HOME: on Windows the home folder comes from it.
+        env = {**os.environ, "HOME": str(self.home), "USERPROFILE": str(self.home),
+               "SHELL": "/bin/zsh"}
+        env.pop("WITHHUMAN_SERVER", None)
+        return subprocess.run(
+            [sys.executable, str(CONFIGURE), "--agent", "codex", "--project", str(self.project),
+             "--team", "lab", "--server", SERVER, "--no-persist", "--skip-check", *extra],
+            capture_output=True, text=True, env=env, timeout=30,
+        )
+
+    def test_reports_a_localized_hook_failure_without_a_decoder_error(self):
+        hook = self.project / "localized-hook.py"
+        hook.write_text("import sys\nsys.stderr.write('\\uc5f0\\uacb0 \\uc624\\ub958')\nsys.exit(2)\n",
+                        encoding="utf-8")
+        spec = importlib.util.spec_from_file_location("withhuman_configure", CONFIGURE)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        ok, output = module.check_codex(hook, SERVER)
+        self.assertFalse(ok)
+        self.assertIn("\uc5f0\uacb0 \uc624\ub958", output)
+
+    def test_writes_the_project_hooks_and_keeps_others(self):
+        hooks_json = self.project / ".codex" / "hooks.json"
+        hooks_json.parent.mkdir()
+        old = {"type": "command", "command": "python3 /old/withhuman-hook.py https://old PreToolUse"}
+        hooks_json.write_text(json.dumps({"hooks": {
+            "PreToolUse": [{"hooks": [old, OTHER]}], "Stop": [{"hooks": [OTHER]}]}}))
+        result = self.configure()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        config = json.loads(hooks_json.read_text())
+        hooks = config["hooks"]
+        self.assertEqual(sorted(hooks), sorted(["SessionStart", "UserPromptSubmit", "PreToolUse",
+                                                "PostToolUse", "Stop", "SubagentStart",
+                                                "SubagentStop"]))
+        # The user's own hooks stay; the earlier WithHuman one is replaced.
+        self.assertEqual(hooks["PreToolUse"][0]["hooks"], [OTHER])
+        self.assertEqual(hooks["Stop"][0]["hooks"], [OTHER])
+        ours = hooks["PreToolUse"][1]["hooks"][0]
+        installed = (self.project / ".codex" / "hooks" / "withhuman-hook.py").as_posix()
+        python = Path(sys.executable).as_posix()
+        self.assertEqual(ours["command"], f'"{python}" "{installed}" {SERVER} PreToolUse')
+        self.assertEqual(ours["commandWindows"],
+                         f'& "{python}" "{installed}" {SERVER} PreToolUse; exit $LASTEXITCODE')
+        self.assertGreaterEqual(ours["timeout"], 10)
+        for event in ("SessionStart", "UserPromptSubmit", "PostToolUse", "SubagentStart"):
+            self.assertEqual(hooks[event][-1]["hooks"][0]["timeout"], 5)
+        self.assertEqual(hooks["Stop"][1]["hooks"][0]["timeout"], 5)
+        for name in ("withhuman-hook.py", "codex_transcript.py", "pre-tool-use.py"):
+            self.assertTrue((self.project / ".codex" / "hooks" / name).is_file(), name)
+        self.assertIn("/hooks", result.stdout)
+        # The user's own Codex folder is never touched.
+        self.assertFalse((self.home / ".codex").exists())
+
+    def test_gives_the_same_result_when_run_again(self):
+        self.assertEqual(self.configure().returncode, 0)
+        first = (self.project / ".codex" / "hooks.json").read_text()
+        self.assertEqual(self.configure().returncode, 0)
+        self.assertEqual((self.project / ".codex" / "hooks.json").read_text(), first)
+
+    def test_fails_when_the_installed_hook_cannot_reach_the_engine(self):
+        env = {**os.environ, "HOME": str(self.home), "USERPROFILE": str(self.home)}
+        result = subprocess.run(
+            [sys.executable, str(CONFIGURE), "--agent", "codex", "--project", str(self.project),
+             "--server", "http://127.0.0.1:9", "--no-persist"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=60,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("did not run", result.stderr)
+
+    def test_uninstall_takes_out_only_withhuman(self):
+        hooks_json = self.project / ".codex" / "hooks.json"
+        hooks_json.parent.mkdir()
+        hooks_json.write_text(json.dumps({"other": True, "hooks": {
+            "PreToolUse": [{"hooks": [OTHER]}], "Stop": [{"hooks": [OTHER]}]}}))
+        (self.project / "src.py").write_text("print(1)\n")
+        self.assertEqual(self.configure().returncode, 0)
+        (self.project / ".codex" / "hooks" / "mine.sh").write_text("echo mine\n")
+        # Bytecode the hook's own check leaves, beside another module's.
+        cache = self.project / ".codex" / "hooks" / "__pycache__"
+        cache.mkdir(exist_ok=True)
+        for name in ("codex_transcript.cpython-311.pyc", "pre-tool-use.cpython-311.pyc",
+                     "mine.cpython-311.pyc"):
+            (cache / name).write_bytes(b"")
+        result = self.configure("--uninstall")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        config = json.loads(hooks_json.read_text())
+        self.assertEqual(config, {"other": True, "hooks": {
+            "PreToolUse": [{"hooks": [OTHER]}], "Stop": [{"hooks": [OTHER]}]}})
+        hooks_dir = self.project / ".codex" / "hooks"
+        self.assertEqual(sorted(p.name for p in hooks_dir.iterdir()), ["__pycache__", "mine.sh"])
+        self.assertEqual([p.name for p in cache.iterdir()], ["mine.cpython-311.pyc"])
+        self.assertEqual((self.project / "src.py").read_text(), "print(1)\n")
+        self.assertTrue(list((self.project / ".codex").glob("hooks.json.bak-*")))
+        # Nothing left to take out the second time.
+        again = self.configure("--uninstall")
+        self.assertIn("Nothing of WithHuman", again.stdout)
+
+    def test_uninstall_needs_no_server(self):
+        env = {**os.environ, "HOME": str(self.home), "USERPROFILE": str(self.home)}
+        env.pop("WITHHUMAN_SERVER", None)
+        result = subprocess.run(
+            [sys.executable, str(CONFIGURE), "--uninstall", "--agent", "codex",
+             "--project", str(self.project)],
+            capture_output=True, text=True, env=env, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

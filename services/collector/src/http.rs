@@ -6,7 +6,7 @@ use std::{
 
 use axum::{
     Json, Router,
-    extract::{FromRequest, Request, State},
+    extract::{FromRequest, Path, Request, State},
     http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
@@ -15,6 +15,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use utoipa::{OpenApi, ToSchema};
 use withhuman_common::intent::split_intent;
 use withhuman_contracts::{
+    codex::{CodexHookEvent, CodexHookInput, CodexShell},
     decisions::{Decision, DecisionResponse, EnforcementMode},
     events::EventResponse,
     hooks::{
@@ -29,11 +30,15 @@ use withhuman_contracts::{
 use crate::{
     CollectorConfig, FailurePolicy, GeneratorError, GeneratorHttpClient, GeneratorTransport,
     InMemoryVerdictStore, NormalizeError, Normalizer, RedisSessionStore, RedisVerdictStore,
-    ReviewPolicy, StoreError, StoredVerdict, VerdictStore, redis_connection,
+    ReviewPolicy, StoreError, StoredVerdict, VerdictStore,
+    codex::{self, Translated},
+    redis_connection,
 };
 
 const CLIENT_HEADER: &str = "x-withhuman-client";
 const REPOSITORY_HEADER: &str = "x-withhuman-repo";
+/// The shell a Codex client runs commands in (`powershell`, else POSIX).
+const SHELL_HEADER: &str = "x-withhuman-shell";
 /// Display content for a flush that is all intent line: a zero-width space, since Claude Code
 /// shows the original text for an empty one.
 const HIDDEN_LINE: &str = "\u{200B}";
@@ -58,6 +63,7 @@ pub struct CollectorService {
     pub normalizer: Normalizer,
     pub generator: Arc<dyn GeneratorTransport>,
     pub verdicts: Arc<dyn VerdictStore>,
+    deliveries: Arc<crate::codex_delivery::Deliveries>,
 }
 
 impl CollectorService {
@@ -71,6 +77,7 @@ impl CollectorService {
             config,
             generator,
             verdicts,
+            deliveries: Arc::default(),
         }
     }
 
@@ -84,6 +91,7 @@ impl CollectorService {
         };
         let connection = redis_connection(&url)?;
         Ok(Self {
+            deliveries: Arc::new(crate::codex_delivery::Deliveries::redis(connection.clone())),
             verdicts: Arc::new(RedisVerdictStore::new(
                 connection.clone(),
                 config.verdict_ttl,
@@ -117,6 +125,7 @@ pub fn app_with_transport(service: CollectorService) -> Router {
         .route("/v1/hooks/MessageDisplay", post(message_display))
         .route("/v1/hooks/PostToolBatch", post(post_tool_batch))
         .route("/v1/hooks/ToolDescriptions", post(tool_descriptions))
+        .route("/v1/hooks/codex/{event}", post(codex_hook))
         .route("/api-docs/openapi.json", get(openapi_document))
         .route("/swagger-ui", get(swagger_ui))
         .route("/swagger-ui/", get(swagger_ui))
@@ -137,7 +146,8 @@ pub fn app_with_transport(service: CollectorService) -> Router {
         config_change,
         message_display,
         post_tool_batch,
-        tool_descriptions
+        tool_descriptions,
+        codex_hook
     ),
     tags((name = "Collector", description = "Claude Code Hook ingestion and enforcement API"))
 )]
@@ -375,12 +385,21 @@ async fn user_prompt_submit(
     headers: HeaderMap,
     StrictJson(request): StrictJson<UserPromptSubmitRequest>,
 ) -> Response {
+    submit_prompt(&service, &trusted(&headers), request, None).await
+}
+
+async fn submit_prompt(
+    service: &CollectorService,
+    context: &TrustedHookContext,
+    request: UserPromptSubmitRequest,
+    tag: Option<&CodexTag<'_>>,
+) -> Response {
     let response = match service
         .normalizer
-        .user_prompt_submit(&trusted(&headers), request, now())
+        .user_prompt_submit(context, request, now())
         .await
     {
-        Ok(event) => send_regular(&service, event).await,
+        Ok(event) => send_regular(service, tagged(event, tag)).await,
         Err(error) => normalize_failure(error),
     };
     if response.status() != StatusCode::OK || !service.config.intent_capture {
@@ -499,6 +518,32 @@ async fn pre_tool_use(
     headers: HeaderMap,
     StrictJson(request): StrictJson<PreToolUseRequest>,
 ) -> Response {
+    let policy = HookPolicy {
+        review: service.config.review_policy,
+        mcp_at_hook: service.config.enforce_mcp_at_hook,
+        failure: service.config.failure_policy,
+        codex: false,
+    };
+    judge_call(&service, &trusted(&headers), request, policy, None).await
+}
+
+/// How a client's Hook answers a verdict.
+#[derive(Debug, Clone, Copy)]
+struct HookPolicy {
+    review: ReviewPolicy,
+    /// MCP calls are enforced by the Hook rather than by AgentGateway.
+    mcp_at_hook: bool,
+    failure: FailurePolicy,
+    codex: bool,
+}
+
+async fn judge_call(
+    service: &CollectorService,
+    context: &TrustedHookContext,
+    request: PreToolUseRequest,
+    policy: HookPolicy,
+    tag: Option<&CodexTag<'_>>,
+) -> Response {
     // A turn whose intent has not arrived is asked for one before its first Call is judged. The
     // ask is best effort: when the session store cannot answer, the Call is judged as usual.
     if service.config.enforcement_mode == EnforcementMode::Enforce
@@ -518,7 +563,7 @@ async fn pre_tool_use(
     let event = match service
         .normalizer
         .pre_tool_use(
-            &trusted(&headers),
+            context,
             request,
             now(),
             service.config.enforcement_mode,
@@ -526,8 +571,8 @@ async fn pre_tool_use(
         )
         .await
     {
-        Ok(event) => event,
-        Err(error) => return pre_tool_failure(&service, error),
+        Ok(event) => tagged(event, tag),
+        Err(error) => return hook_failure(service, policy, error),
     };
     let result = tokio::time::timeout(
         service.config.decision_budget,
@@ -536,22 +581,24 @@ async fn pre_tool_use(
     .await;
     let response = match result {
         Ok(Ok(response)) => response,
-        Ok(Err(error)) => return pre_tool_failure(&service, error),
-        Err(_) => return pre_tool_failure(&service, GeneratorError::Timeout),
+        Ok(Err(error)) => return hook_failure(service, policy, error),
+        Err(_) => return hook_failure(service, policy, GeneratorError::Timeout),
     };
     let Some(decision) = response.decision_response else {
-        return pre_tool_failure(
-            &service,
+        return hook_failure(
+            service,
+            policy,
             GeneratorError::InvalidResponse("missing decision_response".to_owned()),
         );
     };
     if decision.validate().is_err() {
-        return pre_tool_failure(
-            &service,
+        return hook_failure(
+            service,
+            policy,
             GeneratorError::InvalidResponse("invalid decision semantics".to_owned()),
         );
     }
-    let enforced_at_hook = !is_mcp || service.config.enforce_mcp_at_hook;
+    let enforced_at_hook = !is_mcp || policy.mcp_at_hook;
     let observing = service.config.enforcement_mode != EnforcementMode::Enforce;
     let stored = service
         .verdicts
@@ -564,17 +611,322 @@ async fn pre_tool_use(
         // Record and shadow modes keep the verdict for analysis but never block.
         return StatusCode::OK.into_response();
     }
+    if tag.is_some() && policy.failure == FailurePolicy::Closed && stored.is_err() {
+        return hook_failure(service, policy, "verdict store unavailable");
+    }
     if !enforced_at_hook {
         // AgentGateway enforces this call and needs the stored verdict; without it the
         // extAuthz check denies, so the Hook answer follows the failure policy.
         return match stored {
             Ok(()) => StatusCode::OK.into_response(),
-            Err(error) => pre_tool_failure(&service, error),
+            Err(error) => hook_failure(service, policy, error),
         };
     }
     // The verdict is in hand, so a store failure must not override it (a DENY must never turn
     // into ALLOW under the open failure policy).
-    decision_response(decision, service.config.review_policy)
+    decision_response(decision, policy.review)
+}
+
+/// Marks a Codex session's events; Claude Code's pass unchanged.
+struct CodexTag<'a> {
+    /// The Hook as Codex sent it; none for events the bridge made itself.
+    payload: Option<&'a serde_json::Value>,
+    workdir_unknown: bool,
+}
+
+fn tagged(mut event: crate::NormalizedEvent, tag: Option<&CodexTag<'_>>) -> crate::NormalizedEvent {
+    if let Some(tag) = tag {
+        codex::tag(&mut event, tag.payload, tag.workdir_unknown);
+    }
+    event
+}
+
+/// Codex has no way to ask the user, and an `ask` it receives fails the Hook and lets the call
+/// run; MCP calls do not pass AgentGateway. So a REVIEW denies and the Hook enforces MCP calls.
+const CODEX_POLICY: HookPolicy = HookPolicy {
+    review: ReviewPolicy::Deny,
+    mcp_at_hook: true,
+    failure: FailurePolicy::Closed,
+    codex: true,
+};
+
+#[utoipa::path(
+    post,
+    path = "/v1/hooks/codex/{event}",
+    tag = "Collector",
+    params(
+        ("event" = String, Path, description = "Codex Hook event, or MessageDisplay / PostToolBatch made by the bridge"),
+        ("X-WithHuman-Repo" = Option<String>, Header, description = "Repository identity"),
+        ("X-WithHuman-Client" = Option<String>, Header, description = "Client identity"),
+        ("X-WithHuman-Shell" = Option<String>, Header, description = "`powershell` when the client's shell is PowerShell")
+    ),
+    request_body = CodexHookInput,
+    responses(
+        (status = 200, description = "Empty, or Codex Hook output: additional context, or a deny for the call", body = HookSpecificResponse<PreToolUseOutput>),
+        (status = 400, description = "Invalid JSON or Hook", body = ErrorResponse),
+        (status = 404, description = "Unknown event", body = ErrorResponse),
+        (status = 415, body = ErrorResponse),
+        (status = 502, description = "Generator or session store unavailable", body = ErrorResponse)
+    )
+)]
+/// A Codex Hook, translated to its Claude Code counterpart and handled by the same code.
+async fn codex_hook(
+    State(service): State<CollectorService>,
+    Path(event): Path<String>,
+    headers: HeaderMap,
+    StrictJson(raw): StrictJson<serde_json::Value>,
+) -> Response {
+    let Some(id) = headers
+        .get("x-withhuman-event")
+        .and_then(|v| v.to_str().ok())
+    else {
+        return codex_hook_inner(service, event, headers, raw).await;
+    };
+    if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return error(StatusCode::BAD_REQUEST, "invalid_delivery_id");
+    }
+    // Bind the receipt to both the event payload and the trusted client context.
+    let request = withhuman_common::chunking::sha256(
+        &serde_json::json!([
+            event,
+            raw,
+            header_value(&headers, CLIENT_HEADER),
+            header_value(&headers, REPOSITORY_HEADER),
+            header_value(&headers, SHELL_HEADER)
+        ])
+        .to_string(),
+    );
+    let key = format!("withhuman:codex:delivery:{id}");
+    match service.deliveries.begin(&key, &request).await {
+        Ok(Some(receipt)) if receipt.request == request => {
+            return match receipt.reply {
+                Some(reply) => (
+                    StatusCode::OK,
+                    [(axum::http::header::CONTENT_TYPE, "application/json")],
+                    reply,
+                )
+                    .into_response(),
+                None => error(StatusCode::CONFLICT, "codex_resync_required"),
+            };
+        }
+        Ok(Some(_)) => return error(StatusCode::CONFLICT, "delivery_id_conflict"),
+        Err(_) => {
+            return error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "delivery_store_unavailable",
+            );
+        }
+        Ok(None) => {}
+    }
+    let response = codex_hook_inner(service.clone(), event, headers, raw).await;
+    if response.status() != StatusCode::OK {
+        return response;
+    }
+    let Ok(bytes) = axum::body::to_bytes(response.into_body(), 1024 * 1024).await else {
+        return error(StatusCode::CONFLICT, "codex_resync_required");
+    };
+    let Ok(reply) = String::from_utf8(bytes.to_vec()) else {
+        return error(StatusCode::CONFLICT, "codex_resync_required");
+    };
+    if service
+        .deliveries
+        .finish(&key, &request, reply.clone())
+        .await
+        .is_err()
+    {
+        return error(StatusCode::CONFLICT, "codex_resync_required");
+    }
+    (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        reply,
+    )
+        .into_response()
+}
+
+async fn codex_hook_inner(
+    service: CollectorService,
+    event: String,
+    headers: HeaderMap,
+    raw: serde_json::Value,
+) -> Response {
+    let Some(event) = CodexHookEvent::from_path(&event) else {
+        return error(StatusCode::NOT_FOUND, "unknown_event");
+    };
+    let context = trusted(&headers);
+    let made_by_bridge = CodexTag {
+        payload: None,
+        workdir_unknown: false,
+    };
+    match event {
+        CodexHookEvent::MessageDisplay => {
+            let Ok(request) = serde_json::from_value::<MessageDisplayRequest>(raw) else {
+                return error(StatusCode::BAD_REQUEST, "invalid_json");
+            };
+            // Codex cannot hide text it shows, so only the events matter.
+            return match service
+                .normalizer
+                .message_display(&context, request, now())
+                .await
+            {
+                Ok(events) => {
+                    let events = events
+                        .into_iter()
+                        .map(|event| tagged(event, Some(&made_by_bridge)))
+                        .collect();
+                    send_all(&service, events).await
+                }
+                Err(error) => normalize_failure(error),
+            };
+        }
+        CodexHookEvent::PostToolBatch => {
+            let Ok(request) = serde_json::from_value::<PostToolBatchRequest>(raw) else {
+                return error(StatusCode::BAD_REQUEST, "invalid_json");
+            };
+            return match service
+                .normalizer
+                .post_tool_batch(&context, request, now())
+                .await
+            {
+                Ok(event) => send_regular(&service, tagged(event, Some(&made_by_bridge))).await,
+                Err(error) => normalize_failure(error),
+            };
+        }
+        _ => {}
+    }
+    let Ok(input) = serde_json::from_value::<CodexHookInput>(raw.clone()) else {
+        return error(StatusCode::BAD_REQUEST, "invalid_json");
+    };
+    let shell = CodexShell::from_header(header_value(&headers, SHELL_HEADER).as_deref());
+    let record = input.withhuman_record;
+    if record && !codex::valid_record(event, &input) {
+        return error(StatusCode::BAD_REQUEST, "invalid_record_tool");
+    }
+    let Ok(translation) = codex::translate(event, input, shell) else {
+        return error(StatusCode::BAD_REQUEST, "invalid_codex_hook");
+    };
+    // Program files are kept with the Call already; the copy keeps the rest as sent.
+    let mut payload = raw;
+    if let Some(fields) = payload.as_object_mut() {
+        fields.remove("withhuman_programs");
+    }
+    let tag = CodexTag {
+        payload: Some(&payload),
+        workdir_unknown: translation.workdir_unknown,
+    };
+    match translation.request {
+        Translated::SessionStart(request) => {
+            match service
+                .normalizer
+                .session_start(&context, request, now())
+                .await
+            {
+                // Watched paths are a Claude Code feature; Codex gets no output.
+                Ok(event) => send_regular(&service, tagged(event, Some(&tag))).await,
+                Err(error) => normalize_failure(error),
+            }
+        }
+        Translated::UserPromptSubmit(request) => {
+            submit_prompt(&service, &context, request, Some(&tag)).await
+        }
+        Translated::PreToolUse(request) if record => {
+            // A web search Codex ran without a Hook, found later in the transcript: it already
+            // happened, so it is recorded and judged in the background, never blocked.
+            let deadline_ms = u64::try_from(service.config.decision_budget.as_millis()).ok();
+            let event = match service
+                .normalizer
+                .pre_tool_use(
+                    &context,
+                    request,
+                    now(),
+                    EnforcementMode::Record,
+                    deadline_ms,
+                )
+                .await
+            {
+                Ok(event) => event,
+                Err(error) => return normalize_failure(error),
+            };
+            send_regular(&service, tagged(event, Some(&tag))).await
+        }
+        Translated::PreToolUse(request) => {
+            judge_call(&service, &context, request, CODEX_POLICY, Some(&tag)).await
+        }
+        Translated::PostToolUse(request) => {
+            let (session_id, agent_id) = (request.session_id.clone(), request.agent_id.clone());
+            let response = match service
+                .normalizer
+                .post_tool_use(&context, request, now())
+                .await
+            {
+                Ok(event) => send_regular(&service, tagged(event, Some(&tag))).await,
+                Err(error) => return normalize_failure(error),
+            };
+            remind_of_intent(
+                &service,
+                response,
+                HookEventName::PostToolUse,
+                &session_id,
+                agent_id.as_deref(),
+            )
+            .await
+        }
+        Translated::PostToolUseFailure(request) => {
+            let (session_id, agent_id) = (request.session_id.clone(), request.agent_id.clone());
+            let response = match service
+                .normalizer
+                .post_tool_use_failure(&context, request, now())
+                .await
+            {
+                Ok(event) => send_regular(&service, tagged(event, Some(&tag))).await,
+                Err(error) => return normalize_failure(error),
+            };
+            // Codex ran a PostToolUse Hook; it reads output for that event only.
+            remind_of_intent(
+                &service,
+                response,
+                HookEventName::PostToolUse,
+                &session_id,
+                agent_id.as_deref(),
+            )
+            .await
+        }
+        Translated::PostToolBatch(request) => {
+            match service
+                .normalizer
+                .post_tool_batch(&context, request, now())
+                .await
+            {
+                Ok(event) => send_regular(&service, tagged(event, Some(&tag))).await,
+                Err(error) => normalize_failure(error),
+            }
+        }
+        Translated::SubagentStart(request) => {
+            match service
+                .normalizer
+                .subagent_start(&context, request, now())
+                .await
+            {
+                Ok(event) => send_regular(&service, tagged(event, Some(&tag))).await,
+                Err(error) => normalize_failure(error),
+            }
+        }
+        Translated::SubagentStop(request) => {
+            match service
+                .normalizer
+                .subagent_stop(&context, request, now())
+                .await
+            {
+                Ok(event) => send_regular(&service, tagged(event, Some(&tag))).await,
+                Err(error) => normalize_failure(error),
+            }
+        }
+        Translated::Nothing => StatusCode::OK.into_response(),
+    }
+}
+
+fn error(status: StatusCode, error: &'static str) -> Response {
+    (status, Json(ErrorResponse { error })).into_response()
 }
 
 fn decision_response(decision: DecisionResponse, review_policy: ReviewPolicy) -> Response {
@@ -602,15 +954,34 @@ fn blocking_response(permission_decision: PermissionDecision, reason: String) ->
     .into_response()
 }
 
-fn pre_tool_failure(service: &CollectorService, error: impl fmt::Display) -> Response {
+fn hook_failure(
+    service: &CollectorService,
+    policy: HookPolicy,
+    error: impl fmt::Display,
+) -> Response {
     // Record and shadow modes observe only: a failure must not block either. (Record mode never
     // waits for a decision, so a missing one is expected there.)
     if service.config.enforcement_mode != EnforcementMode::Enforce {
         return StatusCode::OK.into_response();
     }
-    match service.config.failure_policy {
+    match policy.failure {
         FailurePolicy::Open => StatusCode::OK.into_response(),
-        FailurePolicy::Closed => blocking_response(PermissionDecision::Deny, error.to_string()),
+        FailurePolicy::Closed => {
+            let mut response = blocking_response(
+                PermissionDecision::Deny,
+                if policy.codex {
+                    "WithHuman could not check this call, so it was blocked".to_owned()
+                } else {
+                    error.to_string()
+                },
+            );
+            // A normalizer or downstream error can have applied only part of the event.
+            // Leave its delivery pending and make the bridge require a fresh session.
+            if policy.codex {
+                *response.status_mut() = StatusCode::SERVICE_UNAVAILABLE;
+            }
+            response
+        }
     }
 }
 
