@@ -117,6 +117,8 @@ the hook blocks the call (the hook's `WITHHUMAN_MODE=observe` lets it through).
 
 Known differences from Claude Code: the `[의도]` line Codex writes stays visible on screen, and
 configuration changes made outside the agent are not recorded (Codex has no ConfigChange hook).
+Simple literal single-file shell writes are checked as Write, and appends as Edit. Partial or
+computed edits, multi-file commands and wildcard paths remain shell calls.
 Unknown or ambiguous shell working directories block the call. Delivery failures block protected
 calls; if the engine cannot confirm an event, start a new session after restoring the service.
 Native web operations without hooks are recorded afterward, using only transcript content.

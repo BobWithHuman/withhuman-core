@@ -398,9 +398,12 @@ fn dotnet_call(chars: &[char], i: usize) -> Option<(Vec<Token>, usize)> {
     ))
 }
 
-/// A path that names exactly one file: no wildcards (also kept out by the tokenizer).
+/// A path that names exactly one file. PowerShell's `-Path` expands wildcards even inside
+/// quotes; the tokenizer only rejects unquoted ones. Keep every wildcard spelling in the shell
+/// path, including literal-path APIs, rather than claiming a potentially different file here.
 fn plain_path(path: &str) -> Option<String> {
-    (!path.is_empty() && !path.starts_with('-')).then(|| path.to_owned())
+    (!path.is_empty() && !path.starts_with('-') && !path.contains(['*', '?', '[', ']']))
+        .then(|| path.to_owned())
 }
 
 fn powershell_step(tokens: &[Token]) -> Option<Step> {

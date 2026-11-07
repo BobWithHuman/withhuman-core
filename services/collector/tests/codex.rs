@@ -794,6 +794,108 @@ fn keeps_anything_more_than_one_literal_write_a_shell_call() {
 }
 
 #[test]
+fn quoted_wildcard_paths_keep_the_entire_command_as_shell() {
+    for (shell, cwd, tool, commands) in [
+        (
+            CodexShell::PowerShell,
+            "C:/proj",
+            "PowerShell",
+            vec![
+                "Set-Content -Path '*.txt' -Value 'x'",
+                "Set-Content -Path \".c?dex/hooks.json\" -Value '{}'",
+                "Set-Content -Path '.claude/h[oa]oks/pre-tool-use.py' -Value 'x'",
+                "Add-Content -Path 'log?.txt' -Value 'entry'",
+                "'x' | Out-File -FilePath 'out*.txt'",
+                "New-Item -ItemType File -Path 'file?.txt' -Value 'x'",
+                "New-Item -ItemType Directory -Path 'nested*' -Force; Set-Content 'nested*/a.txt' 'x'",
+                "Set-Content a.txt 'x'; Get-Content -Path 'a[12].txt'",
+                // Conservatively keep even literal-path APIs in the shell for these spellings.
+                "Set-Content -LiteralPath 'a[1].txt' -Value 'x'",
+                "[IO.File]::WriteAllText('a[1].txt', 'x')",
+                "'x' > 'out?.txt'",
+            ],
+        ),
+        (
+            CodexShell::Posix,
+            "/proj",
+            "Bash",
+            vec![
+                "echo 'x' > '*.txt'",
+                "printf '%s' 'x' > 'out?.txt'",
+                "cat > 'a[1].txt' <<'EOF'\nx\nEOF",
+                "mkdir -p 'nested*' && echo 'x' > 'nested*/a.txt'",
+            ],
+        ),
+    ] {
+        for command in commands {
+            for event in [CodexHookEvent::PreToolUse, CodexHookEvent::PostToolUse] {
+                let input: CodexHookInput = serde_json::from_value(json!({
+                    "session_id": "s", "turn_id": "t", "cwd": cwd,
+                    "tool_use_id": "exec-1", "tool_name": "exec_command",
+                    "tool_input": {"cmd": command}, "withhuman_workdir": cwd,
+                    "tool_response": "original shell output"
+                }))
+                .unwrap();
+                let translation = translate(event, input, shell).unwrap();
+                let (name, input) = match translation.request {
+                    Translated::PreToolUse(request) => (request.tool_name, request.tool_input),
+                    Translated::PostToolUse(request) => {
+                        assert_eq!(request.tool_response["stdout"], "original shell output");
+                        (request.tool_name, request.tool_input.unwrap())
+                    }
+                    _ => panic!("expected tool use"),
+                };
+                assert_eq!(name, tool, "{command}");
+                assert_eq!(input["command"], command);
+            }
+        }
+    }
+    // Wildcard characters in literal CONTENT do not make an ordinary target ambiguous.
+    assert_eq!(
+        ps_write("Set-Content -LiteralPath 'a.txt' -Value '* ? [text]'"),
+        write("C:/proj/a.txt", "* ? [text]\n")
+    );
+}
+
+#[tokio::test]
+async fn keeps_a_wildcard_shell_write_and_its_original_payload_in_both_events() {
+    let generator = Arc::new(Recording::decision(Decision::Allow, ""));
+    let app = app(CollectorConfig::default(), generator.clone());
+    let command = "Set-Content -Path '.c?dex/hooks.json' -Value '{}'";
+    let input = json!({
+        "session_id": "wildcard", "turn_id": "t", "cwd": "C:/proj",
+        "tool_name": "exec_command", "tool_use_id": "exec-1",
+        "tool_input": {"cmd": command}, "withhuman_workdir": "C:/proj",
+        "tool_response": "original output"
+    });
+    send(&app, "PreToolUse", input.clone(), Some("powershell")).await;
+    send(&app, "PostToolUse", input.clone(), Some("powershell")).await;
+    let events = generator.events.lock().unwrap();
+    let calls: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            NormalizedEvent::PreToolUse(event) => Some((
+                &event.event.payload.tool_name,
+                &event.event.payload.tool_input,
+                &event.event.additional_fields["codex_payload"],
+            )),
+            NormalizedEvent::PostToolUse(event) => Some((
+                &event.payload.tool_name,
+                event.payload.tool_input.as_ref().unwrap(),
+                &event.additional_fields["codex_payload"],
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(calls.len(), 2);
+    for (name, tool_input, original) in calls {
+        assert_eq!(name, "PowerShell");
+        assert_eq!(tool_input["command"], command);
+        assert_eq!(original, &input);
+    }
+}
+
+#[test]
 fn reports_a_translated_write_as_writes_report_it() {
     let input = |response: Value| -> CodexHookInput {
         serde_json::from_value(json!({
