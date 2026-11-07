@@ -1,6 +1,7 @@
 """Tests for configure.py: python3 -m unittest discover deploy/client"""
 
 import json
+import importlib.util
 import os
 import subprocess
 import sys
@@ -181,6 +182,17 @@ class CodexConfigureTest(unittest.TestCase):
             capture_output=True, text=True, env=env, timeout=30,
         )
 
+    def test_reports_a_localized_hook_failure_without_a_decoder_error(self):
+        hook = self.project / "localized-hook.py"
+        hook.write_text("import sys\nsys.stderr.write('\\uc5f0\\uacb0 \\uc624\\ub958')\nsys.exit(2)\n",
+                        encoding="utf-8")
+        spec = importlib.util.spec_from_file_location("withhuman_configure", CONFIGURE)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        ok, output = module.check_codex(hook, SERVER)
+        self.assertFalse(ok)
+        self.assertIn("\uc5f0\uacb0 \uc624\ub958", output)
+
     def test_writes_the_project_hooks_and_keeps_others(self):
         hooks_json = self.project / ".codex" / "hooks.json"
         hooks_json.parent.mkdir()
@@ -224,7 +236,7 @@ class CodexConfigureTest(unittest.TestCase):
         result = subprocess.run(
             [sys.executable, str(CONFIGURE), "--agent", "codex", "--project", str(self.project),
              "--server", "http://127.0.0.1:9", "--no-persist"],
-            capture_output=True, text=True, env=env, timeout=60,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=60,
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("did not run", result.stderr)

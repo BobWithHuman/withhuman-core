@@ -325,7 +325,11 @@ def check_codex(hook, server):
                          f'& "{Path(sys.executable).as_posix()}" "{Path(hook).as_posix()}" '
                          f"--check {server}; exit $LASTEXITCODE"])
     for command in commands:
-        result = subprocess.run(command, capture_output=True, text=True)
+        # Python and the Windows terminal can use different encodings. A localized connection
+        # error must remain a failed self-check, rather than crashing the installer's decoder.
+        result = subprocess.run(command, capture_output=True, text=True,
+                                encoding="utf-8", errors="replace",
+                                env={**os.environ, "PYTHONIOENCODING": "utf-8"})
         output = (result.stdout + result.stderr).strip()
         if result.returncode != 0:
             return False, output
