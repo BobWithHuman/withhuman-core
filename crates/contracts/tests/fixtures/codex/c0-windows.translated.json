@@ -37,9 +37,10 @@
       "prompt_id": "<turn:matrix>",
       "session_id": "<session:matrix>",
       "tool_input": {
-        "command": "Set-Content -LiteralPath 'allow-shell.txt' -Value 'C0'"
+        "content": "C0\n",
+        "file_path": "<project>/allow-shell.txt"
       },
-      "tool_name": "PowerShell",
+      "tool_name": "Write",
       "tool_use_id": "call_allow_shell"
     },
     "scenario": "matrix",
@@ -56,9 +57,10 @@
       "prompt_id": "<turn:matrix>",
       "session_id": "<session:matrix>",
       "tool_input": {
-        "command": "Set-Content -LiteralPath 'deny-shell.txt' -Value 'C0'"
+        "content": "C0\n",
+        "file_path": "<project>/deny-shell.txt"
       },
-      "tool_name": "PowerShell",
+      "tool_name": "Write",
       "tool_use_id": "call_deny_shell"
     },
     "scenario": "matrix",
@@ -75,12 +77,17 @@
       "prompt_id": "<turn:matrix>",
       "session_id": "<session:matrix>",
       "tool_input": {
-        "command": "Set-Content -LiteralPath 'allow-shell.txt' -Value 'C0'"
+        "content": "C0\n",
+        "file_path": "<project>/allow-shell.txt"
       },
-      "tool_name": "PowerShell",
+      "tool_name": "Write",
       "tool_response": {
-        "stderr": "",
-        "stdout": ""
+        "content": "C0\n",
+        "filePath": "<project>/allow-shell.txt",
+        "originalFile": null,
+        "structuredPatch": [],
+        "type": "create",
+        "userModified": false
       },
       "tool_use_id": "call_allow_shell"
     },
@@ -512,9 +519,10 @@
       "prompt_id": "<turn:faults>",
       "session_id": "<session:faults>",
       "tool_input": {
-        "command": "Set-Content -LiteralPath 'hook-exit1.txt' -Value 'C0'"
+        "content": "C0\n",
+        "file_path": "<project>/hook-exit1.txt"
       },
-      "tool_name": "PowerShell",
+      "tool_name": "Write",
       "tool_use_id": "call_exit1"
     },
     "scenario": "faults",
@@ -531,9 +539,10 @@
       "prompt_id": "<turn:faults>",
       "session_id": "<session:faults>",
       "tool_input": {
-        "command": "Set-Content -LiteralPath 'hook-exit2.txt' -Value 'C0'"
+        "content": "C0\n",
+        "file_path": "<project>/hook-exit2.txt"
       },
-      "tool_name": "PowerShell",
+      "tool_name": "Write",
       "tool_use_id": "call_exit2"
     },
     "scenario": "faults",
@@ -550,9 +559,10 @@
       "prompt_id": "<turn:faults>",
       "session_id": "<session:faults>",
       "tool_input": {
-        "command": "Set-Content -LiteralPath 'hook-timeout.txt' -Value 'C0'"
+        "content": "C0\n",
+        "file_path": "<project>/hook-timeout.txt"
       },
-      "tool_name": "PowerShell",
+      "tool_name": "Write",
       "tool_use_id": "call_timeout"
     },
     "scenario": "faults",
@@ -569,9 +579,10 @@
       "prompt_id": "<turn:faults>",
       "session_id": "<session:faults>",
       "tool_input": {
-        "command": "Set-Content -LiteralPath 'hook-ask.txt' -Value 'C0'"
+        "content": "C0\n",
+        "file_path": "<project>/hook-ask.txt"
       },
-      "tool_name": "PowerShell",
+      "tool_name": "Write",
       "tool_use_id": "call_ask"
     },
     "scenario": "faults",
@@ -588,12 +599,17 @@
       "prompt_id": "<turn:faults>",
       "session_id": "<session:faults>",
       "tool_input": {
-        "command": "Set-Content -LiteralPath 'hook-ask.txt' -Value 'C0'"
+        "content": "C0\n",
+        "file_path": "<project>/hook-ask.txt"
       },
-      "tool_name": "PowerShell",
+      "tool_name": "Write",
       "tool_response": {
-        "stderr": "",
-        "stdout": ""
+        "content": "C0\n",
+        "filePath": "<project>/hook-ask.txt",
+        "originalFile": null,
+        "structuredPatch": [],
+        "type": "create",
+        "userModified": false
       },
       "tool_use_id": "call_ask"
     },
@@ -611,12 +627,17 @@
       "prompt_id": "<turn:faults>",
       "session_id": "<session:faults>",
       "tool_input": {
-        "command": "Set-Content -LiteralPath 'hook-exit1.txt' -Value 'C0'"
+        "content": "C0\n",
+        "file_path": "<project>/hook-exit1.txt"
       },
-      "tool_name": "PowerShell",
+      "tool_name": "Write",
       "tool_response": {
-        "stderr": "",
-        "stdout": ""
+        "content": "C0\n",
+        "filePath": "<project>/hook-exit1.txt",
+        "originalFile": null,
+        "structuredPatch": [],
+        "type": "create",
+        "userModified": false
       },
       "tool_use_id": "call_exit1"
     },
@@ -634,12 +655,17 @@
       "prompt_id": "<turn:faults>",
       "session_id": "<session:faults>",
       "tool_input": {
-        "command": "Set-Content -LiteralPath 'hook-timeout.txt' -Value 'C0'"
+        "content": "C0\n",
+        "file_path": "<project>/hook-timeout.txt"
       },
-      "tool_name": "PowerShell",
+      "tool_name": "Write",
       "tool_response": {
-        "stderr": "",
-        "stdout": ""
+        "content": "C0\n",
+        "filePath": "<project>/hook-timeout.txt",
+        "originalFile": null,
+        "structuredPatch": [],
+        "type": "create",
+        "userModified": false
       },
       "tool_use_id": "call_timeout"
     },
@@ -1120,9 +1146,10 @@
       "prompt_id": "<turn:workdir>",
       "session_id": "<session:workdir>",
       "tool_input": {
-        "command": "Set-Content -LiteralPath 'allow-nested.txt' -Value 'C0'"
+        "content": "C0\n",
+        "file_path": "<project>/allow-nested.txt"
       },
-      "tool_name": "PowerShell",
+      "tool_name": "Write",
       "tool_use_id": "call_nested_allow"
     },
     "scenario": "workdir",
@@ -1139,12 +1166,17 @@
       "prompt_id": "<turn:workdir>",
       "session_id": "<session:workdir>",
       "tool_input": {
-        "command": "Set-Content -LiteralPath 'allow-nested.txt' -Value 'C0'"
+        "content": "C0\n",
+        "file_path": "<project>/allow-nested.txt"
       },
-      "tool_name": "PowerShell",
+      "tool_name": "Write",
       "tool_response": {
-        "stderr": "",
-        "stdout": ""
+        "content": "C0\n",
+        "filePath": "<project>/allow-nested.txt",
+        "originalFile": null,
+        "structuredPatch": [],
+        "type": "create",
+        "userModified": false
       },
       "tool_use_id": "call_nested_allow"
     },
@@ -1162,9 +1194,10 @@
       "prompt_id": "<turn:workdir>",
       "session_id": "<session:workdir>",
       "tool_input": {
-        "command": "Set-Content -LiteralPath 'deny-nested.txt' -Value 'C0'"
+        "content": "C0\n",
+        "file_path": "<project>/deny-nested.txt"
       },
-      "tool_name": "PowerShell",
+      "tool_name": "Write",
       "tool_use_id": "call_nested_deny"
     },
     "scenario": "workdir",
@@ -1201,9 +1234,10 @@
       "prompt_id": "<turn:live-intent-HQXdBr>",
       "session_id": "<session:live-intent-HQXdBr>",
       "tool_input": {
-        "command": "Set-Content -LiteralPath 'live-intent.txt' -Value 'C0'"
+        "content": "C0\n",
+        "file_path": "<project>/live-intent.txt"
       },
-      "tool_name": "PowerShell",
+      "tool_name": "Write",
       "tool_use_id": "<call:1>"
     },
     "scenario": "live-intent-HQXdBr",
@@ -1220,9 +1254,10 @@
       "prompt_id": "<turn:live-intent-iBmPJR>",
       "session_id": "<session:live-intent-iBmPJR>",
       "tool_input": {
-        "command": "Set-Content -LiteralPath 'live-intent.txt' -Value 'C0'"
+        "content": "C0\n",
+        "file_path": "<project>/live-intent.txt"
       },
-      "tool_name": "PowerShell",
+      "tool_name": "Write",
       "tool_use_id": "<call:1>"
     },
     "scenario": "live-intent-iBmPJR",
@@ -1239,9 +1274,10 @@
       "prompt_id": "<turn:live-intent-Qkpcwz>",
       "session_id": "<session:live-intent-Qkpcwz>",
       "tool_input": {
-        "command": "Set-Content -LiteralPath 'live-intent.txt' -Value 'C0'"
+        "content": "C0\n",
+        "file_path": "<project>/live-intent.txt"
       },
-      "tool_name": "PowerShell",
+      "tool_name": "Write",
       "tool_use_id": "<call:1>"
     },
     "scenario": "live-intent-Qkpcwz",
@@ -1258,9 +1294,10 @@
       "prompt_id": "<turn:live-deny-4YyCjr>",
       "session_id": "<session:live-deny-4YyCjr>",
       "tool_input": {
-        "command": "Set-Content -LiteralPath 'deny-live-intent.txt' -Value 'C0'"
+        "content": "C0\n",
+        "file_path": "<project>/deny-live-intent.txt"
       },
-      "tool_name": "PowerShell",
+      "tool_name": "Write",
       "tool_use_id": "<call:1>"
     },
     "scenario": "live-deny-4YyCjr",

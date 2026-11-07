@@ -281,6 +281,13 @@ pub fn translate_tool(
         if let Some(read) = simple_read(&command, shell, cwd) {
             return ("Read".to_owned(), read);
         }
+        // Codex 0.167 writes files with shell commands; one that only writes literal text into
+        // one file is judged as Claude Code's Write (or Edit, when it appends) is.
+        if let Some(write) =
+            crate::codex_write::simple_write(&command, shell, |path| file_key(cwd, path))
+        {
+            return write;
+        }
         return (shell.tool_name().to_owned(), json!({ "command": command }));
     }
     match name {
@@ -332,6 +339,9 @@ pub fn translate_tool(
 fn tool_response(shell: bool, tool_name: &str, tool_input: &Value, response: Value) -> Value {
     if shell && tool_name == "Read" {
         return read_response(tool_input, response);
+    }
+    if shell && matches!(tool_name, "Write" | "Edit") {
+        return crate::codex_write::write_response(tool_name, tool_input);
     }
     match response {
         Value::String(output) if shell => json!({ "stdout": output, "stderr": "" }),
@@ -582,7 +592,7 @@ pub fn resolve(cwd: Option<&str>, path: &str) -> String {
 }
 
 /// Codex file reads and patch writes must use the same lexically normalized path key.
-fn file_key(cwd: Option<&str>, path: &str) -> String {
+pub fn file_key(cwd: Option<&str>, path: &str) -> String {
     let full = resolve(cwd, path).replace('\\', "/");
     let (prefix, rest) = if full.as_bytes().get(1) == Some(&b':') {
         (format!("{}/", full[..2].to_ascii_uppercase()), &full[2..])

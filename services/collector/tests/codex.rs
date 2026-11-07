@@ -14,8 +14,10 @@ use withhuman_collector::{
     CollectorConfig, CollectorService, GeneratorError, GeneratorTransport, INTENT_INSTRUCTION,
     INTENT_REMINDER, NormalizedEvent, ReviewPolicy, app_with_transport,
     codex::{
-        Hunk, PatchStep, Translated, parse_patch, resolve, simple_read, translate, translate_tool,
+        Hunk, PatchStep, Translated, file_key, parse_patch, resolve, simple_read, translate,
+        translate_tool,
     },
+    codex_write::simple_write,
 };
 use withhuman_common::origin;
 use withhuman_contracts::{
@@ -316,11 +318,11 @@ fn translates_shell_and_other_tools() {
     );
     assert_eq!(
         shell(
-            json!({"command": ["powershell.exe", "-Command", "Set-Content x y"]}),
+            json!({"command": ["powershell.exe", "-Command", "Get-ChildItem x y"]}),
             CodexShell::PowerShell
         )
         .1,
-        json!({"command": "Set-Content x y"})
+        json!({"command": "Get-ChildItem x y"})
     );
     assert_eq!(
         shell(
@@ -411,7 +413,12 @@ fn sends_a_shell_call_with_the_directory_it_runs_in() {
         panic!("expected PreToolUse");
     };
     assert_eq!(request.cwd.as_deref(), Some("C:\\proj\\.codex"));
-    assert_eq!(request.tool_name, "PowerShell");
+    // A plain write is judged as Write, its path resolved where the command runs.
+    assert_eq!(request.tool_name, "Write");
+    assert_eq!(
+        request.tool_input,
+        json!({"file_path": "C:/proj/.codex/hooks.json", "content": "{}\n"})
+    );
     assert_eq!(request.prompt_id.as_deref(), Some("t"));
     assert!(!translation.workdir_unknown);
 
@@ -608,6 +615,225 @@ async fn classifies_a_vendored_file_read_through_the_shell_as_external() {
         results[0].additional_fields["codex_payload"]["tool_input"]["command"],
         "Get-Content -LiteralPath 'vendor\\injected-note.md'"
     );
+}
+
+// ---- Shell commands that only write a file become Write (Codex 0.167 has no patch tool) ----
+
+fn ps_write(command: &str) -> (String, Value) {
+    translate_tool(
+        "exec_command",
+        &json!({ "cmd": command }),
+        Some("C:\\proj"),
+        CodexShell::PowerShell,
+    )
+}
+
+fn sh_write(command: &str) -> (String, Value) {
+    translate_tool(
+        "exec_command",
+        &json!({ "cmd": command }),
+        Some("/proj"),
+        CodexShell::Posix,
+    )
+}
+
+fn write(path: &str, content: &str) -> (String, Value) {
+    (
+        "Write".to_owned(),
+        json!({ "file_path": path, "content": content }),
+    )
+}
+
+fn append(path: &str, text: &str) -> (String, Value) {
+    (
+        "Edit".to_owned(),
+        json!({ "file_path": path, "old_string": "", "new_string": text }),
+    )
+}
+
+#[test]
+fn turns_a_command_that_only_writes_a_file_into_write() {
+    // As real Codex 0.167 wrote a file (C:\WithHuman\withhuman-codex-cb-lab\live-181405).
+    assert_eq!(
+        ps_write(
+            "New-Item -ItemType Directory -Path nested -Force | Out-Null\n\
+             Set-Content -LiteralPath nested/hello.txt -Value 'hello' -Encoding utf8\n\
+             Get-Content -LiteralPath nested/hello.txt"
+        ),
+        write("C:/proj/nested/hello.txt", "hello\n")
+    );
+    for (command, expected) in [
+        (
+            "Set-Content -LiteralPath 'notes.md' -Value 'a, b (c) $not [x]'",
+            write("C:/proj/notes.md", "a, b (c) $not [x]\n"),
+        ),
+        (
+            "sc notes.md 'it''s' -NoNewline",
+            write("C:/proj/notes.md", "it's"),
+        ),
+        (
+            "Set-Content -Path notes.md -Value @'\nline one\n$literal line\n'@",
+            write("C:/proj/notes.md", "line one\n$literal line\n"),
+        ),
+        (
+            "@'\nfirst\nsecond\n'@ | Set-Content -LiteralPath docs\\a.md -Encoding utf8",
+            write("C:/proj/docs/a.md", "first\nsecond\n"),
+        ),
+        (
+            "'hello' | Out-File -FilePath out.txt",
+            write("C:/proj/out.txt", "hello\n"),
+        ),
+        (
+            "Out-File -FilePath out.txt -InputObject \"plain text\" -NoNewline",
+            write("C:/proj/out.txt", "plain text"),
+        ),
+        (
+            "New-Item -ItemType File -Path a.txt -Value 'x' -Force",
+            write("C:/proj/a.txt", "x"),
+        ),
+        (
+            "[System.IO.File]::WriteAllText('C:\\other\\b.txt', 'body')",
+            write("C:/other/b.txt", "body"),
+        ),
+        (
+            "mkdir nested -Force; Set-Content nested\\c.txt 'c'",
+            write("C:/proj/nested/c.txt", "c\n"),
+        ),
+        ("'text' > d.txt", write("C:/proj/d.txt", "text\n")),
+        // Appending adds lines to what the file holds; only those lines are known.
+        (
+            "Add-Content -LiteralPath log.txt -Value 'entry'",
+            append("C:/proj/log.txt", "entry\n"),
+        ),
+        (
+            "'entry' | Out-File -FilePath log.txt -Append",
+            append("C:/proj/log.txt", "entry\n"),
+        ),
+        (
+            "[IO.File]::AppendAllText('log.txt', 'more')",
+            append("C:/proj/log.txt", "more"),
+        ),
+    ] {
+        assert_eq!(ps_write(command), expected, "{command}");
+    }
+    for (command, expected) in [
+        (
+            "cat > notes.md <<'EOF'\n# Notes\n$HOME stays literal\nEOF",
+            write("/proj/notes.md", "# Notes\n$HOME stays literal\n"),
+        ),
+        (
+            "mkdir -p docs && cat <<EOF > docs/a.md\nplain\nEOF",
+            write("/proj/docs/a.md", "plain\n"),
+        ),
+        ("echo 'hi' > hi.txt", write("/proj/hi.txt", "hi\n")),
+        ("echo -n 'hi' > hi.txt", write("/proj/hi.txt", "hi")),
+        (
+            "printf '%s\\n' 'line' > p.txt",
+            write("/proj/p.txt", "line\n"),
+        ),
+        ("printf 'raw' > p.txt", write("/proj/p.txt", "raw")),
+        ("echo 'more' >> log.txt", append("/proj/log.txt", "more\n")),
+        (
+            "cat > a.txt <<'EOF'\nx\nEOF\ncat a.txt",
+            write("/proj/a.txt", "x\n"),
+        ),
+    ] {
+        assert_eq!(sh_write(command), expected, "{command}");
+    }
+}
+
+#[test]
+fn keeps_anything_more_than_one_literal_write_a_shell_call() {
+    for command in [
+        // Computed content or path.
+        "Set-Content notes.md $text",
+        "Set-Content notes.md \"Hello $env:USERNAME\"",
+        "Set-Content notes.md (Get-Date)",
+        "Set-Content $path 'x'",
+        "Set-Content -Path notes.md -Value @\"\n$computed\n\"@",
+        "[IO.File]::WriteAllText((Join-Path . 'a.txt'), 'x')",
+        "[IO.File]::WriteAllText('a.txt', 'x', [Text.Encoding]::UTF8)",
+        // Partial edits.
+        "(Get-Content a.txt) -replace 'a','b' | Set-Content a.txt",
+        // Several files, wildcards, arrays.
+        "Set-Content a.txt 'x'; Set-Content b.txt 'y'",
+        "Set-Content *.txt 'x'",
+        "Set-Content a.txt 'x','y'",
+        // Other steps beside the write.
+        "Set-Content a.txt 'x'; Remove-Item b.txt",
+        "New-Item -ItemType Directory .claude\\hooks -Force | Out-Null; Set-Content a.txt 'x'",
+        "Set-Content a.txt 'x'; Get-Content b.txt",
+        "Get-Content a.txt; Set-Content .codex\\hooks.json '{}'; Write-Output done",
+        "Set-Content a.txt 'x' | Out-Null",
+        // Options not known to be harmless.
+        "Set-Content a.txt 'x' -Stream evil",
+        "Set-Content -Path a.txt -Path b.txt -Value 'x'",
+        "Set-Content -Path:a.txt 'x'",
+        "New-Item -ItemType SymbolicLink -Path a -Value b",
+        "Set-Content a.txt `\n'x'",
+        "Set-Content a.txt 'unterminated",
+    ] {
+        assert_eq!(ps_write(command).0, "PowerShell", "{command}");
+    }
+    for command in [
+        "cat > a.txt <<EOF\n$HOME\nEOF",
+        "cat > a.txt <<-EOF\nx\nEOF",
+        "echo \"$HOME\" > a.txt",
+        "echo 'a' > a.txt && echo 'b' > b.txt",
+        "echo 'a' | tee a.txt",
+        "printf '%d' 1 > a.txt",
+        "printf 'a\\nb' > a.txt",
+        "sed -i 's/a/b/' a.txt",
+        "echo 'x' > a.txt; rm b.txt",
+        "mkdir other && echo 'x' > a.txt",
+        "echo $(id) > a.txt",
+        "echo 'x' > a\\ b.txt",
+    ] {
+        assert_eq!(sh_write(command).0, "Bash", "{command}");
+    }
+}
+
+#[test]
+fn reports_a_translated_write_as_writes_report_it() {
+    let input = |response: Value| -> CodexHookInput {
+        serde_json::from_value(json!({
+            "session_id": "s", "turn_id": "t", "cwd": "C:\\proj", "tool_name": "Bash",
+            "tool_use_id": "exec-1", "withhuman_workdir": "C:\\proj",
+            "tool_input": {"command": "Set-Content -LiteralPath 'a.txt' -Value 'hello'"},
+            "tool_response": response
+        }))
+        .unwrap()
+    };
+    let translation = translate(
+        CodexHookEvent::PostToolUse,
+        input(json!(
+            "Chunk ID: 1\nWall time: 0.1 seconds\nProcess exited with code 0\nOutput:\n"
+        )),
+        CodexShell::PowerShell,
+    )
+    .unwrap();
+    let Translated::PostToolUse(request) = translation.request else {
+        panic!("expected PostToolUse");
+    };
+    assert_eq!(request.tool_name, "Write");
+    assert_eq!(
+        request.tool_response,
+        json!({"type": "create", "filePath": "C:/proj/a.txt", "content": "hello\n",
+               "structuredPatch": [], "originalFile": null, "userModified": false})
+    );
+    // A failed write stays a failed write.
+    let mut failed: Value = serde_json::to_value(input(json!(""))).unwrap();
+    failed["withhuman_failure"] = json!("exit code 1");
+    let translation = translate(
+        CodexHookEvent::PostToolUse,
+        serde_json::from_value(failed).unwrap(),
+        CodexShell::PowerShell,
+    )
+    .unwrap();
+    let Translated::PostToolUseFailure(request) = translation.request else {
+        panic!("expected PostToolUseFailure");
+    };
+    assert_eq!(request.tool_name, "Write");
 }
 
 // ---- The HTTP route ----
@@ -910,9 +1136,44 @@ fn g5a_claude_sessions_survive_the_codex_round_trip() {
             let key = format!("{name}/{}", original["tool_name"].as_str().unwrap_or("-"));
             *allowed.entry(key).or_default() += 1;
         }
-        let (expected, actual) = (canonical(&original), canonical(&back));
+        let (mut expected, mut actual) = (canonical(&original), canonical(&back));
+        // A shell write's result: the shell's output on one side, the Write result on the
+        // other. The engine reads no text from either.
+        if matches!(original["tool_name"].as_str(), Some("Bash" | "PowerShell"))
+            && matches!(
+                expected["tool_name"].as_str(),
+                Some("Write" | "Edit" | "MultiEdit")
+            )
+        {
+            for side in [&mut expected, &mut actual] {
+                if side.get("tool_response").is_some() {
+                    side["tool_response"] = json!("");
+                }
+            }
+        }
         if expected != actual {
-            differences.push(format!("{name}: {expected}\n  -> {actual}"));
+            // Which fields differ, never their values: the events are real.
+            let mut fields: Vec<String> = Vec::new();
+            for (key, value) in expected.as_object().unwrap() {
+                if actual.get(key) != Some(value) {
+                    match (value, actual.get(key)) {
+                        (Value::Object(a), Some(Value::Object(b))) => {
+                            for (inner, v) in a {
+                                if b.get(inner) != Some(v) {
+                                    fields.push(format!("{key}.{inner}"));
+                                }
+                            }
+                        }
+                        _ => fields.push(key.clone()),
+                    }
+                }
+            }
+            differences.push(format!(
+                "{name}/{} -> {}: {}",
+                original["tool_name"].as_str().unwrap_or("-"),
+                actual["tool_name"].as_str().unwrap_or("-"),
+                fields.join(",")
+            ));
         }
     }
     println!(
@@ -922,16 +1183,11 @@ fn g5a_claude_sessions_survive_the_codex_round_trip() {
         differences.len()
     );
     assert!(compared > 0);
-    assert!(
-        differences.is_empty(),
-        "{}",
-        differences
-            .iter()
-            .take(10)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
+    let mut kinds = std::collections::BTreeMap::<&str, usize>::new();
+    for difference in &differences {
+        *kinds.entry(difference.as_str()).or_default() += 1;
+    }
+    assert!(differences.is_empty(), "{kinds:#?}");
 }
 
 /// The Claude Code Hook request a committed event came from; none for events Codex has no Hook
@@ -1152,6 +1408,11 @@ fn codex_tool(name: &str, input: &Value) -> (String, Value) {
 /// - A command's output is compared as the text the engine reads from it.
 /// - A shell command that only prints one file becomes `Read` of it (`simple_read`), with its
 ///   output as the file content.
+/// - A shell command that only writes literal text into one file becomes `Write` of it, or an
+///   `Edit` adding the text when it appends (`simple_write`); what the engine reads of either
+///   result is nothing.
+/// - File paths are compared as the adapter keys them (`file_key`: `/` separators, upper-case
+///   drive), as written by the patch translation since the read and patch paths were unified.
 fn canonical(request: &Value) -> Value {
     let mut request = request.clone();
     let fields = request.as_object_mut().unwrap();
@@ -1178,6 +1439,11 @@ fn canonical(request: &Value) -> Value {
             fields.insert("tool_name".to_owned(), json!("Read"));
             fields.insert("tool_input".to_owned(), read);
             tool_name = Some("Read".to_owned());
+        } else if let Some((name, input)) = simple_write(command, shell, |path| file_key(cwd, path))
+        {
+            fields.insert("tool_name".to_owned(), json!(name));
+            fields.insert("tool_input".to_owned(), input);
+            tool_name = Some(name);
         }
     }
     if let Some(response) = fields.get_mut("tool_response") {
@@ -1188,7 +1454,12 @@ fn canonical(request: &Value) -> Value {
     let Some(tool_name) = tool_name else {
         return request;
     };
-    let input = request["tool_input"].clone();
+    let mut input = request["tool_input"].clone();
+    // A file path written as the patch translation keys it (`/` separators, upper-case drive).
+    if let Some(path) = input.get("file_path").and_then(Value::as_str) {
+        let cwd = request.get("cwd").and_then(Value::as_str);
+        input["file_path"] = json!(file_key(cwd, path));
+    }
     let text = |field: &str| input[field].as_str().unwrap_or_default().to_owned();
     let (name, input) = match tool_name.as_str() {
         "Bash" | "PowerShell" => (tool_name.clone(), json!({ "command": text("command") })),

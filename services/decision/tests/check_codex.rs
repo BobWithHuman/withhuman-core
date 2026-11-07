@@ -426,3 +426,48 @@ fn reading_a_safeguard_is_no_change_but_a_combined_write_is() {
     );
     assert_eq!(effect(&combined), Effect::Safeguard);
 }
+
+/// Codex 0.167 writes files with shell commands, which the Collector sends as Write (or Edit
+/// adding the appended text) with `/`-separated paths: a safeguard there is still one.
+#[test]
+fn a_translated_shell_write_into_a_safeguard_is_a_safeguard_change() {
+    for (tool_name, input) in [
+        (
+            "Write",
+            json!({"file_path": "C:/proj/.codex/hooks.json", "content": "{}\n"}),
+        ),
+        (
+            "Write",
+            json!({"file_path": "C:/proj/.codex/hooks/withhuman-hook.py", "content": ""}),
+        ),
+        (
+            "Edit",
+            json!({"file_path": "C:/proj/.codex/config.toml", "old_string": "", "new_string": "x\n"}),
+        ),
+        (
+            "Edit",
+            json!({"file_path": "/proj/.claude/settings.json", "old_string": "", "new_string": "{}\n"}),
+        ),
+    ] {
+        assert_eq!(
+            effect(&call_in(r"C:\proj", tool_name, input.clone())),
+            Effect::Safeguard,
+            "{input}"
+        );
+    }
+    // An ordinary file is a file change, judged by the lines it adds.
+    let write = call_in(
+        r"C:\proj",
+        "Write",
+        json!({"file_path": "C:/proj/notes.md", "content": "a\nb\n"}),
+    );
+    assert!(matches!(effect(&write), Effect::FileChange { ref added, .. } if added == &["a", "b"]));
+    let append = call_in(
+        r"C:\proj",
+        "Edit",
+        json!({"file_path": "C:/proj/log.txt", "old_string": "", "new_string": "entry\n"}),
+    );
+    assert!(
+        matches!(effect(&append), Effect::FileChange { ref added, ref removed, .. } if added == &["entry"] && removed.is_empty())
+    );
+}
