@@ -303,6 +303,15 @@ def uninstall(agent, project, stamp, report):
     if agent == "codex" and state.is_dir():
         shutil.rmtree(state)
         report.append(f"{state}: removed")
+    # Python's compiled copies of the hook files; anyone else's stay.
+    cache = installed / "__pycache__"
+    if cache.is_dir():
+        stems = {Path(path.name).stem for path in files}
+        for compiled in cache.glob("*.pyc"):
+            if compiled.name.split(".")[0] in stems:
+                compiled.unlink()
+        if not any(cache.iterdir()):
+            cache.rmdir()
     if installed.is_dir() and not any(installed.iterdir()):
         installed.rmdir()
 

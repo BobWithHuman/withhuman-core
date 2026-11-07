@@ -237,13 +237,20 @@ class CodexConfigureTest(unittest.TestCase):
         (self.project / "src.py").write_text("print(1)\n")
         self.assertEqual(self.configure().returncode, 0)
         (self.project / ".codex" / "hooks" / "mine.sh").write_text("echo mine\n")
+        # Bytecode the hook's own check leaves, beside another module's.
+        cache = self.project / ".codex" / "hooks" / "__pycache__"
+        cache.mkdir(exist_ok=True)
+        for name in ("codex_transcript.cpython-311.pyc", "pre-tool-use.cpython-311.pyc",
+                     "mine.cpython-311.pyc"):
+            (cache / name).write_bytes(b"")
         result = self.configure("--uninstall")
         self.assertEqual(result.returncode, 0, result.stderr)
         config = json.loads(hooks_json.read_text())
         self.assertEqual(config, {"other": True, "hooks": {
             "PreToolUse": [{"hooks": [OTHER]}], "Stop": [{"hooks": [OTHER]}]}})
         hooks_dir = self.project / ".codex" / "hooks"
-        self.assertEqual(sorted(p.name for p in hooks_dir.iterdir()), ["mine.sh"])
+        self.assertEqual(sorted(p.name for p in hooks_dir.iterdir()), ["__pycache__", "mine.sh"])
+        self.assertEqual([p.name for p in cache.iterdir()], ["mine.cpython-311.pyc"])
         self.assertEqual((self.project / "src.py").read_text(), "print(1)\n")
         self.assertTrue(list((self.project / ".codex").glob("hooks.json.bak-*")))
         # Nothing left to take out the second time.
