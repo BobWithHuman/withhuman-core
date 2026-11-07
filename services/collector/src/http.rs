@@ -710,6 +710,7 @@ async fn codex_hook(
         return error(StatusCode::BAD_REQUEST, "invalid_json");
     };
     let shell = CodexShell::from_header(header_value(&headers, SHELL_HEADER).as_deref());
+    let record = input.withhuman_record;
     let Ok(translation) = codex::translate(event, input, shell) else {
         return error(StatusCode::BAD_REQUEST, "invalid_codex_hook");
     };
@@ -736,6 +737,29 @@ async fn codex_hook(
         }
         Translated::UserPromptSubmit(request) => {
             submit_prompt(&service, &context, request, Some(&tag)).await
+        }
+        Translated::PreToolUse(request) if record => {
+            // A web search Codex ran without a Hook, found later in the transcript: it already
+            // happened, so it is recorded and judged in the background, never blocked.
+            let deadline_ms = u64::try_from(service.config.decision_budget.as_millis()).ok();
+            if let Ok(event) = service
+                .normalizer
+                .pre_tool_use(
+                    &context,
+                    request,
+                    now(),
+                    EnforcementMode::Record,
+                    deadline_ms,
+                )
+                .await
+            {
+                let _ = tokio::time::timeout(
+                    service.config.decision_budget,
+                    service.generator.send(tagged(event, Some(&tag))),
+                )
+                .await;
+            }
+            StatusCode::OK.into_response()
         }
         Translated::PreToolUse(request) => {
             judge_call(&service, &context, request, CODEX_POLICY, Some(&tag)).await

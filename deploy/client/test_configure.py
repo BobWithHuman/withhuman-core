@@ -150,5 +150,70 @@ class ConfigureTest(unittest.TestCase):
         self.assertIn("must be an http(s) URL", result.stderr)
 
 
+class CodexConfigureTest(unittest.TestCase):
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp()).resolve()
+        self.project = Path(tempfile.mkdtemp()).resolve()
+
+    def configure(self, *extra):
+        # USERPROFILE as well as HOME: on Windows the home folder comes from it.
+        env = {**os.environ, "HOME": str(self.home), "USERPROFILE": str(self.home),
+               "SHELL": "/bin/zsh"}
+        env.pop("WITHHUMAN_SERVER", None)
+        return subprocess.run(
+            [sys.executable, str(CONFIGURE), "--agent", "codex", "--project", str(self.project),
+             "--team", "lab", "--server", SERVER, "--no-persist", "--skip-check", *extra],
+            capture_output=True, text=True, env=env, timeout=30,
+        )
+
+    def test_writes_the_project_hooks_and_keeps_others(self):
+        hooks_json = self.project / ".codex" / "hooks.json"
+        hooks_json.parent.mkdir()
+        old = {"type": "command", "command": "python3 /old/withhuman-hook.py https://old PreToolUse"}
+        hooks_json.write_text(json.dumps({"hooks": {
+            "PreToolUse": [{"hooks": [old, OTHER]}], "Stop": [{"hooks": [OTHER]}]}}))
+        result = self.configure()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        config = json.loads(hooks_json.read_text())
+        hooks = config["hooks"]
+        self.assertEqual(sorted(hooks), sorted(["SessionStart", "UserPromptSubmit", "PreToolUse",
+                                                "PostToolUse", "Stop", "SubagentStart",
+                                                "SubagentStop"]))
+        # The user's own hooks stay; the earlier WithHuman one is replaced.
+        self.assertEqual(hooks["PreToolUse"][0]["hooks"], [OTHER])
+        self.assertEqual(hooks["Stop"][0]["hooks"], [OTHER])
+        ours = hooks["PreToolUse"][1]["hooks"][0]
+        installed = (self.project / ".codex" / "hooks" / "withhuman-hook.py").as_posix()
+        python = Path(sys.executable).as_posix()
+        self.assertEqual(ours["command"], f'"{python}" "{installed}" {SERVER} PreToolUse')
+        self.assertEqual(ours["commandWindows"],
+                         f'& "{python}" "{installed}" {SERVER} PreToolUse; exit $LASTEXITCODE')
+        self.assertGreaterEqual(ours["timeout"], 10)
+        for event in ("SessionStart", "UserPromptSubmit", "PostToolUse", "SubagentStart"):
+            self.assertEqual(hooks[event][-1]["hooks"][0]["timeout"], 5)
+        self.assertEqual(hooks["Stop"][1]["hooks"][0]["timeout"], 5)
+        for name in ("withhuman-hook.py", "codex_transcript.py", "pre-tool-use.py"):
+            self.assertTrue((self.project / ".codex" / "hooks" / name).is_file(), name)
+        self.assertIn("/hooks", result.stdout)
+        # The user's own Codex folder is never touched.
+        self.assertFalse((self.home / ".codex").exists())
+
+    def test_gives_the_same_result_when_run_again(self):
+        self.assertEqual(self.configure().returncode, 0)
+        first = (self.project / ".codex" / "hooks.json").read_text()
+        self.assertEqual(self.configure().returncode, 0)
+        self.assertEqual((self.project / ".codex" / "hooks.json").read_text(), first)
+
+    def test_fails_when_the_installed_hook_cannot_reach_the_engine(self):
+        env = {**os.environ, "HOME": str(self.home), "USERPROFILE": str(self.home)}
+        result = subprocess.run(
+            [sys.executable, str(CONFIGURE), "--agent", "codex", "--project", str(self.project),
+             "--server", "http://127.0.0.1:9", "--no-persist"],
+            capture_output=True, text=True, env=env, timeout=60,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("did not run", result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

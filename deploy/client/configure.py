@@ -18,6 +18,17 @@ the engine this device reports to, and every hook below is written against it.
 
 The setup-project.sh and setup-project.ps1 wrappers fetch this file and the hook, then run it.
 Safe to run again: the result is the same and the client ID is kept.
+
+With --agent codex it sets up Codex CLI instead (step 3 as above):
+
+1. Copies the Codex hook (codex/withhuman-hook.py, codex/codex_transcript.py and
+   hooks/pre-tool-use.py) to the project's .codex/hooks/.
+2. Writes its hooks into the project's .codex/hooks.json, replacing earlier WithHuman entries and
+   keeping other hooks: each runs the hook with this Python, as `command` on macOS and Linux and
+   `commandWindows` on Windows, with a 15-second timeout for PreToolUse and 5 for the rest. The
+   user's ~/.codex is left alone.
+3. Runs the installed hook's self-check against the engine, then tells you to trust the hooks
+   in Codex (/hooks): Codex skips project hooks until they are trusted.
 """
 
 import argparse
@@ -45,6 +56,14 @@ EVENTS = [
 ]
 HOOK_NAME = "pre-tool-use.py"
 PROFILE_MARK = "# WithHuman client ID"
+CODEX_HOOK = "withhuman-hook.py"
+CODEX_FILES = (CODEX_HOOK, "codex_transcript.py", HOOK_NAME)
+# Codex events the hook handles. PreToolUse waits for a judgment (intent wait and decision
+# budget), so it gets more time; the hook ends itself before these limits.
+CODEX_EVENTS = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop",
+                "SubagentStart", "SubagentStop"]
+CODEX_TIMEOUTS = {"PreToolUse": 15}
+CODEX_TIMEOUT = 5
 
 
 def is_withhuman(hook):
@@ -173,8 +192,99 @@ def persist(id_path, value, stamp, report):
         report.append(f"{path}: exports WITHHUMAN_CLIENT_ID (new shells)")
 
 
+def is_codex_withhuman(hook):
+    return isinstance(hook, dict) and CODEX_HOOK in str(hook.get("command", "")) + str(
+        hook.get("commandWindows", ""))
+
+
+def codex_hooks(python, hook, server):
+    """Our Codex hooks by event. PowerShell runs `commandWindows`; `exit $LASTEXITCODE` passes
+    the hook's exit code on, so its exit 2 still blocks."""
+    def entry(event):
+        posix = f'"{python}" "{hook}" {server} {event}'
+        return {
+            "type": "command",
+            "command": posix,
+            "commandWindows": f'& "{python}" "{hook}" {server} {event}; exit $LASTEXITCODE',
+            "timeout": CODEX_TIMEOUTS.get(event, CODEX_TIMEOUT),
+        }
+
+    return {event: {"hooks": [entry(event)]} for event in CODEX_EVENTS}
+
+
+def setup_codex(args, project, stamp, report):
+    codex = project / ".codex"
+    installed = codex / "hooks"
+    installed.mkdir(parents=True, exist_ok=True)
+    here = Path(__file__).resolve().parent
+    for name in CODEX_FILES:
+        source = here / ("hooks" if name == HOOK_NAME else "codex") / name
+        if not source.is_file():
+            sys.exit(f"hook file not found: {source}")
+        if source.resolve() != (installed / name).resolve():
+            shutil.copyfile(source, installed / name)
+    (installed / CODEX_HOOK).chmod(0o755)
+    # Session state the hook keeps; inside .codex/hooks, where the engine blocks an agent's
+    # changes as it does to the hooks themselves.
+    state = installed / "withhuman-state"
+    state.mkdir(exist_ok=True)
+    (state / ".gitignore").write_text("*\n", encoding="utf-8")
+
+    path = codex / "hooks.json"
+    config = load(path)
+    hooks = config.get("hooks") if isinstance(config.get("hooks"), dict) else {}
+    removed = 0
+    for event in list(hooks):
+        groups = hooks[event] if isinstance(hooks[event], list) else []
+        kept_groups = []
+        for group in groups:
+            inner = group.get("hooks") if isinstance(group, dict) else None
+            if not isinstance(inner, list):
+                kept_groups.append(group)
+                continue
+            kept = [hook for hook in inner if not is_codex_withhuman(hook)]
+            removed += len(inner) - len(kept)
+            if kept:
+                group["hooks"] = kept
+                kept_groups.append(group)
+        if kept_groups:
+            hooks[event] = kept_groups
+        else:
+            del hooks[event]
+    if path.exists():
+        report.append(f"{path}: copy at {backup(path, stamp)}"
+                      + (f", {removed} earlier WithHuman hook(s) replaced" if removed else ""))
+    python = Path(sys.executable).as_posix()
+    hook = (installed / CODEX_HOOK).as_posix()
+    for event, group in codex_hooks(python, hook, args.server).items():
+        hooks.setdefault(event, []).append(group)
+    config["hooks"] = hooks
+    save(path, config)
+    return path, installed / CODEX_HOOK
+
+
+def check_codex(hook, server):
+    """Runs the installed hook the way Codex will, so a broken interpreter path or quoting
+    shows now rather than as hooks Codex silently fails to run."""
+    commands = [[sys.executable, str(hook), "--check", server]]
+    if os.name == "nt":
+        commands.append(["powershell", "-NoProfile", "-Command",
+                         f'& "{Path(sys.executable).as_posix()}" "{Path(hook).as_posix()}" '
+                         f"--check {server}; exit $LASTEXITCODE"])
+    for command in commands:
+        result = subprocess.run(command, capture_output=True, text=True)
+        output = (result.stdout + result.stderr).strip()
+        if result.returncode != 0:
+            return False, output
+    return True, output
+
+
 def main():
     parser = argparse.ArgumentParser(description="Set up WithHuman for Claude Code in a project.")
+    parser.add_argument("--agent", choices=["claude", "codex"], default="claude",
+                        help="the coding agent to set up (default: claude)")
+    parser.add_argument("--skip-check", action="store_true",
+                        help="codex: do not run the installed hook against the engine")
     parser.add_argument("--project", default=os.getcwd(), help="project folder (default: here)")
     parser.add_argument("--team", default="default", help="team part of a new client ID")
     parser.add_argument(
@@ -200,6 +310,28 @@ def main():
     args.server = args.server.rstrip("/")
     if not re.fullmatch(r"https?://[^\s/]+(/[^\s]*)?", args.server):
         sys.exit(f"--server must be an http(s) URL: {args.server}")
+    if args.agent == "codex":
+        project = Path(args.project).resolve()
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        report = []
+        path, hook = setup_codex(args, project, stamp, report)
+        id_path, value = client_id(args.team)
+        if not args.no_persist:
+            persist(id_path, value, stamp, report)
+        for line in report:
+            print(line)
+        print(f"WithHuman Codex hooks written to {path}")
+        print(f"Hook: {hook} (run with {sys.executable})")
+        print(f"WITHHUMAN_CLIENT_ID={value}")
+        if not args.skip_check:
+            ok, output = check_codex(hook, args.server)
+            print(output)
+            if not ok:
+                sys.exit("The installed hook did not run; fix the problem above, then run again.")
+        print("Next: start codex in this project, open /hooks and trust the WithHuman hooks.")
+        print("Codex skips project hooks until they are trusted (and again after hooks.json")
+        print("changes), so until then this project is not protected.")
+        return
     hook_source = Path(args.hook)
     if not hook_source.is_file():
         sys.exit(f"hook not found: {hook_source}")

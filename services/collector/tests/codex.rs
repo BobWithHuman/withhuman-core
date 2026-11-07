@@ -18,7 +18,7 @@ use withhuman_collector::{
 use withhuman_common::origin;
 use withhuman_contracts::{
     codex::{CodexHookEvent, CodexHookInput, CodexShell},
-    decisions::{CausalStart, Decision, DecisionResponse},
+    decisions::{CausalStart, Decision, DecisionResponse, EnforcementMode},
     events::EventResponse,
     hooks::{
         PostToolBatchRequest, PostToolUseFailureRequest, PostToolUseRequest, PreToolUseRequest,
@@ -661,6 +661,30 @@ async fn rejects_unknown_events_and_incomplete_hooks() {
         .0,
         StatusCode::BAD_REQUEST
     );
+}
+
+/// A web search the bridge found only in the transcript already ran: it is recorded, never
+/// blocked, and asks for no intent.
+#[tokio::test]
+async fn records_a_search_found_in_the_transcript_without_blocking() {
+    let generator = Arc::new(Recording::decision(Decision::Deny, "blocked"));
+    let app = app(CollectorConfig::default(), generator.clone());
+    let (status, body) = send(
+        &app,
+        "PreToolUse",
+        json!({"session_id":"s","turn_id":"t","cwd":"/p","tool_name":"webrun",
+               "tool_input":{"search_query":[{"q":"codex hooks"}]},
+               "tool_use_id":"transcript-call_w","withhuman_record":true}),
+        None,
+    )
+    .await;
+    assert_eq!((status, body), (StatusCode::OK, Value::Null));
+    let events = generator.events.lock().unwrap();
+    let NormalizedEvent::PreToolUse(call) = &events[0] else {
+        panic!("expected PreToolUse");
+    };
+    assert_eq!(call.mode, EnforcementMode::Record);
+    assert_eq!(call.event.payload.tool_name, "WebSearch");
 }
 
 // ---- G5a: Claude Code sessions sent through the Codex route ----

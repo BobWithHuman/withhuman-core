@@ -97,6 +97,10 @@ pub struct CodexHookInput {
     /// exit code): the failure text.
     #[serde(default)]
     pub withhuman_failure: Option<String>,
+    /// Set by the bridge on a call Codex ran without a Hook (a web search found later in the
+    /// transcript): it is recorded, not judged before it runs.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub withhuman_record: bool,
     /// Local program files a shell call may run, read by the bridge just before the call.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub withhuman_programs: Vec<ProgramFile>,
