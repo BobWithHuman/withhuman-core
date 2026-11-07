@@ -10,8 +10,8 @@
 //! Only literal content is translated: anything the shell would compute (variables,
 //! subexpressions, escapes it interprets), more than one file, wildcards, pipes other than a
 //! literal into the writer, and partial edits stay shell calls, judged as before. Around the one
-//! write a command may create the directories that hold the file and read the file back; both
-//! are part of writing it.
+//! write a command may create the directories that hold the file. A full overwrite may also
+//! read that file back; an append may reveal old content we do not know, so it stays a shell call.
 
 use serde_json::{Value, json};
 use withhuman_contracts::codex::CodexShell;
@@ -80,8 +80,12 @@ pub fn simple_write(
                     ..write
                 });
             }
-            // Reading the written file back shows the agent what it wrote.
-            Step::ReadBack(path) if written.as_ref().is_some_and(|w| w.path == key(&path)) => {}
+            // A full overwrite's read-back only shows the literal content already checked.
+            // After an append it may also expose unknown old content: keep the entire shell call.
+            Step::ReadBack(path)
+                if written
+                    .as_ref()
+                    .is_some_and(|w| !w.append && w.path == key(&path)) => {}
             _ => return None,
         }
     }

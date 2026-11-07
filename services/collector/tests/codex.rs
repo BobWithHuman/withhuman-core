@@ -763,6 +763,7 @@ fn keeps_anything_more_than_one_literal_write_a_shell_call() {
         "Set-Content a.txt 'x'; Remove-Item b.txt",
         "New-Item -ItemType Directory .claude\\hooks -Force | Out-Null; Set-Content a.txt 'x'",
         "Set-Content a.txt 'x'; Get-Content b.txt",
+        "Add-Content a.txt 'x'; Get-Content a.txt",
         "Get-Content a.txt; Set-Content .codex\\hooks.json '{}'; Write-Output done",
         "Set-Content a.txt 'x' | Out-Null",
         // Options not known to be harmless.
@@ -785,6 +786,7 @@ fn keeps_anything_more_than_one_literal_write_a_shell_call() {
         "printf 'a\\nb' > a.txt",
         "sed -i 's/a/b/' a.txt",
         "echo 'x' > a.txt; rm b.txt",
+        "echo 'x' >> a.txt; cat a.txt",
         "mkdir other && echo 'x' > a.txt",
         "echo $(id) > a.txt",
         "echo 'x' > a\\ b.txt",
