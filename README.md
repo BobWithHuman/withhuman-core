@@ -75,6 +75,31 @@ python3 deploy/client/configure.py \
   --hook "$PWD/deploy/client/hooks/pre-tool-use.py"
 ```
 
+### Codex CLI
+
+Configure a Codex CLI project with `--agent codex`:
+
+```sh
+python3 deploy/client/configure.py --agent codex \
+  --project /path/to/project --team personal --server http://127.0.0.1:3000
+```
+
+This installs the hook into `<project>/.codex/hooks/`, writes `<project>/.codex/hooks.json` and
+checks that the installed hook reaches the engine; the user's `~/.codex` is left alone. Then
+start `codex` in the project, open `/hooks` and trust the WithHuman hooks. Codex skips project
+hooks until they are trusted, and again after `hooks.json` changes, so the project is not
+protected until you do.
+
+The hook sends Codex's events to the Collector's `/v1/hooks/codex/{event}` route, which turns
+them into the Claude Code hook requests the engine already judges. Codex cannot ask the user,
+so a REVIEW verdict blocks the call, and MCP calls are enforced by the hook rather than by
+AgentGateway. When the engine cannot be reached or does not answer in time, the hook blocks the
+call (`WITHHUMAN_MODE=observe` lets it through).
+
+Known differences from Claude Code: the `[의도]` line Codex writes stays visible on screen, and
+configuration changes made outside the agent are not recorded (Codex has no ConfigChange hook).
+Verified on Windows with Codex CLI 0.154; macOS is not verified yet.
+
 ## Development
 
 The development and E2E profile builds the services from the working tree and includes an MCP
