@@ -21,7 +21,8 @@ WITHHUMAN_SERVER is required: the address of your own WithHuman engine.
 USAGE
   exit 1
 fi
-base="https://raw.githubusercontent.com/BobWithHuman/withhuman-core/$ref/deploy/client"
+base=${WITHHUMAN_BASE_URL:-"https://raw.githubusercontent.com/BobWithHuman/withhuman-core/$ref/deploy/client"}
+base=${base%/}
 
 python=""
 for candidate in python3 python; do
@@ -40,13 +41,26 @@ here=""
 if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
   here=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 fi
-if [ -n "$here" ] && [ -f "$here/configure.py" ] && [ -f "$here/hooks/pre-tool-use.py" ]; then
-  "$python" "$here/configure.py" --project "$PWD" --team "$team" --server "$WITHHUMAN_SERVER"
-else
+source_dir=""
+if [ -n "$here" ]; then
+  source_dir=$here
+  for file in $files; do
+    [ -f "$here/$file" ] || source_dir=""
+  done
+fi
+if [ -z "$source_dir" ]; then
   tmp=$(mktemp -d)
   trap 'rm -rf "$tmp"' EXIT
-  mkdir -p "$tmp/hooks"
-  curl -fsSL "$base/configure.py" -o "$tmp/configure.py"
-  curl -fsSL "$base/hooks/pre-tool-use.py" -o "$tmp/hooks/pre-tool-use.py"
-  "$python" "$tmp/configure.py" --project "$PWD" --team "$team" --server "$WITHHUMAN_SERVER"
+  for file in $files; do
+    mkdir -p "$tmp/$(dirname "$file")"
+    curl -fsSL "$base/$file" -o "$tmp/$file"
+  done
+  source_dir=$tmp
+fi
+if [ -n "${WITHHUMAN_UNINSTALL:-}" ]; then
+  "$python" "$source_dir/configure.py" --uninstall --agent "$agent" --project "$PWD"
+elif [ "$agent" = codex ]; then
+  "$python" "$source_dir/configure.py" --agent codex --project "$PWD" --team "$team" --server "$WITHHUMAN_SERVER"
+else
+  "$python" "$source_dir/configure.py" --project "$PWD" --team "$team" --server "$WITHHUMAN_SERVER"
 fi

@@ -29,6 +29,11 @@ With --agent codex it sets up Codex CLI instead (step 3 as above):
    user's ~/.codex is left alone.
 3. Runs the installed hook's self-check against the engine, then tells you to trust the hooks
    in Codex (/hooks): Codex skips project hooks until they are trusted.
+
+With --uninstall (and --agent claude or codex) it takes WithHuman out of the project only: its
+hook entries in the project's settings or hooks.json (other hooks and settings are kept, each
+file changed is first copied to <file>.bak-<time>) and the hook files it installed. --server is
+not needed then.
 """
 
 import argparse
@@ -232,6 +237,22 @@ def setup_codex(args, project, stamp, report):
 
     path = codex / "hooks.json"
     config = load(path)
+    removed = strip_codex(config)
+    hooks = config["hooks"]
+    if path.exists():
+        report.append(f"{path}: copy at {backup(path, stamp)}"
+                      + (f", {removed} earlier WithHuman hook(s) replaced" if removed else ""))
+    python = Path(sys.executable).as_posix()
+    hook = (installed / CODEX_HOOK).as_posix()
+    for event, group in codex_hooks(python, hook, args.server).items():
+        hooks.setdefault(event, []).append(group)
+    config["hooks"] = hooks
+    save(path, config)
+    return path, installed / CODEX_HOOK
+
+
+def strip_codex(config):
+    """Takes WithHuman's entries out of a Codex hooks.json in place; the number taken out."""
     hooks = config.get("hooks") if isinstance(config.get("hooks"), dict) else {}
     removed = 0
     for event in list(hooks):
@@ -251,16 +272,39 @@ def setup_codex(args, project, stamp, report):
             hooks[event] = kept_groups
         else:
             del hooks[event]
-    if path.exists():
-        report.append(f"{path}: copy at {backup(path, stamp)}"
-                      + (f", {removed} earlier WithHuman hook(s) replaced" if removed else ""))
-    python = Path(sys.executable).as_posix()
-    hook = (installed / CODEX_HOOK).as_posix()
-    for event, group in codex_hooks(python, hook, args.server).items():
-        hooks.setdefault(event, []).append(group)
     config["hooks"] = hooks
-    save(path, config)
-    return path, installed / CODEX_HOOK
+    return removed
+
+
+def uninstall(agent, project, stamp, report):
+    """Takes WithHuman out of the project: its hook entries (other hooks and settings stay, the
+    file changed is first copied to <file>.bak-<time>) and the hook files it installed. The
+    device's client ID and the user's own settings are left alone."""
+    if agent == "codex":
+        path = project / ".codex" / "hooks.json"
+        if path.exists():
+            config = load(path)
+            removed = strip_codex(config)
+            if removed:
+                report.append(f"{path}: {removed} WithHuman hook(s) removed, copy at {backup(path, stamp)}")
+                save(path, config)
+        installed = project / ".codex" / "hooks"
+        files = [installed / name for name in CODEX_FILES]
+    else:
+        for path in (project / ".claude" / "settings.json", project / ".claude" / "settings.local.json"):
+            clean(path, stamp, report)
+        installed = project / ".claude" / "hooks"
+        files = [installed / HOOK_NAME]
+    for path in files:
+        if path.is_file():
+            path.unlink()
+            report.append(f"{path}: removed")
+    state = installed / "withhuman-state"
+    if agent == "codex" and state.is_dir():
+        shutil.rmtree(state)
+        report.append(f"{state}: removed")
+    if installed.is_dir() and not any(installed.iterdir()):
+        installed.rmdir()
 
 
 def check_codex(hook, server):
@@ -294,9 +338,21 @@ def main():
     )
     parser.add_argument("--hook", default=str(Path(__file__).resolve().parent / "hooks" / HOOK_NAME))
     parser.add_argument("--no-persist", action="store_true", help="leave shell profiles alone")
+    parser.add_argument("--uninstall", action="store_true",
+                        help="take WithHuman out of the project (other hooks and files stay)")
     args = parser.parse_args()
     if sys.version_info < (3, 8):
         sys.exit("WithHuman's hook needs Python 3.8 or later")
+    if args.uninstall:
+        report = []
+        uninstall(args.agent, Path(args.project).resolve(),
+                  datetime.datetime.now().strftime("%Y%m%d-%H%M%S"), report)
+        for line in report or ["Nothing of WithHuman was found in this project."]:
+            print(line)
+        if args.agent == "codex" and report:
+            print("WithHuman is removed from this project. Codex may list the hooks as changed in")
+            print("/hooks; nothing of WithHuman runs any more.")
+        return
     if not re.fullmatch(r"[A-Za-z0-9._-]+", args.team):
         sys.exit(f"team must match [A-Za-z0-9._-]+: {args.team}")
     # No default: pointing a device at someone else's engine would ship this project's prompts
@@ -328,9 +384,10 @@ def main():
             print(output)
             if not ok:
                 sys.exit("The installed hook did not run; fix the problem above, then run again.")
-        print("Next: start codex in this project, open /hooks and trust the WithHuman hooks.")
-        print("Codex skips project hooks until they are trusted (and again after hooks.json")
-        print("changes), so until then this project is not protected.")
+        print("Next: run codex in this project, open /hooks and trust the WithHuman hooks.")
+        print("Codex skips project hooks until they are trusted, and again after hooks.json")
+        print("changes (as after an update that changed it): until you trust them, this")
+        print("project is not protected.")
         return
     hook_source = Path(args.hook)
     if not hook_source.is_file():

@@ -154,6 +154,17 @@ class ConfigureTest(unittest.TestCase):
         self.assertIn("must be an http(s) URL", result.stderr)
 
 
+    def test_uninstall_takes_out_only_withhuman(self):
+        self.write(self.project / ".claude" / "settings.json", {
+            "permissions": {"allow": ["Bash(ls:*)"]}, "hooks": {"Stop": [{"hooks": [OTHER]}]}})
+        self.assertEqual(self.configure("--no-persist").returncode, 0)
+        result = self.configure("--uninstall")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.read(self.project / ".claude" / "settings.json"), {
+            "permissions": {"allow": ["Bash(ls:*)"]}, "hooks": {"Stop": [{"hooks": [OTHER]}]}})
+        self.assertFalse((self.project / ".claude" / "hooks" / "pre-tool-use.py").exists())
+
+
 class CodexConfigureTest(unittest.TestCase):
     def setUp(self):
         self.home = Path(tempfile.mkdtemp()).resolve()
@@ -217,6 +228,37 @@ class CodexConfigureTest(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("did not run", result.stderr)
+
+    def test_uninstall_takes_out_only_withhuman(self):
+        hooks_json = self.project / ".codex" / "hooks.json"
+        hooks_json.parent.mkdir()
+        hooks_json.write_text(json.dumps({"other": True, "hooks": {
+            "PreToolUse": [{"hooks": [OTHER]}], "Stop": [{"hooks": [OTHER]}]}}))
+        (self.project / "src.py").write_text("print(1)\n")
+        self.assertEqual(self.configure().returncode, 0)
+        (self.project / ".codex" / "hooks" / "mine.sh").write_text("echo mine\n")
+        result = self.configure("--uninstall")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        config = json.loads(hooks_json.read_text())
+        self.assertEqual(config, {"other": True, "hooks": {
+            "PreToolUse": [{"hooks": [OTHER]}], "Stop": [{"hooks": [OTHER]}]}})
+        hooks_dir = self.project / ".codex" / "hooks"
+        self.assertEqual(sorted(p.name for p in hooks_dir.iterdir()), ["mine.sh"])
+        self.assertEqual((self.project / "src.py").read_text(), "print(1)\n")
+        self.assertTrue(list((self.project / ".codex").glob("hooks.json.bak-*")))
+        # Nothing left to take out the second time.
+        again = self.configure("--uninstall")
+        self.assertIn("Nothing of WithHuman", again.stdout)
+
+    def test_uninstall_needs_no_server(self):
+        env = {**os.environ, "HOME": str(self.home), "USERPROFILE": str(self.home)}
+        env.pop("WITHHUMAN_SERVER", None)
+        result = subprocess.run(
+            [sys.executable, str(CONFIGURE), "--uninstall", "--agent", "codex",
+             "--project", str(self.project)],
+            capture_output=True, text=True, env=env, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":
