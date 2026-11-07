@@ -35,6 +35,32 @@ pub const AGENT_KIND: &str = "codex";
 /// the project directory.
 pub const WORKDIR_UNKNOWN: &str = "unknown";
 
+/// Only recognized native web operations may use the post-hoc record exception.
+pub fn valid_record(event: CodexHookEvent, input: &CodexHookInput) -> bool {
+    if event != CodexHookEvent::PreToolUse || input.tool_name.as_deref() != Some("webrun") {
+        return false;
+    }
+    let Some(fields) = input.tool_input.as_ref().and_then(Value::as_object) else {
+        return false;
+    };
+    !fields.is_empty()
+        && fields.iter().all(|(name, value)| {
+            let key = match name.as_str() {
+                "search_query" | "image_query" => "q",
+                "open" | "find" | "click" => "ref_id",
+                _ => return false,
+            };
+            value.as_array().is_some_and(|items| {
+                !items.is_empty()
+                    && items.iter().all(|item| {
+                        item.get(key)
+                            .and_then(Value::as_str)
+                            .is_some_and(|s| !s.trim().is_empty())
+                    })
+            })
+        })
+}
+
 /// Codex names for its shell tool, across versions.
 const SHELL_TOOLS: &[&str] = &[
     "Bash",
@@ -293,7 +319,7 @@ pub fn translate_tool(
                 .unwrap_or_default();
             (
                 "Read".to_owned(),
-                json!({ "file_path": resolve(cwd, path) }),
+                json!({ "file_path": file_key(cwd, path) }),
             )
         }
         _ => (name.to_owned(), input.clone()),
@@ -382,7 +408,7 @@ pub fn simple_read(command: &str, shell: CodexShell, cwd: Option<&str>) -> Optio
         }
         _ => return None,
     }
-    let path = resolve(cwd, &path?).replace('\\', "/");
+    let path = file_key(cwd, &path?);
     let mut read = json!({ "file_path": path });
     if let Some(limit) = limit {
         // A part of the file: the engine then does not take it as the whole content.
@@ -555,6 +581,31 @@ pub fn resolve(cwd: Option<&str>, path: &str) -> String {
     format!("{root}{}", steps.join(&separator.to_string()))
 }
 
+/// Codex file reads and patch writes must use the same lexically normalized path key.
+fn file_key(cwd: Option<&str>, path: &str) -> String {
+    let full = resolve(cwd, path).replace('\\', "/");
+    let (prefix, rest) = if full.as_bytes().get(1) == Some(&b':') {
+        (format!("{}/", full[..2].to_ascii_uppercase()), &full[2..])
+    } else if full.starts_with("//") {
+        ("//".to_owned(), full.as_str())
+    } else if full.starts_with('/') {
+        ("/".to_owned(), full.as_str())
+    } else {
+        (String::new(), full.as_str())
+    };
+    let mut steps = Vec::new();
+    for step in rest.split('/') {
+        match step {
+            "" | "." => {}
+            ".." => {
+                steps.pop();
+            }
+            part => steps.push(part),
+        }
+    }
+    format!("{prefix}{}", steps.join("/"))
+}
+
 /// One step of a Codex patch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PatchStep {
@@ -695,7 +746,7 @@ fn apply_patch(input: &Value, cwd: Option<&str>) -> (String, Value) {
                 };
                 changes.push((
                     "Write".to_owned(),
-                    json!({ "file_path": resolve(cwd, &path), "content": content }),
+                    json!({ "file_path": file_key(cwd, &path), "content": content }),
                 ));
             }
             PatchStep::Update {
@@ -703,9 +754,9 @@ fn apply_patch(input: &Value, cwd: Option<&str>) -> (String, Value) {
                 move_to,
                 hunks,
             } => {
-                let mut target = resolve(cwd, &path);
+                let mut target = file_key(cwd, &path);
                 if let Some(move_to) = move_to {
-                    let destination = resolve(cwd, &move_to);
+                    let destination = file_key(cwd, &move_to);
                     changes.push((
                         "Bash".to_owned(),
                         json!({ "command": format!("mv -- {} {}", quote(&target), quote(&destination)) }),
@@ -728,7 +779,7 @@ fn apply_patch(input: &Value, cwd: Option<&str>) -> (String, Value) {
             }
             PatchStep::Delete { path } => changes.push((
                 "Bash".to_owned(),
-                json!({ "command": format!("rm -- {}", quote(&resolve(cwd, &path))) }),
+                json!({ "command": format!("rm -- {}", quote(&file_key(cwd, &path))) }),
             )),
         }
     }

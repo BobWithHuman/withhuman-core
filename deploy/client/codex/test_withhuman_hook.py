@@ -5,6 +5,7 @@ Codex would, against a stand-in Collector.
 """
 
 import http.server
+import hashlib
 import json
 import os
 import shutil
@@ -30,18 +31,34 @@ class Collector(http.server.BaseHTTPRequestHandler):
     answers = {}
     delay = 0.0
     status = 200
+    receipts = {}
+    drop_event = None
 
     def do_POST(self):
         body = self.rfile.read(int(self.headers["Content-Length"]))
         event = self.path.rsplit("/", 1)[-1]
         headers = {name.lower(): value for name, value in self.headers.items()}
+        delivery = headers.get("x-withhuman-event")
+        if delivery in Collector.receipts:
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(Collector.receipts[delivery])
+            return
         Collector.received.append((event, headers, json.loads(body)))
         time.sleep(Collector.delay)
         answer = Collector.answers.get(event, b"")
+        encoded = answer if isinstance(answer, bytes) else json.dumps(answer).encode()
+        if Collector.status == 200 and delivery:
+            Collector.receipts[delivery] = encoded
+        if Collector.drop_event == event:
+            Collector.drop_event = None
+            self.connection.shutdown(socket.SHUT_RDWR)
+            self.connection.close()
+            return
         try:
             self.send_response(Collector.status)
             self.end_headers()
-            self.wfile.write(answer if isinstance(answer, bytes) else json.dumps(answer).encode())
+            self.wfile.write(encoded)
         except OSError:
             pass  # The hook gave up waiting, as the timeout test wants.
 
@@ -103,6 +120,8 @@ class CodexHookTest(unittest.TestCase):
         Collector.received = []
         Collector.answers = {}
         Collector.delay = 0.0
+        Collector.receipts = {}
+        Collector.drop_event = None
         Collector.status = 200
         self.project = Path(tempfile.mkdtemp()).resolve()
         self.hooks = self.project / ".codex" / "hooks"
@@ -257,18 +276,16 @@ class CodexHookTest(unittest.TestCase):
         names = [name for name, _ in self.sent()]
         self.assertEqual(names, ["MessageDisplay", "PreToolUse", "PostToolBatch", "MessageDisplay",
                                  "PreToolUse"])
-        self.assertEqual(self.sent("PostToolBatch")[0][1], {"session_id": "s1", "tool_calls": []})
+        self.assertEqual(self.sent("PostToolBatch")[0][1], {"session_id": "s1", "tool_calls": [{"tool_use_id": "call_1"}]})
 
-    def test_lets_the_engine_judge_a_call_whose_directory_it_cannot_tell(self):
+    def test_denies_a_call_whose_directory_it_cannot_tell(self):
         # Not in the transcript: judged as running in the session folder, marked by the
         # Collector since no directory is sent.
-        self.assertEqual(self.pre(call_id="call_missing")[:2], (0, None))
-        sent = self.sent("PreToolUse")[0][1]
-        self.assertNotIn("withhuman_workdir", sent)
-        self.assertEqual(sent["cwd"], str(self.project))
+        self.assert_denied(self.pre(call_id="call_missing"))
+        self.assertEqual(self.sent("PreToolUse"), [])
         # The same with no transcript at all.
         self.transcript.unlink()
-        self.assertEqual(self.pre(call_id="call_missing")[:2], (0, None))
+        self.assert_denied(self.pre(call_id="call_missing"))
 
     def test_denies_a_call_of_unknown_directory_that_names_a_safeguard(self):
         for command in ["Set-Content hooks.json '{}'", "cd .codex; ni x", "echo > .CLAUDE/x",
@@ -322,15 +339,15 @@ class CodexHookTest(unittest.TestCase):
                     item("response_item", {"type": "custom_tool_call", "name": "exec",
                                            "call_id": "call_script", "input": script}))
         self.pre(call_id="exec-1", tool_input={"command": "Write-Output two"})
-        self.pre(call_id="exec-2", tool_input={"command": "Write-Output one"})
-        self.pre(call_id="exec-3", tool_input={"command": "Write-Output one"})
+        self.assert_denied(self.pre(call_id="exec-2", tool_input={"command": "Write-Output one"}))
+        self.assert_denied(self.pre(call_id="exec-3", tool_input={"command": "Write-Output one"}))
         # The same hook asked again keeps its match.
-        self.pre(call_id="exec-2", tool_input={"command": "Write-Output one"})
+        self.assert_denied(self.pre(call_id="exec-2", tool_input={"command": "Write-Output one"}))
         workdirs = [body["withhuman_workdir"] for _, body in self.sent("PreToolUse")]
-        self.assertEqual(workdirs, [self.nested, str(self.project), self.nested, str(self.project)])
+        self.assertEqual(workdirs, [self.nested])
         # A command given by a variable is never matched by guess: judged in the session folder.
-        self.pre(call_id="exec-4", tool_input={"command": "Write-Output three"})
-        self.assertNotIn("withhuman_workdir", self.sent("PreToolUse")[-1][1])
+        self.assert_denied(self.pre(call_id="exec-4", tool_input={"command": "Write-Output three"}))
+        self.assertEqual(len(self.sent("PreToolUse")), 1)
 
     def test_marks_a_failed_shell_call_of_a_code_mode_script(self):
         self.live_fixture(upto_type="custom_tool_call")
@@ -375,8 +392,7 @@ class CodexHookTest(unittest.TestCase):
                     message("final", "끝"))
         self.hook("Stop", {"last_assistant_message": "끝", "stop_hook_active": False})
         names = [name for name, _ in self.sent()]
-        self.assertEqual(names, ["PreToolUse", "PostToolUse", "PostToolBatch", "MessageDisplay",
-                                 "Stop"])
+        self.assertEqual(names, ["PreToolUse", "PostToolUse", "PostToolBatch", "MessageDisplay"])
         failure = self.sent("PostToolUse")[0][1]
         self.assertEqual((failure["tool_name"], failure["tool_use_id"], failure["withhuman_failure"]),
                          ("mcp__c0__record", "call_m", "boom"))
@@ -405,7 +421,7 @@ class CodexHookTest(unittest.TestCase):
         self.hook("Stop", {"last_assistant_message": "다 했습니다", "stop_hook_active": False})
         display = self.sent("MessageDisplay")[0][1]
         self.assertEqual(display["delta"], "다 했습니다")
-        self.assertEqual([name for name, _ in self.sent()], ["MessageDisplay", "Stop"])
+        self.assertEqual([name for name, _ in self.sent()], ["MessageDisplay"])
 
     def test_attaches_the_programs_a_command_runs(self):
         script = Path(self.nested) / "run.py"
@@ -422,6 +438,84 @@ class CodexHookTest(unittest.TestCase):
         self.append(shell_call("call_1", "a", str(self.project)))
         self.pre()
         self.assertEqual(self.sent("MessageDisplay"), [])
+
+    def test_lost_reply_keeps_cursor_unconfirmed_then_reuses_the_receipt(self):
+        self.append(message("m1", INTENT), shell_call("call_1", "Get-ChildItem", str(self.project)))
+        Collector.drop_event = "MessageDisplay"
+        self.assert_denied(self.pre())
+        state_path = next((self.hooks / "withhuman-state").glob("*.json"))
+        state = json.loads(state_path.read_text())
+        self.assertEqual(state["offset"], 0)
+        self.assertIsNotNone(state["outbox"])
+        self.assertEqual(self.sent("PreToolUse"), [])
+        self.assertEqual(self.pre()[:2], (0, None))
+        self.assertEqual(len(self.sent("MessageDisplay")), 1)
+        self.assertGreater(json.loads(state_path.read_text())["offset"], 0)
+
+    def test_an_unconfirmed_server_error_requires_a_new_session(self):
+        self.append(message("m1", INTENT), shell_call("call_1", "Get-ChildItem", str(self.project)))
+        Collector.status = 502
+        self.assert_denied(self.pre())
+        Collector.status = 200
+        self.assert_denied(self.pre())
+        self.assertEqual(self.sent("PreToolUse"), [])
+        self.assertEqual(len(self.sent("MessageDisplay")), 1)
+
+    def test_cannot_take_a_session_lock_means_deny(self):
+        directory = self.hooks / "withhuman-state"
+        directory.mkdir()
+        lock = directory / (hashlib.sha256(b"s1").hexdigest()[:32] + ".json.lock")
+        lock.write_text("")
+        self.assert_denied(self.pre())
+        self.assertEqual(self.sent(), [])
+
+    def test_malformed_decision_object_is_not_an_allow(self):
+        self.append(shell_call("call_1", "Get-ChildItem", str(self.project)))
+        Collector.answers["PreToolUse"] = {}
+        self.assert_denied(self.pre())
+
+    def test_batches_name_only_finished_calls_and_repeated_stop_is_quiet(self):
+        self.append(shell_call("call_1", "a", str(self.project)),
+                    shell_call("call_2", "b", str(self.project)))
+        self.pre()
+        self.pre(call_id="call_2")
+        self.append(output("call_1"), message("m1", "one done"))
+        self.hook("Stop", {"last_assistant_message":"one done"})
+        batches = self.sent("PostToolBatch")
+        self.assertEqual(batches[0][1]["tool_calls"], [{"tool_use_id":"call_1"}])
+        self.hook("Stop", {"last_assistant_message":"one done"})
+        self.assertEqual(self.sent("PostToolBatch"), batches)
+
+    def test_same_text_in_a_new_turn_gets_its_own_intent_message(self):
+        self.append(item("turn_context", {"turn_id":"t1"}), message(None, INTENT, "t1"))
+        self.hook("Stop", {"turn_id":"t1", "last_assistant_message":INTENT})
+        self.append(item("turn_context", {"turn_id":"t2"}), message(None, INTENT, "t2"))
+        self.hook("Stop", {"turn_id":"t2", "last_assistant_message":INTENT})
+        self.assertEqual(len(self.sent("MessageDisplay")), 2)
+        self.assertNotEqual(self.sent("MessageDisplay")[0][1]["message_id"],
+                            self.sent("MessageDisplay")[1][1]["message_id"])
+
+    def test_subagent_does_not_submit_main_agents_intent(self):
+        self.append(message("main", INTENT), shell_call("subcall", "x", self.nested))
+        self.hook("PreToolUse", {"agent_id":"child", "tool_name":"Bash", "tool_use_id":"subcall",
+                                  "tool_input":{"command":"x"}})
+        self.assertEqual(self.sent("MessageDisplay"), [])
+        self.assertEqual(self.sent("PreToolUse")[0][1]["withhuman_workdir"], self.nested)
+
+    def test_invalid_transcript_cannot_drop_the_intent_and_continue(self):
+        self.transcript.write_text('{broken\n', encoding="utf-8")
+        self.assert_denied(self.pre(tool_name="apply_patch", tool_input={"command":"patch"}))
+        self.assertEqual(self.sent(), [])
+
+    def test_attaches_powershell_paths_without_eating_backslashes(self):
+        script = Path(self.nested) / "run.ps1"
+        script.write_bytes(b"Write-Output 'hi'\n")
+        command = "pwsh -NoProfile -File '.\\run.ps1'" if os.name == "nt" else "pwsh -NoProfile -File './run.ps1'"
+        self.append(shell_call("call_1", command, self.nested))
+        self.pre(tool_input={"command":command})
+        programs = self.sent("PreToolUse")[0][1]["withhuman_programs"]
+        self.assertEqual(programs[0]["path"], str(script))
+        self.assertEqual(programs[0]["content"], "Write-Output 'hi'\n")
 
     def test_checks_it_can_run(self):
         result = subprocess.run(

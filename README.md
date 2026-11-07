@@ -98,6 +98,11 @@ call (`WITHHUMAN_MODE=observe` lets it through).
 
 Known differences from Claude Code: the `[의도]` line Codex writes stays visible on screen, and
 configuration changes made outside the agent are not recorded (Codex has no ConfigChange hook).
+Unknown or ambiguous shell working directories block the call. Delivery failures block protected
+calls; if the engine cannot confirm an event, start a new session after restoring the service.
+Native web operations without hooks are recorded afterward, using only transcript content.
+Subsequent input into an already-open shell and a hook that cannot start or is not trusted are
+outside this protection. `observe` records activity without enforcing protection.
 Verified on Windows with Codex CLI 0.154; macOS is not verified yet.
 
 ## Development

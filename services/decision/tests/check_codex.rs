@@ -28,6 +28,35 @@ fn lines(lines: &[&str]) -> Vec<String> {
 }
 
 #[test]
+fn powershell_runs_check_the_attached_script_at_the_resolved_path() {
+    use withhuman_decision::check::{normalize_path, run_paths};
+    let target = "C:\\proj\\scripts\\run.ps1";
+    for command in [
+        "pwsh -NoProfile -File .\\scripts\\run.ps1",
+        "powershell.exe -ExecutionPolicy Bypass -File 'C:\\proj\\scripts\\run.ps1'",
+        "& '.\\scripts\\run.ps1'",
+        ".\\scripts\\run.ps1",
+    ] {
+        let mut call = call_in("C:\\proj", "PowerShell", json!({"command": command}));
+        call.programs.insert(
+            normalize_path(target),
+            Some("Set-Content canary.txt x".to_owned()),
+        );
+        assert_eq!(run_paths(&call), vec![normalize_path(target)], "{command}");
+        assert!(matches!(effect(&call), Effect::Run { .. }), "{command}");
+    }
+    for (command, target) in [
+        ("python .\\scripts\\run.py", "C:\\proj\\scripts\\run.py"),
+        ("node.exe '.\\scripts\\run.js'", "C:\\proj\\scripts\\run.js"),
+    ] {
+        let mut call = call_in("C:\\proj", "PowerShell", json!({"command": command}));
+        call.programs
+            .insert(normalize_path(target), Some("print('ok')".to_owned()));
+        assert!(matches!(effect(&call), Effect::Run { .. }), "{command}");
+    }
+}
+
+#[test]
 fn knows_codex_safeguards() {
     for (tool_name, input) in [
         (

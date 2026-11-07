@@ -494,12 +494,14 @@ const WRAPPERS: &[(&str, usize)] = &[
     ("timeout", 1),
 ];
 /// Extensions of a program run by its path, as `./run.sh` or `/opt/tool/run.py`.
-const SCRIPT_EXTENSIONS: &[&str] = &[".py", ".sh", ".js", ".mjs", ".cjs", ".ts", ".rb", ".pl"];
+const SCRIPT_EXTENSIONS: &[&str] = &[
+    ".py", ".sh", ".js", ".mjs", ".cjs", ".ts", ".rb", ".pl", ".ps1",
+];
 
 /// The local program files a Bash command runs, each resolved against the directory it runs
 /// in (following a `cd` earlier in the command), in the order they run.
 pub fn run_paths(call: &CallInfo) -> Vec<String> {
-    if call.tool_name != "Bash" {
+    if !matches!(call.tool_name.as_str(), "Bash" | "PowerShell") {
         return Vec::new();
     }
     let Some(command) = call.tool_input.get("command").and_then(Value::as_str) else {
@@ -507,10 +509,16 @@ pub fn run_paths(call: &CallInfo) -> Vec<String> {
     };
     let mut cwd = call.cwd.clone();
     let mut paths = Vec::new();
-    for words in simple_commands(&without_here_documents(command)) {
+    // PowerShell preserves backslashes in paths; the POSIX tokenizer treats them as escapes.
+    let source = if call.tool_name == "PowerShell" {
+        command.replace('\\', "/")
+    } else {
+        command.to_owned()
+    };
+    for words in simple_commands(&without_here_documents(&source)) {
         let words = without_redirections(words);
         match words.first().map(String::as_str) {
-            Some("cd" | "pushd") => {
+            Some("cd" | "pushd" | "Set-Location" | "set-location" | "sl") => {
                 if let Some(directory) = words.get(1).filter(|word| !word.starts_with('-')) {
                     cwd = Some(resolve(cwd.as_deref(), directory));
                 }
@@ -591,7 +599,28 @@ fn program(words: &[String]) -> Option<String> {
         }
     }
     let command = words.next()?;
-    let name = command.rsplit('/').next().unwrap_or(command);
+    let name = command
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(command)
+        .to_ascii_lowercase();
+    let name = name.strip_suffix(".exe").unwrap_or(&name);
+    if matches!(name, "pwsh" | "powershell") {
+        while let Some(word) = words.next() {
+            let flag = word.to_ascii_lowercase();
+            match flag.as_str() {
+                "-command" | "-c" | "-encodedcommand" | "-enc" => return None,
+                "-file" | "-f" => return words.next().map(str::to_owned),
+                "-executionpolicy" | "-ep" | "-inputformat" | "-outputformat" | "-windowstyle"
+                | "-version" => {
+                    words.next();
+                }
+                _ if !word.starts_with('-') => return Some(word.to_owned()),
+                _ => {}
+            }
+        }
+        return None;
+    }
     let interpreter = INTERPRETERS.iter().any(|interpreter| {
         name.strip_prefix(interpreter)
             .is_some_and(|version| version.chars().all(|c| c.is_ascii_digit() || c == '.'))

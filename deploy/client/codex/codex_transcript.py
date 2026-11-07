@@ -43,8 +43,8 @@ class TranscriptError(Exception):
 def read_records(path, offset):
     """The JSON records of the complete lines after byte `offset`, and the offset after them.
 
-    A line Codex is still writing (no newline yet) is left for the next read. A line that is
-    not JSON is skipped.
+    A line Codex is still writing (no newline yet) is left for the next read. Invalid complete
+    records and a truncated transcript cannot advance the confirmed cursor.
     """
     if not path:
         raise TranscriptError("no transcript_path")
@@ -52,7 +52,7 @@ def read_records(path, offset):
         with open(path, "rb") as file:
             size = os.fstat(file.fileno()).st_size
             if offset > size:
-                offset = 0  # The file was replaced; read it again.
+                raise TranscriptError("transcript was truncated; start a new session")
             file.seek(offset)
             data = file.read()
     except OSError as error:
@@ -64,10 +64,11 @@ def read_records(path, offset):
             continue
         try:
             record = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(record, dict):
-            records.append(record)
+        except ValueError as error:
+            raise TranscriptError("invalid transcript record") from error
+        if not isinstance(record, dict):
+            raise TranscriptError("transcript record is not an object")
+        records.append(record)
     return records, offset + end
 
 
@@ -266,6 +267,9 @@ class Session:
             "turn_cwd": None,
             # Shell calls inside code-mode `exec` scripts, waiting for their hooks.
             "code_shells": [],
+            "completed": [],
+            "outbox": None,
+            "resync_required": False,
         }
 
     def __enter__(self):
@@ -280,9 +284,9 @@ class Session:
                 break
             except FileExistsError:
                 try:
-                    if time.time() - os.path.getmtime(self.lock_path) > STALE_LOCK_SECONDS:
-                        os.remove(self.lock_path)
-                        continue
+                    # Never steal a lock from a live or interrupted hook. Its delivery may
+                    # have reached the engine; a new session is the safe recovery path.
+                    pass
                 except OSError:
                     pass
                 if time.monotonic() >= deadline:
@@ -293,8 +297,10 @@ class Session:
                 loaded = json.load(file)
             if isinstance(loaded, dict):
                 self.state.update(loaded)
-        except (OSError, ValueError):
+        except FileNotFoundError:
             pass
+        except (OSError, ValueError) as error:
+            self.state["resync_required"] = True
         return self
 
     def save(self):
@@ -333,12 +339,18 @@ class Session:
         call = self.state["calls"].get(tool_use_id)
         if call and call.get("kind") == "shell":
             return call
-        for entry in self.state["code_shells"]:
-            if entry.get("hook") in (None, tool_use_id) and same_command(entry["cmd"], command):
+        candidates = [entry for entry in self.state["code_shells"]
+                      if entry.get("hook") in (None, tool_use_id)
+                      and entry.get("turn_id") == self.state["turn_id"]
+                      and same_command(entry["cmd"], command)]
+        workdirs = {entry.get("workdir") or entry.get("turn_cwd") for entry in candidates}
+        if len(workdirs) > 1:
+            raise TranscriptError("ambiguous shell workdir; start a new call with a unique command")
+        for entry in candidates:
                 entry["hook"] = tool_use_id
                 call = {"kind": "shell", "name": "exec_command",
                         "workdir": entry.get("workdir") or entry.get("turn_cwd"),
-                        "script": entry.get("call_id")}
+                        "script": entry.get("call_id"), "turn_id": entry.get("turn_id")}
                 self.state["calls"][tool_use_id] = call
                 return call
         return None
@@ -361,8 +373,14 @@ class Session:
     def _close_batch(self, session_id):
         if not self.state["batch_open"]:
             return []
+        completed = [key for key in self.state["completed"]
+                     if self.state["calls"].get(key, {}).get("turn_id") == self.state["turn_id"]]
+        if not completed:
+            return []
         self.state["batch_open"] = False
-        return [("PostToolBatch", {"session_id": session_id, "tool_calls": []})]
+        self.state["completed"] = [key for key in self.state["completed"] if key not in completed]
+        return [("PostToolBatch", {"session_id": session_id,
+                                   "tool_calls": [{"tool_use_id": key} for key in completed]})]
 
     def _record(self, record, session_id, cwd):
         kind = record.get("type")
@@ -372,6 +390,8 @@ class Session:
         item_type = payload.get("type")
         if kind == "turn_context":
             if payload.get("turn_id"):
+                if self.state["turn_id"] != payload["turn_id"]:
+                    self.state["batch_open"] = False
                 self.state["turn_id"] = payload["turn_id"]
             if isinstance(payload.get("cwd"), str):
                 self.state["turn_cwd"] = payload["cwd"]
@@ -384,10 +404,12 @@ class Session:
         meta = payload.get("internal_chat_message_metadata_passthrough") or {}
         turn_id = meta.get("turn_id") or self.state["turn_id"]
         if item_type == "message" and payload.get("role") == "assistant":
+            if turn_id and self.state["turn_id"] and turn_id != self.state["turn_id"]:
+                return []
             events = self._close_batch(session_id)
             text = _text(payload.get("content"))
             message_id = payload.get("id") or "msg-" + hashlib.sha256(
-                text.encode("utf-8")).hexdigest()[:16]
+                (str(turn_id) + text).encode("utf-8")).hexdigest()[:16]
             if text.strip() and message_id not in self.state["messages"]:
                 _remember(self.state["messages"], message_id)
                 self.state["last_message"] = text
@@ -413,7 +435,7 @@ class Session:
             return []
         item_type = payload.get("type")
         name = payload.get("name") or ""
-        call = {"name": name}
+        call = {"name": name, "turn_id": turn_id, "cwd": cwd}
         if item_type == "function_call":
             try:
                 arguments = json.loads(payload.get("arguments") or "{}")
@@ -441,7 +463,7 @@ class Session:
                 for shell in code_shell_calls(source):
                     self.state["code_shells"].append(dict(
                         shell, call_id=call_id, turn_cwd=self.state["turn_cwd"] or cwd,
-                        hook=None))
+                        hook=None, turn_id=turn_id))
                 del self.state["code_shells"][:-MAX_IDS]
             if name == "exec" and "web__run" in source:
                 call.update(kind="web", queries=_quoted("q", source), urls=_quoted("ref_id", source))
@@ -453,7 +475,7 @@ class Session:
             action = payload.get("action") or {}
             queries = [q for q in [action.get("query")] + list(action.get("queries") or []) if q]
             urls = [action["url"]] if action.get("url") else []
-            self.state["calls"][call_id] = {"name": "web_search", "kind": "web"}
+            self.state["calls"][call_id] = {"name": "web_search", "kind": "web", "turn_id": turn_id}
             return self._web(call_id, queries, urls, "", session_id, cwd, turn_id)
         self.state["calls"][call_id] = call
         return []
@@ -462,6 +484,9 @@ class Session:
         if not isinstance(item, dict) or not item.get("id"):
             return
         call = self.state["calls"].setdefault(item["id"], {"kind": "other"})
+        if item["id"] in self.state["pre"]:
+            _remember(self.state["completed"], item["id"])
+            self.state["batch_open"] = True
         kind = item.get("type")
         if kind == "CommandExecution":
             call["kind"] = "shell"
@@ -487,6 +512,10 @@ class Session:
         if not call:
             return []
         call["output"] = True
+        if call_id in self.state["pre"]:
+            _remember(self.state["completed"], call_id)
+        turn_id = call.get("turn_id") or turn_id
+        cwd = call.get("cwd") or cwd
         # An MCP call that failed gets no PostToolUse hook; the engine learns of it here.
         if (call.get("kind") == "mcp" and call.get("status") == "failed"
                 and call_id in self.state["pre"] and call_id not in self.state["posted"]):

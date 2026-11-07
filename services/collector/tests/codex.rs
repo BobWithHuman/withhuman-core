@@ -213,7 +213,7 @@ fn turns_a_patch_into_the_claude_calls_making_its_changes() {
         tool("*** Begin Patch\n*** Add File: a.txt\n+one\n+two\n*** End Patch"),
         (
             "Write".to_owned(),
-            json!({"file_path": "C:\\proj\\a.txt", "content": "one\ntwo\n"})
+            json!({"file_path": "C:/proj/a.txt", "content": "one\ntwo\n"})
         )
     );
     // One file updated in place is a MultiEdit, one edit per hunk, context kept on both sides.
@@ -223,7 +223,7 @@ fn turns_a_patch_into_the_claude_calls_making_its_changes() {
         ),
         (
             "MultiEdit".to_owned(),
-            json!({"file_path": "C:\\proj\\src\\a.py", "edits": [
+            json!({"file_path": "C:/proj/src/a.py", "edits": [
                 {"old_string": "x = 1\ny = 2", "new_string": "x = 1\ny = 3"},
                 {"old_string": "z", "new_string": "w"}
             ]})
@@ -234,7 +234,7 @@ fn turns_a_patch_into_the_claude_calls_making_its_changes() {
         tool("*** Begin Patch\n*** Delete File: old.txt\n*** End Patch"),
         (
             "Bash".to_owned(),
-            json!({"command": "rm -- C:\\proj\\old.txt"})
+            json!({"command": "rm -- C:/proj/old.txt"})
         )
     );
     // Several files, or a move, keep the patch and list its steps.
@@ -244,12 +244,12 @@ fn turns_a_patch_into_the_claude_calls_making_its_changes() {
         (
             "apply_patch".to_owned(),
             json!({"command": patch, "changes": [
-                {"tool_name": "MultiEdit", "tool_input": {"file_path": "C:\\proj\\allow-edit.txt",
+                {"tool_name": "MultiEdit", "tool_input": {"file_path": "C:/proj/allow-edit.txt",
                     "edits": [{"old_string": "before", "new_string": "after"}]}},
-                {"tool_name": "Bash", "tool_input": {"command": "mv -- C:\\proj\\allow-move.txt C:\\proj\\allow-moved.txt"}},
-                {"tool_name": "MultiEdit", "tool_input": {"file_path": "C:\\proj\\allow-moved.txt",
+                {"tool_name": "Bash", "tool_input": {"command": "mv -- C:/proj/allow-move.txt C:/proj/allow-moved.txt"}},
+                {"tool_name": "MultiEdit", "tool_input": {"file_path": "C:/proj/allow-moved.txt",
                     "edits": [{"old_string": "before", "new_string": "after"}]}},
-                {"tool_name": "Bash", "tool_input": {"command": "rm -- C:\\proj\\allow-delete.txt"}}
+                {"tool_name": "Bash", "tool_input": {"command": "rm -- C:/proj/allow-delete.txt"}}
             ]})
         )
     );
@@ -1236,6 +1236,156 @@ fn canonical(request: &Value) -> Value {
 }
 
 // ---- Helpers ----
+
+#[tokio::test]
+async fn record_exception_rejects_every_non_web_call_and_unknown_web_shape() {
+    let generator = Arc::new(Recording::decision(Decision::Allow, "ok"));
+    let router = app(CollectorConfig::default(), generator.clone());
+    for (name, input) in [
+        ("exec_command", json!({"command":"echo x"})),
+        ("apply_patch", json!({"command":"patch"})),
+        ("mcp__x__write", json!({})),
+        ("Read", json!({"file_path":"x"})),
+        ("webrun", json!({"arbitrary":"x"})),
+        ("webrun", json!({"search_query":[]})),
+    ] {
+        let mut body = pre(name, "record-bypass");
+        body["tool_input"] = input;
+        body["withhuman_record"] = json!(true);
+        assert_eq!(
+            send(&router, "PreToolUse", body, None).await.0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    assert!(generator.events.lock().unwrap().is_empty());
+}
+
+struct FailedGenerator;
+#[async_trait]
+impl GeneratorTransport for FailedGenerator {
+    async fn send(&self, _: NormalizedEvent) -> Result<EventResponse, GeneratorError> {
+        Err(GeneratorError::Unavailable("test outage".to_owned()))
+    }
+}
+
+#[tokio::test]
+async fn codex_denies_errors_even_when_claude_failure_policy_is_open() {
+    let config = CollectorConfig {
+        intent_capture: false,
+        ..CollectorConfig::default()
+    };
+    let router = app_with_transport(CollectorService::new(config, Arc::new(FailedGenerator)));
+    let (_, body) = send(&router, "PreToolUse", pre("Read", "outage"), None).await;
+    assert_eq!(body["hookSpecificOutput"]["permissionDecision"], "deny");
+    let response = router
+        .oneshot(post(
+            "/v1/hooks/PreToolUse",
+            json!({"session_id":"s", "tool_name":"Read", "tool_input":{}, "tool_use_id":"claude"}),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(json_body(response).await, (StatusCode::OK, Value::Null));
+}
+
+#[tokio::test]
+async fn codex_denies_a_missing_decision_while_observation_remains_explicit() {
+    for mode in [EnforcementMode::Enforce, EnforcementMode::Shadow] {
+        let mut generator = Recording::decision(Decision::Allow, "ok");
+        generator.response.decision_response = None;
+        let config = CollectorConfig {
+            enforcement_mode: mode,
+            intent_capture: false,
+            ..CollectorConfig::default()
+        };
+        let router = app(config, Arc::new(generator));
+        let (_, body) = send(&router, "PreToolUse", pre("Read", "missing"), None).await;
+        if mode == EnforcementMode::Enforce {
+            assert_eq!(body["hookSpecificOutput"]["permissionDecision"], "deny");
+        } else {
+            assert_eq!(body, Value::Null);
+        }
+    }
+}
+
+#[tokio::test]
+async fn delivery_receipts_replay_only_confirmed_identical_events() {
+    let generator = Arc::new(Recording::decision(Decision::Allow, "ok"));
+    let router = app(CollectorConfig::default(), generator.clone());
+    let body = json!({"session_id":"receipt-session", "source":"startup", "cwd":"C:/proj"});
+    for _ in 0..2 {
+        let mut request = post("/v1/hooks/codex/SessionStart", body.clone(), None);
+        request.headers_mut().insert(
+            "x-withhuman-event",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(
+            router.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::OK
+        );
+    }
+    assert_eq!(generator.events.lock().unwrap().len(), 1);
+    let mut request = post(
+        "/v1/hooks/codex/SessionStart",
+        json!({"session_id":"changed"}),
+        None,
+    );
+    request.headers_mut().insert(
+        "x-withhuman-event",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            .parse()
+            .unwrap(),
+    );
+    assert_eq!(
+        router.oneshot(request).await.unwrap().status(),
+        StatusCode::CONFLICT
+    );
+}
+
+#[tokio::test]
+async fn unfinished_delivery_is_not_automatically_applied_again() {
+    let router = app_with_transport(CollectorService::new(
+        CollectorConfig::default(),
+        Arc::new(FailedGenerator),
+    ));
+    for expected in [StatusCode::BAD_GATEWAY, StatusCode::CONFLICT] {
+        let mut request = post(
+            "/v1/hooks/codex/SessionStart",
+            json!({"session_id":"unfinished", "source":"startup"}),
+            None,
+        );
+        request.headers_mut().insert(
+            "x-withhuman-event",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(
+            router.clone().oneshot(request).await.unwrap().status(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn windows_read_and_patch_use_one_file_key() {
+    let read = simple_read(
+        "Get-Content '.\\vendor\\a.txt'",
+        CodexShell::PowerShell,
+        Some("C:\\proj"),
+    )
+    .unwrap();
+    let (_, write) = translate_tool(
+        "apply_patch",
+        &json!({"command":"*** Begin Patch\n*** Add File: C:\\proj\\vendor\\..\\vendor\\a.txt\n+x\n*** End Patch"}),
+        Some("C:/proj"),
+        CodexShell::PowerShell,
+    );
+    assert_eq!(read["file_path"], write["file_path"]);
+    assert_eq!(read["file_path"], "C:/proj/vendor/a.txt");
+}
 
 fn app(config: CollectorConfig, generator: Arc<Recording>) -> axum::Router {
     app_with_transport(CollectorService::new(config, generator))

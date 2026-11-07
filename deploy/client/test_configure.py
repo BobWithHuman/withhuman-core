@@ -37,9 +37,11 @@ class ConfigureTest(unittest.TestCase):
     def configure(self, *extra, server=SERVER):
         # WITHHUMAN_SERVER is dropped so the developer's own environment cannot stand in for the
         # address under test, nor hide a missing one.
-        env = {**os.environ, "HOME": str(self.home), "SHELL": "/bin/zsh"}
+        env = {**os.environ, "HOME": str(self.home), "USERPROFILE": str(self.home), "SHELL": "/bin/zsh"}
         env.pop("WITHHUMAN_SERVER", None)
         arguments = ["--project", str(self.project), "--team", "lab"]
+        if os.name == "nt":
+            arguments.append("--no-persist")  # Never setx in a unit test.
         if server is not None:
             arguments += ["--server", server]
         return subprocess.run(
@@ -47,6 +49,7 @@ class ConfigureTest(unittest.TestCase):
             capture_output=True, text=True, env=env, timeout=30,
         )
 
+    @unittest.skipIf(os.name == "nt", "POSIX profile persistence; covered on Linux")
     def test_replaces_an_earlier_setup_and_keeps_everything_else(self):
         # User settings from an earlier setup.sh merge, beside the user's own hook and settings.
         self.write(self.home / ".claude" / "settings.json", {
@@ -100,6 +103,7 @@ class ConfigureTest(unittest.TestCase):
         self.assertEqual(profile.count("export WITHHUMAN_CLIENT_ID="), 1)
         self.assertIn(client_id, result.stdout)
 
+    @unittest.skipIf(os.name == "nt", "POSIX profile persistence; covered on Linux")
     def test_gives_the_same_result_when_run_again(self):
         self.assertEqual(self.configure().returncode, 0)
         settings = (self.project / ".claude" / "settings.json").read_text()
@@ -132,10 +136,10 @@ class ConfigureTest(unittest.TestCase):
         self.assertFalse((self.project / ".claude" / "settings.json").exists())
 
     def test_takes_the_address_from_the_environment(self):
-        env = {**os.environ, "HOME": str(self.home), "SHELL": "/bin/zsh",
+        env = {**os.environ, "HOME": str(self.home), "USERPROFILE": str(self.home), "SHELL": "/bin/zsh",
                "WITHHUMAN_SERVER": "http://127.0.0.1:3000/"}
         result = subprocess.run(
-            [sys.executable, str(CONFIGURE), "--project", str(self.project), "--team", "lab"],
+            [sys.executable, str(CONFIGURE), "--project", str(self.project), "--team", "lab", "--no-persist"],
             capture_output=True, text=True, env=env, timeout=30,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
