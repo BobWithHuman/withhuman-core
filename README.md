@@ -77,24 +77,37 @@ python3 deploy/client/configure.py \
 
 ### Codex CLI
 
-Configure a Codex CLI project with `--agent codex`:
+Set up a Codex CLI project with the same one-line installers, choosing Codex. In the folder you
+start `codex` in, on Windows PowerShell:
 
-```sh
-python3 deploy/client/configure.py --agent codex \
-  --project /path/to/project --team personal --server http://127.0.0.1:3000
+```powershell
+$env:WITHHUMAN_SERVER = "http://127.0.0.1:3000"; $env:WITHHUMAN_AGENT = "codex"
+irm https://raw.githubusercontent.com/BobWithHuman/withhuman-core/main/deploy/client/setup-project.ps1 | iex
 ```
 
-This installs the hook into `<project>/.codex/hooks/`, writes `<project>/.codex/hooks.json` and
-checks that the installed hook reaches the engine; the user's `~/.codex` is left alone. Then
-start `codex` in the project, open `/hooks` and trust the WithHuman hooks. Codex skips project
+or on macOS and Linux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/BobWithHuman/withhuman-core/main/deploy/client/setup-project.sh \
+  | WITHHUMAN_SERVER=http://127.0.0.1:3000 WITHHUMAN_AGENT=codex bash
+```
+
+This installs the hook into `<project>/.codex/hooks/`, adds its entries to
+`<project>/.codex/hooks.json` (other hooks are kept) and checks that the installed hook reaches
+the engine; the user's `~/.codex` is left alone, and no engine secret goes on the device. Then
+run `codex` in the project, open `/hooks` and trust the WithHuman hooks. Codex skips project
 hooks until they are trusted, and again after `hooks.json` changes, so the project is not
-protected until you do.
+protected until you do. Running the installer again updates the setup; with
+`WITHHUMAN_UNINSTALL=1` it takes WithHuman out of the project instead. From a checkout,
+`python3 deploy/client/configure.py --agent codex --server <engine>` does the same.
+
+Codex cannot show a confirmation prompt, so a call that needs the user's confirmation (REVIEW)
+is blocked. Confirm in the conversation, then ask again.
 
 The hook sends Codex's events to the Collector's `/v1/hooks/codex/{event}` route, which turns
-them into the Claude Code hook requests the engine already judges. Codex cannot ask the user,
-so a REVIEW verdict blocks the call, and MCP calls are enforced by the hook rather than by
-AgentGateway. When the engine cannot be reached or does not answer in time, the hook blocks the
-call (`WITHHUMAN_MODE=observe` lets it through).
+them into the Claude Code hook requests the engine already judges. MCP calls are enforced by the
+hook rather than by AgentGateway. When the engine cannot be reached or does not answer in time,
+the hook blocks the call (`WITHHUMAN_MODE=observe` lets it through).
 
 Known differences from Claude Code: the `[의도]` line Codex writes stays visible on screen, and
 configuration changes made outside the agent are not recorded (Codex has no ConfigChange hook).
