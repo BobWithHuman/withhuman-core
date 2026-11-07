@@ -1,19 +1,33 @@
 #!/usr/bin/env bash
-# Sets up WithHuman for Claude Code in the current folder (macOS, Linux), replacing any earlier
-# WithHuman setup. Run it in the folder you start Claude Code in:
+# Sets up WithHuman for Claude Code or Codex CLI in the current folder (macOS, Linux), replacing
+# any earlier WithHuman setup. Run it in the folder you start the agent in:
 #
 #   WITHHUMAN_SERVER=https://withhuman.example.com \
 #     curl -fsSL https://raw.githubusercontent.com/BobWithHuman/withhuman-core/main/deploy/client/setup-project.sh | bash -s -- [team]
 #
 # WITHHUMAN_SERVER is the address of your own engine; WithHuman is self-hosted, so there is no
-# default. From a checkout it uses the checkout's files; otherwise it fetches them from
-# WITHHUMAN_REF (default: main). See configure.py for what it changes.
+# default. WITHHUMAN_AGENT picks the agent: claude (default) or codex. Running it again updates
+# the setup; WITHHUMAN_UNINSTALL=1 takes WithHuman out of the folder instead, keeping other hooks.
+# From a checkout it uses the checkout's files; otherwise it fetches them from WITHHUMAN_REF
+# (default: main), or from WITHHUMAN_BASE_URL (a deploy/client folder served elsewhere, for a
+# mirror or a test). See configure.py for what it changes.
 set -euo pipefail
 
 team=${1:-default}
 ref=${WITHHUMAN_REF:-main}
+agent=${WITHHUMAN_AGENT:-claude}
+case "$agent" in
+  claude|codex) ;;
+  *) echo "WITHHUMAN_AGENT must be claude or codex: $agent" >&2; exit 1 ;;
+esac
+# The files configure.py needs: the Claude Code hook, which the Codex hook also uses to attach
+# program files, and the Codex hook with its transcript reader.
+files="configure.py hooks/pre-tool-use.py"
+if [ "$agent" = codex ]; then
+  files="$files codex/withhuman-hook.py codex/codex_transcript.py"
+fi
 
-if [ -z "${WITHHUMAN_SERVER:-}" ]; then
+if [ -z "${WITHHUMAN_SERVER:-}" ] && [ -z "${WITHHUMAN_UNINSTALL:-}" ]; then
   cat >&2 <<'USAGE'
 WITHHUMAN_SERVER is required: the address of your own WithHuman engine.
   personal Docker host:  http://127.0.0.1:3000
