@@ -16,9 +16,13 @@ as the Claude Code hook does, the local program files a shell command may run.
 
 Codex runs a call when its hook fails, times out, exits 1 or answers `ask`. So in enforce mode
 every failure here (Collector unreachable or slow, a non-200 answer, an answer or input that
-does not parse, an unknown shell directory, any exception) ends a PreToolUse with a deny, and
-exits 2 if even that cannot be written. Other events have nothing to block and only report the
-failure on stderr. WITHHUMAN_MODE=observe lets everything through.
+does not parse, any exception) ends a PreToolUse with a deny, and exits 2 if even that cannot
+be written. Other events have nothing to block and only report the failure on stderr.
+WITHHUMAN_MODE=observe lets everything through.
+
+A shell call whose directory the transcript does not show is denied when its command names a
+safeguard (a relative path in it could land anywhere); any other is judged as running in the
+session folder, and the Collector marks it.
 
 Environment: WITHHUMAN_CLIENT_ID (else ~/.config/withhuman/client-id), WITHHUMAN_REPO,
 WITHHUMAN_MODE (enforce | observe), WITHHUMAN_HOOK_TIMEOUT (seconds for the whole run).
@@ -29,6 +33,7 @@ Python 3.8 or later, standard library only; Windows and macOS.
 import importlib.util
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -54,6 +59,12 @@ DEFAULT_DEADLINE_SECONDS = 4.0
 # How long a shell call's entry may take to appear in the transcript.
 TRANSCRIPT_WAIT_SECONDS = 0.5
 STATE_DIRECTORY = os.path.join(HERE, "withhuman-state")
+# What a command touching the agent's safeguards names: Codex's and Claude Code's settings and
+# hooks, and this hook's files.
+SAFEGUARD_MARKS = re.compile(
+    r"\.codex|\.claude|hooks\.json|config\.toml|requirements\.toml|settings[\w.-]*\.json"
+    r"|withhuman-hook|codex_transcript|withhuman-state|pre-tool-use\.py",
+    re.IGNORECASE)
 BLOCKED = "WithHuman could not check this call, so it was blocked"
 
 
@@ -177,22 +188,34 @@ def attach_programs(event, workdir):
         return []
 
 
+def names_safeguard(command):
+    """Whether a command names anything of the agent's safeguards (Codex's or Claude Code's
+    settings and hooks, this hook), however it is spelled or where it runs."""
+    return isinstance(command, str) and SAFEGUARD_MARKS.search(command) is not None
+
+
 def prepare(event_name, event, session, transcript_ok):
-    """Adds what the transcript tells about this event's call; raises BridgeError when a shell
-    call's directory cannot be known."""
+    """Adds what the transcript tells about this event's call; raises BridgeError for a shell
+    call whose directory is unknown and whose command names a safeguard."""
     tool_use_id = event.get("tool_use_id")
     tool_name = event.get("tool_name")
     if event_name not in ("PreToolUse", "PostToolUse") or not tool_use_id:
         return
-    call = session.call(tool_use_id) if session else None
     path = event.get("transcript_path")
-    deadline = time.monotonic() + TRANSCRIPT_WAIT_SECONDS
     shell = tool_name in codex_transcript.SHELL_TOOLS
+    tool_input = event.get("tool_input") if isinstance(event.get("tool_input"), dict) else {}
+    command = tool_input.get("command")
+    if shell:
+        call = session.shell_call(tool_use_id, command) if session else None
+    else:
+        call = session.call(tool_use_id) if session else None
+    deadline = time.monotonic() + TRANSCRIPT_WAIT_SECONDS
     while shell and not call and time.monotonic() < deadline:
-        # Codex may still be writing the call: read again, without the session state.
+        # Codex may still be writing the call, or another run holds the session: read the
+        # whole transcript again, without the session state.
         time.sleep(0.05)
         try:
-            call = codex_transcript.find_call(path, tool_use_id)
+            call = codex_transcript.find_call(path, tool_use_id, command, event.get("cwd"))
         except codex_transcript.TranscriptError:
             break
     if shell:
@@ -202,10 +225,13 @@ def prepare(event_name, event, session, transcript_ok):
             # The model gave no directory: Codex runs the command in the session's.
             event["withhuman_workdir"] = event.get("cwd")
         elif event_name == "PreToolUse":
-            # Without it a relative path would be judged against the project folder, which may
-            # not be where the command writes.
             why = "transcript unreadable" if not transcript_ok else "call not in transcript"
-            raise BridgeError(f"directory of the shell call unknown ({why})")
+            if names_safeguard(command):
+                # A relative path would be judged against the session folder, which may not be
+                # where the command writes: a command touching a safeguard is not risked.
+                raise BridgeError(f"directory of the shell call unknown ({why})")
+            # Judged in the session folder; the Collector marks it (codex_workdir: unknown).
+            print(f"WithHuman: directory of the shell call unknown ({why})", file=sys.stderr)
     if event_name == "PreToolUse" and shell:
         programs = attach_programs(event, event.get("withhuman_workdir"))
         if programs:
@@ -270,7 +296,10 @@ def run(argv, stdin):
             except BridgeError as error:
                 print(f"WithHuman: {synthetic_event} from transcript not sent: {error}",
                       file=sys.stderr)
-        prepare(event_name, event, session, transcript_ok)
+        try:
+            prepare(event_name, event, session, transcript_ok)
+        finally:
+            session.save()  # Which code-mode shell call this hook took.
     answer = collector.post(event_name, event)
     return codex_output(event_name, answer), 0
 

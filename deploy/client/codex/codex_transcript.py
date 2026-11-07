@@ -112,6 +112,132 @@ def _quoted(name, text):
     return found
 
 
+class _Literal:
+    """Reads one JavaScript object or array literal (strings, numbers, true/false/null, bare or
+    quoted keys) from code Codex runs. Only literals: anything computed fails, and nothing is
+    ever evaluated."""
+
+    ESCAPES = {"n": "\n", "t": "\t", "r": "\r", "b": "\b", "f": "\f", "v": "\v", "0": "\0"}
+
+    def __init__(self, text, at):
+        self.text, self.at = text, at
+
+    def fail(self):
+        raise ValueError(f"not a literal at {self.at}")
+
+    def space(self):
+        while self.at < len(self.text) and self.text[self.at] in " \t\r\n":
+            self.at += 1
+
+    def peek(self):
+        self.space()
+        return self.text[self.at] if self.at < len(self.text) else ""
+
+    def value(self):
+        c = self.peek()
+        if c == "{":
+            return self.object()
+        if c == "[":
+            return self.array()
+        if c in "\"'`":
+            return self.string()
+        match = re.compile(r"-?\d+(\.\d+)?|true|false|null").match(self.text, self.at)
+        if not match:
+            self.fail()
+        self.at = match.end()
+        return json.loads(match.group(0))
+
+    def string(self):
+        quote = self.text[self.at]
+        self.at += 1
+        out = []
+        while self.at < len(self.text):
+            c = self.text[self.at]
+            self.at += 1
+            if c == quote:
+                return "".join(out)
+            if quote == "`" and c == "$" and self.text[self.at:self.at + 1] == "{":
+                self.fail()  # A template with a computed part.
+            if c != "\\":
+                out.append(c)
+                continue
+            e = self.text[self.at:self.at + 1]
+            self.at += 1
+            if e == "u":
+                out.append(chr(int(self.text[self.at:self.at + 4], 16)))
+                self.at += 4
+            elif e == "x":
+                out.append(chr(int(self.text[self.at:self.at + 2], 16)))
+                self.at += 2
+            elif e == "\n":
+                pass
+            else:
+                out.append(self.ESCAPES.get(e, e))
+        self.fail()
+
+    def object(self):
+        self.at += 1
+        found = {}
+        while True:
+            c = self.peek()
+            if c == "}":
+                self.at += 1
+                return found
+            if c in "\"'":
+                key = self.string()
+            else:
+                match = re.compile(r"[A-Za-z_$][\w$]*").match(self.text, self.at)
+                if not match:
+                    self.fail()
+                key, self.at = match.group(0), match.end()
+            if self.peek() != ":":
+                self.fail()
+            self.at += 1
+            found[key] = self.value()
+            if self.peek() == ",":
+                self.at += 1
+
+    def array(self):
+        self.at += 1
+        found = []
+        while True:
+            if self.peek() == "]":
+                self.at += 1
+                return found
+            found.append(self.value())
+            if self.peek() == ",":
+                self.at += 1
+
+
+# Shell tools a code-mode `exec` script calls, as `tools.<name>({cmd, workdir, …})`.
+CODE_SHELL = re.compile(r"tools\.(exec_command|shell_command|shell|local_shell)\s*\(")
+
+
+def code_shell_calls(source):
+    """The shell calls in a code-mode `exec` script, in order, each as `{cmd, workdir}`; a call
+    whose arguments are not a plain literal is left out (and its directory stays unknown)."""
+    calls = []
+    for match in CODE_SHELL.finditer(source):
+        try:
+            arguments = _Literal(source, match.end()).value()
+        except (ValueError, IndexError):
+            continue
+        if not isinstance(arguments, dict):
+            continue
+        command = arguments.get("cmd", arguments.get("command"))
+        if isinstance(command, list):
+            command = " ".join(str(word) for word in command)
+        if isinstance(command, str):
+            calls.append({"cmd": command, "workdir": _path(arguments.get("workdir"))})
+    return calls
+
+
+def same_command(a, b):
+    """Whether two command texts are the same command, line endings and edge space aside."""
+    norm = lambda text: text.replace("\r\n", "\n").strip() if isinstance(text, str) else None
+    return norm(a) is not None and norm(a) == norm(b)
+
+
 def _remember(items, value):
     if value not in items:
         items.append(value)
@@ -136,6 +262,10 @@ class Session:
             "webrun_hooked": False,
             "turn_id": None,
             "last_message": None,
+            # The directory the turn runs in: where Codex runs a shell call given none.
+            "turn_cwd": None,
+            # Shell calls inside code-mode `exec` scripts, waiting for their hooks.
+            "code_shells": [],
         }
 
     def __enter__(self):
@@ -196,6 +326,23 @@ class Session:
     def call(self, call_id):
         return self.state["calls"].get(call_id)
 
+    def shell_call(self, tool_use_id, command):
+        """The transcript's entry for a shell call's hook: by its id (a direct call), or, for a
+        call a code-mode script makes, whose hook id the transcript does not show until it ends,
+        the first such call with the same command text not yet taken by another hook."""
+        call = self.state["calls"].get(tool_use_id)
+        if call and call.get("kind") == "shell":
+            return call
+        for entry in self.state["code_shells"]:
+            if entry.get("hook") in (None, tool_use_id) and same_command(entry["cmd"], command):
+                entry["hook"] = tool_use_id
+                call = {"kind": "shell", "name": "exec_command",
+                        "workdir": entry.get("workdir") or entry.get("turn_cwd"),
+                        "script": entry.get("call_id")}
+                self.state["calls"][tool_use_id] = call
+                return call
+        return None
+
     # ---- the transcript ----
 
     def skip_to(self, offset):
@@ -223,8 +370,11 @@ class Session:
         if not isinstance(payload, dict):
             return []
         item_type = payload.get("type")
-        if kind == "turn_context" and payload.get("turn_id"):
-            self.state["turn_id"] = payload["turn_id"]
+        if kind == "turn_context":
+            if payload.get("turn_id"):
+                self.state["turn_id"] = payload["turn_id"]
+            if isinstance(payload.get("cwd"), str):
+                self.state["turn_cwd"] = payload["cwd"]
             return []
         if kind == "event_msg" and item_type == "item_completed":
             self._completed(payload.get("item"))
@@ -275,7 +425,9 @@ class Session:
             if namespace.startswith("mcp__"):
                 call.update(kind="mcp", tool_name=f"{namespace}__{name}", arguments=arguments)
             elif name in SHELL_TOOLS:
-                call.update(kind="shell", workdir=_path(arguments.get("workdir")))
+                # Without a workdir Codex runs the command in the turn's directory.
+                call.update(kind="shell", workdir=_path(arguments.get("workdir"))
+                            or self.state["turn_cwd"])
             else:
                 call["kind"] = "other"
         elif item_type == "local_shell_call":
@@ -283,8 +435,18 @@ class Session:
             call.update(kind="shell", workdir=_path(action.get("working_directory")))
         elif item_type == "custom_tool_call":
             source = payload.get("input") if isinstance(payload.get("input"), str) else ""
+            if name == "exec":
+                # Code mode: a script that may call shells and the web. Its shell calls get hooks
+                # of their own, matched to these by command text.
+                for shell in code_shell_calls(source):
+                    self.state["code_shells"].append(dict(
+                        shell, call_id=call_id, turn_cwd=self.state["turn_cwd"] or cwd,
+                        hook=None))
+                del self.state["code_shells"][:-MAX_IDS]
             if name == "exec" and "web__run" in source:
                 call.update(kind="web", queries=_quoted("q", source), urls=_quoted("ref_id", source))
+            elif name == "exec":
+                call["kind"] = "code"
             else:
                 call["kind"] = "patch" if name == "apply_patch" else "other"
         else:  # web_search_call: no output follows, so it is recorded as it appears.
@@ -358,11 +520,14 @@ class Session:
         return [("PreToolUse", pre), ("PostToolUse", post)]
 
 
-def find_call(transcript_path, call_id):
+def find_call(transcript_path, call_id, command=None, cwd=None):
     """A call's details from a full read of the transcript, without session state: for a hook
-    that could not take the session lock."""
+    that ran before Codex wrote its call, or that could not take the session lock. A shell
+    call is also matched by its command text, as `Session.shell_call` does."""
     probe = Session(".", "probe")  # Never entered: no file is made.
     records, _ = read_records(transcript_path, 0)
     for record in records:
-        probe._record(record, "probe", None)
+        probe._record(record, "probe", cwd)
+    if command is not None:
+        return probe.shell_call(call_id, command)
     return probe.state["calls"].get(call_id)

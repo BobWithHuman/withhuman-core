@@ -259,11 +259,91 @@ class CodexHookTest(unittest.TestCase):
                                  "PreToolUse"])
         self.assertEqual(self.sent("PostToolBatch")[0][1], {"session_id": "s1", "tool_calls": []})
 
-    def test_denies_a_shell_call_whose_directory_it_cannot_tell(self):
-        self.assert_denied(self.pre(call_id="call_missing"))
-        self.assertEqual(self.sent("PreToolUse"), [])
+    def test_lets_the_engine_judge_a_call_whose_directory_it_cannot_tell(self):
+        # Not in the transcript: judged as running in the session folder, marked by the
+        # Collector since no directory is sent.
+        self.assertEqual(self.pre(call_id="call_missing")[:2], (0, None))
+        sent = self.sent("PreToolUse")[0][1]
+        self.assertNotIn("withhuman_workdir", sent)
+        self.assertEqual(sent["cwd"], str(self.project))
+        # The same with no transcript at all.
         self.transcript.unlink()
-        self.assert_denied(self.pre(call_id="call_missing"))
+        self.assertEqual(self.pre(call_id="call_missing")[:2], (0, None))
+
+    def test_denies_a_call_of_unknown_directory_that_names_a_safeguard(self):
+        for command in ["Set-Content hooks.json '{}'", "cd .codex; ni x", "echo > .CLAUDE/x",
+                        "cp a settings.local.json", "rm withhuman-hook.py",
+                        "Set-Content requirements.toml x"]:
+            Collector.received = []
+            self.assert_denied(self.pre(call_id="call_missing", tool_input={"command": command}))
+            self.assertEqual(self.sent("PreToolUse"), [], command)
+        self.transcript.unlink()
+        self.assert_denied(self.pre(call_id="call_missing",
+                                    tool_input={"command": "Set-Content config.toml x"}))
+
+    # ---- code mode: shells called inside an `exec` script ----
+
+    LIVE_COMMAND = ("New-Item -ItemType Directory -Path nested -Force -ErrorAction Stop | Out-Null\n"
+                    "[System.IO.File]::WriteAllText((Join-Path (Get-Location) 'nested\\hello.txt'),"
+                    " 'hello')\nWrite-Output 'hello.txt created'\n"
+                    "[System.IO.File]::WriteAllText((Join-Path (Get-Location) "
+                    "'nested\\.codex\\hooks.json'), '{}')\nWrite-Output 'hooks.json updated'")
+
+    def live_fixture(self, upto_type=None):
+        """The masked transcript of a real Codex 0.154 (ChatGPT) session on Windows whose shell
+        runs inside a code-mode script, up to the record of `upto_type`."""
+        text = (HERE / "fixtures" / "live-code-mode-windows.jsonl").read_text(encoding="utf-8")
+        text = text.replace("<project>", json.dumps(str(self.project))[1:-1])
+        records = []
+        for line in text.splitlines():
+            records.append(json.loads(line))
+            if upto_type and records[-1].get("payload", {}).get("type") == upto_type:
+                break
+        self.append(*records)
+
+    def test_finds_the_directory_of_a_shell_call_in_a_code_mode_script(self):
+        self.live_fixture(upto_type="custom_tool_call")
+        # The hook names the call `exec-…`; the transcript only has the script (`call_…`).
+        result = self.pre(call_id="exec-live-1", tool_input={"command": self.LIVE_COMMAND})
+        self.assertEqual(result[:2], (0, None), result[2])
+        names = [name for name, _ in self.sent()]
+        self.assertEqual(names, ["MessageDisplay", "PreToolUse"])
+        self.assertTrue(self.sent("MessageDisplay")[0][1]["delta"].startswith("[의도]"))
+        # No workdir argument: Codex runs it in the turn's directory.
+        self.assertEqual(self.sent("PreToolUse")[0][1]["withhuman_workdir"], str(self.project))
+
+    def test_matches_each_shell_call_of_a_script_to_its_hook(self):
+        nested = self.nested.replace("\\", "\\\\")
+        script = ('const a = await tools.exec_command({cmd:"Write-Output one"});\n'
+                  f"await tools.exec_command({{'cmd': 'Write-Output two', workdir: \"{nested}\"}});\n"
+                  'await tools.exec_command({cmd:"Write-Output one", "workdir":"' + nested + '"});\n'
+                  "await tools.exec_command({cmd: someVariable});\n")
+        self.append(item("turn_context", {"turn_id": "turn-1", "cwd": str(self.project)}),
+                    item("response_item", {"type": "custom_tool_call", "name": "exec",
+                                           "call_id": "call_script", "input": script}))
+        self.pre(call_id="exec-1", tool_input={"command": "Write-Output two"})
+        self.pre(call_id="exec-2", tool_input={"command": "Write-Output one"})
+        self.pre(call_id="exec-3", tool_input={"command": "Write-Output one"})
+        # The same hook asked again keeps its match.
+        self.pre(call_id="exec-2", tool_input={"command": "Write-Output one"})
+        workdirs = [body["withhuman_workdir"] for _, body in self.sent("PreToolUse")]
+        self.assertEqual(workdirs, [self.nested, str(self.project), self.nested, str(self.project)])
+        # A command given by a variable is never matched by guess: judged in the session folder.
+        self.pre(call_id="exec-4", tool_input={"command": "Write-Output three"})
+        self.assertNotIn("withhuman_workdir", self.sent("PreToolUse")[-1][1])
+
+    def test_marks_a_failed_shell_call_of_a_code_mode_script(self):
+        self.live_fixture(upto_type="custom_tool_call")
+        self.pre(call_id="exec-live-1", tool_input={"command": self.LIVE_COMMAND})
+        self.append(item("event_msg", {"type": "item_completed", "item": {
+            "type": "CommandExecution", "id": "exec-live-1", "status": "failed", "exit_code": 1,
+            "cwd": "file:///" + str(self.project).replace("\\", "/")}}))
+        self.hook("PostToolUse", {"tool_name": "Bash", "tool_use_id": "exec-live-1",
+                                  "tool_input": {"command": self.LIVE_COMMAND},
+                                  "tool_response": ""})
+        post = self.sent("PostToolUse")[0][1]
+        self.assertEqual(post["withhuman_failure"], "exit code 1")
+        self.assertEqual(post["withhuman_workdir"], str(self.project))
 
     def test_runs_a_call_without_a_directory_in_the_session_folder(self):
         self.append(item("response_item", {"type": "function_call", "name": "exec_command",
