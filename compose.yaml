@@ -121,6 +121,28 @@ services:
         condition: service_healthy
     networks: [engine]
 
+  # The graph viewer, started only with `--profile graph-viewer`. It logs in as the
+  # withhuman_viewer role (tools/graph-viewer/viewer-role.sql) and is published on 127.0.0.1
+  # alone; open it through an SSH tunnel.
+  graph-viewer:
+    profiles: [graph-viewer]
+    build: tools/graph-viewer
+    image: withhuman-graph-viewer:local
+    restart: unless-stopped
+    environment:
+      # Optional here so the stack starts without it; the viewer exits at start if it cannot log in.
+      DATABASE_URL: postgres://withhuman_viewer:${VIEWER_DB_PASSWORD:-}@postgres:5432/withhuman
+      # Set only when a host folder of INFUSE attacks is given.
+      INFUSE_ATTACKS_DIR: ${INFUSE_ATTACKS_DIR:+/infuse-attacks}
+    volumes:
+      - ${INFUSE_ATTACKS_DIR:-./tools/graph-viewer}:/infuse-attacks:ro
+    ports:
+      - "127.0.0.1:${VIEWER_PORT:-7480}:7480"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [engine]
+
 volumes:
   postgres-data:
   redis-data:

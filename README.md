@@ -67,6 +67,23 @@ The PostgreSQL `reindex-paragraphs` command runs with the Generator and Decision
 paragraphs and removes their old classifications and paragraph-level cause links. It retains
 original token keys and result-level links.
 
+### Graph viewer
+
+`tools/graph-viewer` shows each session's execution graph, verdicts, causes and paragraphs in a
+browser. It reads PostgreSQL as its own `withhuman_viewer` role, which may read the graph and delete
+whole sessions idle for ten minutes, and is published on `127.0.0.1` only. Set
+`VIEWER_DB_PASSWORD` in `.env` (and `INFUSE_ATTACKS_DIR` to mark INFUSE attack Calls), then:
+
+```sh
+set -a; . ./.env; set +a
+docker compose exec -T postgres psql -U withhuman -d withhuman \
+  -v viewer_password="$VIEWER_DB_PASSWORD" < tools/graph-viewer/viewer-role.sql
+docker compose --profile graph-viewer up -d --build graph-viewer
+ssh -L 7480:localhost:7480 <host>   # then open http://localhost:7480
+```
+
+Run the role script after the engine or `migrate-neo4j.py import` has created the tables.
+
 Configure a Claude Code project against the local gateway:
 
 ```sh
