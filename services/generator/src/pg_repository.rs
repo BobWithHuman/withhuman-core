@@ -354,8 +354,9 @@ impl PgGraphRepository {
             for row in rows {
                 let session: String = row.get(0);
                 let seq: i64 = row.get(2);
-                let mutation =
-                    GeneratorEvent::from_json(row.get(3), row.get(4))?.into_mutation()?;
+                let mutation = GeneratorEvent::from_json(row.get(3), row.get(4))?
+                    .into_mutation()?
+                    .for_postgres();
                 if !mutation.paragraphs.is_empty() {
                     tx.query(
                         &prepared(&tx, STORE_PARAGRAPHS).await?,
@@ -537,7 +538,8 @@ impl GraphRepository for PgGraphRepository {
     }
 
     async fn commit(&self, event: GeneratorEvent) -> Result<EventResponse, RepositoryError> {
-        self.commit_mutation(&event.into_mutation()?).await
+        self.commit_mutation(&event.into_mutation()?.for_postgres())
+            .await
     }
 
     async fn classify_paragraph(
@@ -567,8 +569,12 @@ impl GraphRepository for PgGraphRepository {
             {
                 return Err(PgError::Repository(RepositoryError::NotFound));
             }
+            let error = request
+                .error
+                .as_deref()
+                .map(withhuman_common::postgres_text);
             let parameters: [&(dyn ToSql + Sync); 5] =
-                [&session_id, &hash, &instructs, &jev_ms, &request.error];
+                [&session_id, &hash, &instructs, &jev_ms, &error];
             let applied = tx
                 .execute(&prepared(&tx, CLASSIFY_PARAGRAPHS).await?, &parameters)
                 .await?

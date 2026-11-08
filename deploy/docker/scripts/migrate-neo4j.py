@@ -209,9 +209,21 @@ def export_graph(source, output):
     return counts
 
 
+def for_postgres(value):
+    """A snapshot value as PostgreSQL can store it. Neo4j kept U+0000 (hidden-text attacks carry
+    it on purpose), but PostgreSQL text and jsonb cannot; the engine stores U+FFFD in its place,
+    and so does the import. The snapshot itself and its checksum keep the original."""
+    if isinstance(value, str):
+        return value.replace("\x00", "\ufffd")
+    if isinstance(value, list):
+        return [for_postgres(item) for item in value]
+    return value
+
+
 def stage_snapshot(db, snapshot, sql):
     digest = hashlib.sha256()
     counts = dict.fromkeys(TABLES, 0)
+    replaced = 0
     columns = defaultdict(set)
     buffers = defaultdict(list)
     for table in TABLES:
@@ -241,7 +253,9 @@ def stage_snapshot(db, snapshot, sql):
                 "Snapshot contains a property without a PostgreSQL column")
         digest.update(line)
         counts[table] += 1
-        buffers[table].append(record)
+        stored = {key: for_postgres(value) for key, value in record.items()}
+        replaced += stored != record
+        buffers[table].append(stored)
         if len(buffers[table]) == 250:
             flush(table)
     else:
@@ -249,7 +263,7 @@ def stage_snapshot(db, snapshot, sql):
     for table in list(buffers):
         flush(table)
     require(counts["sessions"] > 0, "Snapshot has no session rows")
-    return counts
+    return counts, replaced
 
 
 def copy_or_verify(db, snapshot, sql, copy):
@@ -260,7 +274,7 @@ def copy_or_verify(db, snapshot, sql, copy):
     db.execute(sql.SQL("LOCK TABLE {} IN SHARE ROW EXCLUSIVE MODE").format(
         sql.SQL(", ").join(sql.Identifier("public", table) for table in TABLES),
     ))
-    counts = stage_snapshot(db, snapshot, sql)
+    counts, replaced = stage_snapshot(db, snapshot, sql)
     for table in TABLES:
         name = sql.Identifier(table)
         if copy:
@@ -275,7 +289,7 @@ def copy_or_verify(db, snapshot, sql, copy):
             )
         """).format(name)).fetchone()[0]
         require(not mismatch, f"Full-row verification failed for {table}")
-    return counts
+    return counts, replaced
 
 
 def main():
@@ -289,6 +303,7 @@ def main():
             fd = os.open(args.snapshot, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
             with os.fdopen(fd, "wb") as output:
                 counts = export_graph(source, output)
+            replaced = 0
         else:
             import psycopg
             from psycopg import sql
@@ -296,7 +311,7 @@ def main():
             database_url = os.environ.get("DATABASE_URL")
             require(database_url, "DATABASE_URL is required")
             with args.snapshot.open("rb") as snapshot, psycopg.connect(database_url, connect_timeout=10) as db:
-                counts = copy_or_verify(db, snapshot, sql, copy=args.command == "import")
+                counts, replaced = copy_or_verify(db, snapshot, sql, copy=args.command == "import")
     except MigrationError as error:
         print(str(error), file=sys.stderr)
         return 1
@@ -305,7 +320,11 @@ def main():
         print(f"Migration failed ({type(error).__name__}). Check the connection, snapshot and schema.",
               file=sys.stderr)
         return 1
-    print(json.dumps({"command": args.command, "rows": counts}, sort_keys=True))
+    result = {"command": args.command, "rows": counts}
+    if replaced:
+        # Rows stored with U+FFFD for U+0000 (see for_postgres).
+        result["rows_with_nul_replaced"] = replaced
+    print(json.dumps(result, sort_keys=True))
     return 0
 
 
