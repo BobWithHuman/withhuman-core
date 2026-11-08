@@ -1000,6 +1000,43 @@ async fn marks_paragraphs_with_hidden_content() {
     delete_session(&query, &session_id).await;
 }
 
+/// PostgreSQL cannot store U+0000, which hidden-text attacks put in tool results on purpose. The
+/// result must still reach the graph, flagged from its original text, with U+FFFD stored instead.
+#[tokio::test]
+async fn stores_a_tool_result_carrying_nul() {
+    let Some((query, generator_url)) = start_without_decision().await else {
+        return;
+    };
+    let session_id = unique_session("generator-nul-it");
+    let client = reqwest::Client::new();
+    let visible =
+        "Plain release notes describing the new dashboard and the faster build. ".repeat(4);
+    let page = format!("{visible}\nHKLM\\Software\\\u{0}Run keeps a value hidden\n{visible}");
+    post_event(
+        &client,
+        &generator_url,
+        "PostToolUse",
+        json!({
+            "session_id":session_id,"order":1,"observed_at":1,"meta":{"tool_use_id":"tool-1"},
+            "payload":{"tool_name":"WebFetch","tool_input":{"url":"https://example.test"},
+                       "tool_response":page}
+        }),
+    )
+    .await;
+
+    let rows = query
+        .one(
+            r#"SELECT jsonb_build_array(jsonb_agg(jsonb_build_array(p.hidden, p.hidden_rules, strpos(p.text, U&'\FFFD') > 0) ORDER BY p."index")) FROM nodes n JOIN paragraphs p USING (session_id, seq) WHERE n.session_id = $1 AND n."order" = 1"#,
+            &[&session_id],
+        ).await;
+    assert_eq!(
+        rows,
+        vec![json!([[false, [], false], [true, ["nul_char"], true]])]
+    );
+
+    delete_session(&query, &session_id).await;
+}
+
 #[tokio::test]
 async fn follows_the_collector_origin_and_reads_tool_output_shapes() {
     let Some((query, generator_url)) = start_without_decision().await else {

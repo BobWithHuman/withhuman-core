@@ -260,6 +260,54 @@ pub(crate) struct GraphMutation {
     pub(crate) subgraph: Option<i64>,
 }
 
+impl GraphMutation {
+    /// The mutation as PostgreSQL can store it: U+0000 in any stored string becomes U+FFFD
+    /// (`withhuman_common::postgres_text`). Paragraphs, hidden flags and tokens were already
+    /// derived from the original text.
+    pub(crate) fn for_postgres(mut self) -> Self {
+        use withhuman_common::make_postgres_text as clean;
+        let optional = |text: &mut Option<String>| {
+            if let Some(text) = text {
+                clean(text);
+            }
+        };
+        clean(&mut self.session_id);
+        clean(&mut self.event_json);
+        clean(&mut self.payload_json);
+        for text in [
+            &mut self.client_id,
+            &mut self.prompt_id,
+            &mut self.agent_id,
+            &mut self.agent_type,
+            &mut self.cwd,
+            &mut self.tool_use_id,
+            &mut self.turn_id,
+            &mut self.repository,
+            &mut self.file_path,
+            &mut self.intent,
+        ] {
+            optional(text);
+        }
+        for paragraph in &mut self.paragraphs {
+            clean(&mut paragraph.text);
+            clean(&mut paragraph.hash);
+            clean(&mut paragraph.source);
+        }
+        for token in &mut self.tokens {
+            for text in [
+                &mut token.key_kind,
+                &mut token.key,
+                &mut token.slot,
+                &mut token.decoded,
+                &mut token.category,
+            ] {
+                clean(text);
+            }
+        }
+        self
+    }
+}
+
 #[derive(Serialize)]
 pub(crate) struct ParagraphMutation {
     pub(crate) index: i64,
