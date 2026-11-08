@@ -361,15 +361,36 @@ def run(argv, stdin):
 
 
 def check(server):
-    """Checks the hook can run here and reach the engine."""
+    """Checks the hook can run here and that the engine has the Codex route.
+
+    An empty event is sent to the route the hook uses: the Collector rejects it as invalid
+    (400) without recording anything. That answer proves the gateway passes the route on and
+    the engine knows Codex; `/healthz` would prove neither, and some gateways do not route it.
+    """
     load_transcript_module()
     load_programs()
     os.makedirs(STATE_DIRECTORY, exist_ok=True)
-    with urllib.request.urlopen(f"{server.rstrip('/')}/healthz", timeout=5) as response:
-        if response.status != 200:
-            raise BridgeError(f"engine answered {response.status}")
-    print(f"WithHuman Codex hook OK: Python {sys.version.split()[0]}, engine {server} reachable")
-    return 0
+    request = urllib.request.Request(
+        f"{server.rstrip('/')}/v1/hooks/codex/PreToolUse", data=b"{}",
+        headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            status, body = response.status, response.read()
+    except urllib.error.HTTPError as error:
+        status, body = error.code, error.read()
+    try:
+        answer = json.loads(body or b"{}")
+    except ValueError:
+        answer = {}
+    if status == 400 and isinstance(answer, dict) and answer.get("error") in (
+            "invalid_json", "invalid_codex_hook"):
+        print(f"WithHuman Codex hook OK: Python {sys.version.split()[0]}, "
+              f"engine {server} reachable with Codex support")
+        return 0
+    if status == 404:
+        raise BridgeError(f"{server} has no Codex route: update the engine to a version "
+                          "with Codex support")
+    raise BridgeError(f"{server} answered {status} to the Codex route")
 
 
 def audit(event_name, payload, output, error=None):

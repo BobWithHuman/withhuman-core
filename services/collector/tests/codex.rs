@@ -653,7 +653,7 @@ fn append(path: &str, text: &str) -> (String, Value) {
 
 #[test]
 fn turns_a_command_that_only_writes_a_file_into_write() {
-    // As real Codex 0.167 wrote a file (C:\WithHuman\withhuman-codex-cb-lab\live-181405).
+    // As a real Codex 0.167 session wrote a file.
     assert_eq!(
         ps_write(
             "New-Item -ItemType Directory -Path nested -Force | Out-Null\n\

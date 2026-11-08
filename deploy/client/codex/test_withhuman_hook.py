@@ -517,12 +517,31 @@ class CodexHookTest(unittest.TestCase):
         self.assertEqual(programs[0]["path"], str(script))
         self.assertEqual(programs[0]["content"], "Write-Output 'hi'\n")
 
-    def test_checks_it_can_run(self):
-        result = subprocess.run(
+    def check(self):
+        return subprocess.run(
             [sys.executable, str(self.hooks / "withhuman-hook.py"), "--check", self.url],
             capture_output=True, text=True, timeout=30)
+
+    def test_checks_it_can_run(self):
+        # The engine rejects the empty probe event, which proves its Codex route is there.
+        Collector.status = 400
+        Collector.answers["PreToolUse"] = {"error": "invalid_json"}
+        result = self.check()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("reachable", result.stdout)
+        self.assertIn("reachable with Codex support", result.stdout)
+        event, _, body = Collector.received[-1]
+        self.assertEqual((event, body), ("PreToolUse", {}))
+
+    def test_check_fails_on_an_engine_without_codex_support(self):
+        Collector.status = 404
+        Collector.answers["PreToolUse"] = b"route not found"
+        result = self.check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no Codex route", result.stderr)
+        # Anything else is no Codex engine either.
+        Collector.status = 200
+        Collector.answers["PreToolUse"] = b""
+        self.assertNotEqual(self.check().returncode, 0)
 
 
 if __name__ == "__main__":
