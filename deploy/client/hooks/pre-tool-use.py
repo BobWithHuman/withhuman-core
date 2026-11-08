@@ -25,7 +25,7 @@ import sys
 import urllib.error
 import urllib.request
 
-SCRIPT_EXTENSIONS = (".py", ".sh", ".bash", ".zsh", ".js", ".mjs", ".cjs", ".ts", ".rb", ".pl")
+SCRIPT_EXTENSIONS = (".py", ".sh", ".bash", ".zsh", ".js", ".mjs", ".cjs", ".ts", ".rb", ".pl", ".ps1")
 # The Collector keeps at most this many files, each cut to this many bytes.
 MAX_PROGRAMS = 8
 MAX_BYTES = 64 * 1024
@@ -34,10 +34,11 @@ MAX_HASHED_BYTES = 16 * 1024 * 1024
 TIMEOUT_SECONDS = float(os.environ.get("WITHHUMAN_HOOK_TIMEOUT", "30"))
 
 
-def words(command):
+def words(command, powershell=False):
     """The words of a shell command; a command shlex cannot split is split at whitespace."""
     try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer = shlex.shlex(command.replace('\\', '/') if powershell else command,
+                            posix=True, punctuation_chars=True)
         lexer.whitespace_split = True
         return list(lexer)
     except ValueError:
@@ -56,7 +57,7 @@ def directories(tokens, cwd):
 def is_program(path):
     if not os.path.isfile(path):
         return False
-    if path.endswith(SCRIPT_EXTENSIONS):
+    if path.lower().endswith(SCRIPT_EXTENSIONS):
         return True
     if not os.access(path, os.X_OK):
         return False
@@ -97,13 +98,13 @@ def program(path):
 
 def programs(event):
     """The program files the event's Bash command may run, at most MAX_PROGRAMS."""
-    if event.get("tool_name") != "Bash":
+    if event.get("tool_name") not in ("Bash", "PowerShell"):
         return []
     command = (event.get("tool_input") or {}).get("command")
     cwd = event.get("cwd") or os.getcwd()
     if not isinstance(command, str) or not os.path.isabs(cwd):
         return []
-    tokens = words(command)
+    tokens = words(command, powershell=event.get("tool_name") == "PowerShell" or os.name == "nt")
     bases = directories(tokens, cwd)
     found = []
     seen = set()

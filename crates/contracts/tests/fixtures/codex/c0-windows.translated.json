@@ -1,0 +1,1325 @@
+[
+  {
+    "claude_event": "SessionStart",
+    "codex_event": "SessionStart",
+    "request": {
+      "cwd": "<project>",
+      "hook_event_name": "SessionStart",
+      "session_id": "<session:matrix>",
+      "source": "startup",
+      "transcript_path": "<transcript>.jsonl"
+    },
+    "scenario": "matrix",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "UserPromptSubmit",
+    "codex_event": "UserPromptSubmit",
+    "request": {
+      "cwd": "<project>",
+      "hook_event_name": "UserPromptSubmit",
+      "prompt": "Run the C0 scripted tool sequence and report completion.",
+      "prompt_id": "<turn:matrix>",
+      "session_id": "<session:matrix>",
+      "transcript_path": "<transcript>.jsonl"
+    },
+    "scenario": "matrix",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "PreToolUse",
+    "codex_event": "PreToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "<turn:matrix>",
+      "session_id": "<session:matrix>",
+      "tool_input": {
+        "content": "C0\n",
+        "file_path": "<project>/allow-shell.txt"
+      },
+      "tool_name": "Write",
+      "tool_use_id": "call_allow_shell"
+    },
+    "scenario": "matrix",
+    "workdir_unknown": true
+  },
+  {
+    "claude_event": "PreToolUse",
+    "codex_event": "PreToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "<turn:matrix>",
+      "session_id": "<session:matrix>",
+      "tool_input": {
+        "content": "C0\n",
+        "file_path": "<project>/deny-shell.txt"
+      },
+      "tool_name": "Write",
+      "tool_use_id": "call_deny_shell"
+    },
+    "scenario": "matrix",
+    "workdir_unknown": true
+  },
+  {
+    "claude_event": "PostToolUse",
+    "codex_event": "PostToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PostToolUse",
+      "prompt_id": "<turn:matrix>",
+      "session_id": "<session:matrix>",
+      "tool_input": {
+        "content": "C0\n",
+        "file_path": "<project>/allow-shell.txt"
+      },
+      "tool_name": "Write",
+      "tool_response": {
+        "content": "C0\n",
+        "filePath": "<project>/allow-shell.txt",
+        "originalFile": null,
+        "structuredPatch": [],
+        "type": "create",
+        "userModified": false
+      },
+      "tool_use_id": "call_allow_shell"
+    },
+    "scenario": "matrix",
+    "workdir_unknown": true
+  },
+  {
+    "claude_event": "PreToolUse",
+    "codex_event": "PreToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "<turn:matrix>",
+      "session_id": "<session:matrix>",
+      "tool_input": {
+        "changes": [
+          {
+            "tool_input": {
+              "content": "C0 A\n",
+              "file_path": "<project>/allow-patch-a.txt"
+            },
+            "tool_name": "Write"
+          },
+          {
+            "tool_input": {
+              "content": "C0 B\n",
+              "file_path": "<project>/allow-patch-b.txt"
+            },
+            "tool_name": "Write"
+          }
+        ],
+        "command": "*** Begin Patch\n*** Add File: allow-patch-a.txt\n+C0 A\n*** Add File: allow-patch-b.txt\n+C0 B\n*** End Patch"
+      },
+      "tool_name": "apply_patch",
+      "tool_use_id": "call_allow-patch"
+    },
+    "scenario": "matrix",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "PostToolUse",
+    "codex_event": "PostToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PostToolUse",
+      "prompt_id": "<turn:matrix>",
+      "session_id": "<session:matrix>",
+      "tool_input": {
+        "changes": [
+          {
+            "tool_input": {
+              "content": "C0 A\n",
+              "file_path": "<project>/allow-patch-a.txt"
+            },
+            "tool_name": "Write"
+          },
+          {
+            "tool_input": {
+              "content": "C0 B\n",
+              "file_path": "<project>/allow-patch-b.txt"
+            },
+            "tool_name": "Write"
+          }
+        ],
+        "command": "*** Begin Patch\n*** Add File: allow-patch-a.txt\n+C0 A\n*** Add File: allow-patch-b.txt\n+C0 B\n*** End Patch"
+      },
+      "tool_name": "apply_patch",
+      "tool_response": "Exit code: 0\nWall time: 2.3 seconds\nOutput:\nSuccess. Updated the following files:\nA allow-patch-a.txt\nA allow-patch-b.txt\n",
+      "tool_use_id": "call_allow-patch"
+    },
+    "scenario": "matrix",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "PreToolUse",
+    "codex_event": "PreToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "<turn:matrix>",
+      "session_id": "<session:matrix>",
+      "tool_input": {
+        "changes": [
+          {
+            "tool_input": {
+              "content": "C0 A\n",
+              "file_path": "<project>/deny-patch-a.txt"
+            },
+            "tool_name": "Write"
+          },
+          {
+            "tool_input": {
+              "content": "C0 B\n",
+              "file_path": "<project>/deny-patch-b.txt"
+            },
+            "tool_name": "Write"
+          }
+        ],
+        "command": "*** Begin Patch\n*** Add File: deny-patch-a.txt\n+C0 A\n*** Add File: deny-patch-b.txt\n+C0 B\n*** End Patch"
+      },
+      "tool_name": "apply_patch",
+      "tool_use_id": "call_deny-patch"
+    },
+    "scenario": "matrix",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "PreToolUse",
+    "codex_event": "PreToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "<turn:matrix>",
+      "session_id": "<session:matrix>",
+      "tool_input": {
+        "marker": "allow-mcp"
+      },
+      "tool_name": "mcp__c0__record",
+      "tool_use_id": "call_allow-mcp"
+    },
+    "scenario": "matrix",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "PostToolUse",
+    "codex_event": "PostToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PostToolUse",
+      "prompt_id": "<turn:matrix>",
+      "session_id": "<session:matrix>",
+      "tool_input": {
+        "marker": "allow-mcp"
+      },
+      "tool_name": "mcp__c0__record",
+      "tool_response": {
+        "_meta": {
+          "c0": true
+        },
+        "content": [
+          {
+            "text": "received allow-mcp",
+            "type": "text"
+          }
+        ],
+        "isError": false
+      },
+      "tool_use_id": "call_allow-mcp"
+    },
+    "scenario": "matrix",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "PreToolUse",
+    "codex_event": "PreToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "<turn:matrix>",
+      "session_id": "<session:matrix>",
+      "tool_input": {
+        "marker": "deny-mcp"
+      },
+      "tool_name": "mcp__c0__record",
+      "tool_use_id": "call_deny-mcp"
+    },
+    "scenario": "matrix",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "PreToolUse",
+    "codex_event": "PreToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "<turn:matrix>",
+      "session_id": "<session:matrix>",
+      "tool_input": {
+        "marker": "mcp-error"
+      },
+      "tool_name": "mcp__c0__record",
+      "tool_use_id": "call_mcp-error"
+    },
+    "scenario": "matrix",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "PreToolUse",
+    "codex_event": "PreToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "<turn:matrix>",
+      "session_id": "<session:matrix>",
+      "tool_input": {
+        "command": "Write-Output 'C0 intentional failure'; exit 7"
+      },
+      "tool_name": "PowerShell",
+      "tool_use_id": "call_failed_shell"
+    },
+    "scenario": "matrix",
+    "workdir_unknown": true
+  },
+  {
+    "claude_event": "PostToolUse",
+    "codex_event": "PostToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PostToolUse",
+      "prompt_id": "<turn:matrix>",
+      "session_id": "<session:matrix>",
+      "tool_input": {
+        "command": "Write-Output 'C0 intentional failure'; exit 7"
+      },
+      "tool_name": "PowerShell",
+      "tool_response": {
+        "stderr": "",
+        "stdout": "C0 intentional failure\r\n"
+      },
+      "tool_use_id": "call_failed_shell"
+    },
+    "scenario": "matrix",
+    "workdir_unknown": true
+  },
+  {
+    "claude_event": "PostToolBatch",
+    "codex_event": "Stop",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "hook_event_name": "PostToolBatch",
+      "session_id": "<session:matrix>",
+      "tool_calls": []
+    },
+    "scenario": "matrix",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "",
+    "codex_event": "SessionEnd",
+    "request": null,
+    "scenario": "matrix",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "SessionStart",
+    "codex_event": "SessionStart",
+    "request": {
+      "cwd": "<project>",
+      "hook_event_name": "SessionStart",
+      "session_id": "<session:parallel>",
+      "source": "startup",
+      "transcript_path": "<transcript>.jsonl"
+    },
+    "scenario": "parallel",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "UserPromptSubmit",
+    "codex_event": "UserPromptSubmit",
+    "request": {
+      "cwd": "<project>",
+      "hook_event_name": "UserPromptSubmit",
+      "prompt": "Run the C0 scripted tool sequence and report completion.",
+      "prompt_id": "<turn:parallel>",
+      "session_id": "<session:parallel>",
+      "transcript_path": "<transcript>.jsonl"
+    },
+    "scenario": "parallel",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "PreToolUse",
+    "codex_event": "PreToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "<turn:parallel>",
+      "session_id": "<session:parallel>",
+      "tool_input": {
+        "command": "Write-Output C0-parallel-fast"
+      },
+      "tool_name": "PowerShell",
+      "tool_use_id": "call_fast"
+    },
+    "scenario": "parallel",
+    "workdir_unknown": true
+  },
+  {
+    "claude_event": "PreToolUse",
+    "codex_event": "PreToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "<turn:parallel>",
+      "session_id": "<session:parallel>",
+      "tool_input": {
+        "command": "Start-Sleep -Milliseconds 1800"
+      },
+      "tool_name": "PowerShell",
+      "tool_use_id": "call_slow"
+    },
+    "scenario": "parallel",
+    "workdir_unknown": true
+  },
+  {
+    "claude_event": "PostToolUse",
+    "codex_event": "PostToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PostToolUse",
+      "prompt_id": "<turn:parallel>",
+      "session_id": "<session:parallel>",
+      "tool_input": {
+        "command": "Write-Output C0-parallel-fast"
+      },
+      "tool_name": "PowerShell",
+      "tool_response": {
+        "stderr": "",
+        "stdout": "C0-parallel-fast\r\n"
+      },
+      "tool_use_id": "call_fast"
+    },
+    "scenario": "parallel",
+    "workdir_unknown": true
+  },
+  {
+    "claude_event": "PostToolUse",
+    "codex_event": "PostToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PostToolUse",
+      "prompt_id": "<turn:parallel>",
+      "session_id": "<session:parallel>",
+      "tool_input": {
+        "command": "Start-Sleep -Milliseconds 1800"
+      },
+      "tool_name": "PowerShell",
+      "tool_response": {
+        "stderr": "",
+        "stdout": ""
+      },
+      "tool_use_id": "call_slow"
+    },
+    "scenario": "parallel",
+    "workdir_unknown": true
+  },
+  {
+    "claude_event": "PostToolBatch",
+    "codex_event": "Stop",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "hook_event_name": "PostToolBatch",
+      "session_id": "<session:parallel>",
+      "tool_calls": []
+    },
+    "scenario": "parallel",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "",
+    "codex_event": "SessionEnd",
+    "request": null,
+    "scenario": "parallel",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "SessionStart",
+    "codex_event": "SessionStart",
+    "request": {
+      "cwd": "<project>",
+      "hook_event_name": "SessionStart",
+      "session_id": "<session:faults>",
+      "source": "startup",
+      "transcript_path": "<transcript>.jsonl"
+    },
+    "scenario": "faults",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "UserPromptSubmit",
+    "codex_event": "UserPromptSubmit",
+    "request": {
+      "cwd": "<project>",
+      "hook_event_name": "UserPromptSubmit",
+      "prompt": "Run the C0 scripted tool sequence and report completion.",
+      "prompt_id": "<turn:faults>",
+      "session_id": "<session:faults>",
+      "transcript_path": "<transcript>.jsonl"
+    },
+    "scenario": "faults",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "PreToolUse",
+    "codex_event": "PreToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "<turn:faults>",
+      "session_id": "<session:faults>",
+      "tool_input": {
+        "content": "C0\n",
+        "file_path": "<project>/hook-exit1.txt"
+      },
+      "tool_name": "Write",
+      "tool_use_id": "call_exit1"
+    },
+    "scenario": "faults",
+    "workdir_unknown": true
+  },
+  {
+    "claude_event": "PreToolUse",
+    "codex_event": "PreToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "<turn:faults>",
+      "session_id": "<session:faults>",
+      "tool_input": {
+        "content": "C0\n",
+        "file_path": "<project>/hook-exit2.txt"
+      },
+      "tool_name": "Write",
+      "tool_use_id": "call_exit2"
+    },
+    "scenario": "faults",
+    "workdir_unknown": true
+  },
+  {
+    "claude_event": "PreToolUse",
+    "codex_event": "PreToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "<turn:faults>",
+      "session_id": "<session:faults>",
+      "tool_input": {
+        "content": "C0\n",
+        "file_path": "<project>/hook-timeout.txt"
+      },
+      "tool_name": "Write",
+      "tool_use_id": "call_timeout"
+    },
+    "scenario": "faults",
+    "workdir_unknown": true
+  },
+  {
+    "claude_event": "PreToolUse",
+    "codex_event": "PreToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "<turn:faults>",
+      "session_id": "<session:faults>",
+      "tool_input": {
+        "content": "C0\n",
+        "file_path": "<project>/hook-ask.txt"
+      },
+      "tool_name": "Write",
+      "tool_use_id": "call_ask"
+    },
+    "scenario": "faults",
+    "workdir_unknown": true
+  },
+  {
+    "claude_event": "PostToolUse",
+    "codex_event": "PostToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PostToolUse",
+      "prompt_id": "<turn:faults>",
+      "session_id": "<session:faults>",
+      "tool_input": {
+        "content": "C0\n",
+        "file_path": "<project>/hook-ask.txt"
+      },
+      "tool_name": "Write",
+      "tool_response": {
+        "content": "C0\n",
+        "filePath": "<project>/hook-ask.txt",
+        "originalFile": null,
+        "structuredPatch": [],
+        "type": "create",
+        "userModified": false
+      },
+      "tool_use_id": "call_ask"
+    },
+    "scenario": "faults",
+    "workdir_unknown": true
+  },
+  {
+    "claude_event": "PostToolUse",
+    "codex_event": "PostToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PostToolUse",
+      "prompt_id": "<turn:faults>",
+      "session_id": "<session:faults>",
+      "tool_input": {
+        "content": "C0\n",
+        "file_path": "<project>/hook-exit1.txt"
+      },
+      "tool_name": "Write",
+      "tool_response": {
+        "content": "C0\n",
+        "filePath": "<project>/hook-exit1.txt",
+        "originalFile": null,
+        "structuredPatch": [],
+        "type": "create",
+        "userModified": false
+      },
+      "tool_use_id": "call_exit1"
+    },
+    "scenario": "faults",
+    "workdir_unknown": true
+  },
+  {
+    "claude_event": "PostToolUse",
+    "codex_event": "PostToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PostToolUse",
+      "prompt_id": "<turn:faults>",
+      "session_id": "<session:faults>",
+      "tool_input": {
+        "content": "C0\n",
+        "file_path": "<project>/hook-timeout.txt"
+      },
+      "tool_name": "Write",
+      "tool_response": {
+        "content": "C0\n",
+        "filePath": "<project>/hook-timeout.txt",
+        "originalFile": null,
+        "structuredPatch": [],
+        "type": "create",
+        "userModified": false
+      },
+      "tool_use_id": "call_timeout"
+    },
+    "scenario": "faults",
+    "workdir_unknown": true
+  },
+  {
+    "claude_event": "PostToolBatch",
+    "codex_event": "Stop",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "hook_event_name": "PostToolBatch",
+      "session_id": "<session:faults>",
+      "tool_calls": []
+    },
+    "scenario": "faults",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "",
+    "codex_event": "SessionEnd",
+    "request": null,
+    "scenario": "faults",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "SessionStart",
+    "codex_event": "SessionStart",
+    "request": {
+      "cwd": "<project>",
+      "hook_event_name": "SessionStart",
+      "session_id": "<session:remove>",
+      "source": "startup",
+      "transcript_path": "<transcript>.jsonl"
+    },
+    "scenario": "remove",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "UserPromptSubmit",
+    "codex_event": "UserPromptSubmit",
+    "request": {
+      "cwd": "<project>",
+      "hook_event_name": "UserPromptSubmit",
+      "prompt": "Run the C0 scripted tool sequence and report completion.",
+      "prompt_id": "<turn:remove>",
+      "session_id": "<session:remove>",
+      "transcript_path": "<transcript>.jsonl"
+    },
+    "scenario": "remove",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "PreToolUse",
+    "codex_event": "PreToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "<turn:remove>",
+      "session_id": "<session:remove>",
+      "tool_input": {
+        "command": "Remove-Item -LiteralPath deny-remove.txt"
+      },
+      "tool_name": "PowerShell",
+      "tool_use_id": "call_deny_remove"
+    },
+    "scenario": "remove",
+    "workdir_unknown": true
+  },
+  {
+    "claude_event": "PreToolUse",
+    "codex_event": "PreToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "<turn:remove>",
+      "session_id": "<session:remove>",
+      "tool_input": {
+        "command": "Remove-Item -LiteralPath allow-remove.txt"
+      },
+      "tool_name": "PowerShell",
+      "tool_use_id": "call_allow_remove"
+    },
+    "scenario": "remove",
+    "workdir_unknown": true
+  },
+  {
+    "claude_event": "PostToolUse",
+    "codex_event": "PostToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PostToolUse",
+      "prompt_id": "<turn:remove>",
+      "session_id": "<session:remove>",
+      "tool_input": {
+        "command": "Remove-Item -LiteralPath allow-remove.txt"
+      },
+      "tool_name": "PowerShell",
+      "tool_response": {
+        "stderr": "",
+        "stdout": ""
+      },
+      "tool_use_id": "call_allow_remove"
+    },
+    "scenario": "remove",
+    "workdir_unknown": true
+  },
+  {
+    "claude_event": "PostToolBatch",
+    "codex_event": "Stop",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "hook_event_name": "PostToolBatch",
+      "session_id": "<session:remove>",
+      "tool_calls": []
+    },
+    "scenario": "remove",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "",
+    "codex_event": "SessionEnd",
+    "request": null,
+    "scenario": "remove",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "SessionStart",
+    "codex_event": "SessionStart",
+    "request": {
+      "cwd": "<project>",
+      "hook_event_name": "SessionStart",
+      "session_id": "<session:patch-mutations>",
+      "source": "startup",
+      "transcript_path": "<transcript>.jsonl"
+    },
+    "scenario": "patch-mutations",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "UserPromptSubmit",
+    "codex_event": "UserPromptSubmit",
+    "request": {
+      "cwd": "<project>",
+      "hook_event_name": "UserPromptSubmit",
+      "prompt": "Run the C0 scripted tool sequence and report completion.",
+      "prompt_id": "<turn:patch-mutations>",
+      "session_id": "<session:patch-mutations>",
+      "transcript_path": "<transcript>.jsonl"
+    },
+    "scenario": "patch-mutations",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "PreToolUse",
+    "codex_event": "PreToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "<turn:patch-mutations>",
+      "session_id": "<session:patch-mutations>",
+      "tool_input": {
+        "changes": [
+          {
+            "tool_input": {
+              "edits": [
+                {
+                  "new_string": "after",
+                  "old_string": "before"
+                }
+              ],
+              "file_path": "<project>/allow-edit.txt"
+            },
+            "tool_name": "MultiEdit"
+          },
+          {
+            "tool_input": {
+              "command": "mv -- '<project>/allow-move.txt' '<project>/allow-moved.txt'"
+            },
+            "tool_name": "Bash"
+          },
+          {
+            "tool_input": {
+              "edits": [
+                {
+                  "new_string": "after",
+                  "old_string": "before"
+                }
+              ],
+              "file_path": "<project>/allow-moved.txt"
+            },
+            "tool_name": "MultiEdit"
+          },
+          {
+            "tool_input": {
+              "command": "rm -- '<project>/allow-delete.txt'"
+            },
+            "tool_name": "Bash"
+          }
+        ],
+        "command": "*** Begin Patch\n*** Update File: allow-edit.txt\n@@\n-before\n+after\n*** Update File: allow-move.txt\n*** Move to: allow-moved.txt\n@@\n-before\n+after\n*** Delete File: allow-delete.txt\n*** End Patch"
+      },
+      "tool_name": "apply_patch",
+      "tool_use_id": "call_mutate_allow"
+    },
+    "scenario": "patch-mutations",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "PostToolUse",
+    "codex_event": "PostToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PostToolUse",
+      "prompt_id": "<turn:patch-mutations>",
+      "session_id": "<session:patch-mutations>",
+      "tool_input": {
+        "changes": [
+          {
+            "tool_input": {
+              "edits": [
+                {
+                  "new_string": "after",
+                  "old_string": "before"
+                }
+              ],
+              "file_path": "<project>/allow-edit.txt"
+            },
+            "tool_name": "MultiEdit"
+          },
+          {
+            "tool_input": {
+              "command": "mv -- '<project>/allow-move.txt' '<project>/allow-moved.txt'"
+            },
+            "tool_name": "Bash"
+          },
+          {
+            "tool_input": {
+              "edits": [
+                {
+                  "new_string": "after",
+                  "old_string": "before"
+                }
+              ],
+              "file_path": "<project>/allow-moved.txt"
+            },
+            "tool_name": "MultiEdit"
+          },
+          {
+            "tool_input": {
+              "command": "rm -- '<project>/allow-delete.txt'"
+            },
+            "tool_name": "Bash"
+          }
+        ],
+        "command": "*** Begin Patch\n*** Update File: allow-edit.txt\n@@\n-before\n+after\n*** Update File: allow-move.txt\n*** Move to: allow-moved.txt\n@@\n-before\n+after\n*** Delete File: allow-delete.txt\n*** End Patch"
+      },
+      "tool_name": "apply_patch",
+      "tool_response": "Exit code: 0\nWall time: 1.1 seconds\nOutput:\nSuccess. Updated the following files:\nM allow-edit.txt\nM allow-moved.txt\nD allow-delete.txt\n",
+      "tool_use_id": "call_mutate_allow"
+    },
+    "scenario": "patch-mutations",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "PreToolUse",
+    "codex_event": "PreToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "<turn:patch-mutations>",
+      "session_id": "<session:patch-mutations>",
+      "tool_input": {
+        "changes": [
+          {
+            "tool_input": {
+              "edits": [
+                {
+                  "new_string": "after",
+                  "old_string": "before"
+                }
+              ],
+              "file_path": "<project>/deny-edit.txt"
+            },
+            "tool_name": "MultiEdit"
+          },
+          {
+            "tool_input": {
+              "command": "mv -- '<project>/deny-move.txt' '<project>/deny-moved.txt'"
+            },
+            "tool_name": "Bash"
+          },
+          {
+            "tool_input": {
+              "edits": [
+                {
+                  "new_string": "after",
+                  "old_string": "before"
+                }
+              ],
+              "file_path": "<project>/deny-moved.txt"
+            },
+            "tool_name": "MultiEdit"
+          },
+          {
+            "tool_input": {
+              "command": "rm -- '<project>/deny-delete.txt'"
+            },
+            "tool_name": "Bash"
+          }
+        ],
+        "command": "*** Begin Patch\n*** Update File: deny-edit.txt\n@@\n-before\n+after\n*** Update File: deny-move.txt\n*** Move to: deny-moved.txt\n@@\n-before\n+after\n*** Delete File: deny-delete.txt\n*** End Patch"
+      },
+      "tool_name": "apply_patch",
+      "tool_use_id": "call_mutate_deny"
+    },
+    "scenario": "patch-mutations",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "PostToolBatch",
+    "codex_event": "Stop",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "hook_event_name": "PostToolBatch",
+      "session_id": "<session:patch-mutations>",
+      "tool_calls": []
+    },
+    "scenario": "patch-mutations",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "",
+    "codex_event": "SessionEnd",
+    "request": null,
+    "scenario": "patch-mutations",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "SessionStart",
+    "codex_event": "SessionStart",
+    "request": {
+      "cwd": "<project>",
+      "hook_event_name": "SessionStart",
+      "session_id": "<session:web-wire>",
+      "source": "startup",
+      "transcript_path": "<transcript>.jsonl"
+    },
+    "scenario": "web-wire",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "UserPromptSubmit",
+    "codex_event": "UserPromptSubmit",
+    "request": {
+      "cwd": "<project>",
+      "hook_event_name": "UserPromptSubmit",
+      "prompt": "Run the C0 scripted tool sequence and report completion.",
+      "prompt_id": "<turn:web-wire>",
+      "session_id": "<session:web-wire>",
+      "transcript_path": "<transcript>.jsonl"
+    },
+    "scenario": "web-wire",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "PreToolUse",
+    "codex_event": "PreToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "<turn:web-wire>",
+      "session_id": "<session:web-wire>",
+      "tool_input": {
+        "command": "Write-Output 'C0 web'"
+      },
+      "tool_name": "PowerShell",
+      "tool_use_id": "call_after_web"
+    },
+    "scenario": "web-wire",
+    "workdir_unknown": true
+  },
+  {
+    "claude_event": "PostToolUse",
+    "codex_event": "PostToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PostToolUse",
+      "prompt_id": "<turn:web-wire>",
+      "session_id": "<session:web-wire>",
+      "tool_input": {
+        "command": "Write-Output 'C0 web'"
+      },
+      "tool_name": "PowerShell",
+      "tool_response": {
+        "stderr": "",
+        "stdout": "C0 web\r\n"
+      },
+      "tool_use_id": "call_after_web"
+    },
+    "scenario": "web-wire",
+    "workdir_unknown": true
+  },
+  {
+    "claude_event": "PostToolBatch",
+    "codex_event": "Stop",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "hook_event_name": "PostToolBatch",
+      "session_id": "<session:web-wire>",
+      "tool_calls": []
+    },
+    "scenario": "web-wire",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "",
+    "codex_event": "SessionEnd",
+    "request": null,
+    "scenario": "web-wire",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "SessionStart",
+    "codex_event": "SessionStart",
+    "request": {
+      "cwd": "<project>",
+      "hook_event_name": "SessionStart",
+      "session_id": "<session:workdir>",
+      "source": "startup",
+      "transcript_path": "<transcript>.jsonl"
+    },
+    "scenario": "workdir",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "UserPromptSubmit",
+    "codex_event": "UserPromptSubmit",
+    "request": {
+      "cwd": "<project>",
+      "hook_event_name": "UserPromptSubmit",
+      "prompt": "Run the C0 scripted tool sequence and report completion.",
+      "prompt_id": "<turn:workdir>",
+      "session_id": "<session:workdir>",
+      "transcript_path": "<transcript>.jsonl"
+    },
+    "scenario": "workdir",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "PreToolUse",
+    "codex_event": "PreToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "<turn:workdir>",
+      "session_id": "<session:workdir>",
+      "tool_input": {
+        "content": "C0\n",
+        "file_path": "<project>/allow-nested.txt"
+      },
+      "tool_name": "Write",
+      "tool_use_id": "call_nested_allow"
+    },
+    "scenario": "workdir",
+    "workdir_unknown": true
+  },
+  {
+    "claude_event": "PostToolUse",
+    "codex_event": "PostToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PostToolUse",
+      "prompt_id": "<turn:workdir>",
+      "session_id": "<session:workdir>",
+      "tool_input": {
+        "content": "C0\n",
+        "file_path": "<project>/allow-nested.txt"
+      },
+      "tool_name": "Write",
+      "tool_response": {
+        "content": "C0\n",
+        "filePath": "<project>/allow-nested.txt",
+        "originalFile": null,
+        "structuredPatch": [],
+        "type": "create",
+        "userModified": false
+      },
+      "tool_use_id": "call_nested_allow"
+    },
+    "scenario": "workdir",
+    "workdir_unknown": true
+  },
+  {
+    "claude_event": "PreToolUse",
+    "codex_event": "PreToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "<turn:workdir>",
+      "session_id": "<session:workdir>",
+      "tool_input": {
+        "content": "C0\n",
+        "file_path": "<project>/deny-nested.txt"
+      },
+      "tool_name": "Write",
+      "tool_use_id": "call_nested_deny"
+    },
+    "scenario": "workdir",
+    "workdir_unknown": true
+  },
+  {
+    "claude_event": "PostToolBatch",
+    "codex_event": "Stop",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "hook_event_name": "PostToolBatch",
+      "session_id": "<session:workdir>",
+      "tool_calls": []
+    },
+    "scenario": "workdir",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "",
+    "codex_event": "SessionEnd",
+    "request": null,
+    "scenario": "workdir",
+    "workdir_unknown": false
+  },
+  {
+    "claude_event": "PreToolUse",
+    "codex_event": "PreToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "<turn:live-intent-HQXdBr>",
+      "session_id": "<session:live-intent-HQXdBr>",
+      "tool_input": {
+        "content": "C0\n",
+        "file_path": "<project>/live-intent.txt"
+      },
+      "tool_name": "Write",
+      "tool_use_id": "<call:1>"
+    },
+    "scenario": "live-intent-HQXdBr",
+    "workdir_unknown": true
+  },
+  {
+    "claude_event": "PreToolUse",
+    "codex_event": "PreToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "<turn:live-intent-iBmPJR>",
+      "session_id": "<session:live-intent-iBmPJR>",
+      "tool_input": {
+        "content": "C0\n",
+        "file_path": "<project>/live-intent.txt"
+      },
+      "tool_name": "Write",
+      "tool_use_id": "<call:1>"
+    },
+    "scenario": "live-intent-iBmPJR",
+    "workdir_unknown": true
+  },
+  {
+    "claude_event": "PreToolUse",
+    "codex_event": "PreToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "<turn:live-intent-Qkpcwz>",
+      "session_id": "<session:live-intent-Qkpcwz>",
+      "tool_input": {
+        "content": "C0\n",
+        "file_path": "<project>/live-intent.txt"
+      },
+      "tool_name": "Write",
+      "tool_use_id": "<call:1>"
+    },
+    "scenario": "live-intent-Qkpcwz",
+    "workdir_unknown": true
+  },
+  {
+    "claude_event": "PreToolUse",
+    "codex_event": "PreToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "<turn:live-deny-4YyCjr>",
+      "session_id": "<session:live-deny-4YyCjr>",
+      "tool_input": {
+        "content": "C0\n",
+        "file_path": "<project>/deny-live-intent.txt"
+      },
+      "tool_name": "Write",
+      "tool_use_id": "<call:1>"
+    },
+    "scenario": "live-deny-4YyCjr",
+    "workdir_unknown": true
+  },
+  {
+    "claude_event": "PreToolUse",
+    "codex_event": "PreToolUse",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "<project>",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "<turn:live-web-qorKLK>",
+      "session_id": "<session:live-web-qorKLK>",
+      "tool_input": {
+        "query": "site:developers.openai.com codex hooks /hooks menu"
+      },
+      "tool_name": "WebSearch",
+      "tool_use_id": "<call:1>"
+    },
+    "scenario": "live-web-qorKLK",
+    "workdir_unknown": false
+  }
+]

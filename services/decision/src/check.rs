@@ -72,6 +72,9 @@ pub enum Effect {
         added: Vec<String>,
         removed: Vec<String>,
     },
+    /// Changes several files in one Call (a Codex patch): each file with the lines it adds and
+    /// removes, or a step that moves or deletes one, named by its command.
+    FileChanges { files: Vec<FileDiff> },
     /// Runs local program files, at least one of which the session saw whole.
     Run { programs: Vec<Program> },
     /// Anything else: reading, running, calling a service.
@@ -87,12 +90,30 @@ pub struct Program {
     pub code: Option<String>,
 }
 
-/// Where an agent's safeguards live.
+/// One file of a Call that changes several.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FileDiff {
+    pub path: String,
+    pub added: Vec<String>,
+    pub removed: Vec<String>,
+}
+
+/// Where an agent's safeguards live, in lower case: Claude Code's settings and hooks, and
+/// Codex's hooks (`hooks.json` and the bridge beside it), configuration and the requirements an
+/// administrator sets.
 const SAFEGUARDS: &[&str] = &[
     ".claude/settings",
     ".claude/hooks",
     ".claude\\settings",
     ".claude\\hooks",
+    ".codex/hooks",
+    ".codex/config.toml",
+    "codex/requirements.toml",
+    "codex/managed_config.toml",
+    ".codex\\hooks",
+    ".codex\\config.toml",
+    "codex\\requirements.toml",
+    "codex\\managed_config.toml",
 ];
 
 /// Commands, or parts of one, that write; output thrown away does not count.
@@ -111,9 +132,128 @@ const WRITES: &[&str] = &[
     "perl ",
 ];
 const DISCARDED: &[&str] = &["2>/dev/null", "&>/dev/null", ">/dev/null", "2>&1"];
+/// PowerShell commands and aliases that write, in lower case, as the command of a pipeline step.
+const POWERSHELL_WRITES: &[&str] = &[
+    "set-content",
+    "add-content",
+    "clear-content",
+    "out-file",
+    "tee-object",
+    "set-item",
+    "new-item",
+    "remove-item",
+    "move-item",
+    "copy-item",
+    "rename-item",
+    "sc",
+    "ac",
+    "ri",
+    "rm",
+    "del",
+    "erase",
+    "rmdir",
+    "mi",
+    "cpi",
+    "ni",
+    "rni",
+];
+/// .NET calls PowerShell scripts write files with, in lower case.
+const DOTNET_WRITES: &[&str] = &[
+    "writealltext",
+    "writealllines",
+    "writeallbytes",
+    "appendalltext",
+    "appendalllines",
+];
+/// Commands that change the directory the rest of a command line runs in, in lower case.
+const CHANGE_DIRECTORY: &[&str] = &[
+    "cd",
+    "chdir",
+    "pushd",
+    "set-location",
+    "sl",
+    "push-location",
+];
 
+/// Whether `path` names a safeguard. Windows file names ignore case, so this does too.
 fn is_safeguard(path: &str) -> bool {
+    let path = path.to_ascii_lowercase();
     SAFEGUARDS.iter().any(|place| path.contains(place))
+}
+
+/// Whether a shell command names a safeguard: as written, or once its paths are resolved against
+/// the directory it runs in (`hooks.json` run inside `.codex`), following `cd` and `Set-Location`
+/// earlier in the line.
+fn names_safeguard(command: &str, cwd: Option<&str>) -> bool {
+    if is_safeguard(command) {
+        return true;
+    }
+    let mut cwd = cwd.map(str::to_owned);
+    for words in shell_steps(command) {
+        let mut words = words.iter();
+        let Some(first) = words.next() else {
+            continue;
+        };
+        if CHANGE_DIRECTORY.contains(&first.to_ascii_lowercase().as_str()) {
+            if let Some(directory) = words.find(|word| !word.starts_with('-')) {
+                cwd = Some(normalize_path(&resolve(cwd.as_deref(), directory)));
+            }
+            continue;
+        }
+        let Some(base) = cwd.as_deref() else {
+            continue;
+        };
+        for word in std::iter::once(first).chain(words) {
+            // `>file`, `2>>file`: the target of a redirection.
+            let word = word.rsplit('>').next().unwrap_or(word);
+            if !word.is_empty()
+                && !word.starts_with('-')
+                && is_safeguard(&normalize_path(&resolve(Some(base), word)))
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// The steps of a command line (split at newlines, `;`, `|`, `&` and parentheses), each as its
+/// words with quotes removed. Unlike [`simple_commands`] a backslash is kept, since it separates
+/// a Windows path; this only looks for names.
+fn shell_steps(command: &str) -> Vec<Vec<String>> {
+    let mut steps = Vec::new();
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut quote: Option<char> = None;
+    for c in command.chars() {
+        match (quote, c) {
+            (Some(open), c) if c == open => quote = None,
+            (Some(_), c) => word.push(c),
+            (None, '\'' | '"') => quote = Some(c),
+            (None, '`') => {}
+            (None, ';' | '|' | '&' | '\n' | '(' | ')' | '{' | '}') => {
+                if !word.is_empty() {
+                    words.push(std::mem::take(&mut word));
+                }
+                if !words.is_empty() {
+                    steps.push(std::mem::take(&mut words));
+                }
+            }
+            (None, c) if c.is_whitespace() || c == ',' => {
+                if !word.is_empty() {
+                    words.push(std::mem::take(&mut word));
+                }
+            }
+            (None, c) => word.push(c),
+        }
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    if !words.is_empty() {
+        steps.push(words);
+    }
+    steps
 }
 
 /// What `call` does.
@@ -153,9 +293,10 @@ pub fn effect(call: &CallInfo) -> Effect {
             };
             file_change(path, &before, &after)
         }
-        "Bash" => {
+        // PowerShell commands change files as Bash commands do (Windows, Codex's shell there).
+        "Bash" | "PowerShell" => {
             let command = text("command");
-            if is_safeguard(command) && writes(command) {
+            if writes(command) && names_safeguard(command, call.cwd.as_deref()) {
                 return Effect::Safeguard;
             }
             let programs = programs(call);
@@ -168,6 +309,54 @@ pub fn effect(call: &CallInfo) -> Effect {
                 }
                 None => Effect::Other,
             }
+        }
+        // A Codex patch the Collector split into the Claude Code calls making its changes.
+        "apply_patch" => {
+            let Some(changes) = input.get("changes").and_then(Value::as_array) else {
+                // A patch that did not parse writes whatever it names.
+                return if is_safeguard(text("command")) {
+                    Effect::Safeguard
+                } else {
+                    Effect::Other
+                };
+            };
+            let mut files = Vec::new();
+            for change in changes {
+                let step = CallInfo {
+                    tool_name: change
+                        .get("tool_name")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    tool_input: change.get("tool_input").cloned().unwrap_or(Value::Null),
+                    prior: None,
+                    programs: BTreeMap::new(),
+                    ..call.clone()
+                };
+                files.push(match effect(&step) {
+                    Effect::Safeguard => return Effect::Safeguard,
+                    Effect::FileChange {
+                        path,
+                        added,
+                        removed,
+                    } => FileDiff {
+                        path,
+                        added,
+                        removed,
+                    },
+                    // A move or a deletion.
+                    _ => FileDiff {
+                        path: crate::trace::call_summary(
+                            &step.tool_name,
+                            &step.tool_input,
+                            ACTION_CHARS,
+                        ),
+                        added: Vec::new(),
+                        removed: Vec::new(),
+                    },
+                });
+            }
+            Effect::FileChanges { files }
         }
         _ => Effect::Other,
     }
@@ -200,7 +389,16 @@ fn writes(command: &str) -> bool {
         .fold(command.to_owned(), |command, discarded| {
             command.replace(discarded, "")
         });
-    WRITES.iter().any(|write| command.contains(write))
+    if WRITES.iter().any(|write| command.contains(write)) {
+        return true;
+    }
+    let lower = command.to_ascii_lowercase();
+    DOTNET_WRITES.iter().any(|write| lower.contains(write))
+        || shell_steps(&lower).iter().any(|words| {
+            words
+                .first()
+                .is_some_and(|first| POWERSHELL_WRITES.contains(&first.as_str()))
+        })
 }
 
 fn file_change(path: &str, before: &str, after: &str) -> Effect {
@@ -296,12 +494,14 @@ const WRAPPERS: &[(&str, usize)] = &[
     ("timeout", 1),
 ];
 /// Extensions of a program run by its path, as `./run.sh` or `/opt/tool/run.py`.
-const SCRIPT_EXTENSIONS: &[&str] = &[".py", ".sh", ".js", ".mjs", ".cjs", ".ts", ".rb", ".pl"];
+const SCRIPT_EXTENSIONS: &[&str] = &[
+    ".py", ".sh", ".js", ".mjs", ".cjs", ".ts", ".rb", ".pl", ".ps1",
+];
 
 /// The local program files a Bash command runs, each resolved against the directory it runs
 /// in (following a `cd` earlier in the command), in the order they run.
 pub fn run_paths(call: &CallInfo) -> Vec<String> {
-    if call.tool_name != "Bash" {
+    if !matches!(call.tool_name.as_str(), "Bash" | "PowerShell") {
         return Vec::new();
     }
     let Some(command) = call.tool_input.get("command").and_then(Value::as_str) else {
@@ -309,10 +509,16 @@ pub fn run_paths(call: &CallInfo) -> Vec<String> {
     };
     let mut cwd = call.cwd.clone();
     let mut paths = Vec::new();
-    for words in simple_commands(&without_here_documents(command)) {
+    // PowerShell preserves backslashes in paths; the POSIX tokenizer treats them as escapes.
+    let source = if call.tool_name == "PowerShell" {
+        command.replace('\\', "/")
+    } else {
+        command.to_owned()
+    };
+    for words in simple_commands(&without_here_documents(&source)) {
         let words = without_redirections(words);
         match words.first().map(String::as_str) {
-            Some("cd" | "pushd") => {
+            Some("cd" | "pushd" | "Set-Location" | "set-location" | "sl") => {
                 if let Some(directory) = words.get(1).filter(|word| !word.starts_with('-')) {
                     cwd = Some(resolve(cwd.as_deref(), directory));
                 }
@@ -393,7 +599,28 @@ fn program(words: &[String]) -> Option<String> {
         }
     }
     let command = words.next()?;
-    let name = command.rsplit('/').next().unwrap_or(command);
+    let name = command
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(command)
+        .to_ascii_lowercase();
+    let name = name.strip_suffix(".exe").unwrap_or(&name);
+    if matches!(name, "pwsh" | "powershell") {
+        while let Some(word) = words.next() {
+            let flag = word.to_ascii_lowercase();
+            match flag.as_str() {
+                "-command" | "-c" | "-encodedcommand" | "-enc" => return None,
+                "-file" | "-f" => return words.next().map(str::to_owned),
+                "-executionpolicy" | "-ep" | "-inputformat" | "-outputformat" | "-windowstyle"
+                | "-version" => {
+                    words.next();
+                }
+                _ if !word.starts_with('-') => return Some(word.to_owned()),
+                _ => {}
+            }
+        }
+        return None;
+    }
     let interpreter = INTERPRETERS.iter().any(|interpreter| {
         name.strip_prefix(interpreter)
             .is_some_and(|version| version.chars().all(|c| c.is_ascii_digit() || c == '.'))
@@ -609,7 +836,7 @@ pub fn check(deviation: &Deviation, link: Link, effect: &Effect) -> Check {
         // Its command line leaves Jev no doubt to show; only its code tells.
         Effect::Run { .. } => Branch::Run,
         _ if !breach && doubt < LOW_DOUBT && link != Link::None => Branch::Clear,
-        Effect::FileChange { .. } => Branch::File,
+        Effect::FileChange { .. } | Effect::FileChanges { .. } => Branch::File,
         Effect::Other => Branch::Purpose,
     };
     Check {
@@ -762,15 +989,35 @@ pub fn request(
                 )]),
             });
         }
-        Effect::FileChange { added, removed, .. } => {
+        Effect::FileChange { .. } | Effect::FileChanges { .. } => {
             let first = action.lines().next().unwrap_or_default();
             state.insert("action".to_owned(), Value::String(truncate(first, 300)));
             let lines = |lines: &[String]| match lines.join("\n") {
                 joined if joined.is_empty() => "(nothing)".to_owned(),
                 joined => truncate(&tokens::redact(&joined), LINES_CHARS),
             };
-            state.insert("added".to_owned(), Value::String(lines(added)));
-            state.insert("removed".to_owned(), Value::String(lines(removed)));
+            let (added, removed) = match effect {
+                Effect::FileChanges { files } => {
+                    // Every file's lines under its name, so a line planted in one file is not
+                    // lost among the changes to the others.
+                    let side = |pick: fn(&FileDiff) -> &[String]| {
+                        let joined = files
+                            .iter()
+                            .map(|file| match pick(file).join("\n") {
+                                lines if lines.is_empty() => format!("--- {}", file.path),
+                                lines => format!("--- {}\n{lines}", file.path),
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        truncate(&tokens::redact(&joined), LINES_CHARS)
+                    };
+                    (side(|file| &file.added), side(|file| &file.removed))
+                }
+                Effect::FileChange { added, removed, .. } => (lines(added), lines(removed)),
+                _ => (lines(&[]), lines(&[])),
+            };
+            state.insert("added".to_owned(), Value::String(added));
+            state.insert("removed".to_owned(), Value::String(removed));
             let context = format!(
                 "`added` lists the lines this tool call (`action`) adds to a file and `removed` \
                  the lines it removes. `paragraphs` are the tool results the agent read before \
