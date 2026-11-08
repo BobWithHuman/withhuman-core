@@ -360,7 +360,11 @@ impl DecisionRepository for PgDecisionRepository {
             |value: Result<Value, serde_json::Error>| -> Result<Option<String>, RepositoryError> {
                 match value.map_err(|error| RepositoryError::InvalidResponse(error.to_string()))? {
                     Value::Null => Ok(None),
-                    Value::String(text) => Ok(Some(text)),
+                    // A reason can quote the Call's input, which may carry U+0000.
+                    Value::String(mut text) => {
+                        withhuman_common::make_postgres_text(&mut text);
+                        Ok(Some(text))
+                    }
                     other => Ok(Some(other.to_string())),
                 }
             };
@@ -564,7 +568,11 @@ impl DecisionRepository for PgDecisionRepository {
         query(
             &client,
             MARK_UNRESOLVED,
-            &[&request.session_id, &signed(request.call_seq), &error],
+            &[
+                &request.session_id,
+                &signed(request.call_seq),
+                &withhuman_common::postgres_text(error),
+            ],
         )
         .await?;
         Ok(())
