@@ -12,8 +12,9 @@ use withhuman_collector::{
 };
 use withhuman_contracts::events::EventResponse;
 
-const HOOK_REQUESTS: [(&str, &str); 11] = [
+const HOOK_REQUESTS: [(&str, &str); 12] = [
     ("SessionStart", r#"{"session_id":"s","cwd":"/repo"}"#),
+    ("SessionEnd", r#"{"session_id":"s","reason":"other"}"#),
     ("UserPromptSubmit", r#"{"session_id":"s","prompt":"hello"}"#),
     (
         "PreToolUse",

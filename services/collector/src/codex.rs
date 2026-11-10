@@ -23,7 +23,8 @@ use withhuman_contracts::{
     codex::{CodexHookEvent, CodexHookInput, CodexShell},
     hooks::{
         HookEventName, PostToolBatchRequest, PostToolUseFailureRequest, PostToolUseRequest,
-        PreToolUseRequest, SessionStartRequest, SubagentLifecycleRequest, UserPromptSubmitRequest,
+        PreToolUseRequest, SessionEndRequest, SessionStartRequest, SubagentLifecycleRequest,
+        UserPromptSubmitRequest,
     },
 };
 
@@ -83,7 +84,8 @@ pub enum Translated {
     PostToolBatch(PostToolBatchRequest),
     SubagentStart(SubagentLifecycleRequest),
     SubagentStop(SubagentLifecycleRequest),
-    /// Nothing for the engine (SessionEnd).
+    SessionEnd(SessionEndRequest),
+    /// Nothing for the engine.
     Nothing,
 }
 
@@ -127,6 +129,8 @@ pub fn translate(
             transcript_path: input.transcript_path,
             cwd: input.cwd,
             source: input.source,
+            permission_mode: input.permission_mode,
+            model: input.model,
         }),
         CodexHookEvent::UserPromptSubmit => Translated::UserPromptSubmit(UserPromptSubmitRequest {
             session_id: input.session_id,
@@ -135,6 +139,7 @@ pub fn translate(
             prompt_id: input.turn_id,
             transcript_path: input.transcript_path,
             cwd: input.cwd,
+            permission_mode: input.permission_mode,
         }),
         CodexHookEvent::PreToolUse => {
             let call = tool_call(&input, shell)?;
@@ -151,6 +156,7 @@ pub fn translate(
                 prompt_id: input.turn_id,
                 agent_id: input.agent_id,
                 agent_type: input.agent_type,
+                permission_mode: input.permission_mode,
                 withhuman_programs: input.withhuman_programs,
             })
         }
@@ -172,6 +178,7 @@ pub fn translate(
                     prompt_id: input.turn_id,
                     agent_id: input.agent_id,
                     agent_type: input.agent_type,
+                    permission_mode: input.permission_mode,
                 }),
                 None => Translated::PostToolUse(PostToolUseRequest {
                     session_id: input.session_id,
@@ -189,6 +196,7 @@ pub fn translate(
                     prompt_id: input.turn_id,
                     agent_id: input.agent_id,
                     agent_type: input.agent_type,
+                    permission_mode: input.permission_mode,
                 }),
             }
         }
@@ -199,7 +207,14 @@ pub fn translate(
             agent_type: input.agent_type,
             tool_calls: Vec::new(),
         }),
-        CodexHookEvent::SessionEnd => Translated::Nothing,
+        CodexHookEvent::SessionEnd => Translated::SessionEnd(SessionEndRequest {
+            session_id: input.session_id,
+            hook_event_name: Some(HookEventName::SessionEnd),
+            transcript_path: input.transcript_path,
+            cwd: input.cwd,
+            permission_mode: input.permission_mode,
+            reason: input.reason,
+        }),
         CodexHookEvent::SubagentStart | CodexHookEvent::SubagentStop => {
             let request = SubagentLifecycleRequest {
                 session_id: input.session_id,
@@ -876,6 +891,7 @@ pub fn tag(event: &mut NormalizedEvent, payload: Option<&Value>, workdir_unknown
     }
     match event {
         NormalizedEvent::SessionStart(event) => mark!(event),
+        NormalizedEvent::SessionEnd(event) => mark!(event),
         NormalizedEvent::UserPromptSubmit(event) => mark!(event),
         NormalizedEvent::PreToolUse(event) => mark!(&mut event.event),
         NormalizedEvent::PostToolUse(event) => mark!(event),

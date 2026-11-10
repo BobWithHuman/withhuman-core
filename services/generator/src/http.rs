@@ -13,15 +13,19 @@ use withhuman_contracts::events::{
     ConfigChangeEventRequest, IntentEventRequest, MessageDisplayEventRequest,
     ParagraphClassificationRequest, PostToolBatchEventRequest, PostToolUseEventRequest,
     PostToolUseFailureEventRequest, PreToolUseEventRequest, RequestContinuationRequest,
-    SessionStartEventRequest, SubagentStartEventRequest, SubagentStopEventRequest,
-    ToolDescriptionsEventRequest, UserPromptSubmitEventRequest,
+    SessionEndEventRequest, SessionStartEventRequest, SubagentStartEventRequest,
+    SubagentStopEventRequest, ToolDescriptionsEventRequest, UserPromptSubmitEventRequest,
 };
 use withhuman_contracts::{
     decisions::{DecisionRequest, EnforcementMode},
     events::EventResponse,
 };
 
-use crate::{DecisionClient, GeneratorEvent, GraphRepository, RepositoryError};
+use withhuman_contracts::inventory::{
+    ClientRegistrationRecord, KeyDenial, NewKey, RevokeKeyRequest, VerifyKeyRequest,
+};
+
+use crate::{DecisionClient, GeneratorEvent, GraphRepository, KeyScope, RepositoryError};
 
 const SWAGGER_UI_HTML: &str = r##"<!doctype html>
 <html lang="en">
@@ -81,6 +85,7 @@ pub fn app(service: GeneratorService) -> Router {
     Router::new()
         .route("/healthz", get(health))
         .route("/v1/events/SessionStart", post(session_start))
+        .route("/v1/events/SessionEnd", post(session_end))
         .route("/v1/events/UserPromptSubmit", post(user_prompt_submit))
         .route("/v1/events/PreToolUse", post(pre_tool_use))
         .route("/v1/events/PostToolUse", post(post_tool_use))
@@ -105,6 +110,13 @@ pub fn app(service: GeneratorService) -> Router {
             "/v1/sessions/{session_id}/calls/{tool_use_id}",
             get(tool_call),
         )
+        .route("/v1/clients", post(register_client).get(clients))
+        .route("/v1/keys", get(all_keys))
+        .route("/v1/keys/verify", post(verify_key))
+        .route("/v1/keys/{key_id}/denials", post(record_key_denial))
+        .route("/v1/keys/{key_id}/revoke", post(revoke_key))
+        .route("/v1/users/{email}/keys", post(issue_key).get(user_keys))
+        .route("/v1/users/{email}/revoke", post(revoke_user))
         .route("/api-docs/openapi.json", get(openapi_document))
         .route("/swagger-ui", get(swagger_ui))
         .route("/swagger-ui/", get(swagger_ui))
@@ -116,6 +128,7 @@ pub fn app(service: GeneratorService) -> Router {
     paths(
         health,
         session_start,
+        session_end,
         user_prompt_submit,
         pre_tool_use,
         post_tool_use,
@@ -130,7 +143,16 @@ pub fn app(service: GeneratorService) -> Router {
         classify_paragraph,
         continue_request,
         session_cursor,
-        tool_call
+        tool_call,
+        register_client,
+        clients,
+        verify_key,
+        record_key_denial,
+        issue_key,
+        user_keys,
+        all_keys,
+        revoke_key,
+        revoke_user
     ),
     tags((name = "Generator", description = "Normalized event persistence and graph enrichment API"))
 )]
@@ -208,6 +230,12 @@ event_handler!(
     SessionStartEventRequest,
     SessionStart,
     "/v1/events/SessionStart"
+);
+event_handler!(
+    session_end,
+    SessionEndEventRequest,
+    SessionEnd,
+    "/v1/events/SessionEnd"
 );
 event_handler!(
     user_prompt_submit,
@@ -405,6 +433,166 @@ async fn tool_call(
         Ok(call) => Json(call).into_response(),
         Err(error) => repository_error_response(error),
     }
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/clients",
+    tag = "Generator",
+    request_body = ClientRegistrationRecord,
+    responses((status = 200, body = withhuman_contracts::inventory::ClientRecord), (status = 500, body = ErrorResponse))
+)]
+async fn register_client(
+    State(service): State<GeneratorService>,
+    StrictJson(record): StrictJson<ClientRegistrationRecord>,
+) -> Response {
+    reply(service.repository.register_client(record).await)
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/clients",
+    tag = "Generator",
+    responses((status = 200, body = [withhuman_contracts::inventory::ClientRecord]), (status = 500, body = ErrorResponse))
+)]
+async fn clients(State(service): State<GeneratorService>) -> Response {
+    reply(service.repository.clients().await)
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/keys/verify",
+    tag = "Generator",
+    request_body = VerifyKeyRequest,
+    responses((status = 200, body = withhuman_contracts::inventory::VerifyKeyResponse), (status = 500, body = ErrorResponse))
+)]
+async fn verify_key(
+    State(service): State<GeneratorService>,
+    StrictJson(request): StrictJson<VerifyKeyRequest>,
+) -> Response {
+    reply(service.repository.verify_key(request).await)
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/keys/{key_id}/denials",
+    tag = "Generator",
+    params(("key_id" = String, Path)),
+    request_body = KeyDenial,
+    responses((status = 204, description = "Denial recorded"), (status = 404, body = ErrorResponse))
+)]
+async fn record_key_denial(
+    State(service): State<GeneratorService>,
+    Path(key_id): Path<String>,
+    StrictJson(denial): StrictJson<KeyDenial>,
+) -> Response {
+    match service.repository.record_key_denial(&key_id, denial).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => repository_error_response(error),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/users/{email}/keys",
+    tag = "Generator",
+    params(("email" = String, Path)),
+    request_body = NewKey,
+    responses((status = 201, body = withhuman_contracts::inventory::KeyRecord), (status = 400, body = ErrorResponse))
+)]
+async fn issue_key(
+    State(service): State<GeneratorService>,
+    Path(email): Path<String>,
+    StrictJson(key): StrictJson<NewKey>,
+) -> Response {
+    if key.user != email {
+        return repository_error_response(RepositoryError::InvalidEvent(
+            "the key's user is not the path's".to_owned(),
+        ));
+    }
+    match service.repository.issue_key(key).await {
+        Ok(record) => (StatusCode::CREATED, Json(record)).into_response(),
+        Err(error) => repository_error_response(error),
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/users/{email}/keys",
+    tag = "Generator",
+    params(("email" = String, Path)),
+    responses((status = 200, body = [withhuman_contracts::inventory::KeyRecord]))
+)]
+async fn user_keys(State(service): State<GeneratorService>, Path(email): Path<String>) -> Response {
+    reply(service.repository.keys(Some(&email)).await)
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/keys",
+    tag = "Generator",
+    responses((status = 200, body = [withhuman_contracts::inventory::KeyRecord]))
+)]
+async fn all_keys(State(service): State<GeneratorService>) -> Response {
+    reply(service.repository.keys(None).await)
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/keys/{key_id}/revoke",
+    tag = "Generator",
+    params(("key_id" = String, Path)),
+    request_body = RevokeKeyRequest,
+    responses((status = 200, body = withhuman_contracts::inventory::KeyRecord), (status = 404, body = ErrorResponse))
+)]
+async fn revoke_key(
+    State(service): State<GeneratorService>,
+    Path(key_id): Path<String>,
+    StrictJson(request): StrictJson<RevokeKeyRequest>,
+) -> Response {
+    reply(
+        service
+            .repository
+            .revoke_keys(KeyScope::Key(&key_id), request, now())
+            .await
+            .map(|mut keys| keys.remove(0)),
+    )
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/users/{email}/revoke",
+    tag = "Generator",
+    params(("email" = String, Path)),
+    request_body = RevokeKeyRequest,
+    responses((status = 200, body = [withhuman_contracts::inventory::KeyRecord]), (status = 404, body = ErrorResponse))
+)]
+async fn revoke_user(
+    State(service): State<GeneratorService>,
+    Path(email): Path<String>,
+    StrictJson(request): StrictJson<RevokeKeyRequest>,
+) -> Response {
+    reply(
+        service
+            .repository
+            .revoke_keys(KeyScope::User(&email), request, now())
+            .await,
+    )
+}
+
+fn reply<T: Serialize>(result: Result<T, RepositoryError>) -> Response {
+    match result {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => repository_error_response(error),
+    }
+}
+
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 fn repository_error_response(error: RepositoryError) -> Response {

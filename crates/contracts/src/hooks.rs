@@ -9,11 +9,15 @@ use utoipa::ToSchema;
 pub struct HookHeaders {
     pub repository: Option<String>,
     pub client_id: Option<String>,
+    /// The user of the client's WithHuman key, set by the engine once it has verified the key;
+    /// never taken from the client.
+    pub user: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 pub enum HookEventName {
     SessionStart,
+    SessionEnd,
     UserPromptSubmit,
     PreToolUse,
     PostToolUse,
@@ -37,6 +41,33 @@ pub struct SessionStartRequest {
     pub cwd: Option<String>,
     #[serde(default)]
     pub source: Option<String>,
+    /// Claude Code's permission mode when the Hook fired (`default`, `plan`, `acceptEdits`,
+    /// `auto`, `dontAsk`, `bypassPermissions`); not every event carries it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
+    /// The model the session runs; only SessionStart carries it, and not always.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+/// The session ended. Claude Code gives SessionEnd Hooks a short budget (1.5 s by default) and
+/// does not wait for their answer.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
+pub struct SessionEndRequest {
+    pub session_id: String,
+    #[serde(default)]
+    pub hook_event_name: Option<HookEventName>,
+    #[serde(default)]
+    pub transcript_path: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    /// Claude Code's permission mode when the Hook fired (`default`, `plan`, `acceptEdits`,
+    /// `auto`, `dontAsk`, `bypassPermissions`); not every event carries it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
+    /// Why it ended: `clear`, `resume`, `logout`, `prompt_input_exit` or `other`.
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
@@ -51,6 +82,10 @@ pub struct UserPromptSubmitRequest {
     pub transcript_path: Option<String>,
     #[serde(default)]
     pub cwd: Option<String>,
+    /// Claude Code's permission mode when the Hook fired (`default`, `plan`, `acceptEdits`,
+    /// `auto`, `dontAsk`, `bypassPermissions`); not every event carries it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
@@ -70,6 +105,10 @@ pub struct PreToolUseRequest {
     pub agent_id: Option<String>,
     #[serde(default)]
     pub agent_type: Option<String>,
+    /// Claude Code's permission mode when the Hook fired (`default`, `plan`, `acceptEdits`,
+    /// `auto`, `dontAsk`, `bypassPermissions`); not every event carries it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
     /// The local program files a Bash command may run, read by the WithHuman command hook
     /// just before the Call, so the code a run executes can be judged; Claude Code's own event
     /// has none.
@@ -114,6 +153,10 @@ pub struct PostToolUseRequest {
     pub agent_id: Option<String>,
     #[serde(default)]
     pub agent_type: Option<String>,
+    /// Claude Code's permission mode when the Hook fired (`default`, `plan`, `acceptEdits`,
+    /// `auto`, `dontAsk`, `bypassPermissions`); not every event carries it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, ToSchema)]
@@ -135,6 +178,10 @@ pub struct PostToolUseFailureRequest {
     pub agent_id: Option<String>,
     #[serde(default)]
     pub agent_type: Option<String>,
+    /// Claude Code's permission mode when the Hook fired (`default`, `plan`, `acceptEdits`,
+    /// `auto`, `dontAsk`, `bypassPermissions`); not every event carries it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]

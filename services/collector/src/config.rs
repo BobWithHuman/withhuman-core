@@ -44,6 +44,14 @@ pub struct CollectorConfig {
     pub intent_wait: Duration,
     /// Commands, besides the built-in list, whose output comes from the network.
     pub network_commands: Vec<String>,
+    /// Hooks must carry a valid WithHuman key: without one a PreToolUse is denied and any other
+    /// Hook refused (401). Off, a Hook without a key is taken as before, without a user.
+    pub require_key: bool,
+    /// The token of the administration API (`/v1/admin`); the API is off without one.
+    pub admin_token: Option<String>,
+    /// How long a key's verification is reused before the Generator is asked again; a revoked
+    /// key stops working within this time.
+    pub key_cache: Duration,
 }
 
 impl Default for CollectorConfig {
@@ -69,6 +77,9 @@ impl Default for CollectorConfig {
             intent_capture: true,
             intent_wait: Duration::from_millis(3_000),
             network_commands: Vec::new(),
+            require_key: false,
+            admin_token: None,
+            key_cache: Duration::from_millis(5_000),
         }
     }
 }
@@ -158,6 +169,16 @@ impl CollectorConfig {
             })?,
             intent_wait,
             network_commands: list_env("WITHHUMAN_EXTERNAL_COMMANDS"),
+            require_key: match_env("WITHHUMAN_REQUIRE_KEY", false, |value| match value {
+                "on" | "true" | "1" => Some(true),
+                "off" | "false" | "0" | "" => Some(false),
+                _ => None,
+            })?,
+            admin_token: env::var("WITHHUMAN_ADMIN_TOKEN")
+                .ok()
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty()),
+            key_cache: Duration::from_millis(parse_env("WITHHUMAN_KEY_CACHE_MS", 5_000)?),
         })
     }
 }

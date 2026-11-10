@@ -22,8 +22,8 @@ use withhuman_contracts::{
         ConfigChangeRequest, HookEventName, HookSpecificResponse, MessageDisplayOutput,
         MessageDisplayRequest, PermissionDecision, PostToolBatchRequest, PostToolUseFailureRequest,
         PostToolUseOutput, PostToolUseRequest, PreToolUseOutput, PreToolUseRequest,
-        SessionStartOutput, SessionStartRequest, SubagentLifecycleRequest, ToolDescriptionsRequest,
-        UserPromptSubmitOutput, UserPromptSubmitRequest,
+        SessionEndRequest, SessionStartOutput, SessionStartRequest, SubagentLifecycleRequest,
+        ToolDescriptionsRequest, UserPromptSubmitOutput, UserPromptSubmitRequest,
     },
 };
 
@@ -32,10 +32,12 @@ use crate::{
     InMemoryVerdictStore, NormalizeError, Normalizer, RedisSessionStore, RedisVerdictStore,
     ReviewPolicy, StoreError, StoredVerdict, VerdictStore,
     codex::{self, Translated},
+    inventory::{self, USER_HEADER},
+    keys::KeyVerifier,
     redis_connection,
 };
 
-const CLIENT_HEADER: &str = "x-withhuman-client";
+pub(crate) const CLIENT_HEADER: &str = "x-withhuman-client";
 const REPOSITORY_HEADER: &str = "x-withhuman-repo";
 /// The shell a Codex client runs commands in (`powershell`, else POSIX).
 const SHELL_HEADER: &str = "x-withhuman-shell";
@@ -63,6 +65,7 @@ pub struct CollectorService {
     pub normalizer: Normalizer,
     pub generator: Arc<dyn GeneratorTransport>,
     pub verdicts: Arc<dyn VerdictStore>,
+    pub keys: KeyVerifier,
     deliveries: Arc<crate::codex_delivery::Deliveries>,
 }
 
@@ -70,6 +73,7 @@ impl CollectorService {
     pub fn new(config: CollectorConfig, generator: Arc<dyn GeneratorTransport>) -> Self {
         let verdicts = Arc::new(InMemoryVerdictStore::new(config.verdict_capacity));
         Self {
+            keys: KeyVerifier::new(generator.clone(), config.key_cache),
             normalizer: Normalizer::default()
                 .with_history(generator.clone())
                 .with_network_commands(config.network_commands.clone())
@@ -91,6 +95,7 @@ impl CollectorService {
         };
         let connection = redis_connection(&url)?;
         Ok(Self {
+            keys: KeyVerifier::new(generator.clone(), config.key_cache),
             deliveries: Arc::new(crate::codex_delivery::Deliveries::redis(connection.clone())),
             verdicts: Arc::new(RedisVerdictStore::new(
                 connection.clone(),
@@ -112,9 +117,10 @@ pub fn app(config: CollectorConfig) -> Router {
 }
 
 pub fn app_with_transport(service: CollectorService) -> Router {
-    Router::new()
-        .route("/healthz", get(health))
+    // Every Hook passes the key check first; see `inventory::authenticate`.
+    let hooks = Router::new()
         .route("/v1/hooks/SessionStart", post(session_start))
+        .route("/v1/hooks/SessionEnd", post(session_end))
         .route("/v1/hooks/UserPromptSubmit", post(user_prompt_submit))
         .route("/v1/hooks/PreToolUse", post(pre_tool_use))
         .route("/v1/hooks/PostToolUse", post(post_tool_use))
@@ -126,6 +132,28 @@ pub fn app_with_transport(service: CollectorService) -> Router {
         .route("/v1/hooks/PostToolBatch", post(post_tool_batch))
         .route("/v1/hooks/ToolDescriptions", post(tool_descriptions))
         .route("/v1/hooks/codex/{event}", post(codex_hook))
+        .route_layer(axum::middleware::from_fn_with_state(
+            service.clone(),
+            inventory::authenticate,
+        ));
+    Router::new()
+        .route("/healthz", get(health))
+        .merge(hooks)
+        .route("/v1/clients/register", post(inventory::register_client))
+        .route("/v1/admin/clients", get(inventory::clients))
+        .route("/v1/admin/keys", get(inventory::all_keys))
+        .route(
+            "/v1/admin/keys/{key_id}/revoke",
+            post(inventory::revoke_key),
+        )
+        .route(
+            "/v1/admin/users/{email}/keys",
+            post(inventory::issue_key).get(inventory::user_keys),
+        )
+        .route(
+            "/v1/admin/users/{email}/revoke",
+            post(inventory::revoke_user),
+        )
         .route("/api-docs/openapi.json", get(openapi_document))
         .route("/swagger-ui", get(swagger_ui))
         .route("/swagger-ui/", get(swagger_ui))
@@ -137,6 +165,7 @@ pub fn app_with_transport(service: CollectorService) -> Router {
     paths(
         health,
         session_start,
+        session_end,
         user_prompt_submit,
         pre_tool_use,
         post_tool_use,
@@ -147,9 +176,19 @@ pub fn app_with_transport(service: CollectorService) -> Router {
         message_display,
         post_tool_batch,
         tool_descriptions,
-        codex_hook
+        codex_hook,
+        inventory::register_client,
+        inventory::issue_key,
+        inventory::user_keys,
+        inventory::all_keys,
+        inventory::revoke_key,
+        inventory::revoke_user,
+        inventory::clients
     ),
-    tags((name = "Collector", description = "Claude Code Hook ingestion and enforcement API"))
+    tags(
+        (name = "Collector", description = "Claude Code Hook ingestion and enforcement API"),
+        (name = "Inventory", description = "Device registration and per-user WithHuman keys")
+    )
 )]
 struct CollectorApiDoc;
 
@@ -345,6 +384,12 @@ async fn remind_of_intent(
     })
     .into_response()
 }
+regular_handler!(
+    session_end,
+    SessionEndRequest,
+    session_end,
+    "/v1/hooks/SessionEnd"
+);
 regular_handler!(
     config_change,
     ConfigChangeRequest,
@@ -921,6 +966,16 @@ async fn codex_hook_inner(
                 Err(error) => normalize_failure(error),
             }
         }
+        Translated::SessionEnd(request) => {
+            match service
+                .normalizer
+                .session_end(&context, request, now())
+                .await
+            {
+                Ok(event) => send_regular(&service, tagged(event, Some(&tag))).await,
+                Err(error) => normalize_failure(error),
+            }
+        }
         Translated::Nothing => StatusCode::OK.into_response(),
     }
 }
@@ -943,7 +998,10 @@ fn decision_response(decision: DecisionResponse, review_policy: ReviewPolicy) ->
     }
 }
 
-fn blocking_response(permission_decision: PermissionDecision, reason: String) -> Response {
+pub(crate) fn blocking_response(
+    permission_decision: PermissionDecision,
+    reason: String,
+) -> Response {
     Json(HookSpecificResponse {
         hook_specific_output: PreToolUseOutput {
             hook_event_name: HookEventName::PreToolUse,
@@ -1042,7 +1100,7 @@ fn trusted(headers: &HeaderMap) -> TrustedHookContext {
     TrustedHookContext::from_headers(headers)
 }
 
-fn now() -> u64 {
+pub(crate) fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -1055,6 +1113,8 @@ fn now() -> u64 {
 pub struct TrustedHookContext {
     pub client_id: Option<String>,
     pub repository: Option<String>,
+    /// The user of the Hook's verified key, as the key check set it.
+    pub user: Option<String>,
 }
 
 impl TrustedHookContext {
@@ -1062,11 +1122,12 @@ impl TrustedHookContext {
         Self {
             client_id: header_value(headers, CLIENT_HEADER),
             repository: header_value(headers, REPOSITORY_HEADER),
+            user: header_value(headers, USER_HEADER),
         }
     }
 }
 
-fn header_value(headers: &HeaderMap, name: &'static str) -> Option<String> {
+pub(crate) fn header_value(headers: &HeaderMap, name: &'static str) -> Option<String> {
     headers
         .get(name)
         .and_then(|value| value.to_str().ok())
@@ -1075,7 +1136,7 @@ fn header_value(headers: &HeaderMap, name: &'static str) -> Option<String> {
         .map(str::to_owned)
 }
 
-struct StrictJson<T>(T);
+pub(crate) struct StrictJson<T>(pub(crate) T);
 
 impl<S, T> FromRequest<S> for StrictJson<T>
 where
@@ -1097,7 +1158,7 @@ where
     }
 }
 
-enum StrictJsonRejection {
+pub(crate) enum StrictJsonRejection {
     InvalidJson,
     UnsupportedMediaType,
 }

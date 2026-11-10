@@ -183,3 +183,132 @@ CREATE TABLE IF NOT EXISTS pending_request_continuations (
   error               text,
   PRIMARY KEY (session_id, "order")
 );
+
+-- Agent inventory: the devices that run agents, the users behind them and their keys.
+--
+-- (:Client)-[:RAN]->(:Session) is `sessions.client_id`, the first client ID the session's
+-- Hooks carried; (:User)-[:HAS_KEY]->(:ApiKey) is `api_keys.user_email`. A Client exists for
+-- every client ID a Hook carried (`first_seen`, `last_seen`) and for every device a setup
+-- registered (`registered_at`); a Session whose Hooks carried none keeps `client_id` NULL.
+
+-- A device. `last_seen` moves at most every 30 s, so busy devices do not queue on the row.
+CREATE TABLE IF NOT EXISTS clients (
+  client_id      text PRIMARY KEY,
+  team           text,
+  hostname       text,
+  os             text,
+  os_user        text,
+  hook_version   text,
+  agent          text,
+  -- The user of the latest key the device presented.
+  user_email     text,
+  -- First and latest registration by a setup; NULL for a device only seen through its Hooks.
+  registered_at  bigint,
+  updated_at     bigint,
+  -- First and latest Hook event.
+  first_seen     bigint,
+  last_seen      bigint
+);
+CREATE INDEX IF NOT EXISTS clients_last_seen ON clients (last_seen);
+
+-- INSTALLED_IN: a project folder a setup wrote the Hooks into.
+CREATE TABLE IF NOT EXISTS client_projects (
+  client_id     text   NOT NULL,
+  project       text   NOT NULL,
+  agent         text,
+  hook_version  text,
+  installed_at  bigint NOT NULL,
+  updated_at    bigint NOT NULL,
+  PRIMARY KEY (client_id, project)
+);
+
+CREATE TABLE IF NOT EXISTS users (
+  email       text   PRIMARY KEY,
+  created_at  bigint NOT NULL
+);
+
+-- A WithHuman key: its id and the SHA-256 of the whole key, never the key itself.
+CREATE TABLE IF NOT EXISTS api_keys (
+  key_id           text   PRIMARY KEY,
+  user_email       text   NOT NULL REFERENCES users (email),
+  hash             text   NOT NULL,
+  created_at       bigint NOT NULL,
+  created_by       text,
+  note             text,
+  -- Moves at most once a minute.
+  last_used_at     bigint,
+  revoked_at       bigint,
+  revoked_by       text,
+  revoke_reason    text,
+  -- PreToolUse calls turned back after the revocation.
+  first_denied_at  bigint,
+  last_denied_at   bigint,
+  denied_count     bigint NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS api_keys_user ON api_keys (user_email);
+
+-- The keys' audit trail: `issued` (actor, reason = note), `revoked` (actor, reason) and
+-- `denied`, once per key and session (session_id, client_id).
+CREATE TABLE IF NOT EXISTS key_events (
+  id          bigserial PRIMARY KEY,
+  key_id      text   NOT NULL,
+  user_email  text   NOT NULL,
+  kind        text   NOT NULL,
+  actor       text,
+  reason      text,
+  session_id  text,
+  client_id   text,
+  at          bigint NOT NULL
+);
+CREATE INDEX IF NOT EXISTS key_events_key ON key_events (key_id, kind);
+CREATE INDEX IF NOT EXISTS key_events_at ON key_events (at);
+
+-- Columns added to tables that held data before the inventory. Each table's columns are
+-- added together, once: ALTER TABLE locks the table even when there is nothing to add. The
+-- sessions recorded before get their client, last activity and start source from their
+-- commits, and every client ID they carried becomes a Client.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                 AND table_name = 'sessions' AND column_name = 'client_id') THEN
+    ALTER TABLE sessions
+      ADD COLUMN client_id        text,
+      ADD COLUMN user_email       text,
+      -- The latest SessionStart's `source`: startup, resume, clear, compact or fork.
+      ADD COLUMN start_source     text,
+      -- The latest values the Hooks reported.
+      ADD COLUMN permission_mode  text,
+      ADD COLUMN model            text,
+      ADD COLUMN last_seen_at     bigint,
+      -- The latest SessionEnd, cleared by a later SessionStart.
+      ADD COLUMN ended_at         bigint,
+      ADD COLUMN end_reason       text;
+    UPDATE sessions s SET client_id = c.client_id, last_seen_at = c.last_seen
+    FROM (SELECT session_id,
+                 (array_agg(client_id ORDER BY "order") FILTER (WHERE client_id IS NOT NULL))[1]
+                   AS client_id,
+                 max(observed_at) AS last_seen
+          FROM event_commits GROUP BY session_id) c
+    WHERE s.session_id = c.session_id;
+    UPDATE sessions s SET start_source = x.source
+    FROM (SELECT DISTINCT ON (session_id) session_id,
+                 substring(event_json FROM '"source":"([^"]*)"') AS source
+          FROM event_commits WHERE event_name = 'SessionStart'
+          ORDER BY session_id, "order" DESC) x
+    WHERE s.session_id = x.session_id;
+    INSERT INTO clients (client_id, team, first_seen, last_seen)
+    SELECT client_id, CASE WHEN position('/' IN client_id) > 0 THEN split_part(client_id, '/', 1) END,
+           min(observed_at), max(observed_at)
+    FROM event_commits WHERE client_id IS NOT NULL GROUP BY client_id
+    ON CONFLICT (client_id) DO NOTHING;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                 AND table_name = 'nodes' AND column_name = 'permission_mode') THEN
+    -- The values at the node's event: a Call's permission mode, and the session's model.
+    ALTER TABLE nodes ADD COLUMN permission_mode text, ADD COLUMN model text;
+  END IF;
+END
+$$;
+CREATE INDEX IF NOT EXISTS sessions_client ON sessions (client_id);
+CREATE INDEX IF NOT EXISTS sessions_user ON sessions (user_email);
+CREATE INDEX IF NOT EXISTS sessions_last_seen ON sessions (last_seen_at);

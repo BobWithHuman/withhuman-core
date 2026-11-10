@@ -5,6 +5,8 @@ mod config;
 mod ext_authz;
 mod http;
 mod intent;
+mod inventory;
+pub mod keys;
 mod normalize;
 mod state;
 mod store;
@@ -15,6 +17,7 @@ pub use config::{CollectorConfig, FailurePolicy, ReviewPolicy};
 pub use ext_authz::ExtAuthzService;
 pub use http::{CollectorService, TrustedHookContext, app, app_with_transport};
 pub use intent::{INTENT_INSTRUCTION, INTENT_REMINDER, INTENT_REQUIRED};
+pub use inventory::USER_HEADER;
 pub use normalize::{
     MAX_PROGRAM_BYTES, MAX_PROGRAMS, MESSAGE_INCOMPLETE_FLAG, NormalizeError, NormalizedEvent,
     Normalizer, RESUME_ORDER_GAP,

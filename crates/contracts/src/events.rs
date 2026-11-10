@@ -15,6 +15,7 @@ pub type AdditionalFields = BTreeMap<String, Value>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 pub enum EventName {
     SessionStart,
+    SessionEnd,
     UserPromptSubmit,
     PreToolUse,
     PostToolUse,
@@ -50,6 +51,12 @@ pub struct EventMetadata {
     /// network commands, downloaded or vendored files). Absent means local or not judged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_origin: Option<ContentOrigin>,
+    /// Claude Code's permission mode when the Hook fired.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
+    /// The model the session runs, as SessionStart reported it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     #[serde(flatten)]
     #[schema(ignore)]
     pub additional_fields: AdditionalFields,
@@ -90,6 +97,9 @@ pub struct EventRequest<T> {
     pub observed_at: u64,
     #[serde(default)]
     pub client_id: Option<String>,
+    /// The user whose WithHuman key the Hook carried, once the Collector verified it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
     /// Per-agent counter of the agent's events.
     #[serde(default)]
     pub sequence: Option<u64>,
@@ -126,6 +136,17 @@ pub struct PreToolUseEventRequest {
 pub struct SessionStartPayload {
     #[serde(default)]
     pub source: Option<String>,
+    #[serde(flatten)]
+    #[schema(ignore)]
+    pub additional_fields: AdditionalFields,
+}
+
+/// The session ended.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize, ToSchema)]
+pub struct SessionEndPayload {
+    /// `clear`, `resume`, `logout`, `prompt_input_exit` or `other`.
+    #[serde(default)]
+    pub reason: Option<String>,
     #[serde(flatten)]
     #[schema(ignore)]
     pub additional_fields: AdditionalFields,
@@ -258,6 +279,7 @@ pub struct ToolDescriptionsPayload {
 }
 
 pub type SessionStartEventRequest = EventRequest<SessionStartPayload>;
+pub type SessionEndEventRequest = EventRequest<SessionEndPayload>;
 pub type UserPromptSubmitEventRequest = EventRequest<UserPromptSubmitPayload>;
 pub type PostToolUseEventRequest = EventRequest<PostToolUsePayload>;
 pub type PostToolUseFailureEventRequest = EventRequest<PostToolUseFailurePayload>;

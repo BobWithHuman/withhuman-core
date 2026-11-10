@@ -4,7 +4,10 @@ use async_trait::async_trait;
 use std::time::Duration;
 
 use serde_json::Value;
-use withhuman_contracts::events::{EventResponse, SessionCursor, ToolCall};
+use withhuman_contracts::{
+    events::{EventResponse, SessionCursor, ToolCall},
+    inventory::{KeyDenial, VerifyKeyRequest, VerifyKeyResponse},
+};
 
 use crate::NormalizedEvent;
 
@@ -27,6 +30,34 @@ pub trait GeneratorTransport: Send + Sync {
         _tool_use_id: &str,
     ) -> Result<Option<Value>, GeneratorError> {
         Ok(None)
+    }
+
+    /// Whose key has this id and hash, and whether it was revoked.
+    async fn verify_key(
+        &self,
+        _request: VerifyKeyRequest,
+    ) -> Result<VerifyKeyResponse, GeneratorError> {
+        Err(GeneratorError::Rejected(404))
+    }
+
+    /// Records a PreToolUse turned back because its key was revoked.
+    async fn record_key_denial(
+        &self,
+        _key_id: &str,
+        _denial: KeyDenial,
+    ) -> Result<(), GeneratorError> {
+        Ok(())
+    }
+
+    /// The Generator's inventory API below `/v1` (clients, users and keys), its status and JSON
+    /// body passed back as they are.
+    async fn inventory(
+        &self,
+        _method: reqwest::Method,
+        _segments: &[&str],
+        _body: Option<Value>,
+    ) -> Result<(u16, Value), GeneratorError> {
+        Err(GeneratorError::Rejected(404))
     }
 }
 
@@ -83,6 +114,79 @@ impl GeneratorTransport for GeneratorHttpClient {
             .await?
             .map(|call| call.tool_input))
     }
+
+    async fn verify_key(
+        &self,
+        request: VerifyKeyRequest,
+    ) -> Result<VerifyKeyResponse, GeneratorError> {
+        let (status, body) = self
+            .inventory(
+                reqwest::Method::POST,
+                &["keys", "verify"],
+                Some(serde_json::to_value(request).map_err(invalid_request)?),
+            )
+            .await?;
+        if status != 200 {
+            return Err(GeneratorError::Rejected(status));
+        }
+        serde_json::from_value(body)
+            .map_err(|error| GeneratorError::InvalidResponse(error.to_string()))
+    }
+
+    async fn record_key_denial(
+        &self,
+        key_id: &str,
+        denial: KeyDenial,
+    ) -> Result<(), GeneratorError> {
+        let (status, _) = self
+            .inventory(
+                reqwest::Method::POST,
+                &["keys", key_id, "denials"],
+                Some(serde_json::to_value(denial).map_err(invalid_request)?),
+            )
+            .await?;
+        match status {
+            200..=299 => Ok(()),
+            status => Err(GeneratorError::Rejected(status)),
+        }
+    }
+
+    async fn inventory(
+        &self,
+        method: reqwest::Method,
+        segments: &[&str],
+        body: Option<Value>,
+    ) -> Result<(u16, Value), GeneratorError> {
+        let mut url = reqwest::Url::parse(&self.base_url).map_err(invalid_request)?;
+        url.path_segments_mut()
+            .map_err(|()| GeneratorError::InvalidRequest("Generator URL has no path".to_owned()))?
+            .push("v1")
+            .extend(segments);
+        let mut request = self.client.request(method, url).timeout(CURSOR_TIMEOUT);
+        if let Some(body) = body {
+            request = request.json(&body);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|error| GeneratorError::Unavailable(error.to_string()))?;
+        let status = response.status().as_u16();
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|error| GeneratorError::InvalidResponse(error.to_string()))?;
+        let body = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes)
+                .map_err(|error| GeneratorError::InvalidResponse(error.to_string()))?
+        };
+        Ok((status, body))
+    }
+}
+
+fn invalid_request(error: impl fmt::Display) -> GeneratorError {
+    GeneratorError::InvalidRequest(error.to_string())
 }
 
 impl GeneratorHttpClient {
@@ -121,6 +225,7 @@ impl GeneratorHttpClient {
 fn event_body(event: &NormalizedEvent) -> Result<serde_json::Value, GeneratorError> {
     let result = match event {
         NormalizedEvent::SessionStart(value) => serde_json::to_value(value),
+        NormalizedEvent::SessionEnd(value) => serde_json::to_value(value),
         NormalizedEvent::UserPromptSubmit(value) => serde_json::to_value(value),
         NormalizedEvent::PreToolUse(value) => serde_json::to_value(value),
         NormalizedEvent::PostToolUse(value) => serde_json::to_value(value),
