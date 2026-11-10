@@ -438,7 +438,77 @@ FROM exceptions WHERE removed_at IS NULL \
   AND (team IS NULL OR team = split_part($1::text, '/', 1)) \
 ORDER BY id";
 
+// A request the gateway retried keeps its first record.
+const MODEL_CALL: &str = "\
+INSERT INTO model_calls (request_id, user_email, client_id, session_id, model, at) \
+VALUES ($1::text, $2::text, $3::text, $4::text, $5::text, $6::bigint) \
+ON CONFLICT (request_id) WHERE request_id IS NOT NULL DO NOTHING";
+
+// The tokens of recorded model requests, from the gateway's request log in the same database:
+// its row names our record in `attributes_json.withhuman_request`.
+const MODEL_TOKENS: &str = "\
+UPDATE model_calls m SET input_tokens = r.input_tokens, output_tokens = r.output_tokens, \
+  model = coalesce(r.gen_ai_response_model, r.gen_ai_request_model, m.model) \
+FROM request_logs r \
+WHERE r.attributes_json->>'withhuman_request' = m.request_id \
+  AND m.input_tokens IS NULL AND m.output_tokens IS NULL AND m.at > $1::bigint \
+  AND (r.input_tokens IS NOT NULL OR r.output_tokens IS NOT NULL)";
+
 impl PgGraphRepository {
+    /// Copies the token counts of model requests recorded since `since` from the gateway's
+    /// request log; none while the gateway has made no log. The number of records filled.
+    pub async fn import_model_tokens(&self, since: u64) -> Result<u64, RepositoryError> {
+        let since = signed(since)?;
+        let result: Result<u64, PgError> = async {
+            let client = self.client().await?;
+            let present: bool = one(
+                &client,
+                "SELECT to_regclass('request_logs') IS NOT NULL",
+                &[],
+            )
+            .await?
+            .get(0);
+            if !present {
+                return Ok(0);
+            }
+            client
+                .batch_execute(
+                    "CREATE INDEX IF NOT EXISTS request_logs_withhuman_request \
+                     ON request_logs ((attributes_json->>'withhuman_request'))",
+                )
+                .await?;
+            run(&client, MODEL_TOKENS, &[&since]).await
+        }
+        .await;
+        Ok(result?)
+    }
+
+    pub(crate) async fn model_call(
+        &self,
+        call: withhuman_contracts::inventory::ModelCall,
+    ) -> Result<(), RepositoryError> {
+        let at = signed(call.at)?;
+        let result: Result<u64, PgError> = async {
+            let client = self.client().await?;
+            run(
+                &client,
+                MODEL_CALL,
+                &[
+                    &call.request_id,
+                    &call.user,
+                    &call.client_id,
+                    &call.session_id,
+                    &call.model,
+                    &at,
+                ],
+            )
+            .await
+        }
+        .await;
+        result?;
+        Ok(())
+    }
+
     pub(crate) async fn checkin(
         &self,
         record: withhuman_contracts::inventory::ClientCheckinRecord,

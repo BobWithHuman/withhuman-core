@@ -947,3 +947,87 @@ async fn an_exception_covers_a_session_only_where_it_applies() {
     )
     .await;
 }
+
+/// The gateway's request log, in its own schema here, gives recorded model requests their tokens.
+#[tokio::test]
+async fn model_calls_take_their_tokens_from_the_gateways_request_log() {
+    let Ok(base) = std::env::var("POSTGRES_INTEGRATION_URL") else {
+        return;
+    };
+    let schema = unique("gwlog").replace('-', "_");
+    let admin = Db::connect(&base).await;
+    admin.exec(&format!("CREATE SCHEMA {schema}"), &[]).await;
+    let separator = if base.contains('?') { '&' } else { '?' };
+    let url = format!("{base}{separator}options=-csearch_path%3D{schema}");
+    let repository = PgGraphRepository::connect(&url, 1).await.unwrap();
+    let db = Db::connect(&url).await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let served = repository.clone();
+    tokio::spawn(async move {
+        axum::serve(listener, app(GeneratorService::new(served)))
+            .await
+            .unwrap()
+    });
+    let url_http = format!("http://{address}");
+    for (id, at) in [("r1", 1_000), ("r2", 1_000), ("old", 10)] {
+        let (status, _) = send(
+            &url_http,
+            "POST",
+            "/v1/model-calls",
+            Some(json!({"request_id": id,
+            "user": "ana@example.com", "client_id": "team/d", "session_id": "s", "model": "m",
+            "at": at})),
+        )
+        .await;
+        assert_eq!(status, 204);
+    }
+    // A request the gateway retried keeps its first record.
+    send(
+        &url_http,
+        "POST",
+        "/v1/model-calls",
+        Some(json!({"request_id": "r1", "at": 2_000})),
+    )
+    .await;
+    // No gateway log yet: nothing to do.
+    assert_eq!(repository.import_model_tokens(100).await.unwrap(), 0);
+    db.0.batch_execute(
+        r#"
+        CREATE TABLE request_logs (id uuid, attributes_json jsonb, input_tokens bigint,
+          output_tokens bigint, gen_ai_request_model text, gen_ai_response_model text);
+        INSERT INTO request_logs VALUES
+          (gen_random_uuid(), '{"withhuman_request": "r1"}', 120, 7, 'm', 'claude-x-1'),
+          (gen_random_uuid(), '{"withhuman_request": "r2"}', NULL, NULL, 'm', NULL),
+          (gen_random_uuid(), '{"withhuman_request": "old"}', 5, 5, 'm', 'm');
+    "#,
+    )
+    .await
+    .unwrap();
+    assert_eq!(repository.import_model_tokens(100).await.unwrap(), 1);
+    let rows = db
+        .row(
+            "SELECT jsonb_agg(jsonb_build_array(request_id, model, input_tokens, output_tokens, \
+         user_email) ORDER BY request_id) FROM model_calls",
+            &[],
+        )
+        .await;
+    assert_eq!(
+        rows,
+        json!([
+            ["old", "m", null, null, "ana@example.com"],
+            ["r1", "claude-x-1", 120, 7, "ana@example.com"],
+            ["r2", "m", null, null, "ana@example.com"]
+        ])
+    );
+    let unprotected = db
+        .row(
+            "SELECT to_jsonb(count(*)) FROM unprotected_model_calls",
+            &[],
+        )
+        .await;
+    assert_eq!(unprotected, json!(3), "session s never reported a Hook");
+    admin
+        .exec(&format!("DROP SCHEMA {schema} CASCADE"), &[])
+        .await;
+}

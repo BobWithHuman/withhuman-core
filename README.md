@@ -121,6 +121,12 @@ automations (`{"kind": "service"}`), and except folders, teams or devices from p
 the `stop_audit` view. Benchmark runs name their client `bench/...` so the inventory can leave
 them out (`clients.test`).
 
+With `WITHHUMAN_MODEL_PROXY=on` and `AGENTGATEWAY_CONFIG=config.model-proxy.yaml`, the gateway
+also passes Claude Code's model requests to Anthropic (`ANTHROPIC_BASE_URL` set to the gateway;
+`configure.py --model-proxy`), after checking the same keys and session stops, and records each
+in `model_calls` without its content. A model request whose session no hook reported shows in
+`unprotected_model_calls`. Bedrock, Vertex and Foundry requests do not take this route.
+
 ### Codex CLI
 
 Set up a Codex CLI project with the same one-line installers, choosing Codex. In the folder you

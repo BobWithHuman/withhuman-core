@@ -75,6 +75,8 @@ services:
       DECISION_URL: http://decision:8082
       # Creates the viewer's read-only login; none while unset.
       WITHHUMAN_VIEWER_PASSWORD: ${WITHHUMAN_VIEWER_PASSWORD:-}
+      # `on` copies model requests' tokens from the gateway's request log.
+      WITHHUMAN_MODEL_PROXY: ${WITHHUMAN_MODEL_PROXY:-off}
     depends_on:
       postgres:
         condition: service_healthy
@@ -104,6 +106,8 @@ services:
       # `on` refuses Hooks without a valid per-user key; see "Keys and the agent inventory".
       WITHHUMAN_REQUIRE_KEY: ${WITHHUMAN_REQUIRE_KEY:-off}
       WITHHUMAN_ADMIN_TOKEN: ${WITHHUMAN_ADMIN_TOKEN:-}
+      # `on` checks model requests the gateway's model route passes (config.model-proxy.yaml).
+      WITHHUMAN_MODEL_PROXY: ${WITHHUMAN_MODEL_PROXY:-off}
     depends_on:
       generator:
         condition: service_healthy
@@ -123,8 +127,12 @@ services:
     command: ["-f", "/config.yaml"]
     ports:
       - "${GATEWAY_BIND:-0.0.0.0}:${GATEWAY_PORT:-3000}:3000"
+    # config.model-proxy.yaml adds the model route (WITHHUMAN_MODEL_PROXY=on), whose request
+    # log the gateway keeps in the engine's database.
+    environment:
+      AGENTGATEWAY_REQUEST_LOG_URL: postgres://withhuman:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/withhuman
     volumes:
-      - ./deploy/agentgateway/config.yaml:/config.yaml:ro
+      - ./deploy/agentgateway/${AGENTGATEWAY_CONFIG:-config.yaml}:/config.yaml:ro
     depends_on:
       collector:
         condition: service_healthy

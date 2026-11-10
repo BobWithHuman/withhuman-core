@@ -391,6 +391,29 @@ class DeviceWideTest(Setup):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse((managed / "managed-settings.d" / "50-withhuman.json").exists())
 
+    @unittest.skipIf(os.name == "nt", "POSIX profile")
+    def test_the_model_route_takes_the_base_url_and_the_key_from_the_shell(self):
+        managed = Path(tempfile.mkdtemp()).resolve()
+        env = {"WITHHUMAN_MANAGED_DIR": str(managed)}
+        result = self.configure("--managed", "--model-proxy", scope=None, env_extra=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        drop_in = self.read(managed / "managed-settings.d" / "50-withhuman.json")
+        self.assertEqual(drop_in["env"]["ANTHROPIC_BASE_URL"], SERVER)
+        result = self.configure("--key-only", "--key", KEY, "--model-proxy", scope=None, env_extra=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        profile = self.home / ".zshrc"
+        shell = subprocess.run(["bash", "-c", f'source "{profile}"; printf %s "$ANTHROPIC_CUSTOM_HEADERS"'],
+                               capture_output=True, text=True, env={**os.environ, "HOME": str(self.home)})
+        client = (managed / "withhuman" / "client-id").read_text().strip()
+        self.assertEqual(shell.stdout, f"x-withhuman-key: {KEY}\nx-withhuman-client: {client}")
+        # The key is in no settings file.
+        for path in [managed / "managed-settings.d" / "50-withhuman.json", *self.home.rglob("settings*.json")]:
+            self.assertNotIn(KEY, path.read_text(), path)
+        # Running it again changes nothing.
+        before = profile.read_text()
+        self.configure("--key-only", "--key", KEY, "--model-proxy", scope=None, env_extra=env)
+        self.assertEqual(profile.read_text(), before)
+
     def test_keeps_a_client_id_a_container_passes_in(self):
         result = self.configure(scope=None, env_extra={"WITHHUMAN_CLIENT_ID": "lab/host-laptop"})
         self.assertEqual(result.returncode, 0, result.stderr)

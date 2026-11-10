@@ -4,7 +4,7 @@
 use tokio_postgres::{Client, NoTls, error::SqlState};
 use withhuman_generator::PgGraphRepository;
 
-const READABLE: [&str; 24] = [
+const READABLE: [&str; 26] = [
     "sessions",
     "event_commits",
     "nodes",
@@ -29,6 +29,8 @@ const READABLE: [&str; 24] = [
     "client_seen_projects",
     "exceptions",
     "project_protection",
+    "model_calls",
+    "unprotected_model_calls",
 ];
 
 #[tokio::test]

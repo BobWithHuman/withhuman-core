@@ -940,6 +940,13 @@ impl GraphRepository for PgGraphRepository {
         PgGraphRepository::checkin(self, record).await
     }
 
+    async fn record_model_call(
+        &self,
+        call: withhuman_contracts::inventory::ModelCall,
+    ) -> Result<(), RepositoryError> {
+        self.model_call(call).await
+    }
+
     async fn add_exception(
         &self,
         request: withhuman_contracts::inventory::ExceptionRequest,

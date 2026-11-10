@@ -52,6 +52,9 @@ pub struct CollectorConfig {
     /// How long a key's verification is reused before the Generator is asked again; a revoked
     /// key stops working within this time.
     pub key_cache: Duration,
+    /// Model requests through the gateway are checked (WITHHUMAN_MODEL_PROXY=on); off, the
+    /// model route denies every request.
+    pub model_proxy: bool,
 }
 
 impl Default for CollectorConfig {
@@ -80,6 +83,7 @@ impl Default for CollectorConfig {
             require_key: false,
             admin_token: None,
             key_cache: Duration::from_millis(5_000),
+            model_proxy: false,
         }
     }
 }
@@ -179,6 +183,11 @@ impl CollectorConfig {
                 .map(|value| value.trim().to_owned())
                 .filter(|value| !value.is_empty()),
             key_cache: Duration::from_millis(parse_env("WITHHUMAN_KEY_CACHE_MS", 5_000)?),
+            model_proxy: match_env("WITHHUMAN_MODEL_PROXY", false, |value| match value {
+                "on" | "true" | "1" => Some(true),
+                "off" | "false" | "0" | "" => Some(false),
+                _ => None,
+            })?,
         })
     }
 }

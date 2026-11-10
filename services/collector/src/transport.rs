@@ -63,6 +63,14 @@ pub trait GeneratorTransport: Send + Sync {
         Ok(())
     }
 
+    /// Records a model request the gateway passed.
+    async fn record_model_call(
+        &self,
+        _call: withhuman_contracts::inventory::ModelCall,
+    ) -> Result<(), GeneratorError> {
+        Ok(())
+    }
+
     /// The active exceptions that can cover a client's sessions, as the Generator answers.
     async fn client_exceptions(&self, _client_id: &str) -> Result<(u16, Value), GeneratorError> {
         Ok((200, Value::Array(Vec::new())))
@@ -162,6 +170,23 @@ impl GeneratorTransport for GeneratorHttpClient {
                 reqwest::Method::POST,
                 &["keys", key_id, "denials"],
                 Some(serde_json::to_value(denial).map_err(invalid_request)?),
+            )
+            .await?;
+        match status {
+            200..=299 => Ok(()),
+            status => Err(GeneratorError::Rejected(status)),
+        }
+    }
+
+    async fn record_model_call(
+        &self,
+        call: withhuman_contracts::inventory::ModelCall,
+    ) -> Result<(), GeneratorError> {
+        let (status, _) = self
+            .inventory(
+                reqwest::Method::POST,
+                &["model-calls"],
+                Some(serde_json::to_value(call).map_err(invalid_request)?),
             )
             .await?;
         match status {

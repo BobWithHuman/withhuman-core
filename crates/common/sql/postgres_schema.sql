@@ -434,6 +434,32 @@ LEFT JOIN LATERAL (
          OR starts_with(c.cwd, p.project || '\'))
 ) h ON true;
 
+-- Model requests the gateway passed (WITHHUMAN_MODEL_PROXY=on): who, from which device and
+-- session, when, which model, and the tokens when the gateway's request log has them. Never
+-- what was asked or answered.
+CREATE TABLE IF NOT EXISTS model_calls (
+  id             bigserial PRIMARY KEY,
+  request_id     text,
+  user_email     text,
+  client_id      text,
+  session_id     text,
+  model          text,
+  at             bigint NOT NULL,
+  input_tokens   bigint,
+  output_tokens  bigint
+);
+CREATE UNIQUE INDEX IF NOT EXISTS model_calls_request ON model_calls (request_id)
+  WHERE request_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS model_calls_user_at ON model_calls (user_email, at);
+CREATE INDEX IF NOT EXISTS model_calls_session ON model_calls (session_id)
+  WHERE session_id IS NOT NULL;
+
+-- A model request whose session no Hook ever reported: an agent running unprotected. The
+-- session id Claude Code sends the model (x-claude-code-session-id) is the one its Hooks carry.
+CREATE OR REPLACE VIEW unprotected_model_calls AS
+SELECT m.* FROM model_calls m
+WHERE m.session_id IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.session_id = m.session_id);
 -- Every stop in one place, for the audit: what was stopped (`key`: a user's key, `session`),
 -- whose, by whom, when and why, when it was released, and when it first turned a call back.
 CREATE OR REPLACE VIEW stop_audit AS
@@ -470,7 +496,7 @@ BEGIN
       file_refs, cause_edges, pending_paragraph_enrichments, pending_request_continuations,
       clients, client_projects, users, key_events, session_stops, call_reviews,
       call_review_latest, stop_audit, client_cwds, client_seen_projects, exceptions,
-      project_protection
+      project_protection, model_calls, unprotected_model_calls
     TO withhuman_viewer;
     GRANT SELECT (key_id, user_email, created_at, created_by, note, last_used_at, revoked_at,
       revoked_by, revoke_reason, first_denied_at, last_denied_at, denied_count)

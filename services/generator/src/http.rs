@@ -127,6 +127,7 @@ pub fn app(service: GeneratorService) -> Router {
         )
         .route("/v1/reviews", post(add_review))
         .route("/v1/clients/checkin", post(checkin))
+        .route("/v1/model-calls", post(record_model_call))
         .route("/v1/exceptions", post(add_exception).get(exceptions))
         .route("/v1/exceptions/{id}/remove", post(remove_exception))
         .route("/api-docs/openapi.json", get(openapi_document))
@@ -171,6 +172,7 @@ pub fn app(service: GeneratorService) -> Router {
         record_session_denial,
         add_review,
         checkin,
+        record_model_call,
         add_exception,
         exceptions,
         remove_exception
@@ -709,6 +711,23 @@ async fn checkin(
     StrictJson(record): StrictJson<withhuman_contracts::inventory::ClientCheckinRecord>,
 ) -> Response {
     match service.repository.checkin(record).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => repository_error_response(error),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/model-calls",
+    tag = "Generator",
+    request_body = withhuman_contracts::inventory::ModelCall,
+    responses((status = 204, description = "Recorded"), (status = 500, body = ErrorResponse))
+)]
+async fn record_model_call(
+    State(service): State<GeneratorService>,
+    StrictJson(call): StrictJson<withhuman_contracts::inventory::ModelCall>,
+) -> Response {
+    match service.repository.record_model_call(call).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => repository_error_response(error),
     }

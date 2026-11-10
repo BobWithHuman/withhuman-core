@@ -154,6 +154,14 @@ pub trait GraphRepository: Send + Sync + 'static {
         Err(RepositoryError::NotFound)
     }
 
+    /// Records a model request the gateway passed.
+    async fn record_model_call(
+        &self,
+        _call: withhuman_contracts::inventory::ModelCall,
+    ) -> Result<(), RepositoryError> {
+        Err(RepositoryError::NotFound)
+    }
+
     async fn add_exception(
         &self,
         _request: withhuman_contracts::inventory::ExceptionRequest,

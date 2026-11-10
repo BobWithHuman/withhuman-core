@@ -122,6 +122,7 @@ SCHEDULE_TASK = "WithHumanCheckin"
 CRON_MARK = "# withhuman-checkin"
 PROFILE_MARK = "# WithHuman client ID"
 KEY_MARK = "# WithHuman key"
+HEADERS_MARK = "# WithHuman model request headers"
 # A WithHuman key as the engine issues it.
 KEY_PATTERN = re.compile(r"whk_[0-9a-f]{16}_[0-9a-f]{64}")
 REGISTER_TIMEOUT = 10
@@ -326,6 +327,36 @@ def persist(id_path, value, stamp, report, name="WITHHUMAN_CLIENT_ID", mark=PROF
         report.append(f"{path}: exports {name} (new shells)")
 
 
+def persist_model_headers(key_path, id_path, stamp, report):
+    """With the model route on, Claude Code sends the key and the client ID on its model
+    requests (ANTHROPIC_CUSTOM_HEADERS), read from their files when a shell starts: the key is
+    never written into a settings file. A Claude Code started without the shell's variables
+    sends no key, which the engine refuses when keys are required."""
+    if os.name == "nt":
+        # One header only: a user environment variable holds no line break.
+        key = Path(key_path).read_text(encoding="utf-8").strip()
+        result = subprocess.run(["setx", "ANTHROPIC_CUSTOM_HEADERS", f"x-withhuman-key: {key}"],
+                                capture_output=True)
+        if result.returncode == 0:
+            report.append("ANTHROPIC_CUSTOM_HEADERS set as a user environment variable")
+        return
+    path = profile()
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    line = (f"export ANTHROPIC_CUSTOM_HEADERS=\"x-withhuman-key: $(cat '{key_path}')\""
+            f"$'\\n'\"x-withhuman-client: $(cat '{id_path}')\"")
+    kept = [item for item in lines if item.strip() != HEADERS_MARK
+            and not item.lstrip().startswith("export ANTHROPIC_CUSTOM_HEADERS=")]
+    wanted = list(kept)
+    while wanted and not wanted[-1].strip():
+        wanted.pop()
+    wanted += ["", HEADERS_MARK, line]
+    if lines[-2:] != [HEADERS_MARK, line]:
+        if path.exists():
+            backup(path, stamp)
+        path.write_text("\n".join(wanted) + "\n", encoding="utf-8")
+        report.append(f"{path}: exports ANTHROPIC_CUSTOM_HEADERS with the WithHuman key (new shells)")
+
+
 def hook_version(paths):
     """The installed hook files' version: the start of their SHA-256, so the inventory shows
     which devices run an old hook."""
@@ -378,6 +409,8 @@ def finish(args, client, key_path, key, agent, project, version, stamp, report, 
     """Keeps the key for new shells and registers the device; returns the lines to print."""
     if key and not args.no_persist:
         persist(key_path, key, stamp, report, name="WITHHUMAN_KEY", mark=KEY_MARK)
+        if args.model_proxy:
+            persist_model_headers(key_path, config_dir() / "client-id", stamp, report)
     lines = []
     if key:
         lines.append(f"WithHuman key kept in {key_path}")
@@ -629,6 +662,8 @@ def setup_user(args, here, stamp, report):
     for event, group in withhuman_hooks(args.server, hook_command(hook, args.server)).items():
         hooks.setdefault(event, []).append(group)
     set_env(settings, "WITHHUMAN_CLIENT_ID", value)
+    if args.model_proxy:
+        set_env(settings, "ANTHROPIC_BASE_URL", args.server)
     save(settings_path, settings)
 
     clean_projects([*claude_projects(home), args.project], stamp, report)
@@ -667,6 +702,10 @@ def setup_managed(args, here, stamp, report):
     settings = {"hooks": {event: [group] for event, group in
                           withhuman_hooks(args.server, hook_command(hook, args.server)).items()},
                 "env": {"WITHHUMAN_CLIENT_ID": value}}
+    if args.model_proxy:
+        # Every model request goes through the engine's gateway; a managed key cannot be
+        # overridden. Bedrock, Vertex and Foundry requests do not go this way.
+        settings["env"]["ANTHROPIC_BASE_URL"] = args.server
     if drop_in.exists():
         report.append(f"{drop_in}: replaced, copy at {backup(drop_in, stamp)}")
     save(drop_in, settings)
@@ -737,6 +776,8 @@ def uninstall_claude(args, stamp, report):
             report.append(f"{settings_path}: {removed} WithHuman hook(s) removed, copy at "
                           f"{backup(settings_path, stamp)}")
             drop_env(settings, "WITHHUMAN_CLIENT_ID")
+            if env.get("ANTHROPIC_BASE_URL") and args.server and env["ANTHROPIC_BASE_URL"] == args.server:
+                drop_env(settings, "ANTHROPIC_BASE_URL")
             save(settings_path, settings)
     config = config_dir()
     schedule(config / CHECKIN_NAME, config, False, report, remove=True)
@@ -918,6 +959,10 @@ def main():
                              "managed setup")
     parser.add_argument("--no-checkin", action="store_true",
                         help="do not schedule the daily check-in")
+    parser.add_argument("--model-proxy", action="store_true",
+                        default=os.environ.get("WITHHUMAN_MODEL_PROXY", "").lower() in ("on", "true", "1"),
+                        help="send Claude Code's model requests through the engine's gateway "
+                             "(ANTHROPIC_BASE_URL), with the key in ANTHROPIC_CUSTOM_HEADERS")
     args = parser.parse_args()
     if sys.version_info < (3, 8):
         sys.exit("WithHuman's hook needs Python 3.8 or later")
@@ -932,6 +977,10 @@ def main():
         key_path, key = keep_key(args.key)
         if not args.no_persist:
             persist(key_path, key, stamp, report, name="WITHHUMAN_KEY", mark=KEY_MARK)
+            if args.model_proxy:
+                managed_id = managed_dir() / "withhuman" / "client-id"
+                persist_model_headers(key_path, managed_id if managed_id.is_file()
+                                      else config_dir() / "client-id", stamp, report)
         for line in report + [f"WithHuman key kept in {key_path}"]:
             print(line)
         return

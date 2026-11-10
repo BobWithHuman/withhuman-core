@@ -56,6 +56,8 @@ helm.sh/chart: {{ printf "%s-%s" .root.Chart.Name .root.Chart.Version }}
   value: {{ .Values.collector.mcpEnforce | quote }}
 - name: WITHHUMAN_REQUIRE_KEY
   value: {{ .Values.collector.requireKey | quote }}
+- name: WITHHUMAN_MODEL_PROXY
+  value: {{ ternary "on" "off" .Values.modelProxy.enabled | quote }}
 # The key administration API is off until the Secret holds `admin-token`.
 - name: WITHHUMAN_ADMIN_TOKEN
   valueFrom:
@@ -71,6 +73,8 @@ helm.sh/chart: {{ printf "%s-%s" .root.Chart.Name .root.Chart.Version }}
 - name: DECISION_URL
   value: http://{{ include "withhuman.fullname" . }}-decision:8082
 {{ include "withhuman.postgresEnv" . }}
+- name: WITHHUMAN_MODEL_PROXY
+  value: {{ ternary "on" "off" .Values.modelProxy.enabled | quote }}
 # The viewer's read-only login is created when the Secret holds `viewer-password`.
 - name: WITHHUMAN_VIEWER_PASSWORD
   valueFrom:

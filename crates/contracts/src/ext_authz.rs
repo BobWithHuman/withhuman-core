@@ -8,10 +8,15 @@ pub use envoy_types::ext_authz::v3::pb::{
     HttpResponse, HttpStatusCode, OkHttpResponse,
 };
 use envoy_types::ext_authz::v3::{
-    CheckResponseExt as _, DeniedHttpResponseBuilder, ToHttpResponse as _,
+    CheckResponseExt as _, DeniedHttpResponseBuilder, OkHttpResponseBuilder, ToHttpResponse as _,
+    pb::HeaderAppendAction,
 };
 pub use envoy_types::pb::envoy::service::auth::v3::{
     AttributeContext, attribute_context, authorization_client::AuthorizationClient,
+};
+/// A check's metadata (`metadata_context.filter_metadata`) and its values.
+pub use envoy_types::pb::google::protobuf::{
+    Struct as MetadataStruct, Value as MetadataValue, value::Kind as MetadataValueKind,
 };
 
 pub const AUTHORIZATION_SERVICE_NAME: &str = "envoy.service.auth.v3.Authorization";
@@ -20,6 +25,28 @@ pub const MCP_TOOL_CALL_METHOD: &str = "tools/call";
 
 pub fn allow_response() -> CheckResponse {
     CheckResponse::with_status(tonic::Status::ok(""))
+}
+
+/// An allow that overwrites the headers in `set` and takes those in `remove` off the request
+/// before the gateway sends it on.
+pub fn allow_with_headers(set: &[(&str, &str)], remove: &[&str]) -> CheckResponse {
+    let mut ok = OkHttpResponseBuilder::new();
+    for (name, value) in set {
+        ok.add_header(
+            *name,
+            *value,
+            Some(HeaderAppendAction::OverwriteIfExistsOrAdd),
+            false,
+        );
+    }
+    for name in remove {
+        ok.remove_header(*name);
+    }
+    CheckResponse {
+        status: CheckResponse::with_status(tonic::Status::ok("")).status,
+        http_response: Some(ok.to_http_response()),
+        ..Default::default()
+    }
 }
 
 pub fn deny_response(reason: impl Into<String>) -> CheckResponse {

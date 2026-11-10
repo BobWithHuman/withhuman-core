@@ -395,3 +395,23 @@ pub struct Review {
     pub actor: Option<String>,
     pub at: u64,
 }
+
+/// A model request the gateway passed: who made it, from where, when, with which model. Never
+/// what was asked or answered.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+pub struct ModelCall {
+    /// The gateway's id for the request, which its request log shares.
+    #[serde(default)]
+    pub request_id: Option<String>,
+    #[serde(default)]
+    pub user: Option<String>,
+    #[serde(default)]
+    pub client_id: Option<String>,
+    /// Claude Code's `x-claude-code-session-id`.
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Epoch milliseconds.
+    pub at: u64,
+}
