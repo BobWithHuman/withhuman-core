@@ -10,8 +10,9 @@ use withhuman_common::{
 use withhuman_contracts::events::{
     ConfigChangeEventRequest, ContentOrigin, IntentEventRequest, MessageDisplayEventRequest,
     PostToolBatchEventRequest, PostToolUseEventRequest, PostToolUseFailureEventRequest,
-    PreToolUseEventRequest, SessionStartEventRequest, SubagentStartEventRequest,
-    SubagentStopEventRequest, ToolDescriptionsEventRequest, UserPromptSubmitEventRequest,
+    PreToolUseEventRequest, SessionEndEventRequest, SessionStartEventRequest,
+    SubagentStartEventRequest, SubagentStopEventRequest, ToolDescriptionsEventRequest,
+    UserPromptSubmitEventRequest,
 };
 
 use crate::RepositoryError;
@@ -19,6 +20,7 @@ use crate::RepositoryError;
 #[derive(Debug, Clone, PartialEq)]
 pub enum GeneratorEvent {
     SessionStart(SessionStartEventRequest),
+    SessionEnd(SessionEndEventRequest),
     UserPromptSubmit(UserPromptSubmitEventRequest),
     PreToolUse(PreToolUseEventRequest),
     PostToolUse(PostToolUseEventRequest),
@@ -36,6 +38,7 @@ impl GeneratorEvent {
     pub fn event_name(&self) -> &'static str {
         match self {
             Self::SessionStart(_) => "SessionStart",
+            Self::SessionEnd(_) => "SessionEnd",
             Self::UserPromptSubmit(_) => "UserPromptSubmit",
             Self::PreToolUse(_) => "PreToolUse",
             Self::PostToolUse(_) => "PostToolUse",
@@ -53,6 +56,7 @@ impl GeneratorEvent {
     pub fn session_id(&self) -> &str {
         match self {
             Self::SessionStart(event) => &event.session_id,
+            Self::SessionEnd(event) => &event.session_id,
             Self::UserPromptSubmit(event) => &event.session_id,
             Self::PreToolUse(event) => &event.event.session_id,
             Self::PostToolUse(event) => &event.session_id,
@@ -70,6 +74,7 @@ impl GeneratorEvent {
     pub fn order(&self) -> u64 {
         match self {
             Self::SessionStart(event) => event.order,
+            Self::SessionEnd(event) => event.order,
             Self::UserPromptSubmit(event) => event.order,
             Self::PreToolUse(event) => event.event.order,
             Self::PostToolUse(event) => event.order,
@@ -93,6 +98,7 @@ impl GeneratorEvent {
 
         Ok(match event_name {
             "SessionStart" => Self::SessionStart(parse(event_json)?),
+            "SessionEnd" => Self::SessionEnd(parse(event_json)?),
             "UserPromptSubmit" => Self::UserPromptSubmit(parse(event_json)?),
             "PreToolUse" => Self::PreToolUse(parse(event_json)?),
             "PostToolUse" => Self::PostToolUse(parse(event_json)?),
@@ -115,7 +121,17 @@ impl GeneratorEvent {
     pub(crate) fn into_mutation(self) -> Result<GraphMutation, RepositoryError> {
         match self {
             Self::SessionStart(event) => {
-                mutation("SessionStart", None, None, None, event, |event| event)
+                let source = event.payload.source.clone();
+                let mut mutation =
+                    mutation("SessionStart", None, None, None, event, |event| event)?;
+                mutation.session = SessionChange::Started { source };
+                Ok(mutation)
+            }
+            Self::SessionEnd(event) => {
+                let reason = event.payload.reason.clone();
+                let mut mutation = mutation("SessionEnd", None, None, None, event, |event| event)?;
+                mutation.session = SessionChange::Ended { reason };
+                Ok(mutation)
             }
             Self::UserPromptSubmit(event) => {
                 let text = Some(Text::local(event.payload.prompt.clone()));
@@ -258,6 +274,24 @@ pub(crate) struct GraphMutation {
     pub(crate) intent: Option<String>,
     /// The session-wide SubGraph the event belongs to.
     pub(crate) subgraph: Option<i64>,
+    /// The user of the Hook's verified key.
+    pub(crate) user: Option<String>,
+    /// Claude Code's permission mode when the Hook fired.
+    pub(crate) permission_mode: Option<String>,
+    /// The session's model, as SessionStart reports it.
+    pub(crate) model: Option<String>,
+    pub(crate) session: SessionChange,
+}
+
+/// How the event moves its session's life.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) enum SessionChange {
+    #[default]
+    None,
+    /// SessionStart, with its `source`.
+    Started { source: Option<String> },
+    /// SessionEnd, with its `reason`.
+    Ended { reason: Option<String> },
 }
 
 impl GraphMutation {
@@ -285,6 +319,9 @@ impl GraphMutation {
             &mut self.repository,
             &mut self.file_path,
             &mut self.intent,
+            &mut self.user,
+            &mut self.permission_mode,
+            &mut self.model,
         ] {
             optional(text);
         }
@@ -303,6 +340,11 @@ impl GraphMutation {
             ] {
                 clean(text);
             }
+        }
+        if let SessionChange::Started { source: Some(text) }
+        | SessionChange::Ended { reason: Some(text) } = &mut self.session
+        {
+            clean(text);
         }
         self
     }
@@ -449,6 +491,10 @@ where
         paragraphs,
         tokens: tokens.into_iter().collect(),
         intent: None,
+        user: envelope.user.clone(),
+        permission_mode: envelope.meta.permission_mode.clone(),
+        model: envelope.meta.model.clone(),
+        session: SessionChange::None,
         subgraph: envelope
             .subgraph
             .map(|value| signed(value, "subgraph"))

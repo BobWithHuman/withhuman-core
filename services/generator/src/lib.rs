@@ -2,6 +2,7 @@ mod config;
 mod decision;
 mod event;
 mod http;
+mod pg_inventory;
 mod pg_repository;
 mod repository;
 
@@ -10,4 +11,4 @@ pub use decision::{DecisionClient, DecisionError, HttpDecisionClient};
 pub use event::GeneratorEvent;
 pub use http::{GeneratorService, app};
 pub use pg_repository::PgGraphRepository;
-pub use repository::{GraphRepository, ReindexReport, RepositoryError};
+pub use repository::{GraphRepository, KeyScope, ReindexReport, RepositoryError};

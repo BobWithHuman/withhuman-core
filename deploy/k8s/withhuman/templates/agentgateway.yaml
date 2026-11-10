@@ -14,6 +14,14 @@ routes:
           pathPrefix: /v1/hooks
     backends:
       - host: {{ .collector }}:8080
+  - name: inventory
+    matches:
+      - path:
+          pathPrefix: /v1/clients
+      - path:
+          pathPrefix: /v1/admin
+    backends:
+      - host: {{ .collector }}:8080
 {{- if .targets }}
 
 mcp:

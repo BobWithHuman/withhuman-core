@@ -10,7 +10,8 @@
 # deploy/client folder (a mirror or a test). $env:WITHHUMAN_AGENT picks the agent: claude (default)
 # or codex. Running it again updates the setup; $env:WITHHUMAN_UNINSTALL = "1" takes WithHuman out
 # of the folder instead, keeping other hooks. See configure.py for what it changes.
-# WITHHUMAN_CLIENT_ID is set for new windows and for this one.
+# $env:WITHHUMAN_KEY is the user's key from the security team, when the engine issues keys.
+# WITHHUMAN_CLIENT_ID (and WITHHUMAN_KEY) are set for new windows and for this one.
 & {
     $ErrorActionPreference = "Stop"
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
@@ -75,3 +76,5 @@ WITHHUMAN_SERVER is required: the address of your own WithHuman engine.
 }
 # configure.py set it for new windows; this window gets it too.
 $env:WITHHUMAN_CLIENT_ID = [Environment]::GetEnvironmentVariable("WITHHUMAN_CLIENT_ID", "User")
+$key = [Environment]::GetEnvironmentVariable("WITHHUMAN_KEY", "User")
+if ($key) { $env:WITHHUMAN_KEY = $key }

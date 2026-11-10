@@ -13,16 +13,16 @@ use withhuman_contracts::{
         IntentEventRequest, IntentPayload, MessageDisplayEventRequest, MessageDisplayPayload,
         PostToolBatchEventRequest, PostToolBatchPayload, PostToolUseEventRequest,
         PostToolUseFailureEventRequest, PostToolUseFailurePayload, PostToolUsePayload,
-        PreToolUseEventRequest, PreToolUsePayload, SessionCursor, SessionStartEventRequest,
-        SessionStartPayload, SubagentStartEventRequest, SubagentStartPayload,
-        SubagentStopEventRequest, SubagentStopPayload, ToolDescription,
-        ToolDescriptionsEventRequest, ToolDescriptionsPayload, UserPromptSubmitEventRequest,
-        UserPromptSubmitPayload,
+        PreToolUseEventRequest, PreToolUsePayload, SessionCursor, SessionEndEventRequest,
+        SessionEndPayload, SessionStartEventRequest, SessionStartPayload,
+        SubagentStartEventRequest, SubagentStartPayload, SubagentStopEventRequest,
+        SubagentStopPayload, ToolDescription, ToolDescriptionsEventRequest,
+        ToolDescriptionsPayload, UserPromptSubmitEventRequest, UserPromptSubmitPayload,
     },
     hooks::{
         ConfigChangeRequest, MessageDisplayRequest, PostToolBatchRequest,
         PostToolUseFailureRequest, PostToolUseRequest, PreToolUseRequest, ProgramFile,
-        SessionStartRequest, SubagentLifecycleRequest, ToolDescriptionsRequest,
+        SessionEndRequest, SessionStartRequest, SubagentLifecycleRequest, ToolDescriptionsRequest,
         UserPromptSubmitRequest,
     },
 };
@@ -43,6 +43,7 @@ pub const MESSAGE_INCOMPLETE_FLAG: &str = "message_incomplete";
 #[derive(Debug, Clone, PartialEq)]
 pub enum NormalizedEvent {
     SessionStart(SessionStartEventRequest),
+    SessionEnd(SessionEndEventRequest),
     UserPromptSubmit(UserPromptSubmitEventRequest),
     PreToolUse(PreToolUseEventRequest),
     PostToolUse(PostToolUseEventRequest),
@@ -60,6 +61,7 @@ impl NormalizedEvent {
     pub fn event_name(&self) -> &'static str {
         match self {
             Self::SessionStart(_) => "SessionStart",
+            Self::SessionEnd(_) => "SessionEnd",
             Self::UserPromptSubmit(_) => "UserPromptSubmit",
             Self::PreToolUse(_) => "PreToolUse",
             Self::PostToolUse(_) => "PostToolUse",
@@ -77,6 +79,7 @@ impl NormalizedEvent {
     pub fn order(&self) -> u64 {
         match self {
             Self::SessionStart(event) => event.order,
+            Self::SessionEnd(event) => event.order,
             Self::UserPromptSubmit(event) => event.order,
             Self::PreToolUse(event) => event.event.order,
             Self::PostToolUse(event) => event.order,
@@ -219,7 +222,9 @@ impl Normalizer {
                 },
             )
             .await?;
-        let meta = metadata(&state, context, None, None, None, None);
+        let mut meta = metadata(&state, context, None, None, None, None);
+        meta.permission_mode = request.permission_mode;
+        meta.model = request.model;
         let envelope = envelope(
             &state,
             context,
@@ -233,6 +238,38 @@ impl Normalizer {
             },
         );
         Ok(NormalizedEvent::SessionStart(envelope))
+    }
+
+    /// The session's end. It adds no node; the Generator marks the session ended.
+    pub async fn session_end(
+        &self,
+        context: &TrustedHookContext,
+        request: SessionEndRequest,
+        observed_at: u64,
+    ) -> Result<NormalizedEvent, NormalizeError> {
+        let state = self
+            .apply(
+                &request.session_id,
+                SessionUpdate {
+                    cwd: request.cwd,
+                    ..Default::default()
+                },
+            )
+            .await?;
+        let mut meta = metadata(&state, context, None, None, None, None);
+        meta.permission_mode = request.permission_mode;
+        Ok(NormalizedEvent::SessionEnd(envelope(
+            &state,
+            context,
+            request.session_id,
+            observed_at,
+            None,
+            meta,
+            SessionEndPayload {
+                reason: request.reason,
+                ..Default::default()
+            },
+        )))
     }
 
     pub async fn user_prompt_submit(
@@ -253,7 +290,8 @@ impl Normalizer {
                 },
             )
             .await?;
-        let meta = metadata(&state, context, None, None, None, None);
+        let mut meta = metadata(&state, context, None, None, None, None);
+        meta.permission_mode = request.permission_mode;
         Ok(NormalizedEvent::UserPromptSubmit(envelope(
             &state,
             context,
@@ -357,7 +395,7 @@ impl Normalizer {
                 },
             )
             .await?;
-        let meta = metadata(
+        let mut meta = metadata(
             &state,
             context,
             Some(request.tool_use_id),
@@ -365,6 +403,7 @@ impl Normalizer {
             request.agent_type,
             None,
         );
+        meta.permission_mode = request.permission_mode;
         Ok(NormalizedEvent::PreToolUse(PreToolUseEventRequest {
             event: envelope(
                 &state,
@@ -423,6 +462,7 @@ impl Normalizer {
             request.agent_type,
             None,
         );
+        meta.permission_mode = request.permission_mode;
         let content_origin = origin::tool_origin(
             &request.tool_name,
             tool_input.as_ref(),
@@ -482,7 +522,7 @@ impl Normalizer {
                 state.tool_input.clone(),
             )
             .await?;
-        let meta = metadata(
+        let mut meta = metadata(
             &state,
             context,
             Some(request.tool_use_id),
@@ -490,6 +530,7 @@ impl Normalizer {
             request.agent_type,
             None,
         );
+        meta.permission_mode = request.permission_mode;
         Ok(NormalizedEvent::PostToolUseFailure(envelope(
             &state,
             context,
@@ -830,6 +871,7 @@ fn envelope<T>(
         order: state.order,
         observed_at,
         client_id: context.client_id.clone(),
+        user: context.user.clone(),
         sequence,
         subgraph: Some(state.subgraph),
         meta,
@@ -858,6 +900,8 @@ fn metadata(
         turn_id,
         repo: context.repository.clone(),
         content_origin: None,
+        permission_mode: None,
+        model: None,
         additional_fields: Default::default(),
     }
 }

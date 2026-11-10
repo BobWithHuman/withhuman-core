@@ -5,6 +5,8 @@
     "request": {
       "cwd": "<project>",
       "hook_event_name": "SessionStart",
+      "model": "gpt-5.4",
+      "permission_mode": "bypassPermissions",
       "session_id": "<session:matrix>",
       "source": "startup",
       "transcript_path": "<transcript>.jsonl"
@@ -18,6 +20,7 @@
     "request": {
       "cwd": "<project>",
       "hook_event_name": "UserPromptSubmit",
+      "permission_mode": "bypassPermissions",
       "prompt": "Run the C0 scripted tool sequence and report completion.",
       "prompt_id": "<turn:matrix>",
       "session_id": "<session:matrix>",
@@ -34,6 +37,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PreToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:matrix>",
       "session_id": "<session:matrix>",
       "tool_input": {
@@ -54,6 +58,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PreToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:matrix>",
       "session_id": "<session:matrix>",
       "tool_input": {
@@ -74,6 +79,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PostToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:matrix>",
       "session_id": "<session:matrix>",
       "tool_input": {
@@ -102,6 +108,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PreToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:matrix>",
       "session_id": "<session:matrix>",
       "tool_input": {
@@ -137,6 +144,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PostToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:matrix>",
       "session_id": "<session:matrix>",
       "tool_input": {
@@ -173,6 +181,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PreToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:matrix>",
       "session_id": "<session:matrix>",
       "tool_input": {
@@ -208,6 +217,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PreToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:matrix>",
       "session_id": "<session:matrix>",
       "tool_input": {
@@ -227,6 +237,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PostToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:matrix>",
       "session_id": "<session:matrix>",
       "tool_input": {
@@ -258,6 +269,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PreToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:matrix>",
       "session_id": "<session:matrix>",
       "tool_input": {
@@ -277,6 +289,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PreToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:matrix>",
       "session_id": "<session:matrix>",
       "tool_input": {
@@ -296,6 +309,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PreToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:matrix>",
       "session_id": "<session:matrix>",
       "tool_input": {
@@ -315,6 +329,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PostToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:matrix>",
       "session_id": "<session:matrix>",
       "tool_input": {
@@ -344,9 +359,15 @@
     "workdir_unknown": false
   },
   {
-    "claude_event": "",
+    "claude_event": "SessionEnd",
     "codex_event": "SessionEnd",
-    "request": null,
+    "request": {
+      "cwd": "<project>",
+      "hook_event_name": "SessionEnd",
+      "reason": "other",
+      "session_id": "<session:matrix>",
+      "transcript_path": "<transcript>.jsonl"
+    },
     "scenario": "matrix",
     "workdir_unknown": false
   },
@@ -356,6 +377,8 @@
     "request": {
       "cwd": "<project>",
       "hook_event_name": "SessionStart",
+      "model": "gpt-5.4",
+      "permission_mode": "bypassPermissions",
       "session_id": "<session:parallel>",
       "source": "startup",
       "transcript_path": "<transcript>.jsonl"
@@ -369,6 +392,7 @@
     "request": {
       "cwd": "<project>",
       "hook_event_name": "UserPromptSubmit",
+      "permission_mode": "bypassPermissions",
       "prompt": "Run the C0 scripted tool sequence and report completion.",
       "prompt_id": "<turn:parallel>",
       "session_id": "<session:parallel>",
@@ -385,6 +409,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PreToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:parallel>",
       "session_id": "<session:parallel>",
       "tool_input": {
@@ -404,6 +429,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PreToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:parallel>",
       "session_id": "<session:parallel>",
       "tool_input": {
@@ -423,6 +449,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PostToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:parallel>",
       "session_id": "<session:parallel>",
       "tool_input": {
@@ -446,6 +473,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PostToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:parallel>",
       "session_id": "<session:parallel>",
       "tool_input": {
@@ -475,9 +503,15 @@
     "workdir_unknown": false
   },
   {
-    "claude_event": "",
+    "claude_event": "SessionEnd",
     "codex_event": "SessionEnd",
-    "request": null,
+    "request": {
+      "cwd": "<project>",
+      "hook_event_name": "SessionEnd",
+      "reason": "other",
+      "session_id": "<session:parallel>",
+      "transcript_path": "<transcript>.jsonl"
+    },
     "scenario": "parallel",
     "workdir_unknown": false
   },
@@ -487,6 +521,8 @@
     "request": {
       "cwd": "<project>",
       "hook_event_name": "SessionStart",
+      "model": "gpt-5.4",
+      "permission_mode": "bypassPermissions",
       "session_id": "<session:faults>",
       "source": "startup",
       "transcript_path": "<transcript>.jsonl"
@@ -500,6 +536,7 @@
     "request": {
       "cwd": "<project>",
       "hook_event_name": "UserPromptSubmit",
+      "permission_mode": "bypassPermissions",
       "prompt": "Run the C0 scripted tool sequence and report completion.",
       "prompt_id": "<turn:faults>",
       "session_id": "<session:faults>",
@@ -516,6 +553,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PreToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:faults>",
       "session_id": "<session:faults>",
       "tool_input": {
@@ -536,6 +574,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PreToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:faults>",
       "session_id": "<session:faults>",
       "tool_input": {
@@ -556,6 +595,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PreToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:faults>",
       "session_id": "<session:faults>",
       "tool_input": {
@@ -576,6 +616,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PreToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:faults>",
       "session_id": "<session:faults>",
       "tool_input": {
@@ -596,6 +637,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PostToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:faults>",
       "session_id": "<session:faults>",
       "tool_input": {
@@ -624,6 +666,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PostToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:faults>",
       "session_id": "<session:faults>",
       "tool_input": {
@@ -652,6 +695,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PostToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:faults>",
       "session_id": "<session:faults>",
       "tool_input": {
@@ -686,9 +730,15 @@
     "workdir_unknown": false
   },
   {
-    "claude_event": "",
+    "claude_event": "SessionEnd",
     "codex_event": "SessionEnd",
-    "request": null,
+    "request": {
+      "cwd": "<project>",
+      "hook_event_name": "SessionEnd",
+      "reason": "other",
+      "session_id": "<session:faults>",
+      "transcript_path": "<transcript>.jsonl"
+    },
     "scenario": "faults",
     "workdir_unknown": false
   },
@@ -698,6 +748,8 @@
     "request": {
       "cwd": "<project>",
       "hook_event_name": "SessionStart",
+      "model": "gpt-5.4",
+      "permission_mode": "bypassPermissions",
       "session_id": "<session:remove>",
       "source": "startup",
       "transcript_path": "<transcript>.jsonl"
@@ -711,6 +763,7 @@
     "request": {
       "cwd": "<project>",
       "hook_event_name": "UserPromptSubmit",
+      "permission_mode": "bypassPermissions",
       "prompt": "Run the C0 scripted tool sequence and report completion.",
       "prompt_id": "<turn:remove>",
       "session_id": "<session:remove>",
@@ -727,6 +780,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PreToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:remove>",
       "session_id": "<session:remove>",
       "tool_input": {
@@ -746,6 +800,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PreToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:remove>",
       "session_id": "<session:remove>",
       "tool_input": {
@@ -765,6 +820,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PostToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:remove>",
       "session_id": "<session:remove>",
       "tool_input": {
@@ -794,9 +850,15 @@
     "workdir_unknown": false
   },
   {
-    "claude_event": "",
+    "claude_event": "SessionEnd",
     "codex_event": "SessionEnd",
-    "request": null,
+    "request": {
+      "cwd": "<project>",
+      "hook_event_name": "SessionEnd",
+      "reason": "other",
+      "session_id": "<session:remove>",
+      "transcript_path": "<transcript>.jsonl"
+    },
     "scenario": "remove",
     "workdir_unknown": false
   },
@@ -806,6 +868,8 @@
     "request": {
       "cwd": "<project>",
       "hook_event_name": "SessionStart",
+      "model": "gpt-5.4",
+      "permission_mode": "bypassPermissions",
       "session_id": "<session:patch-mutations>",
       "source": "startup",
       "transcript_path": "<transcript>.jsonl"
@@ -819,6 +883,7 @@
     "request": {
       "cwd": "<project>",
       "hook_event_name": "UserPromptSubmit",
+      "permission_mode": "bypassPermissions",
       "prompt": "Run the C0 scripted tool sequence and report completion.",
       "prompt_id": "<turn:patch-mutations>",
       "session_id": "<session:patch-mutations>",
@@ -835,6 +900,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PreToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:patch-mutations>",
       "session_id": "<session:patch-mutations>",
       "tool_input": {
@@ -892,6 +958,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PostToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:patch-mutations>",
       "session_id": "<session:patch-mutations>",
       "tool_input": {
@@ -950,6 +1017,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PreToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:patch-mutations>",
       "session_id": "<session:patch-mutations>",
       "tool_input": {
@@ -1013,9 +1081,15 @@
     "workdir_unknown": false
   },
   {
-    "claude_event": "",
+    "claude_event": "SessionEnd",
     "codex_event": "SessionEnd",
-    "request": null,
+    "request": {
+      "cwd": "<project>",
+      "hook_event_name": "SessionEnd",
+      "reason": "other",
+      "session_id": "<session:patch-mutations>",
+      "transcript_path": "<transcript>.jsonl"
+    },
     "scenario": "patch-mutations",
     "workdir_unknown": false
   },
@@ -1025,6 +1099,8 @@
     "request": {
       "cwd": "<project>",
       "hook_event_name": "SessionStart",
+      "model": "gpt-5.4",
+      "permission_mode": "bypassPermissions",
       "session_id": "<session:web-wire>",
       "source": "startup",
       "transcript_path": "<transcript>.jsonl"
@@ -1038,6 +1114,7 @@
     "request": {
       "cwd": "<project>",
       "hook_event_name": "UserPromptSubmit",
+      "permission_mode": "bypassPermissions",
       "prompt": "Run the C0 scripted tool sequence and report completion.",
       "prompt_id": "<turn:web-wire>",
       "session_id": "<session:web-wire>",
@@ -1054,6 +1131,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PreToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:web-wire>",
       "session_id": "<session:web-wire>",
       "tool_input": {
@@ -1073,6 +1151,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PostToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:web-wire>",
       "session_id": "<session:web-wire>",
       "tool_input": {
@@ -1102,9 +1181,15 @@
     "workdir_unknown": false
   },
   {
-    "claude_event": "",
+    "claude_event": "SessionEnd",
     "codex_event": "SessionEnd",
-    "request": null,
+    "request": {
+      "cwd": "<project>",
+      "hook_event_name": "SessionEnd",
+      "reason": "other",
+      "session_id": "<session:web-wire>",
+      "transcript_path": "<transcript>.jsonl"
+    },
     "scenario": "web-wire",
     "workdir_unknown": false
   },
@@ -1114,6 +1199,8 @@
     "request": {
       "cwd": "<project>",
       "hook_event_name": "SessionStart",
+      "model": "gpt-5.4",
+      "permission_mode": "bypassPermissions",
       "session_id": "<session:workdir>",
       "source": "startup",
       "transcript_path": "<transcript>.jsonl"
@@ -1127,6 +1214,7 @@
     "request": {
       "cwd": "<project>",
       "hook_event_name": "UserPromptSubmit",
+      "permission_mode": "bypassPermissions",
       "prompt": "Run the C0 scripted tool sequence and report completion.",
       "prompt_id": "<turn:workdir>",
       "session_id": "<session:workdir>",
@@ -1143,6 +1231,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PreToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:workdir>",
       "session_id": "<session:workdir>",
       "tool_input": {
@@ -1163,6 +1252,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PostToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:workdir>",
       "session_id": "<session:workdir>",
       "tool_input": {
@@ -1191,6 +1281,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PreToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:workdir>",
       "session_id": "<session:workdir>",
       "tool_input": {
@@ -1217,9 +1308,15 @@
     "workdir_unknown": false
   },
   {
-    "claude_event": "",
+    "claude_event": "SessionEnd",
     "codex_event": "SessionEnd",
-    "request": null,
+    "request": {
+      "cwd": "<project>",
+      "hook_event_name": "SessionEnd",
+      "reason": "other",
+      "session_id": "<session:workdir>",
+      "transcript_path": "<transcript>.jsonl"
+    },
     "scenario": "workdir",
     "workdir_unknown": false
   },
@@ -1231,6 +1328,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PreToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:live-intent-HQXdBr>",
       "session_id": "<session:live-intent-HQXdBr>",
       "tool_input": {
@@ -1251,6 +1349,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PreToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:live-intent-iBmPJR>",
       "session_id": "<session:live-intent-iBmPJR>",
       "tool_input": {
@@ -1271,6 +1370,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PreToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:live-intent-Qkpcwz>",
       "session_id": "<session:live-intent-Qkpcwz>",
       "tool_input": {
@@ -1291,6 +1391,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PreToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:live-deny-4YyCjr>",
       "session_id": "<session:live-deny-4YyCjr>",
       "tool_input": {
@@ -1311,6 +1412,7 @@
       "agent_type": null,
       "cwd": "<project>",
       "hook_event_name": "PreToolUse",
+      "permission_mode": "bypassPermissions",
       "prompt_id": "<turn:live-web-qorKLK>",
       "session_id": "<session:live-web-qorKLK>",
       "tool_input": {

@@ -193,8 +193,9 @@ class CodexHookTest(unittest.TestCase):
                                                       "additionalContext": "state your intent"}})
 
     def test_sends_the_client_repository_and_shell(self):
-        self.hook("SessionStart", {"source": "startup"})
+        self.hook("SessionStart", {"source": "startup"}, WITHHUMAN_KEY="whk_codex")
         _, headers, _ = Collector.received[0]
+        self.assertEqual(headers["authorization"], "Bearer whk_codex")
         self.assertEqual(headers["x-withhuman-client"], "lab/device-1")
         self.assertEqual(headers["x-withhuman-repo"], "github.com/acme/app")
         self.assertEqual(headers["x-withhuman-shell"], "powershell" if os.name == "nt" else "posix")
@@ -531,6 +532,15 @@ class CodexHookTest(unittest.TestCase):
         self.assertIn("reachable with Codex support", result.stdout)
         event, _, body = Collector.received[-1]
         self.assertEqual((event, body), ("PreToolUse", {}))
+
+    def test_check_reports_a_key_the_engine_refused(self):
+        Collector.status = 200
+        Collector.answers["PreToolUse"] = {"hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny",
+            "permissionDecisionReason": "revoked"}}
+        result = self.check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("refused this device's WithHuman key: revoked", result.stderr)
 
     def test_check_fails_on_an_engine_without_codex_support(self):
         Collector.status = 404

@@ -6,8 +6,9 @@ use withhuman_contracts::{
     hooks::{
         ConfigChangeRequest, HookSpecificResponse, MessageDisplayOutput, MessageDisplayRequest,
         PostToolBatchRequest, PostToolUseFailureRequest, PostToolUseRequest, PreToolUseOutput,
-        PreToolUseRequest, SessionStartOutput, SessionStartRequest, SubagentLifecycleRequest,
-        ToolDescriptionsRequest, UserPromptSubmitOutput, UserPromptSubmitRequest,
+        PreToolUseRequest, SessionEndRequest, SessionStartOutput, SessionStartRequest,
+        SubagentLifecycleRequest, ToolDescriptionsRequest, UserPromptSubmitOutput,
+        UserPromptSubmitRequest,
     },
 };
 
@@ -24,9 +25,14 @@ fn contract<T: DeserializeOwned>(fixtures: &Value, name: &str) -> T {
 fn all_supported_hook_request_fixtures_match_contracts() {
     let fixtures = fixture(include_str!("fixtures/hooks/requests.json"));
 
-    let _: SessionStartRequest = contract(&fixtures, "session_start");
+    let start: SessionStartRequest = contract(&fixtures, "session_start");
+    assert_eq!(start.permission_mode.as_deref(), Some("default"));
+    assert_eq!(start.model.as_deref(), Some("claude-opus-5"));
+    let end: SessionEndRequest = contract(&fixtures, "session_end");
+    assert_eq!(end.reason.as_deref(), Some("prompt_input_exit"));
     let _: UserPromptSubmitRequest = contract(&fixtures, "user_prompt_submit");
-    let _: PreToolUseRequest = contract(&fixtures, "pre_tool_use");
+    let call: PreToolUseRequest = contract(&fixtures, "pre_tool_use");
+    assert_eq!(call.permission_mode.as_deref(), Some("acceptEdits"));
     let _: PostToolUseRequest = contract(&fixtures, "post_tool_use");
     let _: PostToolUseFailureRequest = contract(&fixtures, "post_tool_use_failure");
     let _: SubagentLifecycleRequest = contract(&fixtures, "subagent_start");

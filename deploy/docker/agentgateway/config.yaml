@@ -19,6 +19,15 @@ routes:
           pathPrefix: /v1/hooks
     backends:
       - host: collector:8080
+  # Device registration and the key administration API (WITHHUMAN_ADMIN_TOKEN).
+  - name: inventory
+    matches:
+      - path:
+          pathPrefix: /v1/clients
+      - path:
+          pathPrefix: /v1/admin
+    backends:
+      - host: collector:8080
 
 mcp:
   policies:

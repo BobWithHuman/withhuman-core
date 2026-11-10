@@ -170,6 +170,7 @@ pub fn from<T: serde::de::DeserializeOwned>(value: Value) -> T {
 pub fn serialize(event: &NormalizedEvent) -> String {
     match event {
         NormalizedEvent::SessionStart(value) => serde_json::to_string(value),
+        NormalizedEvent::SessionEnd(value) => serde_json::to_string(value),
         NormalizedEvent::UserPromptSubmit(value) => serde_json::to_string(value),
         NormalizedEvent::PreToolUse(value) => serde_json::to_string(value),
         NormalizedEvent::PostToolUse(value) => serde_json::to_string(value),
@@ -187,6 +188,7 @@ pub fn serialize(event: &NormalizedEvent) -> String {
 
 pub fn context() -> TrustedHookContext {
     TrustedHookContext {
+        user: None,
         client_id: Some("team-a/laptop-3".to_owned()),
         repository: Some("github.com/acme/service".to_owned()),
     }

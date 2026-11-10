@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Sets up WithHuman for Claude Code in a project folder, replacing any earlier WithHuman setup.
 
-usage: configure.py --server URL [--project DIR] [--team NAME] [--hook FILE] [--no-persist]
+usage: configure.py --server URL [--project DIR] [--team NAME] [--key KEY] [--hook FILE]
+                    [--no-persist] [--no-register]
 
 WithHuman is self-hosted, so --server (or WITHHUMAN_SERVER) has no default: it is the address of
 the engine this device reports to, and every hook below is written against it.
@@ -10,14 +11,21 @@ the engine this device reports to, and every hook below is written against it.
    and the project's own (.claude/settings.json, .claude/settings.local.json), so an earlier
    setup, an all-HTTP PreToolUse hook especially, does not run beside this one. Other settings
    and other hooks are kept, and each file changed is first copied to <file>.bak-<time>.
-2. Writes WithHuman's ten hooks into the project's .claude/settings.json: nine HTTP hooks and a
-   PreToolUse command hook, installed at .claude/hooks/pre-tool-use.py and run with this Python.
+2. Writes WithHuman's eleven hooks into the project's .claude/settings.json: ten HTTP hooks and
+   a PreToolUse command hook, installed at .claude/hooks/pre-tool-use.py and run with this
+   Python. Each sends the client ID and the user's WithHuman key (`Authorization: Bearer`).
 3. Gives the device a stable client ID (~/.config/withhuman/client-id, `<team>/<uuid>`) and,
    unless --no-persist, sets WITHHUMAN_CLIENT_ID for new shells: in the shell profile on macOS
    and Linux, as a user environment variable on Windows.
+4. With --key (or WITHHUMAN_KEY), keeps the key the security team issued in
+   ~/.config/withhuman/key, readable by the user only, and sets WITHHUMAN_KEY for new shells
+   alike. Without one, a key kept by an earlier run is used.
+5. Registers the device with the engine (POST /v1/clients/register): client ID, team, host
+   name, OS, OS user, hook version, agent and project folder. The setup still completes when
+   that fails, and says so; --no-register skips it.
 
 The setup-project.sh and setup-project.ps1 wrappers fetch this file and the hook, then run it.
-Safe to run again: the result is the same and the client ID is kept.
+Safe to run again: the result is the same, the client ID is kept and the registration updated.
 
 With --agent codex it sets up Codex CLI instead (step 3 as above):
 
@@ -29,6 +37,7 @@ With --agent codex it sets up Codex CLI instead (step 3 as above):
    user's ~/.codex is left alone.
 3. Runs the installed hook's self-check against the engine, then tells you to trust the hooks
    in Codex (/hooks): Codex skips project hooks until they are trusted.
+4. Keeps the key and registers the device, as above.
 
 With --uninstall (and --agent claude or codex) it takes WithHuman out of the project only: its
 hook entries in the project's settings or hooks.json (other hooks and settings are kept, each
@@ -38,12 +47,18 @@ not needed then.
 
 import argparse
 import datetime
+import getpass
+import hashlib
 import json
 import os
+import platform
 import re
 import shutil
+import socket
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 import uuid
 from pathlib import Path
 
@@ -58,9 +73,14 @@ EVENTS = [
     "ConfigChange",
     "MessageDisplay",
     "PostToolBatch",
+    "SessionEnd",
 ]
 HOOK_NAME = "pre-tool-use.py"
 PROFILE_MARK = "# WithHuman client ID"
+KEY_MARK = "# WithHuman key"
+# A WithHuman key as the engine issues it.
+KEY_PATTERN = re.compile(r"whk_[0-9a-f]{16}_[0-9a-f]{64}")
+REGISTER_TIMEOUT = 10
 CODEX_HOOK = "withhuman-hook.py"
 CODEX_FILES = (CODEX_HOOK, "codex_transcript.py", HOOK_NAME)
 # Codex events the hook handles. PreToolUse waits for a judgment (intent wait and decision
@@ -111,11 +131,14 @@ def remove_withhuman(settings):
 def withhuman_hooks(server, command):
     """Our hooks by event: HTTP with the client ID header, PreToolUse through `command`."""
     def http(event):
+        # Claude Code puts only listed variables into headers; an unset WITHHUMAN_KEY leaves
+        # `Bearer `, which the engine takes as no key.
         return {
             "type": "http",
             "url": f"{server}/v1/hooks/{event}",
-            "headers": {"x-withhuman-client": "$WITHHUMAN_CLIENT_ID"},
-            "allowedEnvVars": ["WITHHUMAN_CLIENT_ID"],
+            "headers": {"x-withhuman-client": "$WITHHUMAN_CLIENT_ID",
+                        "Authorization": "Bearer $WITHHUMAN_KEY"},
+            "allowedEnvVars": ["WITHHUMAN_CLIENT_ID", "WITHHUMAN_KEY"],
         }
 
     return {
@@ -167,6 +190,31 @@ def client_id(team):
     return path, value
 
 
+def config_dir():
+    return Path.home() / ".config" / "withhuman"
+
+
+def keep_key(given):
+    """The user's WithHuman key: `given`, kept in ~/.config/withhuman/key (mode 0600), or the one
+    an earlier run kept. None when there is neither."""
+    path = config_dir() / "key"
+    if given is None:
+        if path.exists() and path.read_text(encoding="utf-8").strip():
+            return path, path.read_text(encoding="utf-8").strip()
+        return path, None
+    given = given.strip()
+    if not KEY_PATTERN.fullmatch(given):
+        sys.exit("--key is not a WithHuman key (whk_<16 hex>_<64 hex>); copy it again from the "
+                 "security team's message")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Created unreadable to others before the key is written into it.
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+        file.write(given + "\n")
+    path.chmod(0o600)
+    return path, given
+
+
 def profile():
     """The shell profile new terminals read."""
     shell = os.environ.get("SHELL", "")
@@ -175,26 +223,108 @@ def profile():
     return Path.home() / ".bashrc"
 
 
-def persist(id_path, value, stamp, report):
-    """Sets WITHHUMAN_CLIENT_ID for new shells, replacing any line an earlier setup wrote."""
+def persist(id_path, value, stamp, report, name="WITHHUMAN_CLIENT_ID", mark=PROFILE_MARK):
+    """Sets `name` (the client ID, or the key) for new shells from the file at `id_path`,
+    replacing any line an earlier setup wrote."""
     if os.name == "nt":
-        result = subprocess.run(["setx", "WITHHUMAN_CLIENT_ID", value], capture_output=True)
+        result = subprocess.run(["setx", name, value], capture_output=True)
         if result.returncode != 0:
             sys.exit(f"setx failed: {result.stderr.decode(errors='replace').strip()}")
-        report.append("WITHHUMAN_CLIENT_ID set as a user environment variable (new windows)")
+        report.append(f"{name} set as a user environment variable (new windows)")
         return
     path = profile()
     lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-    earlier = re.compile(r"^\s*export\s+WITHHUMAN_CLIENT_ID=")
-    kept = [line for line in lines if line.strip() != PROFILE_MARK and not earlier.match(line)]
-    wanted = kept + [PROFILE_MARK, f"export WITHHUMAN_CLIENT_ID=\"$(cat '{id_path}')\""]
+    earlier = re.compile(rf"^\s*export\s+{name}=")
+    block = [mark, f"export {name}=\"$(cat '{id_path}')\""]
+    # An earlier line is replaced where it stands, so the profile's other WithHuman line keeps
+    # its place and a second run changes nothing.
+    wanted, placed = [], False
+    for line in lines:
+        if line.strip() == mark:
+            continue
+        if earlier.match(line):
+            if not placed:
+                wanted += block
+                placed = True
+            continue
+        wanted.append(line)
+    if not placed:
+        while wanted and not wanted[-1].strip():
+            wanted.pop()
+        wanted += [""] + block
     if wanted != lines:
         if path.exists():
             backup(path, stamp)
-        while kept and not kept[-1].strip():
-            kept.pop()
-        path.write_text("\n".join(kept + ["", PROFILE_MARK, wanted[-1]]) + "\n", encoding="utf-8")
-        report.append(f"{path}: exports WITHHUMAN_CLIENT_ID (new shells)")
+        path.write_text("\n".join(wanted) + "\n", encoding="utf-8")
+        report.append(f"{path}: exports {name} (new shells)")
+
+
+def hook_version(paths):
+    """The installed hook files' version: the start of their SHA-256, so the inventory shows
+    which devices run an old hook."""
+    digest = hashlib.sha256()
+    for path in paths:
+        digest.update(Path(path).read_bytes())
+    return digest.hexdigest()[:12]
+
+
+def register(server, client, team, key, agent, project, version):
+    """Registers the device with the engine; the problem as text when that fails, else None."""
+    body = {
+        "client_id": client,
+        "team": team,
+        "hostname": socket.gethostname(),
+        "os": f"{platform.system().lower()} {platform.release()}".strip(),
+        "os_user": getpass.getuser(),
+        "hook_version": version,
+        "agent": agent,
+        "project": str(project),
+    }
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    request = urllib.request.Request(f"{server}/v1/clients/register",
+                                     data=json.dumps(body).encode("utf-8"),
+                                     headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=REGISTER_TIMEOUT) as response:
+            response.read()
+        return None
+    except urllib.error.HTTPError as error:
+        try:
+            reason = json.loads(error.read() or b"{}").get("error")
+        except (ValueError, AttributeError):
+            reason = None
+        explained = {
+            "key_required": "the engine requires a WithHuman key: run again with --key",
+            "key_invalid": "the engine does not know this key: check it, then run again with --key",
+            "key_revoked": "this key was revoked: ask the security team for a new one",
+        }
+        return explained.get(reason, f"the engine answered {error.code}"
+                             + (f" ({reason})" if reason else ""))
+    except (urllib.error.URLError, OSError, ValueError) as error:
+        return f"the engine could not be reached ({getattr(error, 'reason', error)})"
+
+
+def finish(args, client, key_path, key, agent, project, version, stamp, report):
+    """Keeps the key for new shells and registers the device; returns the lines to print."""
+    if key and not args.no_persist:
+        persist(key_path, key, stamp, report, name="WITHHUMAN_KEY", mark=KEY_MARK)
+    lines = []
+    if key:
+        lines.append(f"WithHuman key kept in {key_path}")
+    else:
+        lines.append("No WithHuman key: hooks report no user. If the security team gave you one, "
+                     "run again with --key.")
+    if args.no_register:
+        return lines
+    problem = register(args.server, client, args.team, key, agent, project, version)
+    if problem:
+        lines.append(f"WARNING: the device was not registered: {problem}. The hooks are "
+                     "installed; run this setup again to register.")
+    else:
+        lines.append(f"Device registered with {args.server}")
+    return lines
 
 
 def is_codex_withhuman(hook):
@@ -351,6 +481,10 @@ def main():
     )
     parser.add_argument("--hook", default=str(Path(__file__).resolve().parent / "hooks" / HOOK_NAME))
     parser.add_argument("--no-persist", action="store_true", help="leave shell profiles alone")
+    parser.add_argument("--key", default=os.environ.get("WITHHUMAN_KEY"),
+                        help="your WithHuman key from the security team (or set WITHHUMAN_KEY)")
+    parser.add_argument("--no-register", action="store_true",
+                        help="do not register the device with the engine")
     parser.add_argument("--uninstall", action="store_true",
                         help="take WithHuman out of the project (other hooks and files stay)")
     args = parser.parse_args()
@@ -383,15 +517,20 @@ def main():
         project = Path(args.project).resolve()
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         report = []
+        key_path, key = keep_key(args.key)
         path, hook = setup_codex(args, project, stamp, report)
         id_path, value = client_id(args.team)
         if not args.no_persist:
             persist(id_path, value, stamp, report)
+        version = hook_version(hook.parent / name for name in CODEX_FILES)
+        notes = finish(args, value, key_path, key, "codex", project, version, stamp, report)
         for line in report:
             print(line)
         print(f"WithHuman Codex hooks written to {path}")
         print(f"Hook: {hook} (run with {sys.executable})")
         print(f"WITHHUMAN_CLIENT_ID={value}")
+        for line in notes:
+            print(line)
         if not args.skip_check:
             ok, output = check_codex(hook, args.server)
             print(output)
@@ -405,6 +544,7 @@ def main():
     hook_source = Path(args.hook)
     if not hook_source.is_file():
         sys.exit(f"hook not found: {hook_source}")
+    key_path, key = keep_key(args.key)
 
     project = Path(args.project).resolve()
     claude = project / ".claude"
@@ -436,12 +576,16 @@ def main():
     id_path, value = client_id(args.team)
     if not args.no_persist:
         persist(id_path, value, stamp, report)
+    notes = finish(args, value, key_path, key, "claude", project, hook_version([hook]), stamp,
+                   report)
 
     for line in report:
         print(line)
     print(f"WithHuman hooks written to {settings_path}")
     print(f"PreToolUse hook: {hook} (run with {sys.executable})")
     print(f"WITHHUMAN_CLIENT_ID={value}")
+    for line in notes:
+        print(line)
     if os.name == "nt":
         print("Open a new terminal (or keep this one if the setup script set it), then run claude here.")
     else:

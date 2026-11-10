@@ -14,6 +14,11 @@ names, such as data or secrets, are never read. The Collector's answer is printe
 Claude Code gets the same allow, deny or ask as from the HTTP hook. When the Collector cannot
 be reached the hook exits 1, a non-blocking error, as an unreachable HTTP hook is.
 
+It sends the device's client ID (WITHHUMAN_CLIENT_ID) and the user's WithHuman key
+(WITHHUMAN_KEY, as `Authorization: Bearer`). When Claude Code was started without them in its
+environment, from an IDE or app for instance, it reads them from ~/.config/withhuman/client-id
+and ~/.config/withhuman/key, which the setup wrote: the engine stops a revoked key's calls here.
+
 Python 3.8 or later, standard library only.
 """
 
@@ -130,6 +135,19 @@ def programs(event):
     return found
 
 
+def setting(name, file):
+    """The environment variable `name`, else the setup's file of that name."""
+    value = os.environ.get(name, "").strip()
+    if value:
+        return value
+    try:
+        path = os.path.join(os.path.expanduser("~"), ".config", "withhuman", file)
+        with open(path, encoding="utf-8") as handle:
+            return handle.read().strip() or None
+    except OSError:
+        return None
+
+
 def main():
     if len(sys.argv) != 2:
         print("usage: pre-tool-use.py <Collector PreToolUse URL>", file=sys.stderr)
@@ -150,9 +168,12 @@ def main():
         pass  # Not JSON: forwarded as is, for the Collector to reject.
 
     headers = {"Content-Type": "application/json"}
-    client_id = os.environ.get("WITHHUMAN_CLIENT_ID")
+    client_id = setting("WITHHUMAN_CLIENT_ID", "client-id")
     if client_id:
         headers["x-withhuman-client"] = client_id
+    key = setting("WITHHUMAN_KEY", "key")
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
     request = urllib.request.Request(sys.argv[1], data=raw, headers=headers, method="POST")
     try:
         with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:

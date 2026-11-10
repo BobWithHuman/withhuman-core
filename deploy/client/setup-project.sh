@@ -6,7 +6,7 @@
 #     curl -fsSL https://raw.githubusercontent.com/BobWithHuman/withhuman-core/main/deploy/client/setup-project.sh | bash -s -- [team]
 #
 # WITHHUMAN_SERVER is the address of your own engine; WithHuman is self-hosted, so there is no
-# default. WITHHUMAN_AGENT picks the agent: claude (default) or codex. Running it again updates
+# default. WITHHUMAN_KEY is the user's key from the security team, when the engine issues keys. WITHHUMAN_AGENT picks the agent: claude (default) or codex. Running it again updates
 # the setup; WITHHUMAN_UNINSTALL=1 takes WithHuman out of the folder instead, keeping other hooks.
 # From a checkout it uses the checkout's files; otherwise it fetches them from WITHHUMAN_REF
 # (default: main), or from WITHHUMAN_BASE_URL (a deploy/client folder served elsewhere, for a

@@ -4,7 +4,17 @@
     "transcript_path": "/home/u/.claude/projects/app/session.jsonl",
     "cwd": "/app",
     "hook_event_name": "SessionStart",
-    "source": "startup"
+    "permission_mode": "default",
+    "source": "startup",
+    "model": "claude-opus-5"
+  },
+  "session_end": {
+    "session_id": "8e789b84",
+    "transcript_path": "/home/u/.claude/projects/app/session.jsonl",
+    "cwd": "/app",
+    "permission_mode": "default",
+    "hook_event_name": "SessionEnd",
+    "reason": "prompt_input_exit"
   },
   "user_prompt_submit": {
     "session_id": "8e789b84",
@@ -17,6 +27,7 @@
     "session_id": "8e789b84",
     "cwd": "/app",
     "hook_event_name": "PreToolUse",
+    "permission_mode": "acceptEdits",
     "tool_name": "Bash",
     "tool_input": { "command": "npm install" },
     "tool_use_id": "toolu_01"

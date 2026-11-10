@@ -6,16 +6,22 @@ use async_trait::async_trait;
 use deadpool_postgres::{GenericClient, Manager, ManagerConfig, Pool, RecyclingMethod};
 use serde_json::{Value, json};
 use tokio_postgres::{NoTls, Row, error::SqlState, types::ToSql};
-use withhuman_contracts::events::{
-    CreatedNode, EventResponse, ParagraphClassificationRequest, ParagraphClassificationResponse,
-    ParagraphReference, RequestContinuationRequest, RequestContinuationResponse, SessionCursor,
-    SubGraphCursor, ToolCall,
+use withhuman_contracts::{
+    events::{
+        CreatedNode, EventResponse, ParagraphClassificationRequest,
+        ParagraphClassificationResponse, ParagraphReference, RequestContinuationRequest,
+        RequestContinuationResponse, SessionCursor, SubGraphCursor, ToolCall,
+    },
+    inventory::{
+        ClientRecord, ClientRegistrationRecord, KeyDenial, KeyRecord, NewKey, RevokeKeyRequest,
+        VerifyKeyRequest, VerifyKeyResponse,
+    },
 };
 
 use crate::{
     GeneratorEvent,
-    event::GraphMutation,
-    repository::{GraphRepository, ReindexReport, RepositoryError},
+    event::{GraphMutation, SessionChange},
+    repository::{GraphRepository, KeyScope, ReindexReport, RepositoryError},
 };
 
 /// Commits of one session queue on its row.
@@ -44,13 +50,56 @@ event_json, cwd, prompt_id, has_node) \
 VALUES ($1::text, $2::bigint, $3::bigint, $4::text, $5::bigint, $6::text, $7::text, $8::text, \
 $9::text, $10::boolean)";
 
+// A node keeps the permission mode its Hook reported and the session's model at the time, which
+// only SessionStart reports.
 const INSERT_NODE: &str = "\
 INSERT INTO nodes (session_id, seq, kind, event_name, \"order\", observed_at, client_id, \
 sequence, prompt_id, agent_id, agent_type, cwd, tool_use_id, turn_id, repository, intent, \
-subgraph, payload_json) \
+subgraph, payload_json, permission_mode, model) \
 VALUES ($1::text, $2::bigint, $3::text, $4::text, $5::bigint, $6::bigint, $7::text, $8::bigint, \
 $9::text, $10::text, $11::text, $12::text, $13::text, $14::text, $15::text, $16::text, \
-$17::bigint, $18::text)";
+$17::bigint, $18::text, $19::text, \
+coalesce($20::text, (SELECT model FROM sessions WHERE session_id = $1::text)))";
+
+// What the session's Hooks report, as of its latest event: an event older than the latest seen
+// fills only what is still unknown. The first client ID stays (RAN). A SessionEnd marks the
+// session ended; a later SessionStart (a resume) opens it again.
+const UPDATE_SESSION: &str = "\
+UPDATE sessions SET \
+  client_id = coalesce(client_id, $2::text), \
+  user_email = CASE WHEN $6::bigint >= coalesce(last_seen_at, 0) \
+    THEN coalesce($3::text, user_email) ELSE coalesce(user_email, $3::text) END, \
+  permission_mode = CASE WHEN $6::bigint >= coalesce(last_seen_at, 0) \
+    THEN coalesce($4::text, permission_mode) ELSE coalesce(permission_mode, $4::text) END, \
+  model = CASE WHEN $6::bigint >= coalesce(last_seen_at, 0) \
+    THEN coalesce($5::text, model) ELSE coalesce(model, $5::text) END, \
+  start_source = CASE WHEN $7::boolean AND $6::bigint >= coalesce(last_seen_at, 0) \
+    THEN coalesce($8::text, start_source) ELSE start_source END, \
+  ended_at = CASE \
+    WHEN $9::boolean THEN GREATEST(coalesce(ended_at, 0), $6::bigint) \
+    WHEN $7::boolean AND $6::bigint > coalesce(ended_at, $6::bigint) THEN NULL \
+    ELSE ended_at END, \
+  end_reason = CASE \
+    WHEN $9::boolean AND $6::bigint >= coalesce(ended_at, 0) THEN $10::text \
+    WHEN $7::boolean AND $6::bigint > coalesce(ended_at, $6::bigint) THEN NULL \
+    ELSE end_reason END, \
+  last_seen_at = GREATEST(coalesce(last_seen_at, 0), $6::bigint) \
+WHERE session_id = $1::text";
+
+// A client ID a Hook carried. The row is written only when something changes or `last_seen` is
+// 30 s old, so the sessions of one busy device do not queue on it.
+const SEE_CLIENT: &str = "\
+INSERT INTO clients (client_id, team, user_email, first_seen, last_seen) \
+VALUES ($1::text, CASE WHEN position('/' IN $1::text) > 0 THEN split_part($1::text, '/', 1) END, \
+  $2::text, $3::bigint, $3::bigint) \
+ON CONFLICT (client_id) DO UPDATE SET \
+  first_seen = LEAST(coalesce(clients.first_seen, EXCLUDED.first_seen), EXCLUDED.first_seen), \
+  last_seen = GREATEST(coalesce(clients.last_seen, 0), EXCLUDED.last_seen), \
+  user_email = coalesce(EXCLUDED.user_email, clients.user_email) \
+WHERE clients.last_seen IS NULL OR clients.first_seen IS NULL \
+  OR EXCLUDED.last_seen > clients.last_seen + 30000 \
+  OR EXCLUDED.first_seen < clients.first_seen \
+  OR (EXCLUDED.user_email IS NOT NULL AND EXCLUDED.user_email IS DISTINCT FROM clients.user_email)";
 
 const INSERT_SUBGRAPH: &str = "\
 INSERT INTO subgraphs (session_id, number) VALUES ($1::text, $2::bigint) \
@@ -307,7 +356,7 @@ impl PgGraphRepository {
         Ok(repository)
     }
 
-    async fn client(&self) -> Result<deadpool_postgres::Object, RepositoryError> {
+    pub(crate) async fn client(&self) -> Result<deadpool_postgres::Object, RepositoryError> {
         self.pool
             .get()
             .await
@@ -417,6 +466,31 @@ impl PgGraphRepository {
                 };
                 let version = session_version + 1;
                 run(&tx, BUMP_VERSION, &[session, &version]).await?;
+                let (started, source) = match &m.session {
+                    SessionChange::Started { source } => (true, source.as_deref()),
+                    _ => (false, None),
+                };
+                let (ended, reason) = match &m.session {
+                    SessionChange::Ended { reason } => (true, reason.as_deref()),
+                    _ => (false, None),
+                };
+                run(
+                    &tx,
+                    UPDATE_SESSION,
+                    &[
+                        session,
+                        &m.client_id,
+                        &m.user,
+                        &m.permission_mode,
+                        &m.model,
+                        &m.observed_at,
+                        &started,
+                        &source,
+                        &ended,
+                        &reason,
+                    ],
+                )
+                .await?;
                 run(
                     &tx,
                     INSERT_COMMIT,
@@ -457,6 +531,8 @@ impl PgGraphRepository {
                             &m.intent,
                             &m.subgraph,
                             &m.payload_json,
+                            &m.permission_mode,
+                            &m.model,
                         ],
                     )
                     .await?;
@@ -508,6 +584,10 @@ impl PgGraphRepository {
             if kind == "Request" {
                 run(&tx, APPLY_PENDING_CONTINUATION, &[session, &m.order, seq]).await?;
             }
+        }
+        // Last, so the shared row is held only until the commit.
+        if let Some(client_id) = &m.client_id {
+            run(&tx, SEE_CLIENT, &[client_id, &m.user, &m.observed_at]).await?;
         }
         tx.commit().await?;
 
@@ -736,6 +816,48 @@ impl GraphRepository for PgGraphRepository {
         serde_json::from_str(&payload)
             .map_err(|error| RepositoryError::InvalidResponse(error.to_string()))
     }
+    async fn register_client(
+        &self,
+        record: ClientRegistrationRecord,
+    ) -> Result<ClientRecord, RepositoryError> {
+        self.register(record).await
+    }
+
+    async fn clients(&self) -> Result<Vec<ClientRecord>, RepositoryError> {
+        self.all_clients().await
+    }
+
+    async fn verify_key(
+        &self,
+        request: VerifyKeyRequest,
+    ) -> Result<VerifyKeyResponse, RepositoryError> {
+        self.verify(request).await
+    }
+
+    async fn record_key_denial(
+        &self,
+        key_id: &str,
+        denial: KeyDenial,
+    ) -> Result<(), RepositoryError> {
+        self.deny(key_id, denial).await
+    }
+
+    async fn issue_key(&self, key: NewKey) -> Result<KeyRecord, RepositoryError> {
+        self.issue(key).await
+    }
+
+    async fn revoke_keys(
+        &self,
+        scope: KeyScope<'_>,
+        request: RevokeKeyRequest,
+        revoked_at: u64,
+    ) -> Result<Vec<KeyRecord>, RepositoryError> {
+        self.revoke(scope, request, revoked_at).await
+    }
+
+    async fn keys(&self, user: Option<&str>) -> Result<Vec<KeyRecord>, RepositoryError> {
+        self.list_keys(user).await
+    }
 }
 
 /// A pool of `size` connections to `database_url`, each preparing a statement once.
@@ -778,7 +900,7 @@ async fn prepared<C: GenericClient>(
     Ok(client.prepare_cached(statement).await?)
 }
 
-async fn run<C: GenericClient>(
+pub(crate) async fn run<C: GenericClient>(
     client: &C,
     statement: &str,
     parameters: &[&(dyn ToSql + Sync)],
@@ -788,7 +910,7 @@ async fn run<C: GenericClient>(
         .await?)
 }
 
-async fn one<C: GenericClient>(
+pub(crate) async fn one<C: GenericClient>(
     client: &C,
     statement: &str,
     parameters: &[&(dyn ToSql + Sync)],
@@ -798,7 +920,7 @@ async fn one<C: GenericClient>(
         .await?)
 }
 
-async fn optional<C: GenericClient>(
+pub(crate) async fn optional<C: GenericClient>(
     client: &C,
     statement: &str,
     parameters: &[&(dyn ToSql + Sync)],
@@ -819,12 +941,12 @@ fn parse_choice_order(choice: &str) -> Result<Option<u64>, RepositoryError> {
         .ok_or_else(|| RepositoryError::InvalidEvent("choice must be `none` or `o<order>`".into()))
 }
 
-fn signed(value: u64) -> Result<i64, RepositoryError> {
+pub(crate) fn signed(value: u64) -> Result<i64, RepositoryError> {
     i64::try_from(value)
         .map_err(|_| RepositoryError::InvalidEvent(format!("{value} exceeds bigint range")))
 }
 
-fn unsigned(value: i64) -> Result<u64, PgError> {
+pub(crate) fn unsigned(value: i64) -> Result<u64, PgError> {
     u64::try_from(value).map_err(|_| {
         PgError::Repository(RepositoryError::InvalidResponse(format!(
             "{value} is negative"
@@ -840,7 +962,7 @@ fn is_transient(error: &PgError) -> bool {
 
 /// An error of one attempt, kept whole until retrying has been decided.
 #[derive(Debug)]
-enum PgError {
+pub(crate) enum PgError {
     Postgres(tokio_postgres::Error),
     Repository(RepositoryError),
 }

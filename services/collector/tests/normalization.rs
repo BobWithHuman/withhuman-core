@@ -20,6 +20,7 @@ use withhuman_contracts::{
 
 fn context() -> TrustedHookContext {
     TrustedHookContext {
+        user: None,
         client_id: Some("team-a/laptop-3".to_owned()),
         repository: Some("github.com/acme/service".to_owned()),
     }
@@ -33,6 +34,8 @@ async fn assigns_gap_free_orders_only_when_an_event_is_emitted() {
         .session_start(
             &context(),
             SessionStartRequest {
+                model: None,
+                permission_mode: None,
                 session_id: "session-1".to_owned(),
                 hook_event_name: None,
                 transcript_path: None,
@@ -63,6 +66,7 @@ async fn assigns_gap_free_orders_only_when_an_event_is_emitted() {
         .user_prompt_submit(
             &context(),
             UserPromptSubmitRequest {
+                permission_mode: None,
                 session_id: "session-1".to_owned(),
                 hook_event_name: None,
                 prompt: "inspect the service".to_owned(),
@@ -92,6 +96,7 @@ async fn aggregates_message_fragments_and_inherits_session_context() {
         .user_prompt_submit(
             &context(),
             UserPromptSubmitRequest {
+                permission_mode: None,
                 session_id: "session-1".to_owned(),
                 hook_event_name: None,
                 prompt: "hello".to_owned(),
@@ -143,6 +148,7 @@ async fn restores_tool_input_and_preserves_tool_correlation() {
         .pre_tool_use(
             &context(),
             PreToolUseRequest {
+                permission_mode: None,
                 session_id: "session-1".to_owned(),
                 hook_event_name: None,
                 tool_name: "Bash".to_owned(),
@@ -164,6 +170,7 @@ async fn restores_tool_input_and_preserves_tool_correlation() {
         .post_tool_use(
             &context(),
             PostToolUseRequest {
+                permission_mode: None,
                 session_id: "session-1".to_owned(),
                 hook_event_name: None,
                 tool_name: "Bash".to_owned(),
@@ -214,6 +221,7 @@ async fn keeps_the_programs_the_hook_attached_with_the_call_within_limits() {
         .pre_tool_use(
             &context(),
             PreToolUseRequest {
+                permission_mode: None,
                 session_id: "session-1".to_owned(),
                 hook_event_name: None,
                 tool_name: "Bash".to_owned(),
@@ -281,6 +289,8 @@ async fn snapshots_pending_side_analysis_references() {
         .session_start(
             &context(),
             SessionStartRequest {
+                model: None,
+                permission_mode: None,
                 session_id: "session-1".to_owned(),
                 hook_event_name: None,
                 transcript_path: None,

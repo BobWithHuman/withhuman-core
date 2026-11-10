@@ -54,6 +54,15 @@ helm.sh/chart: {{ printf "%s-%s" .root.Chart.Name .root.Chart.Version }}
   value: {{ .Values.collector.intentCapture | quote }}
 - name: WITHHUMAN_MCP_ENFORCE
   value: {{ .Values.collector.mcpEnforce | quote }}
+- name: WITHHUMAN_REQUIRE_KEY
+  value: {{ .Values.collector.requireKey | quote }}
+# The key administration API is off until the Secret holds `admin-token`.
+- name: WITHHUMAN_ADMIN_TOKEN
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.existingSecret }}
+      key: admin-token
+      optional: true
 {{- end -}}
 
 {{- define "withhuman.env.generator" -}}

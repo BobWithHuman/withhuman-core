@@ -50,6 +50,7 @@ fn request_json(translated: &Translated) -> Value {
         Translated::SubagentStart(request) | Translated::SubagentStop(request) => {
             serde_json::to_value(request)
         }
+        Translated::SessionEnd(request) => serde_json::to_value(request),
         Translated::Nothing => Ok(Value::Null),
     }
     .unwrap()
@@ -110,6 +111,7 @@ fn claude_event(translated: &Translated) -> &'static str {
         Translated::PostToolBatch(_) => "PostToolBatch",
         Translated::SubagentStart(_) => "SubagentStart",
         Translated::SubagentStop(_) => "SubagentStop",
+        Translated::SessionEnd(_) => "SessionEnd",
         Translated::Nothing => "",
     }
 }
@@ -133,6 +135,7 @@ fn c0_translations_have_the_shape_of_claude_code_requests() {
                 "agent_id",
                 "agent_type",
                 "tool_input",
+                "permission_mode",
             ]
             .map(str::to_owned),
         );
@@ -148,6 +151,7 @@ fn c0_translations_have_the_shape_of_claude_code_requests() {
             "PostToolUse" => "post_tool_use",
             "PostToolUseFailure" => "post_tool_use_failure",
             "PostToolBatch" => "post_tool_batch",
+            "SessionEnd" => "session_end",
             "" => continue,
             other => panic!("unexpected {other}"),
         };
@@ -1100,7 +1104,7 @@ async fn reports_a_failed_call_and_reminds_through_codexs_post_hook() {
 }
 
 #[tokio::test]
-async fn closes_the_batch_at_stop_and_records_nothing_at_session_end() {
+async fn closes_the_batch_at_stop_and_records_the_session_end() {
     let generator = Arc::new(Recording::decision(Decision::Allow, ""));
     let app = app(CollectorConfig::default(), generator.clone());
     let stop = json!({"session_id":"s","turn_id":"t","cwd":"/p","stop_hook_active":false,
@@ -1120,8 +1124,12 @@ async fn closes_the_batch_at_stop_and_records_nothing_at_session_end() {
         (StatusCode::OK, Value::Null)
     );
     let events = generator.events.lock().unwrap();
-    assert_eq!(events.len(), 1);
+    assert_eq!(events.len(), 2);
     assert!(matches!(events[0], NormalizedEvent::PostToolBatch(_)));
+    let NormalizedEvent::SessionEnd(end) = &events[1] else {
+        panic!("expected SessionEnd, got {:?}", events[1]);
+    };
+    assert_eq!(end.payload.reason.as_deref(), Some("other"));
 }
 
 #[tokio::test]
