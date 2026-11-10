@@ -75,6 +75,31 @@ python3 deploy/client/configure.py \
   --hook "$PWD/deploy/client/hooks/pre-tool-use.py"
 ```
 
+### Keys and the agent inventory
+
+The engine records which device and which user run each agent session. Every setup registers
+its device (`POST /v1/clients/register`: client ID, team, host name, OS, OS user, hook version,
+project folder); a setup that cannot reach the engine still completes and says so.
+
+Per-user keys tie Hooks to a person and let the security team stop that person's agents. Set
+`WITHHUMAN_ADMIN_TOKEN` in `.env`, then issue a key and hand it to the user:
+
+```sh
+curl -X POST -H "Authorization: Bearer $WITHHUMAN_ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"actor": "security@example.com"}' http://127.0.0.1:3000/v1/admin/users/ana@example.com/keys
+```
+
+The user sets the project up with it, `--key whk_...` (or `WITHHUMAN_KEY=whk_...` for the
+one-line installers). The key is kept in `~/.config/withhuman/key`, readable by the user only, and
+exported as `WITHHUMAN_KEY`. The engine stores keys as SHA-256 hashes only.
+
+Revoking a key (`POST /v1/admin/keys/<key_id>/revoke`) or all of a user's keys
+(`POST /v1/admin/users/<email>/revoke`), each with `{"actor": ..., "reason": ...}`, denies every
+tool call the user's agents make from then on (within `WITHHUMAN_KEY_CACHE_MS`, 5 s by default).
+Hooks without a valid key are taken without a user unless `WITHHUMAN_REQUIRE_KEY=on`, which
+denies their tool calls and refuses their other Hooks; turn it on before relying on revocation,
+since otherwise a user could drop the key.
+
 ### Codex CLI
 
 Set up a Codex CLI project with the same one-line installers, choosing Codex. In the folder you

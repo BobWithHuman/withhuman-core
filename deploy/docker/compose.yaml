@@ -112,6 +112,8 @@ services:
       WITHHUMAN_DECISION_TIMEOUT_MS: ${WITHHUMAN_DECISION_TIMEOUT_MS:-4200}
       # `off` skips waiting for and asking for a turn's intent, as the E2E suite does.
       WITHHUMAN_INTENT_CAPTURE: ${WITHHUMAN_INTENT_CAPTURE:-on}
+      WITHHUMAN_REQUIRE_KEY: ${WITHHUMAN_REQUIRE_KEY:-off}
+      WITHHUMAN_ADMIN_TOKEN: ${WITHHUMAN_ADMIN_TOKEN:-}
     depends_on:
       generator:
         condition: service_healthy

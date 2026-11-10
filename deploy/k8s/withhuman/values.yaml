@@ -38,6 +38,9 @@ collector:
   # `hook` applies verdicts on MCP tools at the PreToolUse Hook, so a tool that does not pass
   # through AgentGateway is enforced too.
   mcpEnforce: hook
+  # `on` refuses Hooks without a valid per-user key (a PreToolUse is denied); `off` takes them
+  # without a user. The key administration API needs `admin-token` in the Secret.
+  requireKey: "off"
 
 generator:
   image: ghcr.io/bobwithhuman/withhuman-generator
