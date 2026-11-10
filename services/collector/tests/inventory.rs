@@ -49,6 +49,7 @@ struct Generator {
     keys: Mutex<HashMap<String, VerifyKeyResponse>>,
     unavailable: bool,
     stopped: Mutex<Vec<String>>,
+    excepted: Mutex<Vec<String>>,
     flag_lookups: Mutex<usize>,
     session_denials: Mutex<Vec<(String, SessionDenial)>>,
 }
@@ -151,7 +152,22 @@ impl GeneratorTransport for Generator {
                 last_denied_at: None,
                 denied_count: 0,
             }),
+            exception: self
+                .excepted
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|s| s == session_id)
+                .then_some(4),
         })
+    }
+
+    async fn client_exceptions(&self, client_id: &str) -> Result<(u16, Value), GeneratorError> {
+        Ok((
+            200,
+            json!([{"id": 4, "folder": "/work/secret", "client_id": client_id,
+                          "created_at": 1}]),
+        ))
     }
 
     async fn record_session_denial(
@@ -192,6 +208,13 @@ impl GeneratorTransport for Generator {
             ["sessions", session, change] => {
                 json!({"id": 1, "session_id": session, "stopped_at": 1, "denied_count": 0,
                        "released_at": if *change == "release" { json!(2) } else { Value::Null }})
+            }
+            ["clients", "checkin"] => return Ok((204, Value::Null)),
+            ["exceptions"] if method == reqwest::Method::POST => {
+                let mut body = body.unwrap();
+                body["id"] = json!(4);
+                body["created_at"] = json!(1);
+                return Ok((201, body));
             }
             ["reviews"] => {
                 let body = body.unwrap();
@@ -821,4 +844,120 @@ async fn reviews_and_service_keys_go_through_the_admin_api() {
     // A person's key needs an email.
     let (status, _) = post(&app, "/v1/admin/users/ci-deploy/keys", json!({}), &admin).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn an_excepted_session_keeps_only_its_start_and_end() {
+    let generator = Arc::new(Generator::default());
+    let app = app(generator.clone(), |config| {
+        config.key_cache = Duration::from_secs(3_600)
+    });
+    let start = json!({"session_id": "x-1", "source": "startup", "withhuman_exception": 4,
+                       "cwd": "/work/secret/app"});
+    assert_eq!(
+        post(&app, "/v1/hooks/SessionStart", start, &[]).await.0,
+        StatusCode::OK
+    );
+    generator.excepted.lock().unwrap().push("x-1".into());
+    for (event, body) in [
+        (
+            "MessageDisplay",
+            json!({"session_id": "x-1", "message_id": "m", "delta": "secret",
+                                  "final": true}),
+        ),
+        (
+            "UserPromptSubmit",
+            json!({"session_id": "x-1", "prompt": "secret"}),
+        ),
+        ("PreToolUse", call("x-1")),
+    ] {
+        assert_eq!(
+            post(&app, &format!("/v1/hooks/{event}"), body, &[]).await,
+            (StatusCode::OK, Value::Null),
+            "{event}"
+        );
+    }
+    assert_eq!(
+        post(
+            &app,
+            "/v1/hooks/SessionEnd",
+            json!({"session_id": "x-1", "reason": "other"}),
+            &[]
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let events = generator.events();
+    assert_eq!(events.len(), 2, "only the start and the end: {events:?}");
+    let NormalizedEvent::SessionStart(start) = &events[0] else {
+        panic!()
+    };
+    assert_eq!(start.payload.exception, Some(4));
+    assert!(matches!(events[1], NormalizedEvent::SessionEnd(_)));
+}
+
+#[tokio::test]
+async fn devices_check_in_and_read_their_exceptions() {
+    let generator = Arc::new(Generator::with_keys());
+    let app = app(generator.clone(), |config| {
+        config.admin_token = Some(ADMIN.into())
+    });
+    let checkin = json!({"client_id": "team/d1", "hostname": "mac", "scope": "user",
+        "projects": [{"path": "/work/app", "last_used_at": 5}, {"path": "/work/new"}]});
+    let key = bearer(ACTIVE);
+    let (status, _) = post(
+        &app,
+        "/v1/clients/checkin",
+        checkin.clone(),
+        &[("authorization", key.as_str())],
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    {
+        let calls = generator.inventory.lock().unwrap();
+        let sent = calls[0].2.as_ref().unwrap();
+        assert_eq!(sent["user"], "ana@example.com");
+        assert_eq!(sent["projects"][0]["path"], "/work/app");
+        assert!(sent["checked_in_at"].as_u64().unwrap() > 0);
+    }
+    let revoked = bearer(REVOKED);
+    let (status, _) = post(
+        &app,
+        "/v1/clients/checkin",
+        checkin,
+        &[("authorization", revoked.as_str())],
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, list) = get(&app, "/v1/clients/exceptions?client_id=team%2Fd1", &[]).await;
+    assert_eq!(
+        (status, &list[0]["client_id"]),
+        (StatusCode::OK, &json!("team/d1"))
+    );
+
+    let admin = bearer(ADMIN);
+    let admin = [("authorization", admin.as_str())];
+    let (status, made) = post(
+        &app,
+        "/v1/admin/exceptions",
+        json!({"folder": " /work/secret/ ", "actor": "sec@example.com", "reason": "NDA"}),
+        &admin,
+    )
+    .await;
+    assert_eq!(
+        (status, &made["folder"]),
+        (StatusCode::CREATED, &json!("/work/secret"))
+    );
+    let (status, _) = post(
+        &app,
+        "/v1/admin/exceptions",
+        json!({"folder": " ", "team": ""}),
+        &admin,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = post(&app, "/v1/admin/exceptions", json!({"team": "lab"}), &[]).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }

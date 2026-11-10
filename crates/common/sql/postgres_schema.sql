@@ -364,6 +364,76 @@ BEGIN
 END
 $$;
 
+-- Folders where a client's Hooks ran (`cwd`), so a project the daily check-in reports can be
+-- told protected. `last_seen` moves at most every 30 s.
+CREATE TABLE IF NOT EXISTS client_cwds (
+  client_id   text   NOT NULL,
+  cwd         text   NOT NULL,
+  first_seen  bigint NOT NULL,
+  last_seen   bigint NOT NULL,
+  PRIMARY KEY (client_id, cwd)
+);
+
+-- Projects Claude Code ran in on a device, as its daily check-in reports them.
+CREATE TABLE IF NOT EXISTS client_seen_projects (
+  client_id          text   NOT NULL,
+  project            text   NOT NULL,
+  last_used_at       bigint,
+  first_reported_at  bigint NOT NULL,
+  last_reported_at   bigint NOT NULL,
+  PRIMARY KEY (client_id, project)
+);
+
+-- Sessions the security team leaves unprotected: every column given must match (a folder and
+-- the folders below it, a team, a device). Removed ones stay for the audit.
+CREATE TABLE IF NOT EXISTS exceptions (
+  id          bigserial PRIMARY KEY,
+  folder      text,
+  team        text,
+  client_id   text,
+  actor       text,
+  reason      text,
+  created_at  bigint NOT NULL,
+  removed_at  bigint,
+  removed_by  text,
+  CHECK (folder IS NOT NULL OR team IS NOT NULL OR client_id IS NOT NULL)
+);
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                 AND table_name = 'clients' AND column_name = 'last_checkin_at') THEN
+    -- `user`, `managed` or `project`, as the setup reported; and the latest daily check-in.
+    ALTER TABLE clients ADD COLUMN install_scope text, ADD COLUMN last_checkin_at bigint;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                 AND table_name = 'sessions' AND column_name = 'exception_id') THEN
+    -- The exception the session's hook claimed at its start, and the one the engine found
+    -- covering it: a claim without a match is a hook told to keep a session out.
+    ALTER TABLE sessions ADD COLUMN exception_claimed bigint, ADD COLUMN exception_id bigint;
+  END IF;
+  -- Folders recorded before this table existed.
+  IF NOT EXISTS (SELECT 1 FROM client_cwds) THEN
+    INSERT INTO client_cwds (client_id, cwd, first_seen, last_seen)
+    SELECT client_id, cwd, min(observed_at), max(observed_at) FROM event_commits
+    WHERE client_id IS NOT NULL AND cwd IS NOT NULL AND observed_at IS NOT NULL
+    GROUP BY client_id, cwd;
+  END IF;
+END
+$$;
+
+-- Each reported project, protected when the device's Hooks ever ran in it or below it.
+CREATE OR REPLACE VIEW project_protection AS
+SELECT p.client_id, p.project, p.last_used_at, p.first_reported_at, p.last_reported_at,
+       h.last_hook_at, h.last_hook_at IS NOT NULL AS protected
+FROM client_seen_projects p
+LEFT JOIN LATERAL (
+  SELECT max(c.last_seen) AS last_hook_at FROM client_cwds c
+  WHERE c.client_id = p.client_id
+    AND (c.cwd = p.project OR starts_with(c.cwd, p.project || '/')
+         OR starts_with(c.cwd, p.project || '\'))
+) h ON true;
+
 -- Every stop in one place, for the audit: what was stopped (`key`: a user's key, `session`),
 -- whose, by whom, when and why, when it was released, and when it first turned a call back.
 CREATE OR REPLACE VIEW stop_audit AS
@@ -399,7 +469,8 @@ BEGIN
       sessions, event_commits, nodes, subgraphs, paragraphs, tokens, token_mentions, files,
       file_refs, cause_edges, pending_paragraph_enrichments, pending_request_continuations,
       clients, client_projects, users, key_events, session_stops, call_reviews,
-      call_review_latest, stop_audit
+      call_review_latest, stop_audit, client_cwds, client_seen_projects, exceptions,
+      project_protection
     TO withhuman_viewer;
     GRANT SELECT (key_id, user_email, created_at, created_by, note, last_used_at, revoked_at,
       revoked_by, revoke_reason, first_denied_at, last_denied_at, denied_count)

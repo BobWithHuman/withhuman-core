@@ -63,6 +63,11 @@ pub trait GeneratorTransport: Send + Sync {
         Ok(())
     }
 
+    /// The active exceptions that can cover a client's sessions, as the Generator answers.
+    async fn client_exceptions(&self, _client_id: &str) -> Result<(u16, Value), GeneratorError> {
+        Ok((200, Value::Array(Vec::new())))
+    }
+
     /// The Generator's inventory API below `/v1` (clients, users and keys), its status and JSON
     /// body passed back as they are.
     async fn inventory(
@@ -163,6 +168,27 @@ impl GeneratorTransport for GeneratorHttpClient {
             200..=299 => Ok(()),
             status => Err(GeneratorError::Rejected(status)),
         }
+    }
+
+    async fn client_exceptions(&self, client_id: &str) -> Result<(u16, Value), GeneratorError> {
+        let mut url = reqwest::Url::parse(&self.base_url).map_err(invalid_request)?;
+        url.path_segments_mut()
+            .map_err(|()| GeneratorError::InvalidRequest("Generator URL has no path".to_owned()))?
+            .extend(["v1", "exceptions"]);
+        url.query_pairs_mut().append_pair("client_id", client_id);
+        let response = self
+            .client
+            .get(url)
+            .timeout(CURSOR_TIMEOUT)
+            .send()
+            .await
+            .map_err(|error| GeneratorError::Unavailable(error.to_string()))?;
+        let status = response.status().as_u16();
+        let body = response
+            .json()
+            .await
+            .map_err(|error| GeneratorError::InvalidResponse(error.to_string()))?;
+        Ok((status, body))
     }
 
     async fn session_flags(&self, session_id: &str) -> Result<SessionFlags, GeneratorError> {

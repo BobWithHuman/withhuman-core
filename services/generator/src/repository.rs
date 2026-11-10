@@ -112,7 +112,7 @@ pub trait GraphRepository: Send + Sync + 'static {
         Err(RepositoryError::NotFound)
     }
 
-    /// The session's active stop; none for an unknown session.
+    /// The session's active stop and exception; none for an unknown session.
     async fn session_flags(&self, _session_id: &str) -> Result<SessionFlags, RepositoryError> {
         Ok(SessionFlags::default())
     }
@@ -144,6 +144,39 @@ pub trait GraphRepository: Send + Sync + 'static {
         _at: u64,
     ) -> Result<(), RepositoryError> {
         Err(RepositoryError::NotFound)
+    }
+
+    /// Records a device's daily check-in.
+    async fn checkin(
+        &self,
+        _record: withhuman_contracts::inventory::ClientCheckinRecord,
+    ) -> Result<(), RepositoryError> {
+        Err(RepositoryError::NotFound)
+    }
+
+    async fn add_exception(
+        &self,
+        _request: withhuman_contracts::inventory::ExceptionRequest,
+        _at: u64,
+    ) -> Result<withhuman_contracts::inventory::Exception, RepositoryError> {
+        Err(RepositoryError::NotFound)
+    }
+
+    async fn remove_exception(
+        &self,
+        _id: u64,
+        _actor: Option<String>,
+        _at: u64,
+    ) -> Result<withhuman_contracts::inventory::Exception, RepositoryError> {
+        Err(RepositoryError::NotFound)
+    }
+
+    /// Every exception, or the active ones that can cover a client's sessions.
+    async fn exceptions(
+        &self,
+        _client_id: Option<&str>,
+    ) -> Result<Vec<withhuman_contracts::inventory::Exception>, RepositoryError> {
+        Ok(Vec::new())
     }
 
     /// Records a review of a Call; `NotFound` when no Call is `(session_id, seq)`.

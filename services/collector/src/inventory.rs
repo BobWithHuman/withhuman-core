@@ -89,7 +89,8 @@ pub async fn authenticate(
     (status, Json(json!({ "error": error, "message": message }))).into_response()
 }
 
-/// Passes the Hook on with its user, unless the security team stopped its session.
+/// Passes the Hook on with its user, unless the security team stopped its session (a call) or
+/// excepted it from protection (anything but its start and end).
 async fn admit(
     service: &CollectorService,
     mut request: Request,
@@ -100,25 +101,36 @@ async fn admit(
     if let Some(value) = user.and_then(|user| HeaderValue::from_str(user).ok()) {
         request.headers_mut().insert(USER_HEADER, value);
     }
-    if !call {
-        return next.run(request).await;
-    }
+    let path = request.uri().path().to_owned();
+    let event = path.rsplit('/').next().unwrap_or_default().to_owned();
     let (parts, body) = request.into_parts();
     let Ok(bytes) = to_bytes(body, BODY_LIMIT).await else {
         return error(StatusCode::BAD_REQUEST, "invalid_json");
     };
-    if let Some(session_id) = session_of(&bytes) {
-        if service.flags.get(&session_id).await.stop.is_some() {
-            // The denial stands whether or not it could be recorded.
-            let _ = service
-                .generator
-                .record_session_denial(&session_id, SessionDenial { denied_at: now() })
-                .await;
-            return blocking_response(PermissionDecision::Deny, keys::SESSION_STOPPED.to_owned());
-        }
+    let session_id = session_of(&bytes);
+    let request = Request::from_parts(parts, Body::from(bytes));
+    let Some(session_id) = session_id else {
+        return next.run(request).await;
+    };
+    if matches!(event.as_str(), "SessionStart" | "SessionEnd") {
+        // A start may claim an exception; the next Hooks read the session afresh.
+        let response = next.run(request).await;
+        service.flags.forget(&session_id);
+        return response;
     }
-    next.run(Request::from_parts(parts, Body::from(bytes)))
-        .await
+    let flags = service.flags.get(&session_id).await;
+    if flags.exception.is_some() {
+        return StatusCode::OK.into_response();
+    }
+    if call && flags.stop.is_some() {
+        // The denial stands whether or not it could be recorded.
+        let _ = service
+            .generator
+            .record_session_denial(&session_id, SessionDenial { denied_at: now() })
+            .await;
+        return blocking_response(PermissionDecision::Deny, keys::SESSION_STOPPED.to_owned());
+    }
+    next.run(request).await
 }
 
 fn session_of(body: &[u8]) -> Option<String> {
@@ -236,6 +248,173 @@ async fn device_user(
         // Without a required key a bad one is ignored, as on the Hooks.
         _ => Ok(None),
     }
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/clients/checkin",
+    tag = "Inventory",
+    params(("Authorization" = Option<String>, Header, description = "`Bearer <WithHuman key>`")),
+    request_body = withhuman_contracts::inventory::ClientCheckin,
+    responses(
+        (status = 204, description = "Check-in recorded"),
+        (status = 400, description = "Invalid check-in"),
+        (status = 401, description = "Key required or not valid"),
+        (status = 403, description = "Key revoked")
+    )
+)]
+pub async fn checkin(
+    State(service): State<CollectorService>,
+    headers: HeaderMap,
+    StrictJson(checkin): StrictJson<withhuman_contracts::inventory::ClientCheckin>,
+) -> Response {
+    let client_id = checkin.client_id.trim().to_owned();
+    if client_id.is_empty()
+        || client_id.len() > FIELD_LIMIT
+        || checkin.projects.len() > 10_000
+        || checkin
+            .projects
+            .iter()
+            .any(|project| project.path.len() > 4 * FIELD_LIMIT)
+    {
+        return error(StatusCode::BAD_REQUEST, "invalid_checkin");
+    }
+    let user = match device_user(&service, &headers).await {
+        Ok(user) => user,
+        Err(response) => return *response,
+    };
+    let record = withhuman_contracts::inventory::ClientCheckinRecord {
+        checkin: withhuman_contracts::inventory::ClientCheckin {
+            client_id,
+            ..checkin
+        },
+        user,
+        checked_in_at: now(),
+    };
+    match service
+        .generator
+        .inventory(
+            reqwest::Method::POST,
+            &["clients", "checkin"],
+            Some(json!(record)),
+        )
+        .await
+    {
+        Ok((200..=299, _)) => StatusCode::NO_CONTENT.into_response(),
+        Ok((status, body)) => passed(status, body),
+        Err(_) => error(StatusCode::BAD_GATEWAY, "generator_unavailable"),
+    }
+}
+
+#[derive(serde::Deserialize, utoipa::IntoParams)]
+pub struct ClientQuery {
+    client_id: String,
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/clients/exceptions",
+    tag = "Inventory",
+    params(ClientQuery, ("Authorization" = Option<String>, Header, description = "`Bearer <WithHuman key>`")),
+    responses((status = 200, description = "The active exceptions that can cover the device's sessions; the hook matches the folders", body = [withhuman_contracts::inventory::Exception]))
+)]
+pub async fn client_exceptions(
+    State(service): State<CollectorService>,
+    headers: HeaderMap,
+    axum::extract::Query(query): axum::extract::Query<ClientQuery>,
+) -> Response {
+    if let Err(response) = device_user(&service, &headers).await {
+        return *response;
+    }
+    match service.generator.client_exceptions(&query.client_id).await {
+        Ok((status, body)) => passed(status, body),
+        Err(_) => error(StatusCode::BAD_GATEWAY, "generator_unavailable"),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/admin/exceptions",
+    tag = "Inventory",
+    params(("Authorization" = String, Header, description = "`Bearer <WITHHUMAN_ADMIN_TOKEN>`")),
+    request_body = withhuman_contracts::inventory::ExceptionRequest,
+    responses(
+        (status = 201, description = "The exception; sessions it covers keep only their start and end", body = withhuman_contracts::inventory::Exception),
+        (status = 400, description = "Neither folder, team nor client_id")
+    )
+)]
+pub async fn add_exception(
+    State(service): State<CollectorService>,
+    headers: HeaderMap,
+    StrictJson(request): StrictJson<withhuman_contracts::inventory::ExceptionRequest>,
+) -> Response {
+    if let Some(response) = not_admin(&service, &headers) {
+        return response;
+    }
+    let given = |value: Option<String>| {
+        value
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+    };
+    // A folder covers the folders below it, so it is kept without a trailing separator.
+    let request = withhuman_contracts::inventory::ExceptionRequest {
+        folder: given(request.folder)
+            .map(|folder| folder.trim_end_matches(['/', '\\']).to_owned())
+            .filter(|folder| !folder.is_empty()),
+        team: given(request.team),
+        client_id: given(request.client_id),
+        ..request
+    };
+    if request.folder.is_none() && request.team.is_none() && request.client_id.is_none() {
+        return error(StatusCode::BAD_REQUEST, "exception_without_scope");
+    }
+    forward(
+        &service,
+        reqwest::Method::POST,
+        &["exceptions"],
+        Some(json!(request)),
+    )
+    .await
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/admin/exceptions",
+    tag = "Inventory",
+    params(("Authorization" = String, Header, description = "`Bearer <WITHHUMAN_ADMIN_TOKEN>`")),
+    responses((status = 200, description = "Every exception, removed ones too", body = [withhuman_contracts::inventory::Exception]))
+)]
+pub async fn exceptions(State(service): State<CollectorService>, headers: HeaderMap) -> Response {
+    if let Some(response) = not_admin(&service, &headers) {
+        return response;
+    }
+    forward(&service, reqwest::Method::GET, &["exceptions"], None).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/admin/exceptions/{id}/remove",
+    tag = "Inventory",
+    params(("id" = u64, Path), ("Authorization" = String, Header, description = "`Bearer <WITHHUMAN_ADMIN_TOKEN>`")),
+    request_body = withhuman_contracts::inventory::ExceptionRemoval,
+    responses((status = 200, description = "The exception, removed", body = withhuman_contracts::inventory::Exception))
+)]
+pub async fn remove_exception(
+    State(service): State<CollectorService>,
+    Path(id): Path<u64>,
+    headers: HeaderMap,
+    StrictJson(removal): StrictJson<withhuman_contracts::inventory::ExceptionRemoval>,
+) -> Response {
+    if let Some(response) = not_admin(&service, &headers) {
+        return response;
+    }
+    forward(
+        &service,
+        reqwest::Method::POST,
+        &["exceptions", &id.to_string(), "remove"],
+        Some(json!(removal)),
+    )
+    .await
 }
 
 /// The answer to a request that is not an administrator's, who presents

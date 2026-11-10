@@ -1,33 +1,59 @@
 #!/usr/bin/env python3
-"""Sets up WithHuman for Claude Code in a project folder, replacing any earlier WithHuman setup.
+"""Sets up WithHuman for Claude Code on this device, replacing any earlier WithHuman setup.
 
-usage: configure.py --server URL [--project DIR] [--team NAME] [--key KEY] [--hook FILE]
-                    [--no-persist] [--no-register]
+usage: configure.py --server URL [--team NAME] [--key KEY] [--managed | --scope project]
+                    [--project DIR] [--no-persist] [--no-register] [--no-checkin]
+       configure.py --key-only --key KEY
+       configure.py --uninstall [--managed | --scope project]
 
 WithHuman is self-hosted, so --server (or WITHHUMAN_SERVER) has no default: it is the address of
 the engine this device reports to, and every hook below is written against it.
 
-1. Takes every WithHuman hook out of the user's Claude Code settings (~/.claude/settings.json)
-   and the project's own (.claude/settings.json, .claude/settings.local.json), so an earlier
-   setup, an all-HTTP PreToolUse hook especially, does not run beside this one. Other settings
-   and other hooks are kept, and each file changed is first copied to <file>.bak-<time>.
-2. Writes WithHuman's eleven hooks into the project's .claude/settings.json: ten HTTP hooks and
-   a PreToolUse command hook, installed at .claude/hooks/pre-tool-use.py and run with this
-   Python. Each sends the client ID and the user's WithHuman key (`Authorization: Bearer`).
-3. Gives the device a stable client ID (~/.config/withhuman/client-id, `<team>/<uuid>`) and,
-   unless --no-persist, sets WITHHUMAN_CLIENT_ID for new shells: in the shell profile on macOS
-   and Linux, as a user environment variable on Windows.
+By default the hooks go into the user's Claude Code settings (~/.claude/settings.json), so every
+project the user opens, including ones made later, runs them:
+
+1. Takes every WithHuman hook out of those settings and out of the projects Claude Code knows
+   (~/.claude.json) and the one given with --project: their .claude/settings.json and
+   .claude/settings.local.json, and the hook file an earlier per-project setup copied there.
+   Other settings and other tools' hooks are kept; each file changed is first copied to
+   <file>.bak-<time>. WithHuman's hooks are told apart by their mark: the header
+   `x-withhuman-hook` on an HTTP hook, `--withhuman-hook` in a command (and, from setups before
+   the mark, an HTTP hook posting to /v1/hooks/<event> with `x-withhuman-client`, or our
+   pre-tool-use.py posting to /v1/hooks/PreToolUse).
+2. Writes WithHuman's hooks: the events that carry content (SessionStart, UserPromptSubmit,
+   PreToolUse, PostToolUse, PostToolUseFailure) through the command hook, installed at
+   ~/.config/withhuman/hooks/pre-tool-use.py and run with this Python, which leaves out a session
+   the security team excepted; the rest as HTTP hooks. Each sends the client ID and the user's
+   WithHuman key (`Authorization: Bearer`). The settings' `env` sets WITHHUMAN_CLIENT_ID, so the
+   hooks carry it even when Claude Code starts from an app or IDE without the shell's variables.
+3. Gives the device a stable client ID (~/.config/withhuman/client-id, `<team>/<uuid>`, or
+   WITHHUMAN_CLIENT_ID when set, as in a container) and, unless --no-persist, sets
+   WITHHUMAN_CLIENT_ID for new shells: in the shell profile on macOS and Linux, as a user
+   environment variable on Windows.
 4. With --key (or WITHHUMAN_KEY), keeps the key the security team issued in
    ~/.config/withhuman/key, readable by the user only, and sets WITHHUMAN_KEY for new shells
-   alike. Without one, a key kept by an earlier run is used.
-5. Registers the device with the engine (POST /v1/clients/register): client ID, team, host
-   name, OS, OS user, hook version, agent and project folder. The setup still completes when
-   that fails, and says so; --no-register skips it.
+   alike. The key is never written into a settings file. Without one, a key kept earlier is used.
+5. Schedules the daily check-in (checkin.py: launchd, a systemd user timer or cron, the Task
+   Scheduler; --no-checkin skips it) and registers the device with the engine
+   (POST /v1/clients/register). The setup still completes when registering fails, and says so;
+   --no-register skips it and the first check-in.
 
-The setup-project.sh and setup-project.ps1 wrappers fetch this file and the hook, then run it.
-Safe to run again: the result is the same, the client ID is kept and the registration updated.
+--managed puts the hooks into Claude Code's managed settings instead, for every user of the
+device: the drop-in managed-settings.d/50-withhuman.json in /Library/Application Support/
+ClaudeCode (macOS), /etc/claude-code (Linux) or C:\\Program Files\\ClaudeCode (Windows), run as
+root or Administrator. The hooks, the check-in and the device's client ID live in its withhuman/
+folder. User settings files are not touched; projects of the user who ran sudo are cleaned as
+above, and WithHuman hooks left in that user's own settings are reported. Keys stay per user:
+each user runs `configure.py --key-only --key ...`.
 
-With --agent codex it sets up Codex CLI instead (step 3 as above):
+--scope project writes the hooks into the project's .claude/settings.json only, as earlier
+setups did, with the command hook in .claude/hooks.
+
+The setup-project.sh and setup-project.ps1 wrappers fetch this file, the hook and the check-in,
+then run it. Safe to run again: the result is the same, the client ID is kept and the
+registration updated.
+
+With --agent codex it sets up Codex CLI in the project instead (steps 3 and 4 as above):
 
 1. Copies the Codex hook (codex/withhuman-hook.py, codex/codex_transcript.py and
    hooks/pre-tool-use.py) to the project's .codex/hooks/.
@@ -37,16 +63,16 @@ With --agent codex it sets up Codex CLI instead (step 3 as above):
    user's ~/.codex is left alone.
 3. Runs the installed hook's self-check against the engine, then tells you to trust the hooks
    in Codex (/hooks): Codex skips project hooks until they are trusted.
-4. Keeps the key and registers the device, as above.
 
-With --uninstall (and --agent claude or codex) it takes WithHuman out of the project only: its
-hook entries in the project's settings or hooks.json (other hooks and settings are kept, each
-file changed is first copied to <file>.bak-<time>) and the hook files it installed. --server is
-not needed then.
+With --uninstall it takes WithHuman out again: from the user's settings and the given project
+(the default), the managed drop-in (--managed) or the project (--scope project, or --agent
+codex). Other hooks and settings stay, each file changed is first copied to <file>.bak-<time>.
+The client ID and the key are kept. --server is not needed then.
 """
 
 import argparse
 import datetime
+import plistlib
 import getpass
 import hashlib
 import json
@@ -76,6 +102,24 @@ EVENTS = [
     "SessionEnd",
 ]
 HOOK_NAME = "pre-tool-use.py"
+CHECKIN_NAME = "checkin.py"
+# Events whose hook carries content: they go through the command hook, which keeps a session the
+# security team excepted. The rest are HTTP hooks.
+COMMAND_EVENTS = ("SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
+                  "PostToolUseFailure")
+# The mark of WithHuman's hooks.
+MARK_HEADER = "x-withhuman-hook"
+MARK_ARG = "--withhuman-hook"
+# Events earlier setups installed, to recognise their hooks.
+LEGACY_EVENTS = re.compile(
+    r"/v1/hooks/(SessionStart|SessionEnd|UserPromptSubmit|PreToolUse|PostToolUse|"
+    r"PostToolUseFailure|SubagentStart|SubagentStop|ConfigChange|MessageDisplay|PostToolBatch|"
+    r"InstructionsLoaded|FileChanged)$")
+DROP_IN = "50-withhuman.json"
+SCHEDULE_LABEL = "com.withhuman.checkin"
+SCHEDULE_UNIT = "withhuman-checkin"
+SCHEDULE_TASK = "WithHumanCheckin"
+CRON_MARK = "# withhuman-checkin"
 PROFILE_MARK = "# WithHuman client ID"
 KEY_MARK = "# WithHuman key"
 # A WithHuman key as the engine issues it.
@@ -92,10 +136,22 @@ CODEX_TIMEOUT = 5
 
 
 def is_withhuman(hook):
-    """A hook an earlier WithHuman setup added: posting to /v1/hooks/, or running our hook."""
+    """A hook a WithHuman setup added: one with our mark, or, from setups before the mark, an
+    HTTP hook posting an event to /v1/hooks/ with our client header, or our PreToolUse command.
+    Another tool's hook on a similar address or with a similar file name is not ours."""
     if not isinstance(hook, dict):
         return False
-    return "/v1/hooks/" in str(hook.get("url", "")) or HOOK_NAME in str(hook.get("command", ""))
+    headers = hook.get("headers") if isinstance(hook.get("headers"), dict) else {}
+    names = {str(name).lower() for name in headers}
+    if MARK_HEADER in names:
+        return True
+    command = str(hook.get("command", ""))
+    if MARK_ARG in command.split() or f"{MARK_ARG} " in command:
+        return True
+    url = str(hook.get("url", ""))
+    if hook.get("type") == "http" and LEGACY_EVENTS.search(url) and "x-withhuman-client" in names:
+        return True
+    return HOOK_NAME in command and "/v1/hooks/PreToolUse" in command
 
 
 def remove_withhuman(settings):
@@ -129,7 +185,8 @@ def remove_withhuman(settings):
 
 
 def withhuman_hooks(server, command):
-    """Our hooks by event: HTTP with the client ID header, PreToolUse through `command`."""
+    """Our hooks by event: the events with content through `command`, the rest over HTTP with
+    the client ID, the key and our mark."""
     def http(event):
         # Claude Code puts only listed variables into headers; an unset WITHHUMAN_KEY leaves
         # `Bearer `, which the engine takes as no key.
@@ -137,14 +194,21 @@ def withhuman_hooks(server, command):
             "type": "http",
             "url": f"{server}/v1/hooks/{event}",
             "headers": {"x-withhuman-client": "$WITHHUMAN_CLIENT_ID",
-                        "Authorization": "Bearer $WITHHUMAN_KEY"},
+                        "Authorization": "Bearer $WITHHUMAN_KEY",
+                        MARK_HEADER: "1"},
             "allowedEnvVars": ["WITHHUMAN_CLIENT_ID", "WITHHUMAN_KEY"],
         }
 
     return {
-        event: {"hooks": [{"type": "command", "command": command} if event == "PreToolUse" else http(event)]}
+        event: {"hooks": [{"type": "command", "command": command} if event in COMMAND_EVENTS
+                          else http(event)]}
         for event in EVENTS
     }
+
+
+def hook_command(script, server):
+    """Quoted absolute paths run alike from bash, zsh, cmd and PowerShell."""
+    return f'"{Path(sys.executable).as_posix()}" "{Path(script).as_posix()}" {MARK_ARG} {server}'
 
 
 def load(path):
@@ -179,13 +243,16 @@ def clean(path, stamp, report):
         save(path, settings)
 
 
-def client_id(team):
-    """The device's client ID, made once and kept in ~/.config/withhuman/client-id."""
-    path = Path.home() / ".config" / "withhuman" / "client-id"
+def client_id(team, path=None):
+    """The device's client ID, made once and kept in ~/.config/withhuman/client-id (or `path`).
+    A WITHHUMAN_CLIENT_ID already set, as a container passes the host's in, is kept rather than
+    a new one made."""
+    path = path or Path.home() / ".config" / "withhuman" / "client-id"
     if path.exists() and path.read_text(encoding="utf-8").strip():
         return path, path.read_text(encoding="utf-8").strip()
     path.parent.mkdir(parents=True, exist_ok=True)
-    value = f"{team}/{uuid.uuid4()}"
+    given = os.environ.get("WITHHUMAN_CLIENT_ID", "").strip()
+    value = given if re.fullmatch(r"[^\s]{1,512}", given) else f"{team}/{uuid.uuid4()}"
     path.write_text(value + "\n", encoding="utf-8")
     return path, value
 
@@ -268,7 +335,7 @@ def hook_version(paths):
     return digest.hexdigest()[:12]
 
 
-def register(server, client, team, key, agent, project, version):
+def register(server, client, team, key, agent, project, version, scope=None):
     """Registers the device with the engine; the problem as text when that fails, else None."""
     body = {
         "client_id": client,
@@ -278,7 +345,8 @@ def register(server, client, team, key, agent, project, version):
         "os_user": getpass.getuser(),
         "hook_version": version,
         "agent": agent,
-        "project": str(project),
+        "project": str(project) if project else None,
+        "scope": scope,
     }
     headers = {"Content-Type": "application/json"}
     if key:
@@ -306,7 +374,7 @@ def register(server, client, team, key, agent, project, version):
         return f"the engine could not be reached ({getattr(error, 'reason', error)})"
 
 
-def finish(args, client, key_path, key, agent, project, version, stamp, report):
+def finish(args, client, key_path, key, agent, project, version, stamp, report, scope=None):
     """Keeps the key for new shells and registers the device; returns the lines to print."""
     if key and not args.no_persist:
         persist(key_path, key, stamp, report, name="WITHHUMAN_KEY", mark=KEY_MARK)
@@ -318,13 +386,365 @@ def finish(args, client, key_path, key, agent, project, version, stamp, report):
                      "run again with --key.")
     if args.no_register:
         return lines
-    problem = register(args.server, client, args.team, key, agent, project, version)
+    problem = register(args.server, client, args.team, key, agent, project, version, scope)
     if problem:
         lines.append(f"WARNING: the device was not registered: {problem}. The hooks are "
                      "installed; run this setup again to register.")
     else:
         lines.append(f"Device registered with {args.server}")
     return lines
+
+
+def write_text(path, text, mode=0o644):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    path.chmod(mode)
+
+
+def install(source, target, mode=0o755):
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if Path(source).resolve() != target.resolve():
+        shutil.copyfile(source, target)
+    target.chmod(mode)
+
+
+def claude_projects(home):
+    """The project folders Claude Code knows (~/.claude.json), as they are written there."""
+    try:
+        listed = json.loads((home / ".claude.json").read_text(encoding="utf-8")).get("projects")
+    except (OSError, ValueError, AttributeError):
+        return []
+    return [path for path in listed if isinstance(path, str)] if isinstance(listed, dict) else []
+
+
+def our_hook_file(path):
+    try:
+        return path.is_file() and "WithHuman" in path.read_text(encoding="utf-8")[:400]
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def clean_projects(folders, stamp, report):
+    """Takes earlier per-project setups out of `folders`: our hooks in their settings, and the
+    hook file copied into .claude/hooks. Everything else stays."""
+    seen = set()
+    for folder in folders:
+        claude = Path(folder) / ".claude"
+        if claude in seen or not claude.is_dir():
+            continue
+        seen.add(claude)
+        for name in ("settings.json", "settings.local.json"):
+            clean(claude / name, stamp, report)
+        hook = claude / "hooks" / HOOK_NAME
+        if our_hook_file(hook):
+            hook.unlink()
+            report.append(f"{hook}: removed (the hook now runs from the device-wide setup)")
+            if not any(hook.parent.iterdir()):
+                hook.parent.rmdir()
+
+
+def set_env(settings, name, value):
+    env = settings.get("env") if isinstance(settings.get("env"), dict) else {}
+    env[name] = value
+    settings["env"] = env
+
+
+def drop_env(settings, name):
+    env = settings.get("env")
+    if isinstance(env, dict) and name in env:
+        del env[name]
+        if not env:
+            del settings["env"]
+
+
+def write_config(folder, server, scope, version, client=None):
+    """What the check-in reads: the engine, the install scope and the hook version."""
+    write_text(folder / "server", server + "\n")
+    write_text(folder / "scope", scope + "\n")
+    write_text(folder / "hook-version", version + "\n")
+    if client:
+        write_text(folder / "client-id", client + "\n")
+
+
+def managed_dir():
+    """Claude Code's managed settings folder (WITHHUMAN_MANAGED_DIR stands in for it in tests)."""
+    if os.environ.get("WITHHUMAN_MANAGED_DIR"):
+        return Path(os.environ["WITHHUMAN_MANAGED_DIR"])
+    if sys.platform == "darwin":
+        return Path("/Library/Application Support/ClaudeCode")
+    if os.name == "nt":
+        return Path(r"C:\Program Files\ClaudeCode")
+    return Path("/etc/claude-code")
+
+
+def invoking_home():
+    """The home of the user who ran sudo, else this user's."""
+    user = os.environ.get("SUDO_USER")
+    if user and os.name != "nt":
+        try:
+            import pwd
+            return Path(pwd.getpwnam(user).pw_dir)
+        except (ImportError, KeyError):
+            pass
+    return Path.home()
+
+
+def schedule(script, config, system, report, remove=False):
+    """Runs the check-in once a day, or stops it. WITHHUMAN_SCHEDULER=dry writes the schedule's
+    files without running launchctl, systemctl, crontab or schtasks; `none` skips it."""
+    mode = os.environ.get("WITHHUMAN_SCHEDULER", "auto")
+    if mode == "none":
+        return
+    dry = mode == "dry"
+
+    def run(command):
+        if dry:
+            return 0
+        try:
+            return subprocess.run(command, capture_output=True, timeout=30).returncode
+        except (OSError, subprocess.SubprocessError):
+            return 1
+
+    argv = [Path(sys.executable).as_posix(), Path(script).as_posix(), "--config",
+            Path(config).as_posix()]
+    override = os.environ.get("WITHHUMAN_SCHEDULER_DIR")
+    if sys.platform == "darwin":
+        folder = Path(override) if override else (
+            Path("/Library/LaunchAgents") if system else Path.home() / "Library" / "LaunchAgents")
+        plist = folder / f"{SCHEDULE_LABEL}.plist"
+        domain = f"gui/{os.getuid()}" if hasattr(os, "getuid") else None
+        if plist.exists() and not system:
+            run(["launchctl", "bootout", domain, str(plist)])
+        if remove:
+            if plist.exists():
+                plist.unlink()
+                report.append(f"{plist}: removed")
+            return
+        folder.mkdir(parents=True, exist_ok=True)
+        plist.write_bytes(plistlib.dumps({"Label": SCHEDULE_LABEL, "ProgramArguments": argv,
+                                          "StartInterval": 86400, "RunAtLoad": True}))
+        if not system:
+            run(["launchctl", "bootstrap", domain, str(plist)])
+        report.append(f"{plist}: daily check-in" + (" for every user, from their next login"
+                                                     if system else ""))
+        return
+    if os.name == "nt":
+        if system:
+            report.append("Windows: the daily check-in runs per user; each user runs "
+                          "configure.py --key-only to schedule theirs")
+            return
+        if remove:
+            run(["schtasks", "/Delete", "/F", "/TN", SCHEDULE_TASK])
+            return
+        code = run(["schtasks", "/Create", "/F", "/SC", "DAILY", "/TN", SCHEDULE_TASK,
+                    "/TR", subprocess.list2cmdline(argv)])
+        report.append(f"Task Scheduler: {SCHEDULE_TASK} daily" if code == 0 else
+                      "WARNING: the daily check-in could not be scheduled (schtasks failed)")
+        return
+    folder = Path(override) if override else (
+        Path("/etc/systemd/user") if system else Path.home() / ".config" / "systemd" / "user")
+    service, timer = folder / f"{SCHEDULE_UNIT}.service", folder / f"{SCHEDULE_UNIT}.timer"
+    systemd = dry or (shutil.which("systemctl") is not None and (
+        system or run(["systemctl", "--user", "show-environment"]) == 0))
+    scope = ["--global"] if system else ["--user"]
+    if remove:
+        if systemd and timer.exists():
+            run(["systemctl", *scope, "disable", *([] if system else ["--now"]), timer.name])
+        for unit in (service, timer):
+            if unit.exists():
+                unit.unlink()
+                report.append(f"{unit}: removed")
+        if not system:
+            uncron(run, dry, report)
+        return
+    if systemd:
+        command = " ".join(f'"{part}"' for part in argv)
+        write_text(service, "[Unit]\nDescription=WithHuman daily check-in\n\n"
+                            f"[Service]\nType=oneshot\nExecStart={command}\n")
+        write_text(timer, "[Unit]\nDescription=WithHuman daily check-in\n\n"
+                          "[Timer]\nOnCalendar=daily\nPersistent=true\nRandomizedDelaySec=1h\n\n"
+                          "[Install]\nWantedBy=timers.target\n")
+        if system:
+            run(["systemctl", "--global", "enable", timer.name])
+        else:
+            run(["systemctl", "--user", "daemon-reload"])
+            run(["systemctl", "--user", "enable", "--now", timer.name])
+        report.append(f"{timer}: daily check-in")
+        return
+    if system:
+        report.append("WARNING: no systemd, so the check-in is not scheduled for every user")
+        return
+    # No systemd user session: a crontab line, replacing an earlier one.
+    current = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+    lines = [line for line in (current.stdout.splitlines() if current.returncode == 0 else [])
+             if CRON_MARK not in line]
+    lines.append(f"{17 + (os.getpid() % 40)} 10 * * * {' '.join(argv)} {CRON_MARK}")
+    result = subprocess.run(["crontab", "-"], input="\n".join(lines) + "\n", text=True,
+                            capture_output=True)
+    report.append("crontab: daily check-in" if result.returncode == 0 else
+                  "WARNING: the daily check-in could not be scheduled (crontab failed)")
+
+
+def uncron(run, dry, report):
+    if dry or shutil.which("crontab") is None:
+        return
+    current = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+    if current.returncode != 0 or CRON_MARK not in current.stdout:
+        return
+    kept = [line for line in current.stdout.splitlines() if CRON_MARK not in line]
+    subprocess.run(["crontab", "-"], input="\n".join(kept) + "\n", text=True,
+                   capture_output=True)
+    report.append("crontab: daily check-in removed")
+
+
+def first_checkin(script, config, report):
+    """Runs the check-in once now, so the engine has the device's projects from the start."""
+    try:
+        result = subprocess.run([sys.executable, str(script), "--config", str(config)],
+                                capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as error:
+        report.append(f"WARNING: the first check-in did not run ({error})")
+        return
+    if result.returncode != 0:
+        report.append(f"WARNING: the first check-in failed: {result.stderr.strip()}")
+
+
+def setup_user(args, here, stamp, report):
+    """The hooks in the user's settings, for every project."""
+    home = Path.home()
+    config = config_dir()
+    hook = config / "hooks" / HOOK_NAME
+    checkin = config / CHECKIN_NAME
+    install(args.hook, hook)
+    install(here / CHECKIN_NAME, checkin)
+    id_path, value = client_id(args.team)
+
+    settings_path = home / ".claude" / "settings.json"
+    settings = load(settings_path)
+    removed = remove_withhuman(settings)
+    if settings_path.exists():
+        report.append(f"{settings_path}: copy at {backup(settings_path, stamp)}"
+                      + (f", {removed} earlier WithHuman hook(s) replaced" if removed else ""))
+    hooks = settings.setdefault("hooks", {})
+    for event, group in withhuman_hooks(args.server, hook_command(hook, args.server)).items():
+        hooks.setdefault(event, []).append(group)
+    set_env(settings, "WITHHUMAN_CLIENT_ID", value)
+    save(settings_path, settings)
+
+    clean_projects([*claude_projects(home), args.project], stamp, report)
+    version = hook_version([hook, checkin])
+    write_config(config, args.server, "user", version)
+    if not args.no_checkin:
+        schedule(checkin, config, False, report)
+    return settings_path, hook, id_path, value, version, checkin, config
+
+
+def setup_managed(args, here, stamp, report):
+    """The hooks in Claude Code's managed settings, for every user of the device."""
+    folder = managed_dir()
+    own = folder / "withhuman"
+    try:
+        own.mkdir(parents=True, exist_ok=True)
+        (own / ".write-test").write_text("", encoding="utf-8")
+        (own / ".write-test").unlink()
+    except OSError:
+        sys.exit(f"{folder} is not writable: run the managed setup as root (sudo) or "
+                 "Administrator")
+    hook = own / "hooks" / HOOK_NAME
+    checkin = own / CHECKIN_NAME
+    install(args.hook, hook)
+    install(here / CHECKIN_NAME, checkin)
+    # One ID for the device: kept, else the one the user who ran sudo already has.
+    user_home = invoking_home()
+    earlier = user_home / ".config" / "withhuman" / "client-id"
+    path = own / "client-id"
+    if not (path.exists() and path.read_text(encoding="utf-8").strip()) and earlier.is_file():
+        write_text(path, earlier.read_text(encoding="utf-8").strip() + "\n")
+    id_path, value = client_id(args.team, path)
+    path.chmod(0o644)
+
+    drop_in = folder / "managed-settings.d" / DROP_IN
+    settings = {"hooks": {event: [group] for event, group in
+                          withhuman_hooks(args.server, hook_command(hook, args.server)).items()},
+                "env": {"WITHHUMAN_CLIENT_ID": value}}
+    if drop_in.exists():
+        report.append(f"{drop_in}: replaced, copy at {backup(drop_in, stamp)}")
+    save(drop_in, settings)
+    drop_in.chmod(0o644)
+
+    # Projects set up one by one before would run the hooks a second time.
+    clean_projects([*claude_projects(user_home), args.project], stamp, report)
+    left = remove_withhuman(load(user_home / ".claude" / "settings.json"))
+    if left:
+        report.append(f"WARNING: {user_home / '.claude' / 'settings.json'} still holds {left} "
+                      "WithHuman hook(s) of a per-user setup, which would run beside these: as "
+                      "that user, run configure.py --uninstall")
+    version = hook_version([hook, checkin])
+    write_config(own, args.server, "managed", version)
+    if not args.no_checkin:
+        schedule(checkin, own, True, report)
+    return drop_in, hook, id_path, value, version, checkin, own
+
+
+def setup_project(args, here, stamp, report):
+    """The hooks in the project's own settings, as earlier setups did."""
+    project = Path(args.project).resolve()
+    claude = project / ".claude"
+    clean(Path.home() / ".claude" / "settings.json", stamp, report)
+    clean(claude / "settings.local.json", stamp, report)
+    hook = claude / "hooks" / HOOK_NAME
+    install(args.hook, hook)
+    settings_path = claude / "settings.json"
+    settings = load(settings_path)
+    removed = remove_withhuman(settings)
+    if settings_path.exists():
+        report.append(f"{settings_path}: copy at {backup(settings_path, stamp)}"
+                      + (f", {removed} earlier WithHuman hook(s) replaced" if removed else ""))
+    hooks = settings.setdefault("hooks", {})
+    for event, group in withhuman_hooks(args.server, hook_command(hook, args.server)).items():
+        hooks.setdefault(event, []).append(group)
+    save(settings_path, settings)
+    id_path, value = client_id(args.team)
+    return settings_path, hook, id_path, value, hook_version([hook]), None, None
+
+
+def uninstall_claude(args, stamp, report):
+    """Takes WithHuman's Claude Code setup out of the chosen scope."""
+    project = Path(args.project).resolve()
+    if args.managed:
+        folder = managed_dir()
+        drop_in = folder / "managed-settings.d" / DROP_IN
+        if drop_in.exists():
+            drop_in.unlink()
+            report.append(f"{drop_in}: removed")
+        own = folder / "withhuman"
+        schedule(own / CHECKIN_NAME, own, True, report, remove=True)
+        for path in (own / "hooks" / HOOK_NAME, own / CHECKIN_NAME):
+            if path.is_file():
+                path.unlink()
+                report.append(f"{path}: removed")
+        return
+    if args.scope == "project":
+        uninstall("claude", project, stamp, report)
+        return
+    settings_path = Path.home() / ".claude" / "settings.json"
+    if settings_path.exists():
+        settings = load(settings_path)
+        removed = remove_withhuman(settings)
+        env = settings.get("env") if isinstance(settings.get("env"), dict) else {}
+        ours = env.get("WITHHUMAN_CLIENT_ID") is not None
+        if removed or ours:
+            report.append(f"{settings_path}: {removed} WithHuman hook(s) removed, copy at "
+                          f"{backup(settings_path, stamp)}")
+            drop_env(settings, "WITHHUMAN_CLIENT_ID")
+            save(settings_path, settings)
+    config = config_dir()
+    schedule(config / CHECKIN_NAME, config, False, report, remove=True)
+    for path in (config / "hooks" / HOOK_NAME, config / CHECKIN_NAME):
+        if path.is_file():
+            path.unlink()
+            report.append(f"{path}: removed")
+    uninstall("claude", project, stamp, report)
 
 
 def is_codex_withhuman(hook):
@@ -486,15 +906,42 @@ def main():
     parser.add_argument("--no-register", action="store_true",
                         help="do not register the device with the engine")
     parser.add_argument("--uninstall", action="store_true",
-                        help="take WithHuman out of the project (other hooks and files stay)")
+                        help="take WithHuman out again (other hooks and files stay)")
+    parser.add_argument("--managed", action="store_true",
+                        help="claude: put the hooks into Claude Code's managed settings, for "
+                             "every user of the device (run as root or Administrator)")
+    parser.add_argument("--scope", choices=["user", "project"], default="user",
+                        help="claude: the user's settings, every project (default), or only "
+                             "this project's")
+    parser.add_argument("--key-only", action="store_true",
+                        help="only keep the key and export it, as each user does after a "
+                             "managed setup")
+    parser.add_argument("--no-checkin", action="store_true",
+                        help="do not schedule the daily check-in")
     args = parser.parse_args()
     if sys.version_info < (3, 8):
         sys.exit("WithHuman's hook needs Python 3.8 or later")
+    if args.managed and (args.agent != "claude" or args.scope == "project"):
+        sys.exit("--managed sets up Claude Code for the whole device; leave out --agent codex "
+                 "and --scope project")
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    if args.key_only:
+        if not args.key:
+            sys.exit("--key-only needs --key (or WITHHUMAN_KEY)")
+        report = []
+        key_path, key = keep_key(args.key)
+        if not args.no_persist:
+            persist(key_path, key, stamp, report, name="WITHHUMAN_KEY", mark=KEY_MARK)
+        for line in report + [f"WithHuman key kept in {key_path}"]:
+            print(line)
+        return
     if args.uninstall:
         report = []
-        uninstall(args.agent, Path(args.project).resolve(),
-                  datetime.datetime.now().strftime("%Y%m%d-%H%M%S"), report)
-        for line in report or ["Nothing of WithHuman was found in this project."]:
+        if args.agent == "claude":
+            uninstall_claude(args, stamp, report)
+        else:
+            uninstall(args.agent, Path(args.project).resolve(), stamp, report)
+        for line in report or ["Nothing of WithHuman was found."]:
             print(line)
         if args.agent == "codex" and report:
             print("WithHuman is removed from this project. Codex may list the hooks as changed in")
@@ -515,7 +962,6 @@ def main():
         sys.exit(f"--server must be an http(s) URL: {args.server}")
     if args.agent == "codex":
         project = Path(args.project).resolve()
-        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         report = []
         key_path, key = keep_key(args.key)
         path, hook = setup_codex(args, project, stamp, report)
@@ -541,56 +987,52 @@ def main():
         print("changes (as after an update that changed it): until you trust them, this")
         print("project is not protected.")
         return
-    hook_source = Path(args.hook)
-    if not hook_source.is_file():
-        sys.exit(f"hook not found: {hook_source}")
-    key_path, key = keep_key(args.key)
-
-    project = Path(args.project).resolve()
-    claude = project / ".claude"
-    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    if not Path(args.hook).is_file():
+        sys.exit(f"hook not found: {args.hook}")
+    here = Path(__file__).resolve().parent
+    if args.scope == "user" and not (here / CHECKIN_NAME).is_file():
+        sys.exit(f"check-in not found: {here / CHECKIN_NAME}")
+    if args.managed and args.key:
+        sys.exit("Keys are per user: run the managed setup without --key, then each user runs "
+                 "configure.py --key-only --key <their key>")
+    key_path, key = (None, None) if args.managed else keep_key(args.key)
     report = []
-
-    clean(Path.home() / ".claude" / "settings.json", stamp, report)
-    clean(claude / "settings.local.json", stamp, report)
-
-    hook = claude / "hooks" / HOOK_NAME
-    hook.parent.mkdir(parents=True, exist_ok=True)
-    if hook_source.resolve() != hook.resolve():
-        shutil.copyfile(hook_source, hook)
-    hook.chmod(0o755)
-
-    settings_path = claude / "settings.json"
-    settings = load(settings_path)
-    removed = remove_withhuman(settings)
-    if settings_path.exists():
-        report.append(f"{settings_path}: copy at {backup(settings_path, stamp)}"
-                      + (f", {removed} earlier WithHuman hook(s) replaced" if removed else ""))
-    # Quoted absolute paths run alike from bash, zsh, cmd and PowerShell.
-    command = f'"{Path(sys.executable).as_posix()}" "{hook.as_posix()}" {args.server}/v1/hooks/PreToolUse'
-    hooks = settings.setdefault("hooks", {})
-    for event, group in withhuman_hooks(args.server, command).items():
-        hooks.setdefault(event, []).append(group)
-    save(settings_path, settings)
-
-    id_path, value = client_id(args.team)
-    if not args.no_persist:
+    setup = setup_managed if args.managed else (
+        setup_project if args.scope == "project" else setup_user)
+    where, hook, id_path, value, version, checkin, config = setup(args, here, stamp, report)
+    if not args.no_persist and not args.managed:
         persist(id_path, value, stamp, report)
-    notes = finish(args, value, key_path, key, "claude", project, hook_version([hook]), stamp,
-                   report)
+    scope = "managed" if args.managed else args.scope
+    project = Path(args.project).resolve() if scope == "project" else None
+    notes = []
+    if args.managed:
+        if not args.no_register:
+            problem = register(args.server, value, args.team, None, "claude", None, version,
+                               scope)
+            notes.append(f"WARNING: the device was not registered: {problem}." if problem
+                         else f"Device registered with {args.server}")
+        notes.append("Each user keeps their key with: configure.py --key-only --key <their key>")
+    else:
+        notes = finish(args, value, key_path, key, "claude", project, version, stamp, report,
+                       scope)
+    if checkin and not args.no_register and not args.no_checkin and not args.managed:
+        first_checkin(checkin, config, notes)
 
     for line in report:
         print(line)
-    print(f"WithHuman hooks written to {settings_path}")
-    print(f"PreToolUse hook: {hook} (run with {sys.executable})")
+    print(f"WithHuman hooks written to {where}")
+    print(f"Command hook: {hook} (run with {sys.executable})")
     print(f"WITHHUMAN_CLIENT_ID={value}")
     for line in notes:
         print(line)
-    if os.name == "nt":
+    if scope == "user":
+        print("Every Claude Code session of this user runs the hooks from now on, in any folder.")
+    elif scope == "managed":
+        print("Every Claude Code session on this device runs the hooks from now on.")
+    elif os.name == "nt":
         print("Open a new terminal (or keep this one if the setup script set it), then run claude here.")
     else:
         print(f"Open a new terminal or run: source {profile()}   then run claude here.")
-
 
 if __name__ == "__main__":
     main()

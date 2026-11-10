@@ -143,6 +143,16 @@ pub fn app_with_transport(service: CollectorService) -> Router {
         .route("/healthz", get(health))
         .merge(hooks)
         .route("/v1/clients/register", post(inventory::register_client))
+        .route("/v1/clients/checkin", post(inventory::checkin))
+        .route("/v1/clients/exceptions", get(inventory::client_exceptions))
+        .route(
+            "/v1/admin/exceptions",
+            post(inventory::add_exception).get(inventory::exceptions),
+        )
+        .route(
+            "/v1/admin/exceptions/{id}/remove",
+            post(inventory::remove_exception),
+        )
         .route("/v1/admin/clients", get(inventory::clients))
         .route("/v1/admin/keys", get(inventory::all_keys))
         .route(
@@ -190,6 +200,11 @@ pub fn app_with_transport(service: CollectorService) -> Router {
         tool_descriptions,
         codex_hook,
         inventory::register_client,
+        inventory::checkin,
+        inventory::client_exceptions,
+        inventory::add_exception,
+        inventory::exceptions,
+        inventory::remove_exception,
         inventory::issue_key,
         inventory::user_keys,
         inventory::all_keys,

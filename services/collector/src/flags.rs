@@ -1,6 +1,6 @@
-//! What the security team decided about a session: whether it is stopped. The Collector asks the
-//! Generator and keeps the answer a short while (`WITHHUMAN_KEY_CACHE_MS`), as it does for keys;
-//! a change made through this Collector applies at once.
+//! What the security team decided about a session: a stop, or an exception from protection. The
+//! Collector asks the Generator and keeps the answer a short while (`WITHHUMAN_KEY_CACHE_MS`),
+//! as it does for keys; a change made through this Collector applies at once.
 
 use std::{
     collections::HashMap,

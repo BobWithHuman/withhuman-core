@@ -17,10 +17,11 @@ use crate::{
 // (`first_seen`, `last_seen`) is left to the Hooks.
 const REGISTER_CLIENT: &str = "\
 INSERT INTO clients (client_id, team, hostname, os, os_user, hook_version, agent, user_email, \
-  registered_at, updated_at) \
+  registered_at, updated_at, install_scope) \
 VALUES ($1::text, $2::text, $3::text, $4::text, $5::text, $6::text, $7::text, $8::text, \
-  $9::bigint, $9::bigint) \
+  $9::bigint, $9::bigint, $10::text) \
 ON CONFLICT (client_id) DO UPDATE SET \
+  install_scope = coalesce(EXCLUDED.install_scope, clients.install_scope), \
   team = coalesce(EXCLUDED.team, clients.team), \
   hostname = coalesce(EXCLUDED.hostname, clients.hostname), \
   os = coalesce(EXCLUDED.os, clients.os), \
@@ -41,7 +42,7 @@ const CLIENTS: &str = "\
 SELECT c.client_id, c.team, c.hostname, c.os, c.os_user, c.hook_version, c.user_email, \
   c.registered_at, c.updated_at, c.first_seen, c.last_seen, \
   coalesce(array_agg(p.project ORDER BY p.updated_at DESC) FILTER (WHERE p.project IS NOT NULL), \
-    '{}') \
+    '{}'), c.install_scope, c.last_checkin_at \
 FROM clients c LEFT JOIN client_projects p ON p.client_id = c.client_id \
 WHERE $1::text IS NULL OR c.client_id = $1::text \
 GROUP BY c.client_id \
@@ -122,6 +123,7 @@ impl PgGraphRepository {
                     &text(&r.agent),
                     &record.user,
                     &at,
+                    &text(&r.scope),
                 ],
             )
             .await?;
@@ -397,13 +399,189 @@ WHERE EXISTS (SELECT 1 FROM nodes WHERE session_id = $1::text AND seq = $2::bigi
   AND kind = 'Call') \
 RETURNING id";
 
+const SESSION_EXCEPTION: &str = "SELECT exception_id FROM sessions WHERE session_id = $1::text";
+
+// A check-in fills what the device reports and keeps the rest; a project it reports again keeps
+// when it was first reported.
+const CHECKIN_CLIENT: &str = "\
+INSERT INTO clients (client_id, team, hostname, os, os_user, hook_version, user_email, \
+  install_scope, last_checkin_at) \
+VALUES ($1::text, CASE WHEN position('/' IN $1::text) > 0 THEN split_part($1::text, '/', 1) END, \
+  $2::text, $3::text, $4::text, $5::text, $6::text, $7::text, $8::bigint) \
+ON CONFLICT (client_id) DO UPDATE SET \
+  hostname = coalesce(EXCLUDED.hostname, clients.hostname), \
+  os = coalesce(EXCLUDED.os, clients.os), \
+  os_user = coalesce(EXCLUDED.os_user, clients.os_user), \
+  hook_version = coalesce(EXCLUDED.hook_version, clients.hook_version), \
+  user_email = coalesce(EXCLUDED.user_email, clients.user_email), \
+  install_scope = coalesce(EXCLUDED.install_scope, clients.install_scope), \
+  last_checkin_at = GREATEST(coalesce(clients.last_checkin_at, 0), EXCLUDED.last_checkin_at)";
+
+const SEEN_PROJECTS: &str = "\
+INSERT INTO client_seen_projects (client_id, project, last_used_at, first_reported_at, \
+  last_reported_at) \
+SELECT $1::text, p.path, p.last_used_at, $3::bigint, $3::bigint \
+FROM jsonb_to_recordset($2::jsonb) AS p(path text, last_used_at bigint) \
+WHERE p.path IS NOT NULL AND p.path <> '' \
+ON CONFLICT (client_id, project) DO UPDATE SET \
+  last_used_at = GREATEST(client_seen_projects.last_used_at, EXCLUDED.last_used_at), \
+  last_reported_at = EXCLUDED.last_reported_at";
+
+const EXCEPTION_COLUMNS: &str = "id, folder, team, client_id, actor, reason, created_at, \
+removed_at, removed_by";
+
+// The active exceptions that can cover a client's sessions: its team's, its own and everyone's.
+const CLIENT_EXCEPTIONS: &str = "\
+SELECT id, folder, team, client_id, actor, reason, created_at, removed_at, removed_by \
+FROM exceptions WHERE removed_at IS NULL \
+  AND (client_id IS NULL OR client_id = $1::text) \
+  AND (team IS NULL OR team = split_part($1::text, '/', 1)) \
+ORDER BY id";
+
 impl PgGraphRepository {
+    pub(crate) async fn checkin(
+        &self,
+        record: withhuman_contracts::inventory::ClientCheckinRecord,
+    ) -> Result<(), RepositoryError> {
+        let at = signed(record.checked_in_at)?;
+        let c = &record.checkin;
+        let text = |value: &Option<String>| {
+            value
+                .as_deref()
+                .map(|value| withhuman_common::postgres_text(value).into_owned())
+        };
+        let projects = serde_json::to_value(&c.projects)
+            .map_err(|error| RepositoryError::InvalidEvent(error.to_string()))?;
+        let result: Result<(), PgError> = async {
+            let mut client = self.client().await?;
+            let tx = client.transaction().await?;
+            run(
+                &tx,
+                CHECKIN_CLIENT,
+                &[
+                    &c.client_id,
+                    &text(&c.hostname),
+                    &text(&c.os),
+                    &text(&c.os_user),
+                    &text(&c.hook_version),
+                    &record.user,
+                    &text(&c.scope),
+                    &at,
+                ],
+            )
+            .await?;
+            run(&tx, SEEN_PROJECTS, &[&c.client_id, &projects, &at]).await?;
+            tx.commit().await?;
+            Ok(())
+        }
+        .await;
+        Ok(result?)
+    }
+
+    pub(crate) async fn add_exception(
+        &self,
+        request: withhuman_contracts::inventory::ExceptionRequest,
+        at: u64,
+    ) -> Result<withhuman_contracts::inventory::Exception, RepositoryError> {
+        let at = signed(at)?;
+        let result: Result<Row, PgError> = async {
+            let client = self.client().await?;
+            one(
+                &client,
+                &format!(
+                    "INSERT INTO exceptions (folder, team, client_id, actor, reason, created_at) \
+                     VALUES ($1::text, $2::text, $3::text, $4::text, $5::text, $6::bigint) \
+                     RETURNING {EXCEPTION_COLUMNS}"
+                ),
+                &[
+                    &request.folder,
+                    &request.team,
+                    &request.client_id,
+                    &request.actor,
+                    &request.reason,
+                    &at,
+                ],
+            )
+            .await
+        }
+        .await;
+        Ok(exception(&result?)?)
+    }
+
+    pub(crate) async fn remove_exception(
+        &self,
+        id: u64,
+        actor: Option<String>,
+        at: u64,
+    ) -> Result<withhuman_contracts::inventory::Exception, RepositoryError> {
+        let (id, at) = (signed(id)?, signed(at)?);
+        let result: Result<Option<Row>, PgError> = async {
+            let client = self.client().await?;
+            run(
+                &client,
+                "UPDATE exceptions SET removed_at = $2::bigint, removed_by = $3::text \
+                 WHERE id = $1::bigint AND removed_at IS NULL",
+                &[&id, &at, &actor],
+            )
+            .await?;
+            optional(
+                &client,
+                &format!("SELECT {EXCEPTION_COLUMNS} FROM exceptions WHERE id = $1::bigint"),
+                &[&id],
+            )
+            .await
+        }
+        .await;
+        Ok(exception(&result?.ok_or(RepositoryError::NotFound)?)?)
+    }
+
+    /// Every exception, or those that can cover `client_id`'s sessions (active only).
+    pub(crate) async fn list_exceptions(
+        &self,
+        client_id: Option<&str>,
+    ) -> Result<Vec<withhuman_contracts::inventory::Exception>, RepositoryError> {
+        let result: Result<Vec<Row>, PgError> = async {
+            let client = self.client().await?;
+            Ok(match client_id {
+                Some(client_id) => {
+                    client
+                        .query(
+                            &client.prepare_cached(CLIENT_EXCEPTIONS).await?,
+                            &[&client_id],
+                        )
+                        .await?
+                }
+                None => {
+                    client
+                        .query(
+                            &client
+                                .prepare_cached(&format!(
+                                    "SELECT {EXCEPTION_COLUMNS} FROM exceptions ORDER BY id"
+                                ))
+                                .await?,
+                            &[],
+                        )
+                        .await?
+                }
+            })
+        }
+        .await;
+        result?
+            .iter()
+            .map(|row| exception(row).map_err(RepositoryError::from))
+            .collect()
+    }
+
     pub(crate) async fn flags(&self, session_id: &str) -> Result<SessionFlags, RepositoryError> {
         let result: Result<SessionFlags, PgError> = async {
             let client = self.client().await?;
             let stop = optional(&client, ACTIVE_STOP, &[&session_id]).await?;
+            let exception = optional(&client, SESSION_EXCEPTION, &[&session_id])
+                .await?
+                .and_then(|row| row.get::<_, Option<i64>>(0));
             Ok(SessionFlags {
                 stop: stop.as_ref().map(session_stop).transpose()?,
+                exception: exception.map(crate::pg_repository::unsigned).transpose()?,
             })
         }
         .await;
@@ -512,6 +690,20 @@ impl PgGraphRepository {
     }
 }
 
+fn exception(row: &Row) -> Result<withhuman_contracts::inventory::Exception, PgError> {
+    Ok(withhuman_contracts::inventory::Exception {
+        id: millis(row, 0)?.unwrap_or_default(),
+        folder: row.get(1),
+        team: row.get(2),
+        client_id: row.get(3),
+        actor: row.get(4),
+        reason: row.get(5),
+        created_at: millis(row, 6)?.unwrap_or_default(),
+        removed_at: millis(row, 7)?,
+        removed_by: row.get(8),
+    })
+}
+
 fn session_stop(row: &Row) -> Result<SessionStop, PgError> {
     Ok(SessionStop {
         id: millis(row, 0)?.unwrap_or_default(),
@@ -548,6 +740,8 @@ fn client_record(row: &Row) -> Result<ClientRecord, PgError> {
         first_seen: millis(row, 9)?,
         last_seen: millis(row, 10)?,
         projects: row.get(11),
+        install_scope: row.get(12),
+        last_checkin_at: millis(row, 13)?,
     })
 }
 

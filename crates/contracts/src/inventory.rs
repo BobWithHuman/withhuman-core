@@ -27,9 +27,13 @@ pub struct ClientRegistration {
     /// `claude` or `codex`.
     #[serde(default)]
     pub agent: Option<String>,
-    /// The project folder the hooks were written into.
+    /// The project folder the hooks were written into; none for a device-wide setup.
     #[serde(default)]
     pub project: Option<String>,
+    /// Where the hooks were installed: `user` (the user's settings, every project), `managed`
+    /// (Claude Code's managed settings, every user) or `project`.
+    #[serde(default)]
+    pub scope: Option<String>,
 }
 
 /// A registration as the Collector passes it on: with the key's user when one was verified.
@@ -72,6 +76,92 @@ pub struct ClientRecord {
     /// Project folders set up on the device.
     #[serde(default)]
     pub projects: Vec<String>,
+    #[serde(default)]
+    pub install_scope: Option<String>,
+    /// The latest daily check-in.
+    #[serde(default)]
+    pub last_checkin_at: Option<u64>,
+}
+
+/// A project Claude Code ran in on the device, as the daily check-in reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+pub struct SeenProject {
+    pub path: String,
+    /// When Claude Code last used it, epoch milliseconds.
+    #[serde(default)]
+    pub last_used_at: Option<u64>,
+}
+
+/// `POST /v1/clients/checkin`: the device's daily sign of life. It names the projects Claude
+/// Code ran in and when, never what was said in them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+pub struct ClientCheckin {
+    pub client_id: String,
+    #[serde(default)]
+    pub hostname: Option<String>,
+    #[serde(default)]
+    pub os: Option<String>,
+    #[serde(default)]
+    pub os_user: Option<String>,
+    #[serde(default)]
+    pub hook_version: Option<String>,
+    #[serde(default)]
+    pub scope: Option<String>,
+    #[serde(default)]
+    pub projects: Vec<SeenProject>,
+}
+
+/// A check-in as the Collector passes it on.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+pub struct ClientCheckinRecord {
+    #[serde(flatten)]
+    pub checkin: ClientCheckin,
+    #[serde(default)]
+    pub user: Option<String>,
+    pub checked_in_at: u64,
+}
+
+/// `POST /v1/admin/exceptions`: sessions the security team leaves unprotected. Every field given
+/// must match: a folder (and the folders below it), a team, a device.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+pub struct ExceptionRequest {
+    #[serde(default)]
+    pub folder: Option<String>,
+    #[serde(default)]
+    pub team: Option<String>,
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub actor: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+pub struct Exception {
+    pub id: u64,
+    #[serde(default)]
+    pub folder: Option<String>,
+    #[serde(default)]
+    pub team: Option<String>,
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub actor: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    pub created_at: u64,
+    #[serde(default)]
+    pub removed_at: Option<u64>,
+    #[serde(default)]
+    pub removed_by: Option<String>,
+}
+
+/// `POST /v1/admin/exceptions/{id}/remove`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+pub struct ExceptionRemoval {
+    #[serde(default)]
+    pub actor: Option<String>,
 }
 
 /// Whom a key is for: a person, or an automation such as CI.
@@ -248,6 +338,10 @@ pub struct SessionFlags {
     /// The session's active stop.
     #[serde(default)]
     pub stop: Option<SessionStop>,
+    /// The security team excepted the session from protection (its folder, team or device):
+    /// nothing of it but its start and end is recorded.
+    #[serde(default)]
+    pub exception: Option<u64>,
 }
 
 /// A PreToolUse turned back by a session stop.

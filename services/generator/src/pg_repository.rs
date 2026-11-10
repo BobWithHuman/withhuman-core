@@ -84,8 +84,26 @@ UPDATE sessions SET \
     WHEN $9::boolean AND $6::bigint >= coalesce(ended_at, 0) THEN $10::text \
     WHEN $7::boolean AND $6::bigint > coalesce(ended_at, $6::bigint) THEN NULL \
     ELSE end_reason END, \
-  last_seen_at = GREATEST(coalesce(last_seen_at, 0), $6::bigint) \
+  last_seen_at = GREATEST(coalesce(last_seen_at, 0), $6::bigint), \
+  exception_claimed = coalesce($11::bigint, exception_claimed), \
+  exception_id = CASE WHEN $11::bigint IS NULL THEN exception_id ELSE ( \
+    SELECT e.id FROM exceptions e WHERE e.id = $11::bigint AND e.removed_at IS NULL \
+      AND (e.client_id IS NULL OR e.client_id = $2::text) \
+      AND (e.team IS NULL OR e.team = split_part($2::text, '/', 1)) \
+      AND (e.folder IS NULL OR $12::text = e.folder OR starts_with($12::text, e.folder || '/') \
+           OR starts_with($12::text, e.folder || '\\')) \
+  ) END \
 WHERE session_id = $1::text";
+
+// A folder a client's Hooks ran in, at most every 30 s per folder.
+const SEE_CWD: &str = "\
+INSERT INTO client_cwds (client_id, cwd, first_seen, last_seen) \
+VALUES ($1::text, $2::text, $3::bigint, $3::bigint) \
+ON CONFLICT (client_id, cwd) DO UPDATE SET \
+  first_seen = LEAST(client_cwds.first_seen, EXCLUDED.first_seen), \
+  last_seen = GREATEST(client_cwds.last_seen, EXCLUDED.last_seen) \
+WHERE EXCLUDED.last_seen > client_cwds.last_seen + 30000 \
+  OR EXCLUDED.first_seen < client_cwds.first_seen";
 
 // A client ID a Hook carried. The row is written only when something changes or `last_seen` is
 // 30 s old, so the sessions of one busy device do not queue on it.
@@ -481,9 +499,11 @@ impl PgGraphRepository {
                 };
                 let version = session_version + 1;
                 run(&tx, BUMP_VERSION, &[session, &version]).await?;
-                let (started, source) = match &m.session {
-                    SessionChange::Started { source } => (true, source.as_deref()),
-                    _ => (false, None),
+                let (started, source, exception) = match &m.session {
+                    SessionChange::Started { source, exception } => {
+                        (true, source.as_deref(), *exception)
+                    }
+                    _ => (false, None, None),
                 };
                 let (ended, reason) = match &m.session {
                     SessionChange::Ended { reason } => (true, reason.as_deref()),
@@ -503,6 +523,8 @@ impl PgGraphRepository {
                         &source,
                         &ended,
                         &reason,
+                        &exception,
+                        &m.cwd,
                     ],
                 )
                 .await?;
@@ -602,6 +624,9 @@ impl PgGraphRepository {
         }
         // Last, so the shared row is held only until the commit.
         if let Some(client_id) = &m.client_id {
+            if let Some(cwd) = &m.cwd {
+                run(&tx, SEE_CWD, &[client_id, cwd, &m.observed_at]).await?;
+            }
             run(&tx, SEE_CLIENT, &[client_id, &m.user, &m.observed_at]).await?;
         }
         tx.commit().await?;
@@ -906,6 +931,37 @@ impl GraphRepository for PgGraphRepository {
 
     async fn add_review(&self, request: ReviewRequest, at: u64) -> Result<Review, RepositoryError> {
         self.review(request, at).await
+    }
+
+    async fn checkin(
+        &self,
+        record: withhuman_contracts::inventory::ClientCheckinRecord,
+    ) -> Result<(), RepositoryError> {
+        PgGraphRepository::checkin(self, record).await
+    }
+
+    async fn add_exception(
+        &self,
+        request: withhuman_contracts::inventory::ExceptionRequest,
+        at: u64,
+    ) -> Result<withhuman_contracts::inventory::Exception, RepositoryError> {
+        PgGraphRepository::add_exception(self, request, at).await
+    }
+
+    async fn remove_exception(
+        &self,
+        id: u64,
+        actor: Option<String>,
+        at: u64,
+    ) -> Result<withhuman_contracts::inventory::Exception, RepositoryError> {
+        PgGraphRepository::remove_exception(self, id, actor, at).await
+    }
+
+    async fn exceptions(
+        &self,
+        client_id: Option<&str>,
+    ) -> Result<Vec<withhuman_contracts::inventory::Exception>, RepositoryError> {
+        self.list_exceptions(client_id).await
     }
 }
 
