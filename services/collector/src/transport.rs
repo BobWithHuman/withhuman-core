@@ -6,7 +6,7 @@ use std::time::Duration;
 use serde_json::Value;
 use withhuman_contracts::{
     events::{EventResponse, SessionCursor, ToolCall},
-    inventory::{KeyDenial, VerifyKeyRequest, VerifyKeyResponse},
+    inventory::{KeyDenial, SessionDenial, SessionFlags, VerifyKeyRequest, VerifyKeyResponse},
 };
 
 use crate::NormalizedEvent;
@@ -47,6 +47,25 @@ pub trait GeneratorTransport: Send + Sync {
         _denial: KeyDenial,
     ) -> Result<(), GeneratorError> {
         Ok(())
+    }
+
+    /// The session's active stop and exception.
+    async fn session_flags(&self, _session_id: &str) -> Result<SessionFlags, GeneratorError> {
+        Ok(SessionFlags::default())
+    }
+
+    /// Records a PreToolUse its session's stop turned back.
+    async fn record_session_denial(
+        &self,
+        _session_id: &str,
+        _denial: SessionDenial,
+    ) -> Result<(), GeneratorError> {
+        Ok(())
+    }
+
+    /// The active exceptions that can cover a client's sessions, as the Generator answers.
+    async fn client_exceptions(&self, _client_id: &str) -> Result<(u16, Value), GeneratorError> {
+        Ok((200, Value::Array(Vec::new())))
     }
 
     /// The Generator's inventory API below `/v1` (clients, users and keys), its status and JSON
@@ -142,6 +161,60 @@ impl GeneratorTransport for GeneratorHttpClient {
             .inventory(
                 reqwest::Method::POST,
                 &["keys", key_id, "denials"],
+                Some(serde_json::to_value(denial).map_err(invalid_request)?),
+            )
+            .await?;
+        match status {
+            200..=299 => Ok(()),
+            status => Err(GeneratorError::Rejected(status)),
+        }
+    }
+
+    async fn client_exceptions(&self, client_id: &str) -> Result<(u16, Value), GeneratorError> {
+        let mut url = reqwest::Url::parse(&self.base_url).map_err(invalid_request)?;
+        url.path_segments_mut()
+            .map_err(|()| GeneratorError::InvalidRequest("Generator URL has no path".to_owned()))?
+            .extend(["v1", "exceptions"]);
+        url.query_pairs_mut().append_pair("client_id", client_id);
+        let response = self
+            .client
+            .get(url)
+            .timeout(CURSOR_TIMEOUT)
+            .send()
+            .await
+            .map_err(|error| GeneratorError::Unavailable(error.to_string()))?;
+        let status = response.status().as_u16();
+        let body = response
+            .json()
+            .await
+            .map_err(|error| GeneratorError::InvalidResponse(error.to_string()))?;
+        Ok((status, body))
+    }
+
+    async fn session_flags(&self, session_id: &str) -> Result<SessionFlags, GeneratorError> {
+        let (status, body) = self
+            .inventory(
+                reqwest::Method::GET,
+                &["sessions", session_id, "flags"],
+                None,
+            )
+            .await?;
+        if status != 200 {
+            return Err(GeneratorError::Rejected(status));
+        }
+        serde_json::from_value(body)
+            .map_err(|error| GeneratorError::InvalidResponse(error.to_string()))
+    }
+
+    async fn record_session_denial(
+        &self,
+        session_id: &str,
+        denial: SessionDenial,
+    ) -> Result<(), GeneratorError> {
+        let (status, _) = self
+            .inventory(
+                reqwest::Method::POST,
+                &["sessions", session_id, "stop", "denials"],
                 Some(serde_json::to_value(denial).map_err(invalid_request)?),
             )
             .await?;

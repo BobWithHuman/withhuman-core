@@ -13,7 +13,8 @@ use withhuman_contracts::{
         RequestContinuationResponse, SessionCursor, SubGraphCursor, ToolCall,
     },
     inventory::{
-        ClientRecord, ClientRegistrationRecord, KeyDenial, KeyRecord, NewKey, RevokeKeyRequest,
+        ClientRecord, ClientRegistrationRecord, KeyDenial, KeyRecord, NewKey, Review,
+        ReviewRequest, RevokeKeyRequest, SessionFlags, SessionStop, SessionStopRequest,
         VerifyKeyRequest, VerifyKeyResponse,
     },
 };
@@ -83,8 +84,26 @@ UPDATE sessions SET \
     WHEN $9::boolean AND $6::bigint >= coalesce(ended_at, 0) THEN $10::text \
     WHEN $7::boolean AND $6::bigint > coalesce(ended_at, $6::bigint) THEN NULL \
     ELSE end_reason END, \
-  last_seen_at = GREATEST(coalesce(last_seen_at, 0), $6::bigint) \
+  last_seen_at = GREATEST(coalesce(last_seen_at, 0), $6::bigint), \
+  exception_claimed = coalesce($11::bigint, exception_claimed), \
+  exception_id = CASE WHEN $11::bigint IS NULL THEN exception_id ELSE ( \
+    SELECT e.id FROM exceptions e WHERE e.id = $11::bigint AND e.removed_at IS NULL \
+      AND (e.client_id IS NULL OR e.client_id = $2::text) \
+      AND (e.team IS NULL OR e.team = split_part($2::text, '/', 1)) \
+      AND (e.folder IS NULL OR $12::text = e.folder OR starts_with($12::text, e.folder || '/') \
+           OR starts_with($12::text, e.folder || '\\')) \
+  ) END \
 WHERE session_id = $1::text";
+
+// A folder a client's Hooks ran in, at most every 30 s per folder.
+const SEE_CWD: &str = "\
+INSERT INTO client_cwds (client_id, cwd, first_seen, last_seen) \
+VALUES ($1::text, $2::text, $3::bigint, $3::bigint) \
+ON CONFLICT (client_id, cwd) DO UPDATE SET \
+  first_seen = LEAST(client_cwds.first_seen, EXCLUDED.first_seen), \
+  last_seen = GREATEST(client_cwds.last_seen, EXCLUDED.last_seen) \
+WHERE EXCLUDED.last_seen > client_cwds.last_seen + 30000 \
+  OR EXCLUDED.first_seen < client_cwds.first_seen";
 
 // A client ID a Hook carried. The row is written only when something changes or `last_seen` is
 // 30 s old, so the sessions of one busy device do not queue on it.
@@ -349,9 +368,23 @@ pub struct PgGraphRepository {
 impl PgGraphRepository {
     /// Connects to `database_url` (a libpq connection string or URL) and applies the schema.
     pub async fn connect(database_url: &str, pool_size: usize) -> Result<Self, RepositoryError> {
+        Self::connect_with_viewer(database_url, pool_size, None).await
+    }
+
+    /// As [`Self::connect`], first creating or updating the viewer's login
+    /// (`withhuman_viewer`) with `viewer_password` when there is one. The schema then grants it
+    /// what it reads.
+    pub async fn connect_with_viewer(
+        database_url: &str,
+        pool_size: usize,
+        viewer_password: Option<&str>,
+    ) -> Result<Self, RepositoryError> {
         let repository = Self {
             pool: pool(database_url, pool_size)?,
         };
+        if let Some(password) = viewer_password {
+            ensure_viewer(&repository.pool, password).await?;
+        }
         apply_schema(&repository.pool).await?;
         Ok(repository)
     }
@@ -466,9 +499,11 @@ impl PgGraphRepository {
                 };
                 let version = session_version + 1;
                 run(&tx, BUMP_VERSION, &[session, &version]).await?;
-                let (started, source) = match &m.session {
-                    SessionChange::Started { source } => (true, source.as_deref()),
-                    _ => (false, None),
+                let (started, source, exception) = match &m.session {
+                    SessionChange::Started { source, exception } => {
+                        (true, source.as_deref(), *exception)
+                    }
+                    _ => (false, None, None),
                 };
                 let (ended, reason) = match &m.session {
                     SessionChange::Ended { reason } => (true, reason.as_deref()),
@@ -488,6 +523,8 @@ impl PgGraphRepository {
                         &source,
                         &ended,
                         &reason,
+                        &exception,
+                        &m.cwd,
                     ],
                 )
                 .await?;
@@ -587,6 +624,9 @@ impl PgGraphRepository {
         }
         // Last, so the shared row is held only until the commit.
         if let Some(client_id) = &m.client_id {
+            if let Some(cwd) = &m.cwd {
+                run(&tx, SEE_CWD, &[client_id, cwd, &m.observed_at]).await?;
+            }
             run(&tx, SEE_CLIENT, &[client_id, &m.user, &m.observed_at]).await?;
         }
         tx.commit().await?;
@@ -858,6 +898,71 @@ impl GraphRepository for PgGraphRepository {
     async fn keys(&self, user: Option<&str>) -> Result<Vec<KeyRecord>, RepositoryError> {
         self.list_keys(user).await
     }
+
+    async fn session_flags(&self, session_id: &str) -> Result<SessionFlags, RepositoryError> {
+        self.flags(session_id).await
+    }
+
+    async fn stop_session(
+        &self,
+        session_id: &str,
+        request: SessionStopRequest,
+        at: u64,
+    ) -> Result<SessionStop, RepositoryError> {
+        self.stop(session_id, request, at).await
+    }
+
+    async fn release_session(
+        &self,
+        session_id: &str,
+        request: SessionStopRequest,
+        at: u64,
+    ) -> Result<SessionStop, RepositoryError> {
+        self.release(session_id, request, at).await
+    }
+
+    async fn record_session_denial(
+        &self,
+        session_id: &str,
+        at: u64,
+    ) -> Result<(), RepositoryError> {
+        self.deny_session(session_id, at).await
+    }
+
+    async fn add_review(&self, request: ReviewRequest, at: u64) -> Result<Review, RepositoryError> {
+        self.review(request, at).await
+    }
+
+    async fn checkin(
+        &self,
+        record: withhuman_contracts::inventory::ClientCheckinRecord,
+    ) -> Result<(), RepositoryError> {
+        PgGraphRepository::checkin(self, record).await
+    }
+
+    async fn add_exception(
+        &self,
+        request: withhuman_contracts::inventory::ExceptionRequest,
+        at: u64,
+    ) -> Result<withhuman_contracts::inventory::Exception, RepositoryError> {
+        PgGraphRepository::add_exception(self, request, at).await
+    }
+
+    async fn remove_exception(
+        &self,
+        id: u64,
+        actor: Option<String>,
+        at: u64,
+    ) -> Result<withhuman_contracts::inventory::Exception, RepositoryError> {
+        PgGraphRepository::remove_exception(self, id, actor, at).await
+    }
+
+    async fn exceptions(
+        &self,
+        client_id: Option<&str>,
+    ) -> Result<Vec<withhuman_contracts::inventory::Exception>, RepositoryError> {
+        self.list_exceptions(client_id).await
+    }
 }
 
 /// A pool of `size` connections to `database_url`, each preparing a statement once.
@@ -876,6 +981,50 @@ pub(crate) fn pool(database_url: &str, size: usize) -> Result<Pool, RepositoryEr
         .max_size(size)
         .build()
         .map_err(|error| RepositoryError::Unavailable(error.to_string()))
+}
+
+/// The viewer's login: it reads, nothing else, in read-only transactions that cannot run long or
+/// hold many connections. Replicas starting together take turns on the schema lock.
+async fn ensure_viewer(pool: &Pool, password: &str) -> Result<(), RepositoryError> {
+    let result: Result<(), PgError> = async {
+        let mut client = pool.get().await.map_err(|error| {
+            PgError::Repository(RepositoryError::Unavailable(error.to_string()))
+        })?;
+        let tx = client.transaction().await?;
+        tx.execute(&format!("SELECT pg_advisory_xact_lock({SCHEMA_LOCK})"), &[])
+            .await?;
+        // The password goes into the statement as a quoted literal; roles take no parameters.
+        let statement: String = tx
+            .query_one(
+                "SELECT format(CASE WHEN EXISTS (SELECT 1 FROM pg_roles \
+                   WHERE rolname = 'withhuman_viewer') THEN 'ALTER' ELSE 'CREATE' END \
+                   || ' ROLE withhuman_viewer LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB \
+                   NOCREATEROLE NOINHERIT NOREPLICATION CONNECTION LIMIT 20', $1::text)",
+                &[&password],
+            )
+            .await?
+            .get(0);
+        tx.batch_execute(&statement).await?;
+        tx.batch_execute(
+            "ALTER ROLE withhuman_viewer SET default_transaction_read_only = on; \
+             ALTER ROLE withhuman_viewer SET statement_timeout = '60s'; \
+             ALTER ROLE withhuman_viewer SET idle_in_transaction_session_timeout = '60s'",
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+    .await;
+    // The statement holds the password, so a failure is reported without it.
+    result.map_err(|error| match error {
+        PgError::Postgres(error) => RepositoryError::Query(format!(
+            "could not set up the viewer login withhuman_viewer: {}",
+            error
+                .as_db_error()
+                .map_or("connection failed", |db| db.message())
+        )),
+        PgError::Repository(error) => error,
+    })
 }
 
 pub(crate) async fn apply_schema(pool: &Pool) -> Result<(), RepositoryError> {

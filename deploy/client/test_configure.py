@@ -21,7 +21,9 @@ OLD_HTTP = {"type": "http", "url": "https://old.example.com/v1/hooks/PreToolUse"
             "headers": {"x-withhuman-client": "$WITHHUMAN_CLIENT_ID"}}
 OTHER = {"type": "command", "command": "echo mine"}
 KEY = "whk_0123456789abcdef_" + "ab" * 32
-HEADERS = {"x-withhuman-client": "$WITHHUMAN_CLIENT_ID", "Authorization": "Bearer $WITHHUMAN_KEY"}
+HEADERS = {"x-withhuman-client": "$WITHHUMAN_CLIENT_ID", "Authorization": "Bearer $WITHHUMAN_KEY",
+           "x-withhuman-hook": "1"}
+COMMAND_EVENTS = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure"]
 
 
 class Engine(http.server.BaseHTTPRequestHandler):
@@ -59,13 +61,18 @@ class Setup(unittest.TestCase):
     def read(self, path):
         return json.loads(path.read_text())
 
-    def configure(self, *extra, server=SERVER, register=False):
-        # WITHHUMAN_SERVER and WITHHUMAN_KEY are dropped so the developer's own environment cannot
-        # stand in for what is under test. Registering is left to the tests about it.
-        env = {**os.environ, "HOME": str(self.home), "USERPROFILE": str(self.home), "SHELL": "/bin/zsh"}
-        env.pop("WITHHUMAN_SERVER", None)
-        env.pop("WITHHUMAN_KEY", None)
+    def configure(self, *extra, server=SERVER, register=False, scope="project", env_extra=None):
+        # WITHHUMAN_SERVER, WITHHUMAN_KEY and WITHHUMAN_CLIENT_ID are dropped so the developer's
+        # own environment cannot stand in for what is under test. Registering is left to the
+        # tests about it, and nothing is scheduled.
+        env = {**os.environ, "HOME": str(self.home), "USERPROFILE": str(self.home), "SHELL": "/bin/zsh",
+               "WITHHUMAN_SCHEDULER": "none", **(env_extra or {})}
+        for name in ("WITHHUMAN_SERVER", "WITHHUMAN_KEY", "WITHHUMAN_CLIENT_ID"):
+            if name not in (env_extra or {}):
+                env.pop(name, None)
         arguments = ["--project", str(self.project), "--team", "lab"]
+        if scope:
+            arguments += ["--scope", scope]
         if not register:
             arguments.append("--no-register")
         if os.name == "nt":
@@ -114,11 +121,13 @@ class ConfigureTest(Setup):
         hook = self.project / ".claude" / "hooks" / "pre-tool-use.py"
         self.assertEqual(command["type"], "command")
         self.assertEqual(command["command"], f'"{Path(sys.executable).as_posix()}" "{hook.as_posix()}" '
-                                             f"{SERVER}/v1/hooks/PreToolUse")
+                                             f"--withhuman-hook {SERVER}")
+        for event in COMMAND_EVENTS:
+            self.assertEqual(settings["hooks"][event][-1]["hooks"][0], command, event)
         self.assertTrue(os.access(hook, os.X_OK))
         self.assertEqual(hook.read_text(), (HERE / "hooks" / "pre-tool-use.py").read_text())
-        post = settings["hooks"]["PostToolUse"][0]["hooks"][0]
-        self.assertEqual(post["url"], f"{SERVER}/v1/hooks/PostToolUse")
+        post = settings["hooks"]["MessageDisplay"][0]["hooks"][0]
+        self.assertEqual(post["url"], f"{SERVER}/v1/hooks/MessageDisplay")
         self.assertEqual(post["headers"], HEADERS)
         self.assertEqual(post["allowedEnvVars"], ["WITHHUMAN_CLIENT_ID", "WITHHUMAN_KEY"])
         end = settings["hooks"]["SessionEnd"][0]["hooks"][0]
@@ -174,14 +183,16 @@ class ConfigureTest(Setup):
                "WITHHUMAN_SERVER": "http://127.0.0.1:3000/"}
         result = subprocess.run(
             [sys.executable, str(CONFIGURE), "--project", str(self.project), "--team", "lab", "--no-persist",
-             "--no-register"],
+             "--no-register", "--scope", "project"],
             capture_output=True, text=True, env=env, timeout=30,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         settings = self.read(self.project / ".claude" / "settings.json")
         # The trailing slash is dropped rather than doubled into the hook URLs.
-        self.assertEqual(settings["hooks"]["PostToolUse"][0]["hooks"][0]["url"],
-                         "http://127.0.0.1:3000/v1/hooks/PostToolUse")
+        self.assertEqual(settings["hooks"]["MessageDisplay"][0]["hooks"][0]["url"],
+                         "http://127.0.0.1:3000/v1/hooks/MessageDisplay")
+        self.assertTrue(settings["hooks"]["PostToolUse"][0]["hooks"][0]["command"]
+                        .endswith("--withhuman-hook http://127.0.0.1:3000"))
 
     def test_rejects_an_address_that_is_not_a_url(self):
         result = self.configure(server="withhuman.example.com")
@@ -269,6 +280,163 @@ class KeyAndRegistrationTest(Setup):
         result = self.configure(server="http://127.0.0.1:9", register=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("could not be reached", result.stdout)
+
+
+def load_configure():
+    spec = importlib.util.spec_from_file_location("withhuman_configure", CONFIGURE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# Another tool's hooks that look like ours from afar: an /v1/hooks/ address, a file named alike.
+FOREIGN_HTTP = {"type": "http", "url": "https://other.example.com/v1/hooks/PreToolUse",
+                "headers": {"x-other": "1"}}
+FOREIGN_COMMAND = {"type": "command", "command": "python3 /opt/other/pre-tool-use.py --lint"}
+
+
+class DeviceWideTest(Setup):
+    """The hooks in the user's settings (the default) or in managed settings."""
+
+    def setUp(self):
+        super().setUp()
+        # A project set up one by one before, which Claude Code knows.
+        self.old = Path(tempfile.mkdtemp()).resolve()
+        (self.old / ".claude" / "hooks").mkdir(parents=True)
+        self.write(self.old / ".claude" / "settings.json", {
+            "permissions": {"allow": ["Bash(ls:*)"]},
+            "hooks": {"PreToolUse": [{"hooks": [
+                {"type": "command", "command": f'"python3" "{self.old}/.claude/hooks/pre-tool-use.py" '
+                                               f"{SERVER}/v1/hooks/PreToolUse"}, FOREIGN_COMMAND]}],
+                      "MessageDisplay": [{"hooks": [dict(OLD_HTTP, url=f"{SERVER}/v1/hooks/MessageDisplay")]}]}})
+        (self.old / ".claude" / "hooks" / "pre-tool-use.py").write_text(
+            (HERE / "hooks" / "pre-tool-use.py").read_text())
+        self.write(self.home / ".claude.json", {"projects": {str(self.old): {}, "/gone/away": {}}})
+        self.write(self.home / ".claude" / "settings.json", {
+            "model": "opus", "env": {"MINE": "1"},
+            "hooks": {"PreToolUse": [{"hooks": [FOREIGN_HTTP, OTHER]}]}})
+
+    def test_installs_for_every_project_and_takes_out_the_per_project_ones(self):
+        result = self.configure(scope=None)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        settings = self.read(self.home / ".claude" / "settings.json")
+        client_id = (self.home / ".config" / "withhuman" / "client-id").read_text().strip()
+        self.assertEqual(settings["env"], {"MINE": "1", "WITHHUMAN_CLIENT_ID": client_id})
+        self.assertEqual(settings["model"], "opus")
+        self.assertEqual(settings["hooks"]["PreToolUse"][0], {"hooks": [FOREIGN_HTTP, OTHER]})
+        hook = self.home / ".config" / "withhuman" / "hooks" / "pre-tool-use.py"
+        ours = settings["hooks"]["PreToolUse"][1]["hooks"][0]
+        self.assertEqual(ours["command"], f'"{Path(sys.executable).as_posix()}" "{hook.as_posix()}" '
+                                          f"--withhuman-hook {SERVER}")
+        self.assertEqual(settings["hooks"]["SessionEnd"][0]["hooks"][0]["headers"], HEADERS)
+        config = self.home / ".config" / "withhuman"
+        self.assertEqual((config / "server").read_text().strip(), SERVER)
+        self.assertEqual((config / "scope").read_text().strip(), "user")
+        self.assertTrue((config / "checkin.py").is_file())
+        # The earlier project setup is gone; the project's other settings and hooks stay.
+        old = self.read(self.old / ".claude" / "settings.json")
+        self.assertEqual(old, {"permissions": {"allow": ["Bash(ls:*)"]},
+                               "hooks": {"PreToolUse": [{"hooks": [FOREIGN_COMMAND]}]}})
+        self.assertFalse((self.old / ".claude" / "hooks").exists())
+        self.assertIn("in any folder", result.stdout)
+        # A second run changes nothing.
+        before = (self.home / ".claude" / "settings.json").read_text()
+        self.assertEqual(self.configure(scope=None).returncode, 0)
+        self.assertEqual((self.home / ".claude" / "settings.json").read_text(), before)
+
+        result = self.configure("--uninstall", scope=None)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.read(self.home / ".claude" / "settings.json"), {
+            "model": "opus", "env": {"MINE": "1"},
+            "hooks": {"PreToolUse": [{"hooks": [FOREIGN_HTTP, OTHER]}]}})
+        self.assertFalse(hook.exists())
+
+    def test_tells_our_hooks_from_other_tools_by_their_mark(self):
+        module = load_configure()
+        command = module.hook_command("/h/pre-tool-use.py", SERVER)
+        ours = module.withhuman_hooks(SERVER, command)
+        for group in ours.values():
+            self.assertTrue(module.is_withhuman(group["hooks"][0]))
+        earlier = [OLD_HTTP, {"type": "command", "command": f'python3 "$HOME/.config/withhuman/hooks/'
+                                                            f'pre-tool-use.py" {SERVER}/v1/hooks/PreToolUse'},
+                   dict(OLD_HTTP, url=f"{SERVER}/v1/hooks/FileChanged")]
+        for hook in earlier:
+            self.assertTrue(module.is_withhuman(hook), hook)
+        foreign = [FOREIGN_HTTP, FOREIGN_COMMAND, OTHER,
+                   {"type": "http", "url": "https://x/v1/hooks/custom", "headers": {"x-withhuman-client": "a"}},
+                   {"type": "command", "command": "run --withhuman-hook-like"}, "not a hook"]
+        for hook in foreign:
+            self.assertFalse(module.is_withhuman(hook), hook)
+
+    def test_managed_settings_leave_the_users_files_alone(self):
+        managed = Path(tempfile.mkdtemp()).resolve()
+        (self.home / ".config" / "withhuman").mkdir(parents=True)
+        (self.home / ".config" / "withhuman" / "client-id").write_text("lab/device-1\n")
+        user = self.home / ".claude" / "settings.json"
+        self.write(user, {"hooks": {"MessageDisplay": [{"hooks": [OLD_HTTP]}]}})
+        before = user.read_text()
+        env = {"WITHHUMAN_MANAGED_DIR": str(managed)}
+        result = self.configure("--managed", scope=None, env_extra=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        drop_in = self.read(managed / "managed-settings.d" / "50-withhuman.json")
+        self.assertEqual(drop_in["env"], {"WITHHUMAN_CLIENT_ID": "lab/device-1"})
+        hook = managed / "withhuman" / "hooks" / "pre-tool-use.py"
+        self.assertIn(hook.as_posix(), drop_in["hooks"]["PreToolUse"][0]["hooks"][0]["command"])
+        self.assertEqual((managed / "withhuman" / "scope").read_text().strip(), "managed")
+        self.assertEqual(user.read_text(), before)
+        self.assertIn("still holds 1 WithHuman hook", result.stdout)
+        self.assertNotIn("x-withhuman-client", (self.old / ".claude" / "settings.json").read_text())
+        self.assertNotEqual(self.configure("--managed", "--key", KEY, scope=None, env_extra=env).returncode, 0)
+        result = self.configure("--uninstall", "--managed", scope=None, env_extra=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((managed / "managed-settings.d" / "50-withhuman.json").exists())
+
+    def test_keeps_a_client_id_a_container_passes_in(self):
+        result = self.configure(scope=None, env_extra={"WITHHUMAN_CLIENT_ID": "lab/host-laptop"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.home / ".config" / "withhuman" / "client-id").read_text().strip(),
+                         "lab/host-laptop")
+
+    @unittest.skipIf(sys.platform == "darwin" or os.name == "nt", "the Linux schedule")
+    def test_schedules_the_daily_check_in(self):
+        units = Path(tempfile.mkdtemp())
+        env = {"WITHHUMAN_SCHEDULER": "dry", "WITHHUMAN_SCHEDULER_DIR": str(units)}
+        self.assertEqual(self.configure(scope=None, env_extra=env).returncode, 0)
+        service = (units / "withhuman-checkin.service").read_text()
+        checkin = (self.home / ".config" / "withhuman" / "checkin.py").as_posix()
+        self.assertIn(f'"{checkin}" "--config"', service)
+        self.assertIn("OnCalendar=daily", (units / "withhuman-checkin.timer").read_text())
+        self.assertEqual(self.configure("--uninstall", scope=None, env_extra=env).returncode, 0)
+        self.assertEqual(list(units.iterdir()), [])
+
+
+class CheckinTest(Setup):
+    def test_reports_projects_and_their_last_use_without_opening_conversations(self):
+        work = "/work/my-app"
+        self.write(self.home / ".claude.json", {"projects": {work: {"history": ["secret prompt"]},
+                                                             "/never/used": {}}})
+        store = self.home / ".claude" / "projects" / "-work-my-app"
+        store.mkdir(parents=True)
+        transcript = store / "s.jsonl"
+        transcript.write_text("secret conversation\n")
+        os.utime(transcript, (1_700_000_000, 1_700_000_000))
+        os.utime(store, (1_600_000_000, 1_600_000_000))
+        transcript.chmod(0)  # Unreadable: the check-in only looks at when it changed.
+        config = self.home / ".config" / "withhuman"
+        config.mkdir(parents=True)
+        for name, value in (("server", SERVER), ("client-id", "lab/d1"), ("scope", "user"),
+                            ("hook-version", "abc")):
+            (config / name).write_text(value + "\n")
+        env = {**os.environ, "HOME": str(self.home)}
+        env.pop("WITHHUMAN_CLIENT_ID", None)
+        result = subprocess.run([sys.executable, str(HERE / "checkin.py"), "--config", str(config),
+                                 "--dry-run"], capture_output=True, text=True, env=env, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body = json.loads(result.stdout)
+        self.assertEqual(body["projects"], [{"path": work, "last_used_at": 1_700_000_000_000},
+                                            {"path": "/never/used", "last_used_at": None}])
+        self.assertEqual((body["client_id"], body["scope"], body["hook_version"]), ("lab/d1", "user", "abc"))
+        self.assertNotIn("secret", result.stdout)
 
 
 class CodexConfigureTest(unittest.TestCase):
