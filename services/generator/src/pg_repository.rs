@@ -13,7 +13,8 @@ use withhuman_contracts::{
         RequestContinuationResponse, SessionCursor, SubGraphCursor, ToolCall,
     },
     inventory::{
-        ClientRecord, ClientRegistrationRecord, KeyDenial, KeyRecord, NewKey, RevokeKeyRequest,
+        ClientRecord, ClientRegistrationRecord, KeyDenial, KeyRecord, NewKey, Review,
+        ReviewRequest, RevokeKeyRequest, SessionFlags, SessionStop, SessionStopRequest,
         VerifyKeyRequest, VerifyKeyResponse,
     },
 };
@@ -871,6 +872,40 @@ impl GraphRepository for PgGraphRepository {
 
     async fn keys(&self, user: Option<&str>) -> Result<Vec<KeyRecord>, RepositoryError> {
         self.list_keys(user).await
+    }
+
+    async fn session_flags(&self, session_id: &str) -> Result<SessionFlags, RepositoryError> {
+        self.flags(session_id).await
+    }
+
+    async fn stop_session(
+        &self,
+        session_id: &str,
+        request: SessionStopRequest,
+        at: u64,
+    ) -> Result<SessionStop, RepositoryError> {
+        self.stop(session_id, request, at).await
+    }
+
+    async fn release_session(
+        &self,
+        session_id: &str,
+        request: SessionStopRequest,
+        at: u64,
+    ) -> Result<SessionStop, RepositoryError> {
+        self.release(session_id, request, at).await
+    }
+
+    async fn record_session_denial(
+        &self,
+        session_id: &str,
+        at: u64,
+    ) -> Result<(), RepositoryError> {
+        self.deny_session(session_id, at).await
+    }
+
+    async fn add_review(&self, request: ReviewRequest, at: u64) -> Result<Review, RepositoryError> {
+        self.review(request, at).await
     }
 }
 

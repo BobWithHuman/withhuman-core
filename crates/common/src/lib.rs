@@ -51,7 +51,10 @@ mod tests {
     fn the_viewer_reads_every_table() {
         let tables: Vec<&str> = POSTGRES_SCHEMA
             .lines()
-            .filter_map(|line| line.strip_prefix("CREATE TABLE IF NOT EXISTS "))
+            .filter_map(|line| {
+                line.strip_prefix("CREATE TABLE IF NOT EXISTS ")
+                    .or_else(|| line.strip_prefix("CREATE OR REPLACE VIEW "))
+            })
             .map(|rest| rest.split_whitespace().next().unwrap())
             .collect();
         let granted = listed(POSTGRES_SCHEMA, "GRANT SELECT ON\n");

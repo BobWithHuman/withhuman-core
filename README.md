@@ -100,6 +100,11 @@ Hooks without a valid key are taken without a user unless `WITHHUMAN_REQUIRE_KEY
 denies their tool calls and refuses their other Hooks; turn it on before relying on revocation,
 since otherwise a user could drop the key.
 
+The security team can also stop one session (`POST /v1/admin/sessions/<id>/stop`, released
+with `.../release`), review calls after the fact (`POST /v1/admin/reviews`) and issue keys to
+automations (`{"kind": "service"}`). Every stop is in the `stop_audit` view. Benchmark runs name
+their client `bench/...` so the inventory can leave them out (`clients.test`).
+
 ### The security team's viewer
 
 The viewer reads PostgreSQL directly, read-only, as `withhuman_viewer`. The Generator creates that

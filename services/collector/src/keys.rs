@@ -27,6 +27,8 @@ const CACHE_ENTRIES: usize = 10_000;
 /// Why a PreToolUse was turned back because of its key. Shown to the user and the agent.
 pub const KEY_REVOKED: &str = "보안팀이 이 사용자의 에이전트 사용을 멈췄습니다. \
 도구 호출이 모두 막혀 있으니 작업을 멈추고, 필요하면 보안팀에 문의하세요.";
+pub const SESSION_STOPPED: &str = "보안팀이 이 세션의 에이전트 사용을 멈췄습니다. \
+이 세션의 도구 호출이 모두 막혀 있으니 작업을 멈추고, 필요하면 보안팀에 문의하세요.";
 pub const KEY_MISSING: &str = "WithHuman 키가 없어 이 도구 호출을 막았습니다. \
 보안팀에서 키를 받아 설치 스크립트를 --key 와 함께 다시 실행하세요.";
 pub const KEY_INVALID: &str = "WithHuman 키가 올바르지 않아 이 도구 호출을 막았습니다. \

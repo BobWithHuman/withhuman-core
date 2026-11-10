@@ -6,6 +6,8 @@
 //! the denial; other Hooks of that user are still recorded. Without a valid key, Hooks are taken
 //! as before unless `WITHHUMAN_REQUIRE_KEY` is on.
 //!
+//! A stopped session's PreToolUse is turned back the same way, and recorded with the stop.
+//!
 //! A PreToolUse is always turned back with a 200 deny: Claude Code lets a call run when its Hook
 //! answers anything but 2xx, so a 401 would not stop it.
 //!
@@ -15,7 +17,7 @@
 
 use axum::{
     Json,
-    body::to_bytes,
+    body::{Body, to_bytes},
     extract::{Path, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode},
     middleware::Next,
@@ -27,7 +29,8 @@ use withhuman_contracts::{
     hooks::PermissionDecision,
     inventory::{
         ClientRegistration, ClientRegistrationRecord, IssueKeyRequest, IssuedKey, KeyDenial,
-        KeyRecord, NewKey, RevokeKeyRequest,
+        KeyRecord, NewKey, ReviewRequest, RevokeKeyRequest, SessionDenial, SessionStopRequest,
+        UserKind,
     },
 };
 
@@ -39,7 +42,7 @@ use crate::{
 
 /// The verified user of a Hook's key. Set by the Collector alone.
 pub const USER_HEADER: &str = "x-withhuman-user";
-/// Bytes of a refused PreToolUse read for its session id.
+/// Bytes of a Hook read for its session id; the Hooks' own JSON limit is lower.
 const BODY_LIMIT: usize = 8 * 1024 * 1024;
 /// Longest value a device may register in a field.
 const FIELD_LIMIT: usize = 1_024;
@@ -55,10 +58,12 @@ pub async fn authenticate(
     let codex = path.starts_with("/v1/hooks/codex/");
     let require = service.config.require_key;
     let (reason, error) = match service.keys.check(request.headers(), now()).await {
-        KeyCheck::Active { user, .. } => return pass(request, next, Some(&user)).await,
+        KeyCheck::Active { user, .. } => {
+            return admit(&service, request, next, Some(&user), call).await;
+        }
         KeyCheck::Revoked { key_id, user } => {
             if !call {
-                return pass(request, next, Some(&user)).await;
+                return admit(&service, request, next, Some(&user), call).await;
             }
             return refuse_revoked(&service, request, &key_id).await;
         }
@@ -69,7 +74,7 @@ pub async fn authenticate(
         {
             (keys::KEY_UNCHECKED, "key_unchecked")
         }
-        _ => return pass(request, next, None).await,
+        _ => return admit(&service, request, next, None, call).await,
     };
     if call {
         return blocking_response(PermissionDecision::Deny, reason.to_owned());
@@ -84,11 +89,46 @@ pub async fn authenticate(
     (status, Json(json!({ "error": error, "message": message }))).into_response()
 }
 
-async fn pass(mut request: Request, next: Next, user: Option<&str>) -> Response {
+/// Passes the Hook on with its user, unless the security team stopped its session.
+async fn admit(
+    service: &CollectorService,
+    mut request: Request,
+    next: Next,
+    user: Option<&str>,
+    call: bool,
+) -> Response {
     if let Some(value) = user.and_then(|user| HeaderValue::from_str(user).ok()) {
         request.headers_mut().insert(USER_HEADER, value);
     }
-    next.run(request).await
+    if !call {
+        return next.run(request).await;
+    }
+    let (parts, body) = request.into_parts();
+    let Ok(bytes) = to_bytes(body, BODY_LIMIT).await else {
+        return error(StatusCode::BAD_REQUEST, "invalid_json");
+    };
+    if let Some(session_id) = session_of(&bytes) {
+        if service.flags.get(&session_id).await.stop.is_some() {
+            // The denial stands whether or not it could be recorded.
+            let _ = service
+                .generator
+                .record_session_denial(&session_id, SessionDenial { denied_at: now() })
+                .await;
+            return blocking_response(PermissionDecision::Deny, keys::SESSION_STOPPED.to_owned());
+        }
+    }
+    next.run(Request::from_parts(parts, Body::from(bytes)))
+        .await
+}
+
+fn session_of(body: &[u8]) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct Session {
+        session_id: String,
+    }
+    serde_json::from_slice::<Session>(body)
+        .ok()
+        .map(|session| session.session_id)
 }
 
 /// The kill switch: the call is denied and the denial recorded with the key, so the audit shows
@@ -98,8 +138,7 @@ async fn refuse_revoked(service: &CollectorService, request: Request, key_id: &s
     let session_id = to_bytes(request.into_body(), BODY_LIMIT)
         .await
         .ok()
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-        .and_then(|event| Some(event.get("session_id")?.as_str()?.to_owned()));
+        .and_then(|bytes| session_of(&bytes));
     // The denial stands whether or not it could be recorded.
     let _ = service
         .generator
@@ -154,20 +193,9 @@ pub async fn register_client(
     {
         return error(StatusCode::BAD_REQUEST, "invalid_registration");
     }
-    let user = match service.keys.check(&headers, now()).await {
-        KeyCheck::Active { user, .. } => Some(user),
-        KeyCheck::Revoked { .. } => return error(StatusCode::FORBIDDEN, "key_revoked"),
-        KeyCheck::Invalid if service.config.require_key => {
-            return error(StatusCode::UNAUTHORIZED, "key_invalid");
-        }
-        KeyCheck::Nothing if service.config.require_key => {
-            return error(StatusCode::UNAUTHORIZED, "key_required");
-        }
-        KeyCheck::Unchecked if service.config.require_key => {
-            return error(StatusCode::SERVICE_UNAVAILABLE, "key_unchecked");
-        }
-        // Without a required key a bad one is ignored, as on the Hooks.
-        _ => None,
+    let user = match device_user(&service, &headers).await {
+        Ok(user) => user,
+        Err(response) => return *response,
     };
     let record = ClientRegistrationRecord {
         registration: ClientRegistration {
@@ -186,6 +214,30 @@ pub async fn register_client(
     .await
 }
 
+/// The user of a device's key, by the Hooks' rules: a revoked key is refused, and a missing or
+/// bad one only when keys are required.
+async fn device_user(
+    service: &CollectorService,
+    headers: &HeaderMap,
+) -> Result<Option<String>, Box<Response>> {
+    match service.keys.check(headers, now()).await {
+        KeyCheck::Active { user, .. } => Ok(Some(user)),
+        KeyCheck::Revoked { .. } => Err(Box::new(error(StatusCode::FORBIDDEN, "key_revoked"))),
+        KeyCheck::Invalid if service.config.require_key => {
+            Err(Box::new(error(StatusCode::UNAUTHORIZED, "key_invalid")))
+        }
+        KeyCheck::Nothing if service.config.require_key => {
+            Err(Box::new(error(StatusCode::UNAUTHORIZED, "key_required")))
+        }
+        KeyCheck::Unchecked if service.config.require_key => Err(Box::new(error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "key_unchecked",
+        ))),
+        // Without a required key a bad one is ignored, as on the Hooks.
+        _ => Ok(None),
+    }
+}
+
 /// The answer to a request that is not an administrator's, who presents
 /// `Authorization: Bearer <WITHHUMAN_ADMIN_TOKEN>`; none for an administrator's.
 fn not_admin(service: &CollectorService, headers: &HeaderMap) -> Option<Response> {
@@ -201,6 +253,22 @@ fn not_admin(service: &CollectorService, headers: &HeaderMap) -> Option<Response
     // Hashes compare in the same time whatever the token's length or first difference.
     (sha256(presented) != sha256(token))
         .then(|| error(StatusCode::UNAUTHORIZED, "admin_token_invalid"))
+}
+
+/// A key's user: a person's email, or a service's name (`ci-deploy`, `team.bot`).
+fn key_user(name: &str, kind: UserKind) -> Option<String> {
+    match kind {
+        UserKind::Person => user_email(name),
+        UserKind::Service => {
+            let name = name.trim().to_lowercase();
+            let valid = !name.is_empty()
+                && name.len() <= 254
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"._-@".contains(&byte));
+            valid.then_some(name)
+        }
+    }
 }
 
 fn user_email(email: &str) -> Option<String> {
@@ -238,8 +306,8 @@ pub async fn issue_key(
     if let Some(response) = not_admin(&service, &headers) {
         return response;
     }
-    let Some(user) = user_email(&email) else {
-        return error(StatusCode::BAD_REQUEST, "invalid_email");
+    let Some(user) = key_user(&email, request.kind) else {
+        return error(StatusCode::BAD_REQUEST, "invalid_user");
     };
     let Ok((key, presented)) = keys::generate() else {
         return error(StatusCode::INTERNAL_SERVER_ERROR, "key_generation_failed");
@@ -248,6 +316,7 @@ pub async fn issue_key(
         key_id: presented.key_id,
         hash: presented.hash,
         user: user.clone(),
+        kind: request.kind,
         actor: request.actor,
         note: request.note,
         created_at: now(),
@@ -365,8 +434,8 @@ pub async fn revoke_user(
     if let Some(response) = not_admin(&service, &headers) {
         return response;
     }
-    let Some(user) = user_email(&email) else {
-        return error(StatusCode::BAD_REQUEST, "invalid_email");
+    let Some(user) = key_user(&email, UserKind::Service) else {
+        return error(StatusCode::BAD_REQUEST, "invalid_user");
     };
     let response = forward(
         &service,
@@ -393,6 +462,105 @@ pub async fn clients(State(service): State<CollectorService>, headers: HeaderMap
         return response;
     }
     forward(&service, reqwest::Method::GET, &["clients"], None).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/admin/sessions/{session_id}/stop",
+    tag = "Inventory",
+    params(("session_id" = String, Path), ("Authorization" = String, Header, description = "`Bearer <WITHHUMAN_ADMIN_TOKEN>`")),
+    request_body = SessionStopRequest,
+    responses(
+        (status = 200, description = "The session's active stop (an earlier one is kept): its PreToolUse calls are denied", body = withhuman_contracts::inventory::SessionStop),
+        (status = 404, description = "No such session, or admin API disabled")
+    )
+)]
+pub async fn stop_session(
+    State(service): State<CollectorService>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+    StrictJson(request): StrictJson<SessionStopRequest>,
+) -> Response {
+    session_change(&service, &headers, &session_id, "stop", request).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/admin/sessions/{session_id}/release",
+    tag = "Inventory",
+    params(("session_id" = String, Path), ("Authorization" = String, Header, description = "`Bearer <WITHHUMAN_ADMIN_TOKEN>`")),
+    request_body = SessionStopRequest,
+    responses(
+        (status = 200, description = "The stop, released", body = withhuman_contracts::inventory::SessionStop),
+        (status = 404, description = "The session is not stopped, or admin API disabled")
+    )
+)]
+pub async fn release_session(
+    State(service): State<CollectorService>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+    StrictJson(request): StrictJson<SessionStopRequest>,
+) -> Response {
+    session_change(&service, &headers, &session_id, "release", request).await
+}
+
+async fn session_change(
+    service: &CollectorService,
+    headers: &HeaderMap,
+    session_id: &str,
+    change: &str,
+    request: SessionStopRequest,
+) -> Response {
+    if let Some(response) = not_admin(service, headers) {
+        return response;
+    }
+    let response = forward(
+        service,
+        reqwest::Method::POST,
+        &["sessions", session_id, change],
+        Some(json!(request)),
+    )
+    .await;
+    if response.status().is_success() {
+        service.flags.forget(session_id);
+    }
+    response
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/admin/reviews",
+    tag = "Inventory",
+    params(("Authorization" = String, Header, description = "`Bearer <WITHHUMAN_ADMIN_TOKEN>`")),
+    request_body = ReviewRequest,
+    responses(
+        (status = 201, description = "The review, kept beside earlier ones of the Call", body = withhuman_contracts::inventory::Review),
+        (status = 400, description = "Note too long"),
+        (status = 404, description = "No Call is (session_id, seq), or admin API disabled")
+    )
+)]
+pub async fn add_review(
+    State(service): State<CollectorService>,
+    headers: HeaderMap,
+    StrictJson(request): StrictJson<ReviewRequest>,
+) -> Response {
+    if let Some(response) = not_admin(&service, &headers) {
+        return response;
+    }
+    if request
+        .note
+        .as_ref()
+        .is_some_and(|note| note.len() > 10_000)
+    {
+        return error(StatusCode::BAD_REQUEST, "note_too_long");
+    }
+    forward(
+        &service,
+        reqwest::Method::POST,
+        &["reviews"],
+        Some(json!(request)),
+    )
+    .await
 }
 
 async fn forward(
