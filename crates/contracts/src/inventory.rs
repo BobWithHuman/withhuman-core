@@ -74,7 +74,25 @@ pub struct ClientRecord {
     pub projects: Vec<String>,
 }
 
-/// `POST /v1/admin/users/{email}/keys`.
+/// Whom a key is for: a person, or an automation such as CI.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UserKind {
+    #[default]
+    Person,
+    Service,
+}
+
+impl UserKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Person => "person",
+            Self::Service => "service",
+        }
+    }
+}
+
+/// `POST /v1/admin/users/{user}/keys`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 pub struct IssueKeyRequest {
     /// Who issues the key, for the audit trail (the administrator's email).
@@ -82,6 +100,10 @@ pub struct IssueKeyRequest {
     pub actor: Option<String>,
     #[serde(default)]
     pub note: Option<String>,
+    /// `service` for an automation's key; its user is a name such as `ci-deploy`, not an email.
+    /// A user keeps the kind of their first key.
+    #[serde(default)]
+    pub kind: UserKind,
 }
 
 /// `POST /v1/admin/keys/{key_id}/revoke`.
@@ -102,6 +124,8 @@ pub struct NewKey {
     pub hash: String,
     pub user: String,
     #[serde(default)]
+    pub kind: UserKind,
+    #[serde(default)]
     pub actor: Option<String>,
     #[serde(default)]
     pub note: Option<String>,
@@ -114,6 +138,8 @@ pub struct NewKey {
 pub struct KeyRecord {
     pub key_id: String,
     pub user: String,
+    #[serde(default)]
+    pub user_kind: UserKind,
     pub created_at: u64,
     #[serde(default)]
     pub created_by: Option<String>,
@@ -179,4 +205,99 @@ pub struct KeyDenial {
     pub client_id: Option<String>,
     /// Epoch milliseconds.
     pub denied_at: u64,
+}
+
+/// `POST /v1/admin/sessions/{session_id}/stop` and `.../release`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+pub struct SessionStopRequest {
+    /// Who stops or releases the session, for the audit trail.
+    #[serde(default)]
+    pub actor: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// A session the security team stopped: its PreToolUse calls are denied until it is released.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+pub struct SessionStop {
+    pub id: u64,
+    pub session_id: String,
+    pub stopped_at: u64,
+    #[serde(default)]
+    pub stopped_by: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub released_at: Option<u64>,
+    #[serde(default)]
+    pub released_by: Option<String>,
+    #[serde(default)]
+    pub release_reason: Option<String>,
+    /// The first PreToolUse turned back by this stop.
+    #[serde(default)]
+    pub first_denied_at: Option<u64>,
+    #[serde(default)]
+    pub last_denied_at: Option<u64>,
+    #[serde(default)]
+    pub denied_count: u64,
+}
+
+/// What the Collector checks of a session before passing its Hooks on.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+pub struct SessionFlags {
+    /// The session's active stop.
+    #[serde(default)]
+    pub stop: Option<SessionStop>,
+}
+
+/// A PreToolUse turned back by a session stop.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+pub struct SessionDenial {
+    /// Epoch milliseconds.
+    pub denied_at: u64,
+}
+
+/// The security team's verdict on a call after the fact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewStatus {
+    Unreviewed,
+    NoIssue,
+    Issue,
+}
+
+impl ReviewStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unreviewed => "unreviewed",
+            Self::NoIssue => "no_issue",
+            Self::Issue => "issue",
+        }
+    }
+}
+
+/// `POST /v1/admin/reviews`: a review of the Call `(session_id, seq)`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+pub struct ReviewRequest {
+    pub session_id: String,
+    pub seq: u64,
+    pub status: ReviewStatus,
+    #[serde(default)]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub actor: Option<String>,
+}
+
+/// A review as recorded; later reviews of the same Call are kept beside it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+pub struct Review {
+    pub id: u64,
+    pub session_id: String,
+    pub seq: u64,
+    pub status: ReviewStatus,
+    #[serde(default)]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub actor: Option<String>,
+    pub at: u64,
 }

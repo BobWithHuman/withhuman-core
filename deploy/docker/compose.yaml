@@ -83,6 +83,7 @@ services:
       DATABASE_URL: postgres://withhuman:${POSTGRES_PASSWORD:-withhuman-e2e}@postgres:5432/withhuman
       DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-16}
       DECISION_URL: http://decision:8082
+      WITHHUMAN_VIEWER_PASSWORD: ${WITHHUMAN_VIEWER_PASSWORD:-}
     depends_on:
       postgres:
         condition: service_healthy

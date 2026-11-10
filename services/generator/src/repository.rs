@@ -7,7 +7,8 @@ use withhuman_contracts::{
         RequestContinuationRequest, RequestContinuationResponse, SessionCursor, ToolCall,
     },
     inventory::{
-        ClientRecord, ClientRegistrationRecord, KeyDenial, KeyRecord, NewKey, RevokeKeyRequest,
+        ClientRecord, ClientRegistrationRecord, KeyDenial, KeyRecord, NewKey, Review,
+        ReviewRequest, RevokeKeyRequest, SessionFlags, SessionStop, SessionStopRequest,
         VerifyKeyRequest, VerifyKeyResponse,
     },
 };
@@ -108,6 +109,49 @@ pub trait GraphRepository: Send + Sync + 'static {
 
     /// Every key, or a user's, newest first.
     async fn keys(&self, _user: Option<&str>) -> Result<Vec<KeyRecord>, RepositoryError> {
+        Err(RepositoryError::NotFound)
+    }
+
+    /// The session's active stop; none for an unknown session.
+    async fn session_flags(&self, _session_id: &str) -> Result<SessionFlags, RepositoryError> {
+        Ok(SessionFlags::default())
+    }
+
+    /// Stops a recorded session (keeping an active stop); `NotFound` for an unknown session.
+    async fn stop_session(
+        &self,
+        _session_id: &str,
+        _request: SessionStopRequest,
+        _at: u64,
+    ) -> Result<SessionStop, RepositoryError> {
+        Err(RepositoryError::NotFound)
+    }
+
+    /// Releases the session's active stop; `NotFound` when it has none.
+    async fn release_session(
+        &self,
+        _session_id: &str,
+        _request: SessionStopRequest,
+        _at: u64,
+    ) -> Result<SessionStop, RepositoryError> {
+        Err(RepositoryError::NotFound)
+    }
+
+    /// Records a PreToolUse its session's stop turned back.
+    async fn record_session_denial(
+        &self,
+        _session_id: &str,
+        _at: u64,
+    ) -> Result<(), RepositoryError> {
+        Err(RepositoryError::NotFound)
+    }
+
+    /// Records a review of a Call; `NotFound` when no Call is `(session_id, seq)`.
+    async fn add_review(
+        &self,
+        _request: ReviewRequest,
+        _at: u64,
+    ) -> Result<Review, RepositoryError> {
         Err(RepositoryError::NotFound)
     }
 }

@@ -390,6 +390,21 @@ async fn keys_are_issued_verified_revoked_and_audited() {
         ])
     );
 
+    let stops = db
+        .row(
+            "SELECT jsonb_agg(jsonb_build_array(target, key_id = $2, stopped_by, first_denied_at) \
+             ORDER BY stopped_at, key_id = $2 DESC) FROM stop_audit WHERE user_email = $1",
+            &[&user, &first_id],
+        )
+        .await;
+    assert_eq!(
+        stops,
+        json!([
+            ["key", true, "sec@example.com", 300],
+            ["key", false, "ciso@example.com", null]
+        ])
+    );
+
     db.exec("DELETE FROM key_events WHERE user_email = $1", &[&user])
         .await;
     db.exec("DELETE FROM api_keys WHERE user_email = $1", &[&user])
@@ -539,4 +554,213 @@ impl Db {
             .await;
         }
     }
+}
+
+#[tokio::test]
+async fn sessions_are_stopped_released_and_audited() {
+    let Some((db, url)) = start().await else {
+        return;
+    };
+    let session = unique("inv-stop");
+    post(
+        &url,
+        "SessionStart",
+        json!({"session_id": session, "order": 1, "observed_at": 1,
+        "user": "ana@example.com", "meta": {}, "payload": {}}),
+    )
+    .await;
+    let (status, _) = send(&url, "POST", "/v1/sessions/nope/stop", Some(json!({}))).await;
+    assert_eq!(status, 404, "only a recorded session is stopped");
+    let (_, flags) = send(&url, "GET", &format!("/v1/sessions/{session}/flags"), None).await;
+    assert_eq!(flags["stop"], Value::Null);
+
+    let (status, stop) = send(
+        &url,
+        "POST",
+        &format!("/v1/sessions/{session}/stop"),
+        Some(json!({"actor": "sec@example.com", "reason": "exfiltration"})),
+    )
+    .await;
+    assert_eq!(status, 200);
+    // Stopping again keeps the first stop.
+    let (_, again) = send(
+        &url,
+        "POST",
+        &format!("/v1/sessions/{session}/stop"),
+        Some(json!({"actor": "other@example.com"})),
+    )
+    .await;
+    assert_eq!(
+        (&again["id"], &again["stopped_by"]),
+        (&stop["id"], &json!("sec@example.com"))
+    );
+    let (_, flags) = send(&url, "GET", &format!("/v1/sessions/{session}/flags"), None).await;
+    assert_eq!(flags["stop"]["reason"], "exfiltration");
+    for at in [500, 700] {
+        let (status, _) = send(
+            &url,
+            "POST",
+            &format!("/v1/sessions/{session}/stop/denials"),
+            Some(json!({"denied_at": at})),
+        )
+        .await;
+        assert_eq!(status, 204);
+    }
+    let (status, released) = send(
+        &url,
+        "POST",
+        &format!("/v1/sessions/{session}/release"),
+        Some(json!({"actor": "sec@example.com", "reason": "cleared"})),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        (&released["first_denied_at"], &released["denied_count"]),
+        (&json!(500), &json!(2))
+    );
+    let (status, _) = send(
+        &url,
+        "POST",
+        &format!("/v1/sessions/{session}/release"),
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, 404, "nothing left to release");
+    let (status, _) = send(
+        &url,
+        "POST",
+        &format!("/v1/sessions/{session}/stop/denials"),
+        Some(json!({"denied_at": 900})),
+    )
+    .await;
+    assert_eq!(status, 404);
+
+    let audit = db.row(
+        "SELECT jsonb_agg(jsonb_build_array(target, user_email, stopped_by, reason, released_by, \
+         first_denied_at, denied_count)) FROM stop_audit WHERE session_id = $1",
+        &[&session],
+    ).await;
+    assert_eq!(
+        audit,
+        json!([[
+            "session",
+            "ana@example.com",
+            "sec@example.com",
+            "exfiltration",
+            "sec@example.com",
+            500,
+            2
+        ]])
+    );
+    db.exec(
+        "DELETE FROM session_stops WHERE session_id = $1",
+        &[&session],
+    )
+    .await;
+    db.remove(&session).await;
+}
+
+#[tokio::test]
+async fn reviews_name_a_call_and_keep_their_history() {
+    let Some((db, url)) = start().await else {
+        return;
+    };
+    let session = unique("inv-review");
+    let mut call = json!({"session_id": session, "order": 1, "observed_at": 1,
+        "meta": {"tool_use_id": "t1"}, "payload": {"tool_name": "Bash",
+        "tool_input": {"command": "ls"}}, "mode": "record"});
+    post(&url, "PreToolUse", call.take()).await;
+    let seq = db
+        .row(
+            "SELECT to_jsonb(seq) FROM nodes WHERE session_id = $1 AND kind = 'Call'",
+            &[&session],
+        )
+        .await;
+    for (status, note) in [("issue", "copied .env"), ("no_issue", "false alarm")] {
+        let (code, review) = send(
+            &url,
+            "POST",
+            "/v1/reviews",
+            Some(json!({"session_id": session,
+            "seq": seq, "status": status, "note": note, "actor": "sec@example.com"})),
+        )
+        .await;
+        assert_eq!((code, &review["status"]), (201, &json!(status)));
+    }
+    let (status, _) = send(
+        &url,
+        "POST",
+        "/v1/reviews",
+        Some(json!({"session_id": session,
+        "seq": 999, "status": "issue"})),
+    )
+    .await;
+    assert_eq!(status, 404, "only a Call is reviewed");
+    let latest = db
+        .row(
+            "SELECT jsonb_build_array(status, note, (SELECT count(*) FROM call_reviews \
+         WHERE session_id = $1)) FROM call_review_latest WHERE session_id = $1",
+            &[&session],
+        )
+        .await;
+    assert_eq!(latest, json!(["no_issue", "false alarm", 2]));
+    db.exec(
+        "DELETE FROM call_reviews WHERE session_id = $1",
+        &[&session],
+    )
+    .await;
+    db.remove(&session).await;
+}
+
+#[tokio::test]
+async fn service_users_and_test_clients_are_told_apart() {
+    let Some((db, url)) = start().await else {
+        return;
+    };
+    let name = unique("ci");
+    let key = |kind: &str, id: &str| {
+        json!({"key_id": id, "hash": "h", "user": name, "kind": kind,
+        "created_at": 1})
+    };
+    let (status, issued) = send(
+        &url,
+        "POST",
+        &format!("/v1/users/{name}/keys"),
+        Some(key("service", &unique("s1"))),
+    )
+    .await;
+    assert_eq!((status, &issued["user_kind"]), (201, &json!("service")));
+    let (status, _) = send(
+        &url,
+        "POST",
+        &format!("/v1/users/{name}/keys"),
+        Some(key("person", &unique("s2"))),
+    )
+    .await;
+    assert_eq!(status, 400, "a user keeps the kind of their first key");
+
+    let bench = format!("bench/{}", unique("run"));
+    let device = format!("team/{}", unique("device"));
+    for client in [&bench, &device] {
+        post(
+            &url,
+            "SessionStart",
+            json!({"session_id": unique("inv-test"), "order": 1,
+            "observed_at": 1, "client_id": client, "meta": {}, "payload": {}}),
+        )
+        .await;
+    }
+    let test = db
+        .row(
+            "SELECT jsonb_agg(test ORDER BY client_id) FROM clients WHERE client_id IN ($1, $2)",
+            &[&bench, &device],
+        )
+        .await;
+    assert_eq!(test, json!([true, false]));
+    db.exec("DELETE FROM key_events WHERE user_email = $1", &[&name])
+        .await;
+    db.exec("DELETE FROM api_keys WHERE user_email = $1", &[&name])
+        .await;
+    db.exec("DELETE FROM users WHERE email = $1", &[&name])
+        .await;
 }

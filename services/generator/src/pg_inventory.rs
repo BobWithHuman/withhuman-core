@@ -2,8 +2,9 @@
 
 use tokio_postgres::Row;
 use withhuman_contracts::inventory::{
-    ClientRecord, ClientRegistrationRecord, KeyDenial, KeyRecord, KeyStatus, NewKey,
-    RevokeKeyRequest, VerifyKeyRequest, VerifyKeyResponse,
+    ClientRecord, ClientRegistrationRecord, KeyDenial, KeyRecord, KeyStatus, NewKey, Review,
+    ReviewRequest, RevokeKeyRequest, SessionFlags, SessionStop, SessionStopRequest, UserKind,
+    VerifyKeyRequest, VerifyKeyResponse,
 };
 
 use crate::{
@@ -71,8 +72,13 @@ SELECT $1::text, $2::text, 'denied', $3::text, $4::text, $5::bigint \
 WHERE NOT EXISTS (SELECT 1 FROM key_events WHERE key_id = $1::text AND kind = 'denied' \
   AND session_id IS NOT DISTINCT FROM $3::text)";
 
+// A user keeps the kind of their first key.
 const INSERT_USER: &str = "\
-INSERT INTO users (email, created_at) VALUES ($1::text, $2::bigint) ON CONFLICT DO NOTHING";
+WITH added AS ( \
+  INSERT INTO users (email, created_at, kind) VALUES ($1::text, $2::bigint, $3::text) \
+  ON CONFLICT DO NOTHING RETURNING kind \
+) \
+SELECT kind FROM added UNION ALL SELECT kind FROM users WHERE email = $1::text";
 
 const INSERT_KEY: &str = "\
 INSERT INTO api_keys (key_id, user_email, hash, created_at, created_by, note) \
@@ -82,8 +88,10 @@ const KEY_EVENT: &str = "\
 INSERT INTO key_events (key_id, user_email, kind, actor, reason, at) \
 VALUES ($1::text, $2::text, $3::text, $4::text, $5::text, $6::bigint)";
 
-const KEY_COLUMNS: &str = "key_id, user_email, created_at, created_by, note, last_used_at, \
-revoked_at, revoked_by, revoke_reason, first_denied_at, last_denied_at, denied_count";
+const KEY_COLUMNS: &str = "k.key_id, k.user_email, k.created_at, k.created_by, k.note, \
+k.last_used_at, k.revoked_at, k.revoked_by, k.revoke_reason, k.first_denied_at, \
+k.last_denied_at, k.denied_count, u.kind";
+const KEYS: &str = "api_keys k JOIN users u ON u.email = k.user_email";
 
 impl PgGraphRepository {
     pub(crate) async fn register(
@@ -217,7 +225,16 @@ impl PgGraphRepository {
         let result: Result<KeyRecord, PgError> = async {
             let mut client = self.client().await?;
             let tx = client.transaction().await?;
-            run(&tx, INSERT_USER, &[&key.user, &at]).await?;
+            let kind: String = one(&tx, INSERT_USER, &[&key.user, &at, &key.kind.as_str()])
+                .await?
+                .get(0);
+            if kind != key.kind.as_str() {
+                return Err(PgError::Repository(RepositoryError::InvalidEvent(format!(
+                    "{} is a {kind}, not a {}",
+                    key.user,
+                    key.kind.as_str()
+                ))));
+            }
             run(
                 &tx,
                 INSERT_KEY,
@@ -246,7 +263,7 @@ impl PgGraphRepository {
             .await?;
             let row = one(
                 &tx,
-                &format!("SELECT {KEY_COLUMNS} FROM api_keys WHERE key_id = $1::text"),
+                &format!("SELECT {KEY_COLUMNS} FROM {KEYS} WHERE k.key_id = $1::text"),
                 &[&key.key_id],
             )
             .await?;
@@ -304,8 +321,8 @@ impl PgGraphRepository {
             let rows = tx
                 .query(
                     &tx.prepare_cached(&format!(
-                        "SELECT {KEY_COLUMNS} FROM api_keys WHERE {column} = $1::text \
-                         ORDER BY created_at DESC, key_id"
+                        "SELECT {KEY_COLUMNS} FROM {KEYS} WHERE k.{column} = $1::text \
+                         ORDER BY k.created_at DESC, k.key_id"
                     ))
                     .await?,
                     &[&value],
@@ -332,9 +349,9 @@ impl PgGraphRepository {
                 .query(
                     &client
                         .prepare_cached(&format!(
-                            "SELECT {KEY_COLUMNS} FROM api_keys \
-                             WHERE $1::text IS NULL OR user_email = $1::text \
-                             ORDER BY created_at DESC, key_id LIMIT 10000"
+                            "SELECT {KEY_COLUMNS} FROM {KEYS} \
+                             WHERE $1::text IS NULL OR k.user_email = $1::text \
+                             ORDER BY k.created_at DESC, k.key_id LIMIT 10000"
                         ))
                         .await?,
                     &[&user],
@@ -345,6 +362,170 @@ impl PgGraphRepository {
         .await;
         Ok(result?)
     }
+}
+
+const ACTIVE_STOP: &str = "\
+SELECT id, session_id, stopped_at, stopped_by, reason, released_at, released_by, release_reason, \
+  first_denied_at, last_denied_at, denied_count \
+FROM session_stops WHERE session_id = $1::text AND released_at IS NULL";
+
+// Stopping a stopped session keeps the stop it has.
+const STOP_SESSION: &str = "\
+INSERT INTO session_stops (session_id, stopped_at, stopped_by, reason) \
+SELECT $1::text, $2::bigint, $3::text, $4::text \
+WHERE EXISTS (SELECT 1 FROM sessions WHERE session_id = $1::text) \
+ON CONFLICT (session_id) WHERE released_at IS NULL DO NOTHING";
+
+const RELEASE_SESSION: &str = "\
+UPDATE session_stops SET released_at = $2::bigint, released_by = $3::text, \
+  release_reason = $4::text \
+WHERE session_id = $1::text AND released_at IS NULL \
+RETURNING id, session_id, stopped_at, stopped_by, reason, released_at, released_by, \
+  release_reason, first_denied_at, last_denied_at, denied_count";
+
+const DENY_SESSION: &str = "\
+UPDATE session_stops SET first_denied_at = coalesce(first_denied_at, $2::bigint), \
+  last_denied_at = greatest(coalesce(last_denied_at, 0), $2::bigint), \
+  denied_count = denied_count + 1 \
+WHERE session_id = $1::text AND released_at IS NULL";
+
+// A review names a Call of the graph.
+const ADD_REVIEW: &str = "\
+INSERT INTO call_reviews (session_id, seq, status, note, actor, at) \
+SELECT $1::text, $2::bigint, $3::text, $4::text, $5::text, $6::bigint \
+WHERE EXISTS (SELECT 1 FROM nodes WHERE session_id = $1::text AND seq = $2::bigint \
+  AND kind = 'Call') \
+RETURNING id";
+
+impl PgGraphRepository {
+    pub(crate) async fn flags(&self, session_id: &str) -> Result<SessionFlags, RepositoryError> {
+        let result: Result<SessionFlags, PgError> = async {
+            let client = self.client().await?;
+            let stop = optional(&client, ACTIVE_STOP, &[&session_id]).await?;
+            Ok(SessionFlags {
+                stop: stop.as_ref().map(session_stop).transpose()?,
+            })
+        }
+        .await;
+        Ok(result?)
+    }
+
+    pub(crate) async fn stop(
+        &self,
+        session_id: &str,
+        request: SessionStopRequest,
+        at: u64,
+    ) -> Result<SessionStop, RepositoryError> {
+        let at = signed(at)?;
+        let result: Result<Option<SessionStop>, PgError> = async {
+            let client = self.client().await?;
+            run(
+                &client,
+                STOP_SESSION,
+                &[&session_id, &at, &request.actor, &request.reason],
+            )
+            .await?;
+            optional(&client, ACTIVE_STOP, &[&session_id])
+                .await?
+                .as_ref()
+                .map(session_stop)
+                .transpose()
+        }
+        .await;
+        result?.ok_or(RepositoryError::NotFound)
+    }
+
+    pub(crate) async fn release(
+        &self,
+        session_id: &str,
+        request: SessionStopRequest,
+        at: u64,
+    ) -> Result<SessionStop, RepositoryError> {
+        let at = signed(at)?;
+        let result: Result<Option<SessionStop>, PgError> = async {
+            let client = self.client().await?;
+            optional(
+                &client,
+                RELEASE_SESSION,
+                &[&session_id, &at, &request.actor, &request.reason],
+            )
+            .await?
+            .as_ref()
+            .map(session_stop)
+            .transpose()
+        }
+        .await;
+        result?.ok_or(RepositoryError::NotFound)
+    }
+
+    pub(crate) async fn deny_session(
+        &self,
+        session_id: &str,
+        at: u64,
+    ) -> Result<(), RepositoryError> {
+        let at = signed(at)?;
+        let result: Result<u64, PgError> = async {
+            let client = self.client().await?;
+            run(&client, DENY_SESSION, &[&session_id, &at]).await
+        }
+        .await;
+        match result? {
+            0 => Err(RepositoryError::NotFound),
+            _ => Ok(()),
+        }
+    }
+
+    pub(crate) async fn review(
+        &self,
+        request: ReviewRequest,
+        at: u64,
+    ) -> Result<Review, RepositoryError> {
+        let seq = signed(request.seq)?;
+        let at_signed = signed(at)?;
+        let result: Result<Option<Row>, PgError> = async {
+            let client = self.client().await?;
+            optional(
+                &client,
+                ADD_REVIEW,
+                &[
+                    &request.session_id,
+                    &seq,
+                    &request.status.as_str(),
+                    &request.note,
+                    &request.actor,
+                    &at_signed,
+                ],
+            )
+            .await
+        }
+        .await;
+        let row = result?.ok_or(RepositoryError::NotFound)?;
+        Ok(Review {
+            id: crate::pg_repository::unsigned(row.get(0))?,
+            session_id: request.session_id,
+            seq: request.seq,
+            status: request.status,
+            note: request.note,
+            actor: request.actor,
+            at,
+        })
+    }
+}
+
+fn session_stop(row: &Row) -> Result<SessionStop, PgError> {
+    Ok(SessionStop {
+        id: millis(row, 0)?.unwrap_or_default(),
+        session_id: row.get(1),
+        stopped_at: millis(row, 2)?.unwrap_or_default(),
+        stopped_by: row.get(3),
+        reason: row.get(4),
+        released_at: millis(row, 5)?,
+        released_by: row.get(6),
+        release_reason: row.get(7),
+        first_denied_at: millis(row, 8)?,
+        last_denied_at: millis(row, 9)?,
+        denied_count: millis(row, 10)?.unwrap_or_default(),
+    })
 }
 
 fn millis(row: &Row, index: usize) -> Result<Option<u64>, PgError> {
@@ -384,5 +565,10 @@ fn key_record(row: &Row) -> Result<KeyRecord, PgError> {
         first_denied_at: millis(row, 9)?,
         last_denied_at: millis(row, 10)?,
         denied_count: millis(row, 11)?.unwrap_or_default(),
+        user_kind: if row.get::<_, String>(12) == "service" {
+            UserKind::Service
+        } else {
+            UserKind::Person
+        },
     })
 }

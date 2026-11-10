@@ -22,7 +22,8 @@ use withhuman_contracts::{
 };
 
 use withhuman_contracts::inventory::{
-    ClientRegistrationRecord, KeyDenial, NewKey, RevokeKeyRequest, VerifyKeyRequest,
+    ClientRegistrationRecord, KeyDenial, NewKey, ReviewRequest, RevokeKeyRequest, SessionDenial,
+    SessionStopRequest, VerifyKeyRequest,
 };
 
 use crate::{DecisionClient, GeneratorEvent, GraphRepository, KeyScope, RepositoryError};
@@ -117,6 +118,14 @@ pub fn app(service: GeneratorService) -> Router {
         .route("/v1/keys/{key_id}/revoke", post(revoke_key))
         .route("/v1/users/{email}/keys", post(issue_key).get(user_keys))
         .route("/v1/users/{email}/revoke", post(revoke_user))
+        .route("/v1/sessions/{session_id}/flags", get(session_flags))
+        .route("/v1/sessions/{session_id}/stop", post(stop_session))
+        .route("/v1/sessions/{session_id}/release", post(release_session))
+        .route(
+            "/v1/sessions/{session_id}/stop/denials",
+            post(record_session_denial),
+        )
+        .route("/v1/reviews", post(add_review))
         .route("/api-docs/openapi.json", get(openapi_document))
         .route("/swagger-ui", get(swagger_ui))
         .route("/swagger-ui/", get(swagger_ui))
@@ -152,7 +161,12 @@ pub fn app(service: GeneratorService) -> Router {
         user_keys,
         all_keys,
         revoke_key,
-        revoke_user
+        revoke_user,
+        session_flags,
+        stop_session,
+        release_session,
+        record_session_denial,
+        add_review
     ),
     tags((name = "Generator", description = "Normalized event persistence and graph enrichment API"))
 )]
@@ -578,6 +592,102 @@ async fn revoke_user(
             .revoke_keys(KeyScope::User(&email), request, now())
             .await,
     )
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/sessions/{session_id}/flags",
+    tag = "Generator",
+    params(("session_id" = String, Path)),
+    responses((status = 200, body = withhuman_contracts::inventory::SessionFlags))
+)]
+async fn session_flags(
+    State(service): State<GeneratorService>,
+    Path(session_id): Path<String>,
+) -> Response {
+    reply(service.repository.session_flags(&session_id).await)
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/sessions/{session_id}/stop",
+    tag = "Generator",
+    params(("session_id" = String, Path)),
+    request_body = SessionStopRequest,
+    responses((status = 200, body = withhuman_contracts::inventory::SessionStop), (status = 404, body = ErrorResponse))
+)]
+async fn stop_session(
+    State(service): State<GeneratorService>,
+    Path(session_id): Path<String>,
+    StrictJson(request): StrictJson<SessionStopRequest>,
+) -> Response {
+    reply(
+        service
+            .repository
+            .stop_session(&session_id, request, now())
+            .await,
+    )
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/sessions/{session_id}/release",
+    tag = "Generator",
+    params(("session_id" = String, Path)),
+    request_body = SessionStopRequest,
+    responses((status = 200, body = withhuman_contracts::inventory::SessionStop), (status = 404, body = ErrorResponse))
+)]
+async fn release_session(
+    State(service): State<GeneratorService>,
+    Path(session_id): Path<String>,
+    StrictJson(request): StrictJson<SessionStopRequest>,
+) -> Response {
+    reply(
+        service
+            .repository
+            .release_session(&session_id, request, now())
+            .await,
+    )
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/sessions/{session_id}/stop/denials",
+    tag = "Generator",
+    params(("session_id" = String, Path)),
+    request_body = SessionDenial,
+    responses((status = 204, description = "Denial recorded"), (status = 404, body = ErrorResponse))
+)]
+async fn record_session_denial(
+    State(service): State<GeneratorService>,
+    Path(session_id): Path<String>,
+    StrictJson(denial): StrictJson<SessionDenial>,
+) -> Response {
+    match service
+        .repository
+        .record_session_denial(&session_id, denial.denied_at)
+        .await
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => repository_error_response(error),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/reviews",
+    tag = "Generator",
+    request_body = ReviewRequest,
+    responses((status = 201, body = withhuman_contracts::inventory::Review), (status = 404, body = ErrorResponse))
+)]
+async fn add_review(
+    State(service): State<GeneratorService>,
+    StrictJson(request): StrictJson<ReviewRequest>,
+) -> Response {
+    match service.repository.add_review(request, now()).await {
+        Ok(review) => (StatusCode::CREATED, Json(review)).into_response(),
+        Err(error) => repository_error_response(error),
+    }
 }
 
 fn reply<T: Serialize>(result: Result<T, RepositoryError>) -> Response {
