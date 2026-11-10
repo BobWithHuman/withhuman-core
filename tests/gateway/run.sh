@@ -5,10 +5,10 @@
 #
 #   AGENTGATEWAY_IMAGE=cr.agentgateway.dev/agentgateway:v1.7.0 tests/gateway/run.sh
 #
-# It checks what the deployment relies on: Hooks pass through to the Collector, and an MCP tool
-# call is allowed or denied by the verdict its PreToolUse got (extAuthz). It also reports how the
-# image treats an extAuthz `includeRequestBody: {}` (AgentGateway 1.6.0 answered 413 to any request
-# with a body).
+# It checks what the deployment relies on: Hooks pass through to the Collector, an MCP tool
+# call is allowed or denied by the verdict its PreToolUse got (extAuthz), and, with
+# WITHHUMAN_MODEL_PROXY=on, the model route's key check. It also reports how the image treats an
+# extAuthz `includeRequestBody: {}` (AgentGateway 1.6.0 answered 413 to any request with a body).
 #
 # DATABASE_URL may name a PostgreSQL to use; otherwise one is started and removed.
 set -euo pipefail
@@ -95,6 +95,7 @@ wait_for "http://127.0.0.1:$generator_port/healthz"
 COLLECTOR_ADDR="127.0.0.1:$collector_port" COLLECTOR_EXT_AUTHZ_ADDR="127.0.0.1:$authz_port" \
   GENERATOR_URL="http://127.0.0.1:$generator_port" WITHHUMAN_MODE=enforce \
   WITHHUMAN_INTENT_CAPTURE=off WITHHUMAN_MCP_ENFORCE=gateway WITHHUMAN_KEY_CACHE_MS=0 \
+  WITHHUMAN_ADMIN_TOKEN=gateway-test-admin WITHHUMAN_MODEL_PROXY="${WITHHUMAN_MODEL_PROXY:-off}" \
   "$bin/withhuman-collector" >"$work/collector.log" 2>&1 &
 pids+=($!)
 wait_for "http://127.0.0.1:$collector_port/healthz"
@@ -102,10 +103,12 @@ MCP_FIXTURE_ADDR="127.0.0.1:$fixture_port" "$bin/withhuman-mcp-fixture" >"$work/
 pids+=($!)
 wait_for "http://127.0.0.1:$fixture_port/healthz"
 
+gateway_config=config.yaml
+[ "${WITHHUMAN_MODEL_PROXY:-off}" = on ] && gateway_config=config.model-proxy.yaml
 # The deployment's gateway configuration, pointed at this host's services, with a probe route
 # for the extAuthz body option.
 sed -e "s#collector:8080#127.0.0.1:$collector_port#g" -e "s#collector:9000#127.0.0.1:$authz_port#g" \
-  -e "s#port: 3000#port: $gateway_port#" "$repo/deploy/agentgateway/config.yaml" >"$work/config.yaml"
+  -e "s#port: 3000#port: $gateway_port#" "$repo/deploy/agentgateway/$gateway_config" >"$work/config.yaml"
 python3 - "$work/config.yaml" "$fixture_port" "$authz_port" <<'PY'
 import sys
 path, fixture, authz = sys.argv[1:]
@@ -129,6 +132,7 @@ open(path, "w").write(text)
 PY
 containers+=("wh-gateway-test-agw-$suffix")
 docker run -d --name "wh-gateway-test-agw-$suffix" --network host \
+  -e AGENTGATEWAY_REQUEST_LOG_URL="$DATABASE_URL" \
   -v "$work/config.yaml:/config.yaml:ro" "$image" -f /config.yaml >/dev/null
 for _ in $(seq 1 60); do
   curl --silent --output /dev/null "$gateway/healthz" && break
@@ -184,4 +188,7 @@ if [ "${EXPECT_BODY_PROBE:-}" != "" ]; then
   test "$probe" = "$EXPECT_BODY_PROBE"
 fi
 
+if [ "${WITHHUMAN_MODEL_PROXY:-off}" = on ]; then
+  . "$repo/tests/gateway/model.sh"
+fi
 echo "ok"

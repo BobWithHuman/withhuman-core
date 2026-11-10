@@ -3,7 +3,7 @@
 
 usage: configure.py --server URL [--project DIR] [--team NAME] [--key KEY] [--hook FILE]
                     [--no-persist] [--no-register] [--no-checkin]
-                    [--scope project|user|managed] [--managed-hooks-only]
+                    [--scope project|user|managed] [--managed-hooks-only] [--model-proxy]
 
 WithHuman is self-hosted, so --server (or WITHHUMAN_SERVER) has no default: it is the address of
 the engine this device reports to, and every hook below is written against it.
@@ -52,6 +52,11 @@ cron, the Task Scheduler; --no-checkin skips it). It reports the projects Claude
 their last use, read with stat only (POST /v1/clients/checkin), so the inventory shows the
 projects the hooks never reached. A managed setup on Windows schedules none (it would be per
 user).
+
+With --model-proxy (or WITHHUMAN_MODEL_PROXY=on) a global setup also sends Claude Code's model
+requests through the engine's gateway: ANTHROPIC_BASE_URL in the settings it writes, and the key
+and client ID in ANTHROPIC_CUSTOM_HEADERS from the shell profile, so the key is in no settings
+file. Under a managed setup each user's key goes there with their own setup's --key.
   --managed-hooks-only also sets allowManagedHooksOnly, so Claude Code runs no user, project or
   plugin hooks beside the administrator's: no WithHuman hook a project setup left runs twice, and
   none of the user's own can stand beside it.
@@ -173,6 +178,7 @@ SCHEDULE_TASK = "WithHumanCheckin"
 CRON_MARK = "# withhuman-checkin"
 PROFILE_MARK = "# WithHuman client ID"
 KEY_MARK = "# WithHuman key"
+HEADERS_MARK = "# WithHuman model request headers"
 # A WithHuman key as the engine issues it.
 KEY_PATTERN = re.compile(r"whk_[0-9a-f]{16}_[0-9a-f]{64}")
 REGISTER_TIMEOUT = 10
@@ -1051,6 +1057,36 @@ def persist(id_path, value, stamp, report, name="WITHHUMAN_CLIENT_ID", mark=PROF
         report.append(f"{path}: exports {name} (new shells)")
 
 
+def persist_model_headers(key_path, id_path, stamp, report):
+    """With the model route on, Claude Code sends the key and the client ID on its model
+    requests (ANTHROPIC_CUSTOM_HEADERS), read from their files when a shell starts: the key is
+    never written into a settings file. A Claude Code started without the shell's variables
+    sends no key, which the engine refuses when keys are required."""
+    if os.name == "nt":
+        # One header only: a user environment variable holds no line break.
+        key = Path(key_path).read_text(encoding="utf-8").strip()
+        result = subprocess.run(["setx", "ANTHROPIC_CUSTOM_HEADERS", f"x-withhuman-key: {key}"],
+                                capture_output=True)
+        if result.returncode == 0:
+            report.append("ANTHROPIC_CUSTOM_HEADERS set as a user environment variable")
+        return
+    path = profile()
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    line = (f"export ANTHROPIC_CUSTOM_HEADERS=\"x-withhuman-key: $(cat '{key_path}')\""
+            f"$'\\n'\"x-withhuman-client: $(cat '{id_path}')\"")
+    kept = [item for item in lines if item.strip() != HEADERS_MARK
+            and not item.lstrip().startswith("export ANTHROPIC_CUSTOM_HEADERS=")]
+    wanted = list(kept)
+    while wanted and not wanted[-1].strip():
+        wanted.pop()
+    wanted += ["", HEADERS_MARK, line]
+    if lines[-2:] != [HEADERS_MARK, line]:
+        if path.exists():
+            backup(path, stamp)
+        path.write_text("\n".join(wanted) + "\n", encoding="utf-8")
+        report.append(f"{path}: exports ANTHROPIC_CUSTOM_HEADERS with the WithHuman key (new shells)")
+
+
 def hook_version(paths):
     """The installed hook files' version: the start of their SHA-256, so the inventory shows
     which devices run an old hook."""
@@ -1184,6 +1220,11 @@ def finish(args, client, key_path, key, agent, project, version, stamp, report):
     """Keeps the key for new shells and registers the device; returns the lines to print."""
     if key and not args.no_persist and args.scope != "managed":
         persist(key_path, key, stamp, report, name="WITHHUMAN_KEY", mark=KEY_MARK)
+        if args.model_proxy:
+            # A device a managed setup covers keeps its client ID in the device folder.
+            device_id = device_dir() / "client-id"
+            persist_model_headers(key_path, device_id if device_id.is_file()
+                                  else config_dir() / "client-id", stamp, report)
     lines = []
     if args.scope == "managed":
         lines.append("Each user's own WithHuman key (WITHHUMAN_KEY, or ~/.config/withhuman/key) "
@@ -1388,11 +1429,31 @@ def first_checkin(script, config, report):
         report.append(f"WARNING: the first check-in failed: {result.stderr.strip()}")
 
 
+def drop_model_route(path, server_file, stamp, report):
+    """Takes out the ANTHROPIC_BASE_URL a setup with --model-proxy wrote: only when it is still
+    the engine that setup was for, so a base URL of the user's own stays."""
+    try:
+        server = server_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return
+    settings = load(path)
+    env = settings.get("env")
+    if not server or not isinstance(env, dict) or env.get("ANTHROPIC_BASE_URL") != server:
+        return
+    backup(path, stamp)
+    del env["ANTHROPIC_BASE_URL"]
+    if not env:
+        del settings["env"]
+    save(path, settings)
+    report.append(f"{path}: ANTHROPIC_BASE_URL removed")
+
+
 def uninstall_user(home, stamp, report):
     """Takes the user setup of the user at `home` out: the WithHuman hooks of their settings and
     the hook in ~/.config/withhuman/hooks. Their client ID is kept."""
     clean(home / ".claude" / "settings.json", stamp, report)
     config = home / ".config" / "withhuman"
+    drop_model_route(home / ".claude" / "settings.json", config / "server", stamp, report)
     if home == Path.home():
         schedule(config / CHECKIN_NAME, config, False, report, remove=True)
     else:
@@ -1463,6 +1524,10 @@ def setup_global(args, hook_source, key_path, key, stamp, report):
         # A file of WithHuman's own: written whole, so nothing of the organisation's is in it.
         path = managed_settings()
         settings = {"hooks": {event: [group] for event, group in ours.items()}}
+        if args.model_proxy:
+            # Every model request goes through the engine's gateway; a managed key cannot be
+            # overridden. Bedrock, Vertex and Foundry requests do not go this way.
+            settings["env"] = {"ANTHROPIC_BASE_URL": args.server}
         if args.managed_hooks_only:
             settings["allowManagedHooksOnly"] = True
         if path.exists():
@@ -1482,6 +1547,10 @@ def setup_global(args, hook_source, key_path, key, stamp, report):
         hooks = settings.setdefault("hooks", {})
         for event, group in ours.items():
             hooks.setdefault(event, []).append(group)
+        if args.model_proxy:
+            env = settings.get("env") if isinstance(settings.get("env"), dict) else {}
+            env["ANTHROPIC_BASE_URL"] = args.server
+            settings["env"] = env
         save(path, settings)
         if not args.no_persist:
             persist(id_path, value, stamp, report)
@@ -1599,6 +1668,11 @@ def main():
                              "and every event then travel unencrypted)")
     parser.add_argument("--no-checkin", action="store_true",
                         help="with --scope user or managed: do not schedule the daily check-in")
+    parser.add_argument("--model-proxy", action="store_true",
+                        default=os.environ.get("WITHHUMAN_MODEL_PROXY", "").lower() in ("on", "true", "1"),
+                        help="with --scope user or managed: send Claude Code's model requests "
+                             "through the engine's gateway (ANTHROPIC_BASE_URL), with the key in "
+                             "ANTHROPIC_CUSTOM_HEADERS")
     parser.add_argument("--managed-hooks-only", action="store_true",
                         help="with --scope managed: run no user, project or plugin hooks beside "
                              "the administrator's")
@@ -1612,6 +1686,12 @@ def main():
             else f"{agent.name} is set up per {agent.scope_note}"))
     if args.managed_hooks_only and args.scope != "managed":
         sys.exit("--managed-hooks-only goes with --scope managed")
+    if args.model_proxy and args.scope == "project":
+        # WITHHUMAN_MODEL_PROXY in the environment asks for it where it applies; the flag itself
+        # with a project setup is a mistake.
+        if "--model-proxy" in sys.argv and args.reset is None and not args.uninstall:
+            sys.exit("--model-proxy goes with --scope user or managed")
+        args.model_proxy = False
     if args.scope == "managed" and args.key:
         sys.exit("a managed setup is for every user of the device and takes no key: each user "
                  "keeps their own (WITHHUMAN_KEY, or a setup with --key in their own account)")

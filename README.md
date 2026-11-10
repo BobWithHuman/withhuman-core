@@ -327,6 +327,13 @@ client ID is kept, so the setup made after is the same device:
 sudo python3 deploy/client/configure.py --reset ~/src/app ~/src/api
 ```
 
+With `WITHHUMAN_MODEL_PROXY=on` and `AGENTGATEWAY_CONFIG=config.model-proxy.yaml`, the gateway
+also passes Claude Code's model requests to Anthropic (`ANTHROPIC_BASE_URL` set to the gateway;
+`configure.py --scope user|managed --model-proxy`), after checking the same keys and session
+stops, and records each in `model_calls` without its content. A model request whose session no
+hook reported shows in `unprotected_model_calls`. Bedrock, Vertex and Foundry requests do not
+take this route.
+
 </details>
 
 <a id="codex-cli"></a>

@@ -3,6 +3,19 @@
 {{- $name := printf "%s-agentgateway" (include "withhuman.fullname" .) -}}
 {{- $collector := printf "%s-collector" (include "withhuman.fullname" .) -}}
 {{- define "withhuman.agentgatewayConfig" -}}
+{{- if .modelProxy }}
+config:
+  logging:
+    database:
+      url: ${AGENTGATEWAY_REQUEST_LOG_URL}
+frontendPolicies:
+  accessLog:
+    add:
+      withhuman_request: 'request.headers["x-withhuman-request"]'
+    database:
+      llm: metadata
+
+{{ end -}}
 gateways:
   default:
     port: 3000
@@ -22,6 +35,32 @@ routes:
           pathPrefix: /v1/admin
     backends:
       - host: {{ .collector }}:8080
+{{- if .modelProxy }}
+  - name: model
+    matches:
+      - path:
+          pathPrefix: /v1/messages
+    policies:
+      extAuthz:
+        host: {{ .collector }}:9000
+        protocol:
+          grpc:
+            context:
+              withhuman: model
+            metadata:
+              withhuman: '{"model": llm.requestModel}'
+        failureMode: deny
+      ai:
+        routes:
+          /v1/messages: messages
+          /v1/messages/count_tokens: anthropicTokenCount
+          "*": passthrough
+    backends:
+      - ai:
+          name: anthropic
+          provider:
+            anthropic: {}
+{{- end }}
 {{- if .targets }}
 
 mcp:
@@ -45,7 +84,7 @@ mcp:
     {{- end }}
 {{- end }}
 {{- end -}}
-{{- $config := include "withhuman.agentgatewayConfig" (dict "collector" $collector "targets" $values.mcpTargets) }}
+{{- $config := include "withhuman.agentgatewayConfig" (dict "collector" $collector "targets" $values.mcpTargets "modelProxy" .Values.modelProxy.enabled) }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -93,6 +132,15 @@ spec:
           image: {{ $values.image | quote }}
           imagePullPolicy: {{ .Values.imagePullPolicy }}
           args: [-f, /etc/agentgateway/config.yaml]
+          {{- if .Values.modelProxy.enabled }}
+          env:
+            # The gateway's request log, in the engine's database.
+            - name: AGENTGATEWAY_REQUEST_LOG_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.existingSecret }}
+                  key: database-url
+          {{- end }}
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

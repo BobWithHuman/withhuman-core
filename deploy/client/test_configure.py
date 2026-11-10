@@ -1285,6 +1285,34 @@ class GlobalSetupTest(Setup):
         self.assertEqual(list(units.iterdir()), [])
         self.assertFalse((self.home / ".config" / "withhuman" / "checkin.py").exists())
 
+    @unittest.skipIf(os.name == "nt", "POSIX profile")
+    def test_the_model_route_takes_the_base_url_and_the_key_from_the_shell(self):
+        result = self.run_scope("managed", "--model-proxy")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        drop_in = self.read(self.managed / "managed-settings.d" / "50-withhuman.json")
+        self.assertEqual(drop_in["env"]["ANTHROPIC_BASE_URL"], SERVER)
+        result = self.run_scope("user", "--key", KEY, "--model-proxy")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.read(self.home / ".claude" / "settings.json")["env"]["ANTHROPIC_BASE_URL"],
+                         SERVER)
+        profile = self.home / ".zshrc"
+        shell = subprocess.run(["bash", "-c", f'source "{profile}"; printf %s "$ANTHROPIC_CUSTOM_HEADERS"'],
+                               capture_output=True, text=True, env={**os.environ, "HOME": str(self.home)})
+        client = (self.device / "client-id").read_text().strip()
+        self.assertEqual(shell.stdout, f"x-withhuman-key: {KEY}\nx-withhuman-client: {client}")
+        # The key is in no settings file.
+        for path in [self.managed / "managed-settings.d" / "50-withhuman.json",
+                     *self.home.rglob("settings*.json")]:
+            self.assertNotIn(KEY, path.read_text(), path)
+        # Running it again changes nothing.
+        before = profile.read_text()
+        self.run_scope("user", "--key", KEY, "--model-proxy")
+        self.assertEqual(profile.read_text(), before)
+        # Taken out with the setup; a project setup does not take the flag.
+        self.assertEqual(self.run_scope("user", "--uninstall").returncode, 0)
+        self.assertNotIn("env", self.read(self.home / ".claude" / "settings.json"))
+        self.assertNotEqual(self.run_scope("project", "--model-proxy").returncode, 0)
+
     def test_managed_scope_keeps_the_check_in_in_the_device_folder(self):
         units = Path(tempfile.mkdtemp())
         env = {"WITHHUMAN_SCHEDULER": "dry", "WITHHUMAN_SCHEDULER_DIR": str(units)}

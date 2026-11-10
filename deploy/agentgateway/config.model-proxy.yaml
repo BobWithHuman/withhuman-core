@@ -1,0 +1,91 @@
+# yaml-language-server: $schema=https://agentgateway.dev/schema/config
+#
+# The gateway configuration with the model route, for WITHHUMAN_MODEL_PROXY=on: config.yaml and
+# a route that passes Claude Code's model requests to Anthropic after the Collector checked the
+# user's key and session. Point Claude Code at the gateway with ANTHROPIC_BASE_URL. Bedrock,
+# Vertex and Foundry requests do not come this way.
+
+# The gateway's request log goes to the engine's PostgreSQL (AGENTGATEWAY_REQUEST_LOG_URL), with
+# the model and token counts of each model request and never its content (`llm: metadata`).
+# `withhuman_request` names the record the Collector made when it checked the request; the
+# Generator copies the tokens there (model_calls).
+config:
+  logging:
+    database:
+      url: ${AGENTGATEWAY_REQUEST_LOG_URL}
+frontendPolicies:
+  accessLog:
+    add:
+      withhuman_request: 'request.headers["x-withhuman-request"]'
+    database:
+      llm: metadata
+
+gateways:
+  default:
+    port: 3000
+
+routes:
+  - name: health
+    matches:
+      - path:
+          pathPrefix: /healthz
+    backends:
+      - host: collector:8080
+  - name: claude-hooks
+    matches:
+      - path:
+          pathPrefix: /v1/hooks
+    backends:
+      - host: collector:8080
+  # Device registration and the key administration API (WITHHUMAN_ADMIN_TOKEN).
+  - name: inventory
+    matches:
+      - path:
+          pathPrefix: /v1/clients
+      - path:
+          pathPrefix: /v1/admin
+    backends:
+      - host: collector:8080
+
+  # Claude Code's model requests (ANTHROPIC_BASE_URL), passed to Anthropic with the user's own
+  # credentials. The Collector checks the user's WithHuman key first (x-withhuman-key, from
+  # ANTHROPIC_CUSTOM_HEADERS) and the session (x-claude-code-session-id), as it does for Hooks.
+  - name: model
+    matches:
+      - path:
+          pathPrefix: /v1/messages
+    policies:
+      extAuthz:
+        host: collector:9000
+        protocol:
+          grpc:
+            context:
+              withhuman: model
+            metadata:
+              withhuman: '{"model": llm.requestModel}'
+        failureMode: deny
+      ai:
+        routes:
+          /v1/messages: messages
+          /v1/messages/count_tokens: anthropicTokenCount
+          "*": passthrough
+    backends:
+      - ai:
+          name: anthropic
+          provider:
+            anthropic: {}
+
+mcp:
+  policies:
+    extAuthz:
+      conditional:
+        - condition: has(mcp.tool)
+          host: collector:9000
+          protocol:
+            grpc: {}
+          failureMode: deny
+          includeRequestBody:
+            maxRequestBytes: 1048576
+            allowPartialMessage: false
+            packAsBytes: true
+  targets: []

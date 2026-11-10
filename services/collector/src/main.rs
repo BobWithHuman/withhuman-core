@@ -2,7 +2,8 @@ use std::{io, sync::Arc};
 
 use tokio::sync::watch;
 use withhuman_collector::{
-    CollectorConfig, CollectorService, ExtAuthzService, GeneratorHttpClient, app_with_transport,
+    CollectorConfig, CollectorService, ExtAuthzService, GeneratorHttpClient, ModelAccess,
+    app_with_transport,
 };
 use withhuman_common::shutdown::shutdown_signal;
 use withhuman_contracts::ext_authz::AuthorizationServer;
@@ -14,7 +15,16 @@ async fn main() -> io::Result<()> {
     let generator = Arc::new(GeneratorHttpClient::new(config.generator_url.clone()));
     let service =
         CollectorService::from_config(config.clone(), generator).map_err(io::Error::other)?;
-    let ext_authz = ExtAuthzService::new(service.verdicts.clone(), config.enforcement_mode);
+    let mut ext_authz = ExtAuthzService::new(service.verdicts.clone(), config.enforcement_mode);
+    if config.model_proxy {
+        ext_authz = ext_authz.with_models(ModelAccess {
+            keys: service.keys.clone(),
+            flags: service.flags.clone(),
+            generator: service.generator.clone(),
+            require_key: config.require_key,
+            failure: config.failure_policy,
+        });
+    }
     let http_app = app_with_transport(service);
 
     // Both servers stop on the one signal and finish the requests they hold.

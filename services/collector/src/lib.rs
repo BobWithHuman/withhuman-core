@@ -24,7 +24,7 @@ mod triage;
 mod verdicts;
 
 pub use config::{CollectorConfig, FailurePolicy, ReviewPolicy};
-pub use ext_authz::ExtAuthzService;
+pub use ext_authz::{ExtAuthzService, MODEL_CONTEXT, MODEL_KEY_HEADER, ModelAccess};
 pub use http::{CollectorService, HookPolicy, TrustedHookContext, app, app_with_transport};
 pub use intent::{INTENT_INSTRUCTION, INTENT_REMINDER, INTENT_REQUIRED};
 pub use inventory::USER_HEADER;
