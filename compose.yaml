@@ -118,7 +118,7 @@ services:
 
   # The only service with a host port. The security group lets the load balancer alone reach it.
   agentgateway:
-    image: ${AGENTGATEWAY_IMAGE:-cr.agentgateway.dev/agentgateway:v1.6.0}
+    image: ${AGENTGATEWAY_IMAGE:-cr.agentgateway.dev/agentgateway:v1.7.0}
     restart: unless-stopped
     command: ["-f", "/config.yaml"]
     ports:

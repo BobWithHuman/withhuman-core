@@ -143,7 +143,7 @@ services:
     networks: [engine]
 
   agentgateway:
-    image: cr.agentgateway.dev/agentgateway:v1.6.0
+    image: cr.agentgateway.dev/agentgateway:v1.7.0
     command: ["-f", "/config.yaml"]
     ports:
       - "127.0.0.1:${AGENTGATEWAY_PORT:-3000}:3000"
