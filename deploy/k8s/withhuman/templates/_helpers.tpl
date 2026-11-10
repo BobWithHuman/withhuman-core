@@ -71,6 +71,13 @@ helm.sh/chart: {{ printf "%s-%s" .root.Chart.Name .root.Chart.Version }}
 - name: DECISION_URL
   value: http://{{ include "withhuman.fullname" . }}-decision:8082
 {{ include "withhuman.postgresEnv" . }}
+# The viewer's read-only login is created when the Secret holds `viewer-password`.
+- name: WITHHUMAN_VIEWER_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.existingSecret }}
+      key: viewer-password
+      optional: true
 {{- end -}}
 
 {{- define "withhuman.env.decision" -}}

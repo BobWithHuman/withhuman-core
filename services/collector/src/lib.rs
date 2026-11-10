@@ -3,6 +3,7 @@ mod codex_delivery;
 pub mod codex_write;
 mod config;
 mod ext_authz;
+pub mod flags;
 mod http;
 mod intent;
 mod inventory;

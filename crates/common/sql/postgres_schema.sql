@@ -312,3 +312,169 @@ $$;
 CREATE INDEX IF NOT EXISTS sessions_client ON sessions (client_id);
 CREATE INDEX IF NOT EXISTS sessions_user ON sessions (user_email);
 CREATE INDEX IF NOT EXISTS sessions_last_seen ON sessions (last_seen_at);
+
+-- A session the security team stopped (until `released_at`): its PreToolUse calls are denied.
+-- At most one stop of a session is active; released ones stay for the audit.
+CREATE TABLE IF NOT EXISTS session_stops (
+  id               bigserial PRIMARY KEY,
+  session_id       text   NOT NULL,
+  stopped_at       bigint NOT NULL,
+  stopped_by       text,
+  reason           text,
+  released_at      bigint,
+  released_by      text,
+  release_reason   text,
+  first_denied_at  bigint,
+  last_denied_at   bigint,
+  denied_count     bigint NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS session_stops_active ON session_stops (session_id)
+  WHERE released_at IS NULL;
+CREATE INDEX IF NOT EXISTS session_stops_stopped_at ON session_stops (stopped_at);
+
+-- The security team's reviews of Calls after the fact, `(session_id, seq)` naming the Call.
+-- Each review is kept; `call_review_latest` is the one that stands.
+CREATE TABLE IF NOT EXISTS call_reviews (
+  id          bigserial PRIMARY KEY,
+  session_id  text   NOT NULL,
+  seq         bigint NOT NULL,
+  status      text   NOT NULL CHECK (status IN ('unreviewed', 'no_issue', 'issue')),
+  note        text,
+  actor       text,
+  at          bigint NOT NULL
+);
+CREATE INDEX IF NOT EXISTS call_reviews_call ON call_reviews (session_id, seq, id);
+
+CREATE OR REPLACE VIEW call_review_latest AS
+SELECT DISTINCT ON (session_id, seq) id, session_id, seq, status, note, actor, at
+FROM call_reviews ORDER BY session_id, seq, id DESC;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                 AND table_name = 'users' AND column_name = 'kind') THEN
+    -- `person`, or `service` for an automation (CI) with keys of its own.
+    ALTER TABLE users ADD COLUMN kind text NOT NULL DEFAULT 'person';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                 AND table_name = 'clients' AND column_name = 'test') THEN
+    -- Benchmark and test runs name themselves `bench/...`, so the inventory can leave them out.
+    ALTER TABLE clients ADD COLUMN test boolean GENERATED ALWAYS AS (client_id LIKE 'bench/%') STORED;
+  END IF;
+END
+$$;
+
+-- Folders where a client's Hooks ran (`cwd`), so a project the daily check-in reports can be
+-- told protected. `last_seen` moves at most every 30 s.
+CREATE TABLE IF NOT EXISTS client_cwds (
+  client_id   text   NOT NULL,
+  cwd         text   NOT NULL,
+  first_seen  bigint NOT NULL,
+  last_seen   bigint NOT NULL,
+  PRIMARY KEY (client_id, cwd)
+);
+
+-- Projects Claude Code ran in on a device, as its daily check-in reports them.
+CREATE TABLE IF NOT EXISTS client_seen_projects (
+  client_id          text   NOT NULL,
+  project            text   NOT NULL,
+  last_used_at       bigint,
+  first_reported_at  bigint NOT NULL,
+  last_reported_at   bigint NOT NULL,
+  PRIMARY KEY (client_id, project)
+);
+
+-- Sessions the security team leaves unprotected: every column given must match (a folder and
+-- the folders below it, a team, a device). Removed ones stay for the audit.
+CREATE TABLE IF NOT EXISTS exceptions (
+  id          bigserial PRIMARY KEY,
+  folder      text,
+  team        text,
+  client_id   text,
+  actor       text,
+  reason      text,
+  created_at  bigint NOT NULL,
+  removed_at  bigint,
+  removed_by  text,
+  CHECK (folder IS NOT NULL OR team IS NOT NULL OR client_id IS NOT NULL)
+);
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                 AND table_name = 'clients' AND column_name = 'last_checkin_at') THEN
+    -- `user`, `managed` or `project`, as the setup reported; and the latest daily check-in.
+    ALTER TABLE clients ADD COLUMN install_scope text, ADD COLUMN last_checkin_at bigint;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                 AND table_name = 'sessions' AND column_name = 'exception_id') THEN
+    -- The exception the session's hook claimed at its start, and the one the engine found
+    -- covering it: a claim without a match is a hook told to keep a session out.
+    ALTER TABLE sessions ADD COLUMN exception_claimed bigint, ADD COLUMN exception_id bigint;
+  END IF;
+  -- Folders recorded before this table existed.
+  IF NOT EXISTS (SELECT 1 FROM client_cwds) THEN
+    INSERT INTO client_cwds (client_id, cwd, first_seen, last_seen)
+    SELECT client_id, cwd, min(observed_at), max(observed_at) FROM event_commits
+    WHERE client_id IS NOT NULL AND cwd IS NOT NULL AND observed_at IS NOT NULL
+    GROUP BY client_id, cwd;
+  END IF;
+END
+$$;
+
+-- Each reported project, protected when the device's Hooks ever ran in it or below it.
+CREATE OR REPLACE VIEW project_protection AS
+SELECT p.client_id, p.project, p.last_used_at, p.first_reported_at, p.last_reported_at,
+       h.last_hook_at, h.last_hook_at IS NOT NULL AS protected
+FROM client_seen_projects p
+LEFT JOIN LATERAL (
+  SELECT max(c.last_seen) AS last_hook_at FROM client_cwds c
+  WHERE c.client_id = p.client_id
+    AND (c.cwd = p.project OR starts_with(c.cwd, p.project || '/')
+         OR starts_with(c.cwd, p.project || '\'))
+) h ON true;
+
+-- Every stop in one place, for the audit: what was stopped (`key`: a user's key, `session`),
+-- whose, by whom, when and why, when it was released, and when it first turned a call back.
+CREATE OR REPLACE VIEW stop_audit AS
+SELECT 'key'::text AS target, k.user_email, NULL::text AS session_id, k.key_id,
+       e.actor AS stopped_by, e.reason, e.at AS stopped_at,
+       NULL::bigint AS released_at, NULL::text AS released_by, NULL::text AS release_reason,
+       k.first_denied_at, k.last_denied_at, k.denied_count
+FROM key_events e JOIN api_keys k ON k.key_id = e.key_id
+WHERE e.kind = 'revoked'
+UNION ALL
+SELECT 'session', s.user_email, t.session_id, NULL, t.stopped_by, t.reason, t.stopped_at,
+       t.released_at, t.released_by, t.release_reason, t.first_denied_at, t.last_denied_at,
+       t.denied_count
+FROM session_stops t LEFT JOIN sessions s ON s.session_id = t.session_id;
+
+-- Indexes for reading across sessions: every Call in a period, and every mention of a
+-- sensitive token (any category but `address`).
+CREATE INDEX IF NOT EXISTS nodes_calls_observed_at ON nodes (observed_at) WHERE kind = 'Call';
+CREATE INDEX IF NOT EXISTS tokens_sensitive ON tokens (category, session_id)
+  WHERE category <> 'address';
+
+-- What the security team's viewer reads: role `withhuman_viewer`, which the Generator creates
+-- when WITHHUMAN_VIEWER_PASSWORD is set. SELECT only, and only here: every table of this file
+-- is listed below (a test checks it), and grants made elsewhere, such as an earlier viewer's
+-- DELETE, are taken back. `api_keys` is readable without its `hash`.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'withhuman_viewer') THEN
+    EXECUTE format('REVOKE ALL ON ALL TABLES IN SCHEMA %I FROM withhuman_viewer', current_schema());
+    EXECUTE format('REVOKE ALL ON ALL SEQUENCES IN SCHEMA %I FROM withhuman_viewer', current_schema());
+    EXECUTE format('GRANT USAGE ON SCHEMA %I TO withhuman_viewer', current_schema());
+    GRANT SELECT ON
+      sessions, event_commits, nodes, subgraphs, paragraphs, tokens, token_mentions, files,
+      file_refs, cause_edges, pending_paragraph_enrichments, pending_request_continuations,
+      clients, client_projects, users, key_events, session_stops, call_reviews,
+      call_review_latest, stop_audit, client_cwds, client_seen_projects, exceptions,
+      project_protection
+    TO withhuman_viewer;
+    GRANT SELECT (key_id, user_email, created_at, created_by, note, last_used_at, revoked_at,
+      revoked_by, revoke_reason, first_denied_at, last_denied_at, denied_count)
+    ON api_keys TO withhuman_viewer;
+  END IF;
+END
+$$;

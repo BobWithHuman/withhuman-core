@@ -16,11 +16,25 @@ HOOK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pre-tool-use.py
 class Collector(http.server.BaseHTTPRequestHandler):
     received = []
     answer = b""
+    # The exceptions the engine answers; None answers 500.
+    exceptions = []
+    fetched = []
+
+    def do_GET(self):
+        Collector.fetched.append(self.path)
+        if Collector.exceptions is None:
+            self.send_response(500)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(json.dumps(Collector.exceptions).encode())
 
     def do_POST(self):
         body = self.rfile.read(int(self.headers["Content-Length"]))
         # Header names are compared without case, as HTTP has them.
         headers = {name.lower(): value for name, value in self.headers.items()}
+        headers[":path"] = self.path
         Collector.received.append((headers, json.loads(body)))
         self.send_response(200)
         self.end_headers()
@@ -43,7 +57,9 @@ class PreToolUseHookTest(unittest.TestCase):
 
     def setUp(self):
         Collector.received.clear()
+        Collector.fetched.clear()
         Collector.answer = b""
+        Collector.exceptions = []
         self.workspace = tempfile.mkdtemp()
         self.write("scripts/run.py", "print('run')\n")
         self.write("skill/tool.sh", "echo tool\n")
@@ -61,6 +77,16 @@ class PreToolUseHookTest(unittest.TestCase):
             file.write(text)
         if executable:
             os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
+
+    def run_marked(self, event, home, project):
+        """Runs the hook as the device-wide setup does, for any event."""
+        env = {**os.environ, "HOME": home, "USERPROFILE": home, "CLAUDE_PROJECT_DIR": project,
+               "WITHHUMAN_CLIENT_ID": "team/device"}
+        env.pop("WITHHUMAN_KEY", None)
+        server = self.url.rsplit("/v1/hooks/", 1)[0]
+        return subprocess.run([sys.executable, HOOK, "--withhuman-hook", server],
+                              input=json.dumps(event).encode(), capture_output=True, env=env,
+                              timeout=30)
 
     def run_hook(self, event, url=None, client_id="team/device", key=None, home=None):
         # A home of its own, so the setup files of whoever runs the tests are not read.
@@ -162,6 +188,63 @@ class PreToolUseHookTest(unittest.TestCase):
         result = self.run_hook(self.bash("ls"), url="http://127.0.0.1:9/v1/hooks/PreToolUse")
         self.assertEqual(result.returncode, 1)
         self.assertIn(b"unreachable", result.stderr)
+
+    def session(self, home, project, folder_events=("SessionStart", "UserPromptSubmit", "PostToolUse")):
+        sent = []
+        for name in folder_events:
+            event = {"session_id": "s", "hook_event_name": name, "cwd": project, "source": "startup",
+                     "prompt": "secret plan", "tool_name": "Read", "tool_response": "secret"}
+            before = len(Collector.received)
+            result = self.run_marked(event, home, project)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            sent.append(Collector.received[before:])
+        return sent
+
+    def test_posts_every_event_to_its_route(self):
+        home = tempfile.mkdtemp()
+        sent = self.session(home, "/work/app")
+        self.assertEqual([batch[0][0][":path"] for batch in sent],
+                         ["/v1/hooks/SessionStart", "/v1/hooks/UserPromptSubmit", "/v1/hooks/PostToolUse"])
+        self.assertEqual(sent[1][0][1]["prompt"], "secret plan")
+        self.assertIn("client_id=team%2Fdevice", Collector.fetched[0])
+
+    def test_an_excepted_folder_sends_only_that_the_session_started(self):
+        Collector.exceptions = [{"id": 4, "folder": "/work/secret", "created_at": 1}]
+        home = tempfile.mkdtemp()
+        start, prompt, result = self.session(home, "/work/secret/app")
+        self.assertEqual(start[0][1], {"session_id": "s", "hook_event_name": "SessionStart",
+                                       "source": "startup", "cwd": "/work/secret/app",
+                                       "withhuman_exception": 4})
+        self.assertEqual((prompt, result), ([], []))
+        # Elsewhere on the device everything is sent.
+        start, prompt, _ = self.session(home, "/work/secretive")
+        self.assertNotIn("withhuman_exception", start[0][1])
+        self.assertEqual(prompt[0][1]["prompt"], "secret plan")
+
+    def test_sends_everything_when_the_list_cannot_be_fetched(self):
+        Collector.exceptions = [{"id": 4, "folder": "/work/secret", "created_at": 1}]
+        home = tempfile.mkdtemp()
+        self.session(home, "/work/secret/app", ("SessionStart",))
+        Collector.exceptions = None
+        Collector.received.clear()
+        sent = self.session(home, "/work/secret/app")
+        self.assertEqual([len(batch) for batch in sent], [1, 1, 1])
+        self.assertNotIn("withhuman_exception", sent[0][0][1])
+        self.assertFalse(os.path.exists(os.path.join(home, ".config", "withhuman", "exceptions.json")))
+
+    def test_a_stale_or_broken_cache_covers_nothing(self):
+        home = tempfile.mkdtemp()
+        cache = os.path.join(home, ".config", "withhuman", "exceptions.json")
+        os.makedirs(os.path.dirname(cache))
+        for content in ({"fetched_at": 0, "client_id": "team/device",
+                         "exceptions": [{"id": 4, "folder": "/work/secret"}]},
+                        {"fetched_at": 9e12, "client_id": "team/other",
+                         "exceptions": [{"id": 4, "folder": "/work/secret"}]},
+                        "not json"):
+            with open(cache, "w") as file:
+                file.write(content if isinstance(content, str) else json.dumps(content))
+            sent = self.session(home, "/work/secret/app", ("UserPromptSubmit",))
+            self.assertEqual(len(sent[0]), 1, content)
 
 
 if __name__ == "__main__":
