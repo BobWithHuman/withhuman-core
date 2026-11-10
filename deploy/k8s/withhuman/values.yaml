@@ -88,7 +88,7 @@ decision:
   distrustedSourceDeny: false
 
 agentgateway:
-  image: cr.agentgateway.dev/agentgateway:v1.6.0
+  image: cr.agentgateway.dev/agentgateway:v1.7.0
   replicaCount: 2
   resources:
     requests: { cpu: 100m, memory: 64Mi }
