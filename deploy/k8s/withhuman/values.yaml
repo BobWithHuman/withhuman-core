@@ -71,8 +71,14 @@ decision:
   jevTimeoutMs: 3000
   intentBlockThreshold: 0.5
 
+# Claude Code's model requests through the gateway (ANTHROPIC_BASE_URL to the Ingress host):
+# checked against the users' keys and session stops, recorded without content in model_calls,
+# with tokens from the gateway's request log, which it keeps in the engine's PostgreSQL.
+modelProxy:
+  enabled: false
+
 agentgateway:
-  image: cr.agentgateway.dev/agentgateway:v1.6.0
+  image: cr.agentgateway.dev/agentgateway:v1.7.0
   replicaCount: 2
   resources:
     requests: { cpu: 100m, memory: 64Mi }

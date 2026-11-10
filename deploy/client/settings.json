@@ -4,16 +4,8 @@
       {
         "hooks": [
           {
-            "type": "http",
-            "url": "https://withhuman.example.com/v1/hooks/SessionStart",
-            "headers": {
-              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID",
-              "Authorization": "Bearer $WITHHUMAN_KEY"
-            },
-            "allowedEnvVars": [
-              "WITHHUMAN_CLIENT_ID",
-              "WITHHUMAN_KEY"
-            ]
+            "type": "command",
+            "command": "python3 \"$HOME/.config/withhuman/hooks/pre-tool-use.py\" --withhuman-hook https://withhuman.example.com"
           }
         ]
       }
@@ -22,16 +14,8 @@
       {
         "hooks": [
           {
-            "type": "http",
-            "url": "https://withhuman.example.com/v1/hooks/UserPromptSubmit",
-            "headers": {
-              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID",
-              "Authorization": "Bearer $WITHHUMAN_KEY"
-            },
-            "allowedEnvVars": [
-              "WITHHUMAN_CLIENT_ID",
-              "WITHHUMAN_KEY"
-            ]
+            "type": "command",
+            "command": "python3 \"$HOME/.config/withhuman/hooks/pre-tool-use.py\" --withhuman-hook https://withhuman.example.com"
           }
         ]
       }
@@ -41,7 +25,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$HOME/.config/withhuman/hooks/pre-tool-use.py\" https://withhuman.example.com/v1/hooks/PreToolUse"
+            "command": "python3 \"$HOME/.config/withhuman/hooks/pre-tool-use.py\" --withhuman-hook https://withhuman.example.com"
           }
         ]
       }
@@ -50,16 +34,8 @@
       {
         "hooks": [
           {
-            "type": "http",
-            "url": "https://withhuman.example.com/v1/hooks/PostToolUse",
-            "headers": {
-              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID",
-              "Authorization": "Bearer $WITHHUMAN_KEY"
-            },
-            "allowedEnvVars": [
-              "WITHHUMAN_CLIENT_ID",
-              "WITHHUMAN_KEY"
-            ]
+            "type": "command",
+            "command": "python3 \"$HOME/.config/withhuman/hooks/pre-tool-use.py\" --withhuman-hook https://withhuman.example.com"
           }
         ]
       }
@@ -68,16 +44,8 @@
       {
         "hooks": [
           {
-            "type": "http",
-            "url": "https://withhuman.example.com/v1/hooks/PostToolUseFailure",
-            "headers": {
-              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID",
-              "Authorization": "Bearer $WITHHUMAN_KEY"
-            },
-            "allowedEnvVars": [
-              "WITHHUMAN_CLIENT_ID",
-              "WITHHUMAN_KEY"
-            ]
+            "type": "command",
+            "command": "python3 \"$HOME/.config/withhuman/hooks/pre-tool-use.py\" --withhuman-hook https://withhuman.example.com"
           }
         ]
       }
@@ -90,7 +58,8 @@
             "url": "https://withhuman.example.com/v1/hooks/SubagentStart",
             "headers": {
               "x-withhuman-client": "$WITHHUMAN_CLIENT_ID",
-              "Authorization": "Bearer $WITHHUMAN_KEY"
+              "Authorization": "Bearer $WITHHUMAN_KEY",
+              "x-withhuman-hook": "1"
             },
             "allowedEnvVars": [
               "WITHHUMAN_CLIENT_ID",
@@ -108,7 +77,8 @@
             "url": "https://withhuman.example.com/v1/hooks/SubagentStop",
             "headers": {
               "x-withhuman-client": "$WITHHUMAN_CLIENT_ID",
-              "Authorization": "Bearer $WITHHUMAN_KEY"
+              "Authorization": "Bearer $WITHHUMAN_KEY",
+              "x-withhuman-hook": "1"
             },
             "allowedEnvVars": [
               "WITHHUMAN_CLIENT_ID",
@@ -126,7 +96,8 @@
             "url": "https://withhuman.example.com/v1/hooks/ConfigChange",
             "headers": {
               "x-withhuman-client": "$WITHHUMAN_CLIENT_ID",
-              "Authorization": "Bearer $WITHHUMAN_KEY"
+              "Authorization": "Bearer $WITHHUMAN_KEY",
+              "x-withhuman-hook": "1"
             },
             "allowedEnvVars": [
               "WITHHUMAN_CLIENT_ID",
@@ -144,7 +115,8 @@
             "url": "https://withhuman.example.com/v1/hooks/MessageDisplay",
             "headers": {
               "x-withhuman-client": "$WITHHUMAN_CLIENT_ID",
-              "Authorization": "Bearer $WITHHUMAN_KEY"
+              "Authorization": "Bearer $WITHHUMAN_KEY",
+              "x-withhuman-hook": "1"
             },
             "allowedEnvVars": [
               "WITHHUMAN_CLIENT_ID",
@@ -162,7 +134,8 @@
             "url": "https://withhuman.example.com/v1/hooks/PostToolBatch",
             "headers": {
               "x-withhuman-client": "$WITHHUMAN_CLIENT_ID",
-              "Authorization": "Bearer $WITHHUMAN_KEY"
+              "Authorization": "Bearer $WITHHUMAN_KEY",
+              "x-withhuman-hook": "1"
             },
             "allowedEnvVars": [
               "WITHHUMAN_CLIENT_ID",
@@ -180,7 +153,8 @@
             "url": "https://withhuman.example.com/v1/hooks/SessionEnd",
             "headers": {
               "x-withhuman-client": "$WITHHUMAN_CLIENT_ID",
-              "Authorization": "Bearer $WITHHUMAN_KEY"
+              "Authorization": "Bearer $WITHHUMAN_KEY",
+              "x-withhuman-hook": "1"
             },
             "allowedEnvVars": [
               "WITHHUMAN_CLIENT_ID",

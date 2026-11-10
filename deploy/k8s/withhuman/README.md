@@ -15,7 +15,8 @@ kubectl create secret generic withhuman \
   --from-literal=redis-url=redis://...
 ```
 
-Add `--from-literal=admin-token=...` to turn on the key administration API (`/v1/admin`), and set
+Add `--from-literal=viewer-password=...` to create the viewer's read-only login
+(`withhuman_viewer`), and `--from-literal=admin-token=...` to turn on the key administration API (`/v1/admin`), and set
 `collector.requireKey: "on"` to refuse Hooks without a valid per-user key.
 
 Each environment's values live in the `withhuman-gitops` repository, and Argo CD installs the chart

@@ -1,7 +1,8 @@
 # The engine for a personal Docker host: the whole stack on one machine.
 # deploy/docker/compose.yaml remains the development and E2E profile that builds from source.
-# This file pulls published images and leaves out the MCP fixture. Only the gateway takes a host
-# port, so PostgreSQL and Redis are reachable on the Compose network alone.
+# This file pulls published images and leaves out the MCP fixture. The gateway takes a host port,
+# and PostgreSQL one on 127.0.0.1 for the security team's viewer, which signs in as
+# withhuman_viewer (WITHHUMAN_VIEWER_PASSWORD); Redis is reachable on the Compose network alone.
 #
 # The variables below come from .env; see .env.example.
 name: withhuman
@@ -14,6 +15,9 @@ services:
       POSTGRES_USER: withhuman
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       POSTGRES_DB: withhuman
+    # The viewer reads the graph here: postgres://withhuman_viewer@127.0.0.1:15432/withhuman.
+    ports:
+      - "${POSTGRES_BIND:-127.0.0.1}:${POSTGRES_PORT:-15432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -69,6 +73,10 @@ services:
       DATABASE_URL: postgres://withhuman:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/withhuman
       DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-16}
       DECISION_URL: http://decision:8082
+      # Creates the viewer's read-only login; none while unset.
+      WITHHUMAN_VIEWER_PASSWORD: ${WITHHUMAN_VIEWER_PASSWORD:-}
+      # `on` copies model requests' tokens from the gateway's request log.
+      WITHHUMAN_MODEL_PROXY: ${WITHHUMAN_MODEL_PROXY:-off}
     depends_on:
       postgres:
         condition: service_healthy
@@ -98,6 +106,8 @@ services:
       # `on` refuses Hooks without a valid per-user key; see "Keys and the agent inventory".
       WITHHUMAN_REQUIRE_KEY: ${WITHHUMAN_REQUIRE_KEY:-off}
       WITHHUMAN_ADMIN_TOKEN: ${WITHHUMAN_ADMIN_TOKEN:-}
+      # `on` checks model requests the gateway's model route passes (config.model-proxy.yaml).
+      WITHHUMAN_MODEL_PROXY: ${WITHHUMAN_MODEL_PROXY:-off}
     depends_on:
       generator:
         condition: service_healthy
@@ -112,13 +122,17 @@ services:
 
   # The only service with a host port. The security group lets the load balancer alone reach it.
   agentgateway:
-    image: ${AGENTGATEWAY_IMAGE:-cr.agentgateway.dev/agentgateway:v1.6.0}
+    image: ${AGENTGATEWAY_IMAGE:-cr.agentgateway.dev/agentgateway:v1.7.0}
     restart: unless-stopped
     command: ["-f", "/config.yaml"]
     ports:
       - "${GATEWAY_BIND:-0.0.0.0}:${GATEWAY_PORT:-3000}:3000"
+    # config.model-proxy.yaml adds the model route (WITHHUMAN_MODEL_PROXY=on), whose request
+    # log the gateway keeps in the engine's database.
+    environment:
+      AGENTGATEWAY_REQUEST_LOG_URL: postgres://withhuman:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/withhuman
     volumes:
-      - ./deploy/agentgateway/config.yaml:/config.yaml:ro
+      - ./deploy/agentgateway/${AGENTGATEWAY_CONFIG:-config.yaml}:/config.yaml:ro
     depends_on:
       collector:
         condition: service_healthy

@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
-"""WithHuman PreToolUse hook for Claude Code.
+"""WithHuman command hook for Claude Code.
 
-Forwards the PreToolUse event to the WithHuman Collector, as the HTTP hook does, and attaches
-the local program files a Bash command may run, read just before the call, so the engine can
-judge the code a script run executes even when the agent never read the script. The engine
-reaches the client only through hook events; this is the one hook that runs here.
+Forwards a hook event to the WithHuman Collector, as an HTTP hook would. The setup runs it for
+the events that carry content (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse,
+PostToolUseFailure), so it can keep a session the security team excepted on this device:
 
-usage: pre-tool-use.py <Collector PreToolUse URL>
+usage: pre-tool-use.py --withhuman-hook <WithHuman server>
+       pre-tool-use.py <Collector PreToolUse URL>          (an earlier setup's form)
+
+At a session's start it fetches the exceptions that can cover this device and keeps them a day
+(~/.config/withhuman/exceptions.json). When one covers the session's folder (CLAUDE_PROJECT_DIR),
+it sends only that the session started and under which exception, and nothing else of it. When
+the list cannot be fetched, the cache is dropped and everything is sent.
+
+For PreToolUse it attaches the local program files a Bash command may run, read just before
+the call, so the engine can judge the code a script run executes even when the agent never read
+the script.
 
 Only files a command could run are attached: an existing regular file named in the command
 with a script extension, or an executable one that starts with `#!`. Other files the command
@@ -27,7 +36,9 @@ import json
 import os
 import shlex
 import sys
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 SCRIPT_EXTENSIONS = (".py", ".sh", ".bash", ".zsh", ".js", ".mjs", ".cjs", ".ts", ".rb", ".pl", ".ps1")
@@ -37,6 +48,11 @@ MAX_BYTES = 64 * 1024
 # Larger files are attached without a hash.
 MAX_HASHED_BYTES = 16 * 1024 * 1024
 TIMEOUT_SECONDS = float(os.environ.get("WITHHUMAN_HOOK_TIMEOUT", "30"))
+CONFIG = os.path.join(os.path.expanduser("~"), ".config", "withhuman")
+# The security team's exceptions, fetched at each session's start and trusted for a day.
+EXCEPTIONS_CACHE = os.path.join(CONFIG, "exceptions.json")
+EXCEPTIONS_MAX_AGE = 24 * 3600
+EXCEPTIONS_TIMEOUT = 3
 
 
 def words(command, powershell=False):
@@ -141,40 +157,128 @@ def setting(name, file):
     if value:
         return value
     try:
-        path = os.path.join(os.path.expanduser("~"), ".config", "withhuman", file)
+        path = os.path.join(CONFIG, file)
         with open(path, encoding="utf-8") as handle:
             return handle.read().strip() or None
     except OSError:
         return None
 
 
+def under(folder, path):
+    """`path` is `folder` or below it, on POSIX or Windows."""
+    if not folder or not path:
+        return False
+    if os.name == "nt" or "\\" in folder:
+        folder, path = folder.replace("\\", "/").lower(), path.replace("\\", "/").lower()
+    folder = folder.rstrip("/")
+    return path == folder or path.startswith(folder + "/")
+
+
+def fetch_exceptions(server, client_id, key):
+    """Refreshes the cached exceptions at a session's start. When they cannot be fetched the
+    cache is dropped, so the session is sent whole: a missing list never keeps anything out."""
+    try:
+        query = urllib.parse.urlencode({"client_id": client_id or ""})
+        request = urllib.request.Request(f"{server}/v1/clients/exceptions?{query}",
+                                         headers=auth_headers(client_id, key))
+        with urllib.request.urlopen(request, timeout=EXCEPTIONS_TIMEOUT) as response:
+            found = json.loads(response.read())
+        if not isinstance(found, list):
+            raise ValueError("not a list")
+        os.makedirs(CONFIG, exist_ok=True)
+        cached = {"fetched_at": time.time(), "client_id": client_id,
+                  "exceptions": [{"id": e.get("id"), "folder": e.get("folder")} for e in found
+                                 if isinstance(e, dict) and isinstance(e.get("id"), int)]}
+        partial = EXCEPTIONS_CACHE + ".part"
+        with open(partial, "w", encoding="utf-8") as handle:
+            json.dump(cached, handle)
+        os.replace(partial, EXCEPTIONS_CACHE)
+    except Exception:  # noqa: BLE001
+        try:
+            os.remove(EXCEPTIONS_CACHE)
+        except OSError:
+            pass
+
+
+def exception_for(folder, client_id):
+    """The cached exception covering `folder`, or None. A cache that is missing, unreadable,
+    stale or for another device covers nothing."""
+    try:
+        with open(EXCEPTIONS_CACHE, encoding="utf-8") as handle:
+            cached = json.load(handle)
+        if time.time() - float(cached["fetched_at"]) > EXCEPTIONS_MAX_AGE:
+            return None
+        if cached.get("client_id") != client_id:
+            return None
+        for exception in cached["exceptions"]:
+            if exception.get("folder") is None or under(exception["folder"], folder):
+                return exception["id"]
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def auth_headers(client_id, key):
+    headers = {"Content-Type": "application/json"}
+    if client_id:
+        headers["x-withhuman-client"] = client_id
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    return headers
+
+
 def main():
-    if len(sys.argv) != 2:
-        print("usage: pre-tool-use.py <Collector PreToolUse URL>", file=sys.stderr)
+    # `--withhuman-hook <server>` (any event, posted to <server>/v1/hooks/<event>), or the
+    # earlier `<Collector PreToolUse URL>`.
+    arguments = sys.argv[1:]
+    marked = arguments[:1] == ["--withhuman-hook"]
+    if marked:
+        arguments = arguments[1:]
+    if len(arguments) != 1:
+        print("usage: pre-tool-use.py --withhuman-hook <WithHuman server>", file=sys.stderr)
         return 1
     raw = sys.stdin.buffer.read()
     try:
         event = json.loads(raw)
-        # Reading the programs must never keep the event from being judged.
-        try:
-            attached = programs(event)
-        except Exception as error:  # noqa: BLE001
-            print(f"WithHuman: programs not attached: {error}", file=sys.stderr)
-            attached = []
-        if attached:
-            event["withhuman_programs"] = attached
-            raw = json.dumps(event).encode("utf-8")
     except ValueError:
-        pass  # Not JSON: forwarded as is, for the Collector to reject.
-
-    headers = {"Content-Type": "application/json"}
+        event = None  # Not JSON: forwarded as is, for the Collector to reject.
+    name = (event or {}).get("hook_event_name") if isinstance(event, dict) else None
+    if marked:
+        server = arguments[0].rstrip("/")
+        url = f"{server}/v1/hooks/{name or 'PreToolUse'}"
+    else:
+        url = arguments[0]
+        server = url.split("/v1/hooks/")[0]
     client_id = setting("WITHHUMAN_CLIENT_ID", "client-id")
-    if client_id:
-        headers["x-withhuman-client"] = client_id
     key = setting("WITHHUMAN_KEY", "key")
-    if key:
-        headers["Authorization"] = f"Bearer {key}"
-    request = urllib.request.Request(sys.argv[1], data=raw, headers=headers, method="POST")
+
+    if isinstance(event, dict):
+        # A session the security team excepted keeps its start, without content, and nothing
+        # else. The project folder is where the session started.
+        folder = os.environ.get("CLAUDE_PROJECT_DIR") or event.get("cwd")
+        if name == "SessionStart":
+            fetch_exceptions(server, client_id, key)
+        exception = exception_for(folder, client_id) if marked else None
+        if exception is not None:
+            if name != "SessionStart":
+                return 0
+            event = {key_: event[key_] for key_ in ("session_id", "hook_event_name", "source",
+                                                    "cwd") if key_ in event}
+            event["withhuman_exception"] = exception
+            raw = json.dumps(event).encode("utf-8")
+        elif name in (None, "PreToolUse"):
+            # Reading the programs must never keep the event from being judged.
+            try:
+                attached = programs(event)
+            except Exception as error:  # noqa: BLE001
+                print(f"WithHuman: programs not attached: {error}", file=sys.stderr)
+                attached = []
+            if attached:
+                event["withhuman_programs"] = attached
+                raw = json.dumps(event).encode("utf-8")
+
+    request = urllib.request.Request(url, data=raw, headers=auth_headers(client_id, key),
+                                     method="POST")
     try:
         with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
             body = response.read()

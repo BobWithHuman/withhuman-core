@@ -67,13 +67,19 @@ The PostgreSQL `reindex-paragraphs` command runs with the Generator and Decision
 paragraphs and removes their old classifications and paragraph-level cause links. It retains
 original token keys and result-level links.
 
-Configure a Claude Code project against the local gateway:
+Set Claude Code up against the local gateway, for every project of this user (the hooks go into
+`~/.claude/settings.json`; earlier per-project setups are taken out):
 
 ```sh
-python3 deploy/client/configure.py \
-  --project /path/to/project --team personal --server http://127.0.0.1:3000 \
-  --hook "$PWD/deploy/client/hooks/pre-tool-use.py"
+python3 deploy/client/configure.py --team personal --server http://127.0.0.1:3000
 ```
+
+`--managed` (as root or Administrator) puts the hooks into Claude Code's managed settings
+instead, for every user of the device, as the drop-in `managed-settings.d/50-withhuman.json`.
+`--scope project` keeps the earlier per-project setup. The setup also schedules a daily check-in
+that reports the projects Claude Code ran in (paths and last use only), so projects the hooks
+never reached show as unprotected. In a container, pass the host's `WITHHUMAN_CLIENT_ID` (and
+`WITHHUMAN_KEY`) in, or mount `~/.config/withhuman` read-only, so the device keeps one ID.
 
 ### Keys and the agent inventory
 
@@ -99,6 +105,27 @@ tool call the user's agents make from then on (within `WITHHUMAN_KEY_CACHE_MS`, 
 Hooks without a valid key are taken without a user unless `WITHHUMAN_REQUIRE_KEY=on`, which
 denies their tool calls and refuses their other Hooks; turn it on before relying on revocation,
 since otherwise a user could drop the key.
+
+### The security team's viewer
+
+The viewer reads PostgreSQL directly, read-only, as `withhuman_viewer`. The Generator creates that
+login when `WITHHUMAN_VIEWER_PASSWORD` is set, and the schema grants it SELECT on the graph and
+inventory tables (`api_keys` without its hash) and nothing else. The personal stack publishes
+PostgreSQL on `127.0.0.1:15432` (`POSTGRES_PORT`):
+`postgres://withhuman_viewer:<WITHHUMAN_VIEWER_PASSWORD>@127.0.0.1:15432/withhuman`.
+
+The security team can also stop one session (`POST /v1/admin/sessions/<id>/stop`, released
+with `.../release`), review calls after the fact (`POST /v1/admin/reviews`), issue keys to
+automations (`{"kind": "service"}`), and except folders, teams or devices from protection
+(`POST /v1/admin/exceptions`): an excepted session sends only that it started. Every stop is in
+the `stop_audit` view. Benchmark runs name their client `bench/...` so the inventory can leave
+them out (`clients.test`).
+
+With `WITHHUMAN_MODEL_PROXY=on` and `AGENTGATEWAY_CONFIG=config.model-proxy.yaml`, the gateway
+also passes Claude Code's model requests to Anthropic (`ANTHROPIC_BASE_URL` set to the gateway;
+`configure.py --model-proxy`), after checking the same keys and session stops, and records each
+in `model_calls` without its content. A model request whose session no hook reported shows in
+`unprotected_model_calls`. Bedrock, Vertex and Foundry requests do not take this route.
 
 ### Codex CLI
 
