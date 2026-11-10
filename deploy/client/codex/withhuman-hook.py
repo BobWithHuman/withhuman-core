@@ -23,7 +23,8 @@ WITHHUMAN_MODE=observe lets everything through.
 A shell call whose directory the transcript does not show uniquely is denied. Required events
 stay in a durable outbox until the Collector acknowledges their stable delivery IDs.
 
-Environment: WITHHUMAN_CLIENT_ID (else ~/.config/withhuman/client-id), WITHHUMAN_REPO,
+Environment: WITHHUMAN_CLIENT_ID (else ~/.config/withhuman/client-id), WITHHUMAN_KEY (else
+~/.config/withhuman/key), WITHHUMAN_REPO,
 WITHHUMAN_MODE (enforce | observe), WITHHUMAN_HOOK_TIMEOUT (seconds for the whole run).
 
 Python 3.8 or later, standard library only; Windows and macOS.
@@ -84,16 +85,26 @@ def deny(reason):
     }).encode("utf-8")
 
 
-def client_id():
-    value = os.environ.get("WITHHUMAN_CLIENT_ID", "").strip()
+def setting(name, file):
+    """The environment variable `name`, else the setup's file of that name."""
+    value = os.environ.get(name, "").strip()
     if value:
         return value
     try:
-        path = os.path.join(os.path.expanduser("~"), ".config", "withhuman", "client-id")
-        with open(path, encoding="utf-8") as file:
-            return file.read().strip() or None
+        path = os.path.join(os.path.expanduser("~"), ".config", "withhuman", file)
+        with open(path, encoding="utf-8") as handle:
+            return handle.read().strip() or None
     except OSError:
         return None
+
+
+def client_id():
+    return setting("WITHHUMAN_CLIENT_ID", "client-id")
+
+
+def key():
+    """The user's WithHuman key, sent as `Authorization: Bearer`."""
+    return setting("WITHHUMAN_KEY", "key")
 
 
 def headers():
@@ -103,6 +114,8 @@ def headers():
     }
     if client_id():
         found["x-withhuman-client"] = client_id()
+    if key():
+        found["Authorization"] = f"Bearer {key()}"
     if os.environ.get("WITHHUMAN_REPO"):
         found["x-withhuman-repo"] = os.environ["WITHHUMAN_REPO"]
     return found
@@ -372,7 +385,7 @@ def check(server):
     os.makedirs(STATE_DIRECTORY, exist_ok=True)
     request = urllib.request.Request(
         f"{server.rstrip('/')}/v1/hooks/codex/PreToolUse", data=b"{}",
-        headers={"Content-Type": "application/json"}, method="POST")
+        headers=headers(), method="POST")
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
             status, body = response.status, response.read()
@@ -390,6 +403,11 @@ def check(server):
     if status == 404:
         raise BridgeError(f"{server} has no Codex route: update the engine to a version "
                           "with Codex support")
+    # The engine turns a call back before reading it when the key is missing, wrong or revoked.
+    refused = (answer.get("hookSpecificOutput") or {}) if isinstance(answer, dict) else {}
+    if status == 200 and refused.get("permissionDecision") == "deny":
+        raise BridgeError(f"{server} refused this device's WithHuman key: "
+                          f"{refused.get('permissionDecisionReason')}")
     raise BridgeError(f"{server} answered {status} to the Codex route")
 
 

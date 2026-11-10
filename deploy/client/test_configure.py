@@ -1,11 +1,14 @@
 """Tests for configure.py: python3 -m unittest discover deploy/client"""
 
+import http.server
 import json
 import importlib.util
 import os
+import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -17,9 +20,30 @@ SERVER = "https://withhuman.example.com"
 OLD_HTTP = {"type": "http", "url": "https://old.example.com/v1/hooks/PreToolUse",
             "headers": {"x-withhuman-client": "$WITHHUMAN_CLIENT_ID"}}
 OTHER = {"type": "command", "command": "echo mine"}
+KEY = "whk_0123456789abcdef_" + "ab" * 32
+HEADERS = {"x-withhuman-client": "$WITHHUMAN_CLIENT_ID", "Authorization": "Bearer $WITHHUMAN_KEY"}
 
 
-class ConfigureTest(unittest.TestCase):
+class Engine(http.server.BaseHTTPRequestHandler):
+    """The engine's registration endpoint, answering `status` and `body`."""
+    received = []
+    status = 200
+    body = b'{"client_id": "x"}'
+
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers["Content-Length"]))
+        Engine.received.append((self.path, {k.lower(): v for k, v in self.headers.items()},
+                                json.loads(body)))
+        self.send_response(Engine.status)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(Engine.body)
+
+    def log_message(self, *_):
+        pass
+
+
+class Setup(unittest.TestCase):
     def setUp(self):
         # Resolved, because configure.py resolves --project: on macOS the temporary directory is
         # /var/folders/... through a symlink to /private/var/folders/..., and comparing the two
@@ -35,12 +59,15 @@ class ConfigureTest(unittest.TestCase):
     def read(self, path):
         return json.loads(path.read_text())
 
-    def configure(self, *extra, server=SERVER):
-        # WITHHUMAN_SERVER is dropped so the developer's own environment cannot stand in for the
-        # address under test, nor hide a missing one.
+    def configure(self, *extra, server=SERVER, register=False):
+        # WITHHUMAN_SERVER and WITHHUMAN_KEY are dropped so the developer's own environment cannot
+        # stand in for what is under test. Registering is left to the tests about it.
         env = {**os.environ, "HOME": str(self.home), "USERPROFILE": str(self.home), "SHELL": "/bin/zsh"}
         env.pop("WITHHUMAN_SERVER", None)
+        env.pop("WITHHUMAN_KEY", None)
         arguments = ["--project", str(self.project), "--team", "lab"]
+        if not register:
+            arguments.append("--no-register")
         if os.name == "nt":
             arguments.append("--no-persist")  # Never setx in a unit test.
         if server is not None:
@@ -50,6 +77,9 @@ class ConfigureTest(unittest.TestCase):
             capture_output=True, text=True, env=env, timeout=30,
         )
 
+
+
+class ConfigureTest(Setup):
     @unittest.skipIf(os.name == "nt", "POSIX profile persistence; covered on Linux")
     def test_replaces_an_earlier_setup_and_keeps_everything_else(self):
         # User settings from an earlier setup.sh merge, beside the user's own hook and settings.
@@ -77,7 +107,7 @@ class ConfigureTest(unittest.TestCase):
         settings = self.read(self.project / ".claude" / "settings.json")
         self.assertEqual(settings["permissions"], {"allow": ["Bash(ls:*)"]})
         self.assertEqual(settings["hooks"]["Stop"], [{"hooks": [OTHER]}])
-        self.assertEqual(len(settings["hooks"]), 11)
+        self.assertEqual(len(settings["hooks"]), 12)
         pre = settings["hooks"]["PreToolUse"]
         self.assertEqual(len(pre), 1)
         command = pre[0]["hooks"][0]
@@ -89,7 +119,10 @@ class ConfigureTest(unittest.TestCase):
         self.assertEqual(hook.read_text(), (HERE / "hooks" / "pre-tool-use.py").read_text())
         post = settings["hooks"]["PostToolUse"][0]["hooks"][0]
         self.assertEqual(post["url"], f"{SERVER}/v1/hooks/PostToolUse")
-        self.assertEqual(post["headers"], {"x-withhuman-client": "$WITHHUMAN_CLIENT_ID"})
+        self.assertEqual(post["headers"], HEADERS)
+        self.assertEqual(post["allowedEnvVars"], ["WITHHUMAN_CLIENT_ID", "WITHHUMAN_KEY"])
+        end = settings["hooks"]["SessionEnd"][0]["hooks"][0]
+        self.assertEqual((end["type"], end["url"]), ("http", f"{SERVER}/v1/hooks/SessionEnd"))
 
         # Each file changed was kept as it was.
         for folder, name in [(self.home / ".claude", "settings.json"), (self.project / ".claude", "settings.json"),
@@ -140,7 +173,8 @@ class ConfigureTest(unittest.TestCase):
         env = {**os.environ, "HOME": str(self.home), "USERPROFILE": str(self.home), "SHELL": "/bin/zsh",
                "WITHHUMAN_SERVER": "http://127.0.0.1:3000/"}
         result = subprocess.run(
-            [sys.executable, str(CONFIGURE), "--project", str(self.project), "--team", "lab", "--no-persist"],
+            [sys.executable, str(CONFIGURE), "--project", str(self.project), "--team", "lab", "--no-persist",
+             "--no-register"],
             capture_output=True, text=True, env=env, timeout=30,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -166,6 +200,77 @@ class ConfigureTest(unittest.TestCase):
         self.assertFalse((self.project / ".claude" / "hooks" / "pre-tool-use.py").exists())
 
 
+class KeyAndRegistrationTest(Setup):
+    """--key and the registration with the engine."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.engine = http.server.HTTPServer(("127.0.0.1", 0), Engine)
+        threading.Thread(target=cls.engine.serve_forever, daemon=True).start()
+        cls.url = f"http://127.0.0.1:{cls.engine.server_port}"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.engine.shutdown()
+
+    def setUp(self):
+        super().setUp()
+        Engine.received.clear()
+        Engine.status = 200
+        Engine.body = b'{"client_id": "x"}'
+
+    @unittest.skipIf(os.name == "nt", "POSIX file modes and profile")
+    def test_keeps_the_key_private_and_exports_it(self):
+        result = self.configure("--key", KEY)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        path = self.home / ".config" / "withhuman" / "key"
+        self.assertEqual(path.read_text().strip(), KEY)
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        profile = (self.home / ".zshrc").read_text()
+        self.assertIn(f"export WITHHUMAN_KEY=\"$(cat '{path}')\"", profile)
+        self.assertNotIn(KEY, profile + result.stdout)
+        # Run again without --key: the kept key stays, and nothing changes.
+        result = self.configure()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.home / ".zshrc").read_text(), profile)
+        self.assertEqual(path.read_text().strip(), KEY)
+
+    def test_rejects_a_malformed_key_before_changing_anything(self):
+        result = self.configure("--key", "sk-not-ours")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not a WithHuman key", result.stderr)
+        self.assertFalse((self.project / ".claude" / "settings.json").exists())
+        self.assertFalse((self.home / ".config" / "withhuman" / "key").exists())
+
+    def test_registers_the_device_with_its_key(self):
+        result = self.configure("--key", KEY, server=self.url, register=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Device registered", result.stdout)
+        path, headers, body = Engine.received[0]
+        self.assertEqual(path, "/v1/clients/register")
+        self.assertEqual(headers["authorization"], f"Bearer {KEY}")
+        client_id = (self.home / ".config" / "withhuman" / "client-id").read_text().strip()
+        self.assertEqual(body["client_id"], client_id)
+        self.assertEqual((body["team"], body["agent"], body["project"]),
+                         ("lab", "claude", str(self.project)))
+        for field in ("hostname", "os", "os_user"):
+            self.assertTrue(body[field], field)
+        self.assertRegex(body["hook_version"], r"^[0-9a-f]{12}$")
+
+    def test_completes_the_setup_when_registration_fails(self):
+        Engine.status = 401
+        Engine.body = b'{"error": "key_required"}'
+        result = self.configure(server=self.url, register=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("WARNING: the device was not registered", result.stdout)
+        self.assertIn("requires a WithHuman key", result.stdout)
+        self.assertNotIn("authorization", Engine.received[0][1])
+        self.assertTrue((self.project / ".claude" / "settings.json").exists())
+        result = self.configure(server="http://127.0.0.1:9", register=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("could not be reached", result.stdout)
+
+
 class CodexConfigureTest(unittest.TestCase):
     def setUp(self):
         self.home = Path(tempfile.mkdtemp()).resolve()
@@ -176,9 +281,11 @@ class CodexConfigureTest(unittest.TestCase):
         env = {**os.environ, "HOME": str(self.home), "USERPROFILE": str(self.home),
                "SHELL": "/bin/zsh"}
         env.pop("WITHHUMAN_SERVER", None)
+        env.pop("WITHHUMAN_KEY", None)
         return subprocess.run(
             [sys.executable, str(CONFIGURE), "--agent", "codex", "--project", str(self.project),
-             "--team", "lab", "--server", SERVER, "--no-persist", "--skip-check", *extra],
+             "--team", "lab", "--server", SERVER, "--no-persist", "--skip-check", "--no-register",
+             *extra],
             capture_output=True, text=True, env=env, timeout=30,
         )
 
@@ -235,7 +342,7 @@ class CodexConfigureTest(unittest.TestCase):
         env = {**os.environ, "HOME": str(self.home), "USERPROFILE": str(self.home)}
         result = subprocess.run(
             [sys.executable, str(CONFIGURE), "--agent", "codex", "--project", str(self.project),
-             "--server", "http://127.0.0.1:9", "--no-persist"],
+             "--server", "http://127.0.0.1:9", "--no-persist", "--no-register"],
             capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=60,
         )
         self.assertNotEqual(result.returncode, 0)

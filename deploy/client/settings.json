@@ -7,10 +7,12 @@
             "type": "http",
             "url": "https://withhuman.example.com/v1/hooks/SessionStart",
             "headers": {
-              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID"
+              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID",
+              "Authorization": "Bearer $WITHHUMAN_KEY"
             },
             "allowedEnvVars": [
-              "WITHHUMAN_CLIENT_ID"
+              "WITHHUMAN_CLIENT_ID",
+              "WITHHUMAN_KEY"
             ]
           }
         ]
@@ -23,10 +25,12 @@
             "type": "http",
             "url": "https://withhuman.example.com/v1/hooks/UserPromptSubmit",
             "headers": {
-              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID"
+              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID",
+              "Authorization": "Bearer $WITHHUMAN_KEY"
             },
             "allowedEnvVars": [
-              "WITHHUMAN_CLIENT_ID"
+              "WITHHUMAN_CLIENT_ID",
+              "WITHHUMAN_KEY"
             ]
           }
         ]
@@ -49,10 +53,12 @@
             "type": "http",
             "url": "https://withhuman.example.com/v1/hooks/PostToolUse",
             "headers": {
-              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID"
+              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID",
+              "Authorization": "Bearer $WITHHUMAN_KEY"
             },
             "allowedEnvVars": [
-              "WITHHUMAN_CLIENT_ID"
+              "WITHHUMAN_CLIENT_ID",
+              "WITHHUMAN_KEY"
             ]
           }
         ]
@@ -65,10 +71,12 @@
             "type": "http",
             "url": "https://withhuman.example.com/v1/hooks/PostToolUseFailure",
             "headers": {
-              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID"
+              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID",
+              "Authorization": "Bearer $WITHHUMAN_KEY"
             },
             "allowedEnvVars": [
-              "WITHHUMAN_CLIENT_ID"
+              "WITHHUMAN_CLIENT_ID",
+              "WITHHUMAN_KEY"
             ]
           }
         ]
@@ -81,10 +89,12 @@
             "type": "http",
             "url": "https://withhuman.example.com/v1/hooks/SubagentStart",
             "headers": {
-              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID"
+              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID",
+              "Authorization": "Bearer $WITHHUMAN_KEY"
             },
             "allowedEnvVars": [
-              "WITHHUMAN_CLIENT_ID"
+              "WITHHUMAN_CLIENT_ID",
+              "WITHHUMAN_KEY"
             ]
           }
         ]
@@ -97,10 +107,12 @@
             "type": "http",
             "url": "https://withhuman.example.com/v1/hooks/SubagentStop",
             "headers": {
-              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID"
+              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID",
+              "Authorization": "Bearer $WITHHUMAN_KEY"
             },
             "allowedEnvVars": [
-              "WITHHUMAN_CLIENT_ID"
+              "WITHHUMAN_CLIENT_ID",
+              "WITHHUMAN_KEY"
             ]
           }
         ]
@@ -113,10 +125,12 @@
             "type": "http",
             "url": "https://withhuman.example.com/v1/hooks/ConfigChange",
             "headers": {
-              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID"
+              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID",
+              "Authorization": "Bearer $WITHHUMAN_KEY"
             },
             "allowedEnvVars": [
-              "WITHHUMAN_CLIENT_ID"
+              "WITHHUMAN_CLIENT_ID",
+              "WITHHUMAN_KEY"
             ]
           }
         ]
@@ -129,10 +143,12 @@
             "type": "http",
             "url": "https://withhuman.example.com/v1/hooks/MessageDisplay",
             "headers": {
-              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID"
+              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID",
+              "Authorization": "Bearer $WITHHUMAN_KEY"
             },
             "allowedEnvVars": [
-              "WITHHUMAN_CLIENT_ID"
+              "WITHHUMAN_CLIENT_ID",
+              "WITHHUMAN_KEY"
             ]
           }
         ]
@@ -145,10 +161,30 @@
             "type": "http",
             "url": "https://withhuman.example.com/v1/hooks/PostToolBatch",
             "headers": {
-              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID"
+              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID",
+              "Authorization": "Bearer $WITHHUMAN_KEY"
             },
             "allowedEnvVars": [
-              "WITHHUMAN_CLIENT_ID"
+              "WITHHUMAN_CLIENT_ID",
+              "WITHHUMAN_KEY"
+            ]
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "https://withhuman.example.com/v1/hooks/SessionEnd",
+            "headers": {
+              "x-withhuman-client": "$WITHHUMAN_CLIENT_ID",
+              "Authorization": "Bearer $WITHHUMAN_KEY"
+            },
+            "allowedEnvVars": [
+              "WITHHUMAN_CLIENT_ID",
+              "WITHHUMAN_KEY"
             ]
           }
         ]

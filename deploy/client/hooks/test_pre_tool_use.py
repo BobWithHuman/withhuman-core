@@ -62,11 +62,16 @@ class PreToolUseHookTest(unittest.TestCase):
         if executable:
             os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
 
-    def run_hook(self, event, url=None, client_id="team/device"):
-        env = dict(os.environ)
+    def run_hook(self, event, url=None, client_id="team/device", key=None, home=None):
+        # A home of its own, so the setup files of whoever runs the tests are not read.
+        home = home or tempfile.mkdtemp()
+        env = {**os.environ, "HOME": home, "USERPROFILE": home}
         env.pop("WITHHUMAN_CLIENT_ID", None)
+        env.pop("WITHHUMAN_KEY", None)
         if client_id:
             env["WITHHUMAN_CLIENT_ID"] = client_id
+        if key:
+            env["WITHHUMAN_KEY"] = key
         return subprocess.run(
             [sys.executable, HOOK, url or self.url],
             input=json.dumps(event).encode(),
@@ -126,8 +131,32 @@ class PreToolUseHookTest(unittest.TestCase):
         self.assertEqual(headers["x-withhuman-client"], "team/device")
         self.assertEqual(headers["content-type"], "application/json")
 
+        self.assertNotIn("authorization", headers)
+
         self.run_hook(event, client_id=None)
         self.assertNotIn("x-withhuman-client", Collector.received[-1][0])
+
+    def test_sends_the_key_and_reads_the_setups_files_without_the_environment(self):
+        event = {"session_id": "s", "tool_name": "Read", "tool_input": {"file_path": "/x"},
+                 "tool_use_id": "t", "cwd": self.workspace}
+        self.run_hook(event, key="whk_k")
+        self.assertEqual(Collector.received[-1][0]["authorization"], "Bearer whk_k")
+        # Claude Code started from an IDE or app has neither variable; the setup's files stand in.
+        home = tempfile.mkdtemp()
+        config = os.path.join(home, ".config", "withhuman")
+        os.makedirs(config)
+        for name, value in (("client-id", "team/from-file\n"), ("key", "whk_file\n")):
+            with open(os.path.join(config, name), "w") as file:
+                file.write(value)
+        self.run_hook(event, client_id=None, home=home)
+        headers = Collector.received[-1][0]
+        self.assertEqual(headers["x-withhuman-client"], "team/from-file")
+        self.assertEqual(headers["authorization"], "Bearer whk_file")
+        # The environment comes first.
+        self.run_hook(event, key="whk_env", home=home)
+        headers = Collector.received[-1][0]
+        self.assertEqual(headers["x-withhuman-client"], "team/device")
+        self.assertEqual(headers["authorization"], "Bearer whk_env")
 
     def test_fails_without_blocking_when_the_collector_is_unreachable(self):
         result = self.run_hook(self.bash("ls"), url="http://127.0.0.1:9/v1/hooks/PreToolUse")
