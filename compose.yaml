@@ -1,7 +1,8 @@
 # The engine for a personal Docker host: the whole stack on one machine.
 # deploy/docker/compose.yaml remains the development and E2E profile that builds from source.
-# This file pulls published images and leaves out the MCP fixture. Only the gateway takes a host
-# port, so PostgreSQL and Redis are reachable on the Compose network alone.
+# This file pulls published images and leaves out the MCP fixture. The gateway takes a host port,
+# and PostgreSQL one on 127.0.0.1 for the security team's viewer, which signs in as
+# withhuman_viewer (WITHHUMAN_VIEWER_PASSWORD); Redis is reachable on the Compose network alone.
 #
 # The variables below come from .env; see .env.example.
 name: withhuman
@@ -14,6 +15,9 @@ services:
       POSTGRES_USER: withhuman
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       POSTGRES_DB: withhuman
+    # The viewer reads the graph here: postgres://withhuman_viewer@127.0.0.1:15432/withhuman.
+    ports:
+      - "${POSTGRES_BIND:-127.0.0.1}:${POSTGRES_PORT:-15432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -69,6 +73,8 @@ services:
       DATABASE_URL: postgres://withhuman:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/withhuman
       DATABASE_POOL_SIZE: ${DATABASE_POOL_SIZE:-16}
       DECISION_URL: http://decision:8082
+      # Creates the viewer's read-only login; none while unset.
+      WITHHUMAN_VIEWER_PASSWORD: ${WITHHUMAN_VIEWER_PASSWORD:-}
     depends_on:
       postgres:
         condition: service_healthy

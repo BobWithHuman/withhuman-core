@@ -349,9 +349,23 @@ pub struct PgGraphRepository {
 impl PgGraphRepository {
     /// Connects to `database_url` (a libpq connection string or URL) and applies the schema.
     pub async fn connect(database_url: &str, pool_size: usize) -> Result<Self, RepositoryError> {
+        Self::connect_with_viewer(database_url, pool_size, None).await
+    }
+
+    /// As [`Self::connect`], first creating or updating the viewer's login
+    /// (`withhuman_viewer`) with `viewer_password` when there is one. The schema then grants it
+    /// what it reads.
+    pub async fn connect_with_viewer(
+        database_url: &str,
+        pool_size: usize,
+        viewer_password: Option<&str>,
+    ) -> Result<Self, RepositoryError> {
         let repository = Self {
             pool: pool(database_url, pool_size)?,
         };
+        if let Some(password) = viewer_password {
+            ensure_viewer(&repository.pool, password).await?;
+        }
         apply_schema(&repository.pool).await?;
         Ok(repository)
     }
@@ -876,6 +890,50 @@ pub(crate) fn pool(database_url: &str, size: usize) -> Result<Pool, RepositoryEr
         .max_size(size)
         .build()
         .map_err(|error| RepositoryError::Unavailable(error.to_string()))
+}
+
+/// The viewer's login: it reads, nothing else, in read-only transactions that cannot run long or
+/// hold many connections. Replicas starting together take turns on the schema lock.
+async fn ensure_viewer(pool: &Pool, password: &str) -> Result<(), RepositoryError> {
+    let result: Result<(), PgError> = async {
+        let mut client = pool.get().await.map_err(|error| {
+            PgError::Repository(RepositoryError::Unavailable(error.to_string()))
+        })?;
+        let tx = client.transaction().await?;
+        tx.execute(&format!("SELECT pg_advisory_xact_lock({SCHEMA_LOCK})"), &[])
+            .await?;
+        // The password goes into the statement as a quoted literal; roles take no parameters.
+        let statement: String = tx
+            .query_one(
+                "SELECT format(CASE WHEN EXISTS (SELECT 1 FROM pg_roles \
+                   WHERE rolname = 'withhuman_viewer') THEN 'ALTER' ELSE 'CREATE' END \
+                   || ' ROLE withhuman_viewer LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB \
+                   NOCREATEROLE NOINHERIT NOREPLICATION CONNECTION LIMIT 20', $1::text)",
+                &[&password],
+            )
+            .await?
+            .get(0);
+        tx.batch_execute(&statement).await?;
+        tx.batch_execute(
+            "ALTER ROLE withhuman_viewer SET default_transaction_read_only = on; \
+             ALTER ROLE withhuman_viewer SET statement_timeout = '60s'; \
+             ALTER ROLE withhuman_viewer SET idle_in_transaction_session_timeout = '60s'",
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+    .await;
+    // The statement holds the password, so a failure is reported without it.
+    result.map_err(|error| match error {
+        PgError::Postgres(error) => RepositoryError::Query(format!(
+            "could not set up the viewer login withhuman_viewer: {}",
+            error
+                .as_db_error()
+                .map_or("connection failed", |db| db.message())
+        )),
+        PgError::Repository(error) => error,
+    })
 }
 
 pub(crate) async fn apply_schema(pool: &Pool) -> Result<(), RepositoryError> {
