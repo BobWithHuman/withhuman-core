@@ -9,9 +9,17 @@ use withhuman_generator::{
 async fn main() -> io::Result<()> {
     let config = GeneratorConfig::from_env()?;
     let settings = PostgresSettings::from_env()?;
-    let repository = PgGraphRepository::connect(&settings.database_url, settings.pool_size)
-        .await
-        .map_err(io::Error::other)?;
+    // The security team's viewer reads the graph through its own login (WITHHUMAN_VIEWER_PASSWORD).
+    let viewer_password = env::var("WITHHUMAN_VIEWER_PASSWORD")
+        .ok()
+        .filter(|password| !password.is_empty());
+    let repository = PgGraphRepository::connect_with_viewer(
+        &settings.database_url,
+        settings.pool_size,
+        viewer_password.as_deref(),
+    )
+    .await
+    .map_err(io::Error::other)?;
     if env::args().nth(1).as_deref() == Some("reindex-paragraphs") {
         let report = repository
             .reindex_paragraphs()

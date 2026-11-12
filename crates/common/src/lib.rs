@@ -29,3 +29,53 @@ pub fn make_postgres_text(text: &mut String) {
         *text = stored;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::POSTGRES_SCHEMA;
+
+    /// The table names after `marker` up to the next `;`, in `sql`.
+    fn listed(sql: &str, marker: &str) -> Vec<String> {
+        let start = sql.find(marker).expect("the viewer's grants") + marker.len();
+        let end = start + sql[start..].find(';').expect("a statement end");
+        sql[start..end]
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .filter(|word| !word.is_empty() && *word != "TO" && *word != "withhuman_viewer")
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// The viewer can read every table but what is kept from it, so a new table cannot be
+    /// forgotten: add it to the viewer's grants (or to `withheld` with a reason).
+    #[test]
+    fn the_viewer_reads_every_table() {
+        let tables: Vec<&str> = POSTGRES_SCHEMA
+            .lines()
+            .filter_map(|line| line.strip_prefix("CREATE TABLE IF NOT EXISTS "))
+            .map(|rest| rest.split_whitespace().next().unwrap())
+            .collect();
+        let granted = listed(POSTGRES_SCHEMA, "GRANT SELECT ON\n");
+        // Readable by column, without its hash.
+        let by_column = ["api_keys"];
+        for table in &tables {
+            assert!(
+                granted.iter().any(|name| name == table) || by_column.contains(table),
+                "the viewer cannot read {table}: grant it in postgres_schema.sql"
+            );
+        }
+        for name in &granted {
+            assert!(
+                tables.contains(&name.as_str()),
+                "{name} is granted but not created"
+            );
+        }
+        assert!(!granted.iter().any(|name| name == "api_keys"));
+        assert!(POSTGRES_SCHEMA.contains("ON api_keys TO withhuman_viewer"));
+        let columns = POSTGRES_SCHEMA
+            .split("GRANT SELECT (")
+            .nth(1)
+            .and_then(|rest| rest.split(')').next())
+            .unwrap();
+        assert!(!columns.split(',').any(|column| column.trim() == "hash"));
+    }
+}

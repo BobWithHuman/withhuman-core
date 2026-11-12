@@ -312,3 +312,32 @@ $$;
 CREATE INDEX IF NOT EXISTS sessions_client ON sessions (client_id);
 CREATE INDEX IF NOT EXISTS sessions_user ON sessions (user_email);
 CREATE INDEX IF NOT EXISTS sessions_last_seen ON sessions (last_seen_at);
+
+
+-- Indexes for reading across sessions: every Call in a period, and every mention of a
+-- sensitive token (any category but `address`).
+CREATE INDEX IF NOT EXISTS nodes_calls_observed_at ON nodes (observed_at) WHERE kind = 'Call';
+CREATE INDEX IF NOT EXISTS tokens_sensitive ON tokens (category, session_id)
+  WHERE category <> 'address';
+
+-- What the security team's viewer reads: role `withhuman_viewer`, which the Generator creates
+-- when WITHHUMAN_VIEWER_PASSWORD is set. SELECT only, and only here: every table of this file
+-- is listed below (a test checks it), and grants made elsewhere, such as an earlier viewer's
+-- DELETE, are taken back. `api_keys` is readable without its `hash`.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'withhuman_viewer') THEN
+    EXECUTE format('REVOKE ALL ON ALL TABLES IN SCHEMA %I FROM withhuman_viewer', current_schema());
+    EXECUTE format('REVOKE ALL ON ALL SEQUENCES IN SCHEMA %I FROM withhuman_viewer', current_schema());
+    EXECUTE format('GRANT USAGE ON SCHEMA %I TO withhuman_viewer', current_schema());
+    GRANT SELECT ON
+      sessions, event_commits, nodes, subgraphs, paragraphs, tokens, token_mentions, files,
+      file_refs, cause_edges, pending_paragraph_enrichments, pending_request_continuations,
+      clients, client_projects, users, key_events
+    TO withhuman_viewer;
+    GRANT SELECT (key_id, user_email, created_at, created_by, note, last_used_at, revoked_at,
+      revoked_by, revoke_reason, first_denied_at, last_denied_at, denied_count)
+    ON api_keys TO withhuman_viewer;
+  END IF;
+END
+$$;

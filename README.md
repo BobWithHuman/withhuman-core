@@ -100,6 +100,14 @@ Hooks without a valid key are taken without a user unless `WITHHUMAN_REQUIRE_KEY
 denies their tool calls and refuses their other Hooks; turn it on before relying on revocation,
 since otherwise a user could drop the key.
 
+### The security team's viewer
+
+The viewer reads PostgreSQL directly, read-only, as `withhuman_viewer`. The Generator creates that
+login when `WITHHUMAN_VIEWER_PASSWORD` is set, and the schema grants it SELECT on the graph and
+inventory tables (`api_keys` without its hash) and nothing else. The personal stack publishes
+PostgreSQL on `127.0.0.1:15432` (`POSTGRES_PORT`):
+`postgres://withhuman_viewer:<WITHHUMAN_VIEWER_PASSWORD>@127.0.0.1:15432/withhuman`.
+
 ### Codex CLI
 
 Set up a Codex CLI project with the same one-line installers, choosing Codex. In the folder you
