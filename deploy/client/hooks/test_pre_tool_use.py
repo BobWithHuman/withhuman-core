@@ -62,12 +62,15 @@ class PreToolUseHookTest(unittest.TestCase):
         if executable:
             os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
 
-    def run_hook(self, event, url=None, client_id="team/device", key=None, home=None):
+    def run_hook(self, event, url=None, client_id="team/device", key=None, home=None, env=None):
         # A home of its own, so the setup files of whoever runs the tests are not read.
         home = home or tempfile.mkdtemp()
+        extra = env or {}
         env = {**os.environ, "HOME": home, "USERPROFILE": home}
         env.pop("WITHHUMAN_CLIENT_ID", None)
         env.pop("WITHHUMAN_KEY", None)
+        env.pop("WITHHUMAN_HOOK_ON_UNREACHABLE", None)
+        env.update(extra)
         if client_id:
             env["WITHHUMAN_CLIENT_ID"] = client_id
         if key:
@@ -158,10 +161,19 @@ class PreToolUseHookTest(unittest.TestCase):
         self.assertEqual(headers["x-withhuman-client"], "team/device")
         self.assertEqual(headers["authorization"], "Bearer whk_env")
 
-    def test_fails_without_blocking_when_the_collector_is_unreachable(self):
+    def test_denies_when_the_collector_is_unreachable(self):
         result = self.run_hook(self.bash("ls"), url="http://127.0.0.1:9/v1/hooks/PreToolUse")
-        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(b"unreachable", result.stderr)
+        output = json.loads(result.stdout)["hookSpecificOutput"]
+        self.assertEqual(output["permissionDecision"], "deny")
+        self.assertEqual(output["hookEventName"], "PreToolUse")
+
+    def test_can_still_fail_without_blocking_when_asked(self):
+        result = self.run_hook(self.bash("ls"), url="http://127.0.0.1:9/v1/hooks/PreToolUse",
+                               env={"WITHHUMAN_HOOK_ON_UNREACHABLE": "allow"})
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, b"")
 
 
 if __name__ == "__main__":

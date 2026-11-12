@@ -163,6 +163,8 @@ pub struct TraceSettings {
     pub max_hops: usize,
     /// At most this many of the session's intents, the most recent first.
     pub max_intents: usize,
+    /// Experimental changes to the second question and the verdict, all off by default.
+    pub check: crate::check::CheckSettings,
 }
 
 impl Default for TraceSettings {
@@ -175,6 +177,7 @@ impl Default for TraceSettings {
             text_chars: 1_500,
             max_hops: 50,
             max_intents: 20,
+            check: crate::check::CheckSettings::default(),
         }
     }
 }

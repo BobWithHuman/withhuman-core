@@ -1,6 +1,7 @@
 //! Shared technical infrastructure for WithHuman services.
 
 pub mod chunking;
+pub mod grade;
 pub mod graph_store;
 pub mod hidden;
 pub mod intent;

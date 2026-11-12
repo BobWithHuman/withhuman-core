@@ -108,6 +108,28 @@ inventory tables (`api_keys` without its hash) and nothing else. The personal st
 PostgreSQL on `127.0.0.1:15432` (`POSTGRES_PORT`):
 `postgres://withhuman_viewer:<WITHHUMAN_VIEWER_PASSWORD>@127.0.0.1:15432/withhuman`.
 
+### Hardening switches
+
+When the engine gives no judgment (unreachable, an error, no answer in time) a tool call is
+denied: the Collector defaults to `WITHHUMAN_ON_FAILURE=closed`, and `pre-tool-use.py` denies when
+it cannot reach the Collector (`WITHHUMAN_HOOK_ON_UNREACHABLE=allow` restores the old non-blocking
+exit). A stored verdict is kept 5 minutes (`WITHHUMAN_VERDICT_TTL_SECS`, was 1 hour).
+
+These switches are off by default; off, the check is as before. Set them in `.env`:
+
+| Switch | Effect |
+|---|---|
+| `WITHHUMAN_CHECK_LINE_QUESTION` | A file change is asked about each line it adds; a document the user pointed to counts only for the task it describes |
+| `WITHHUMAN_CHECK_FILE_ALWAYS` | A file change is never cleared on the first question alone |
+| `WITHHUMAN_CHECK_SHELL_WRITES` | A shell command that writes files is checked like a file change |
+| `WITHHUMAN_CHECK_RESTORE_AWARE` | A change that only undoes the session's own earlier changes to a file is allowed |
+| `WITHHUMAN_CHECK_SHELL_SPLIT` / `_SHELL_DECODE` | Jev sees a several-step command step by step, and text built from base64, character codes or joined literals |
+| `WITHHUMAN_GRADES` | Each call is graded 0, 1, 2-1, 2-2, 3-1 or 3-2 by how far its effect can be undone (KISA agentic-AI zero-trust guide, table 2-5) and the grade is recorded in the trace; it does not change a verdict |
+| `WITHHUMAN_DEGRADED_MODE` | After `WITHHUMAN_DEGRADED_FAILURES` (3) Jev failures in a row, or at once on 401/402/403/429, the rules judge alone for `WITHHUMAN_DEGRADED_SECONDS` (60): grade 0 and 1 are allowed (except a secret read, a web fetch or an edit of CI or hooks), grade 2 and 3 are reviewed, a safeguard change is denied |
+| `WITHHUMAN_CHUNK_BREAK_AT_RULES` (Generator) | A `---`, `***` or `___` line starts a new paragraph, so a note appended after it is traced apart from the text before |
+| `WITHHUMAN_CODEX_FAILED_OUTPUT` (Collector) | A Codex shell command that exits non-zero is recorded with its output, as Claude Code records a failed Bash command |
+| `WITHHUMAN_FAILURE_BY_GRADE` (Collector) | With `WITHHUMAN_ASK=ask`, a grade 2 or 3 call the engine could not judge is put to the user instead of denied (Claude Code only) |
+
 ### Codex CLI
 
 Set up a Codex CLI project with the same one-line installers, choosing Codex. In the folder you

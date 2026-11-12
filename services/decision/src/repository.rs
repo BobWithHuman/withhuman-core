@@ -72,6 +72,17 @@ pub trait DecisionRepository: Send + Sync + 'static {
         Ok(())
     }
 
+    /// The file changes the session's earlier Calls made to `path` and that ran (their result is
+    /// in the graph), oldest first: what a file change that undoes them is checked against.
+    async fn earlier_file_changes(
+        &self,
+        _session_id: &str,
+        _call_order: u64,
+        _path: &str,
+    ) -> Result<Vec<crate::check::FileDiff>, RepositoryError> {
+        Ok(Vec::new())
+    }
+
     /// Records that tracing the Call failed.
     async fn mark_unresolved(
         &self,

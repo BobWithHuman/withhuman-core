@@ -604,6 +604,12 @@ async fn judge_call(
     let is_mcp = request.tool_name.starts_with("mcp__");
     let tool_name = request.tool_name.clone();
     let arguments = request.tool_input.clone();
+    // The Call's rule grade, for when the engine gives no judgment.
+    let graded = if service.config.failure_by_grade {
+        withhuman_common::grade::grade(&tool_name, &arguments)
+    } else {
+        None
+    };
     let deadline_ms = u64::try_from(service.config.decision_budget.as_millis()).ok();
     let event = match service
         .normalizer
@@ -617,7 +623,7 @@ async fn judge_call(
         .await
     {
         Ok(event) => tagged(event, tag),
-        Err(error) => return hook_failure(service, policy, error),
+        Err(error) => return hook_failure(service, policy, graded, error),
     };
     let result = tokio::time::timeout(
         service.config.decision_budget,
@@ -626,13 +632,14 @@ async fn judge_call(
     .await;
     let response = match result {
         Ok(Ok(response)) => response,
-        Ok(Err(error)) => return hook_failure(service, policy, error),
-        Err(_) => return hook_failure(service, policy, GeneratorError::Timeout),
+        Ok(Err(error)) => return hook_failure(service, policy, graded, error),
+        Err(_) => return hook_failure(service, policy, graded, GeneratorError::Timeout),
     };
     let Some(decision) = response.decision_response else {
         return hook_failure(
             service,
             policy,
+            graded,
             GeneratorError::InvalidResponse("missing decision_response".to_owned()),
         );
     };
@@ -640,6 +647,7 @@ async fn judge_call(
         return hook_failure(
             service,
             policy,
+            graded,
             GeneratorError::InvalidResponse("invalid decision semantics".to_owned()),
         );
     }
@@ -657,14 +665,14 @@ async fn judge_call(
         return StatusCode::OK.into_response();
     }
     if tag.is_some() && policy.failure == FailurePolicy::Closed && stored.is_err() {
-        return hook_failure(service, policy, "verdict store unavailable");
+        return hook_failure(service, policy, graded, "verdict store unavailable");
     }
     if !enforced_at_hook {
         // AgentGateway enforces this call and needs the stored verdict; without it the
         // extAuthz check denies, so the Hook answer follows the failure policy.
         return match stored {
             Ok(()) => StatusCode::OK.into_response(),
-            Err(error) => hook_failure(service, policy, error),
+            Err(error) => hook_failure(service, policy, graded, error),
         };
     }
     // The verdict is in hand, so a store failure must not override it (a DENY must never turn
@@ -1015,6 +1023,7 @@ pub(crate) fn blocking_response(
 fn hook_failure(
     service: &CollectorService,
     policy: HookPolicy,
+    graded: Option<withhuman_common::grade::Graded>,
     error: impl fmt::Display,
 ) -> Response {
     // Record and shadow modes observe only: a failure must not block either. (Record mode never
@@ -1024,6 +1033,28 @@ fn hook_failure(
     }
     match policy.failure {
         FailurePolicy::Open => StatusCode::OK.into_response(),
+        // A person can still decide a hard or impossible to undo Call when the
+        // client asks; anything else is blocked, reads included, since no judgment stands
+        // behind it.
+        FailurePolicy::Closed
+            if !policy.codex
+                && policy.review == ReviewPolicy::Ask
+                && graded.is_some_and(|graded| graded.grade.level() >= 2) =>
+        {
+            let graded = graded.unwrap_or(withhuman_common::grade::Graded {
+                grade: withhuman_common::grade::Grade::TWO_ONE,
+                reason: "unknown",
+            });
+            blocking_response(
+                PermissionDecision::Ask,
+                format!(
+                    "WithHuman이 이 호출을 판정하지 못했습니다({error}). {}({}: {})이라 실행 여부를 직접 확인해 주세요.",
+                    graded.grade.label(),
+                    graded.grade.as_str(),
+                    graded.describe()
+                ),
+            )
+        }
         FailurePolicy::Closed => {
             let mut response = blocking_response(
                 PermissionDecision::Deny,

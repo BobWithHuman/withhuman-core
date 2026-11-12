@@ -6,6 +6,9 @@ const DEFAULT_BIND_ADDRESS: &str = "0.0.0.0:8080";
 const DEFAULT_EXT_AUTHZ_ADDRESS: &str = "0.0.0.0:9000";
 const DEFAULT_GENERATOR_URL: &str = "http://generator:8081";
 
+/// What a Call gets when the engine gave no judgment (an error or no answer in time). Closed,
+/// a deny, unless `WITHHUMAN_ON_FAILURE=open`: with no judgment there is nothing to allow the
+/// Call on, and an engine that merely fails must not lift every control.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailurePolicy {
     Open,
@@ -27,6 +30,9 @@ pub struct CollectorConfig {
     pub enforcement_mode: EnforcementMode,
     pub failure_policy: FailurePolicy,
     pub review_policy: ReviewPolicy,
+    /// When the engine gives no judgment, ask about grade 2 and 3 Calls (when the
+    /// client asks at all) rather than block them.
+    pub failure_by_grade: bool,
     pub enforce_mcp_at_hook: bool,
     pub watch_paths: Vec<String>,
     pub verdict_capacity: usize,
@@ -66,13 +72,14 @@ impl Default for CollectorConfig {
             generator_url: DEFAULT_GENERATOR_URL.to_owned(),
             decision_budget: Duration::from_millis(4_200),
             enforcement_mode: EnforcementMode::Enforce,
-            failure_policy: FailurePolicy::Open,
+            failure_policy: FailurePolicy::Closed,
             review_policy: ReviewPolicy::Deny,
+            failure_by_grade: false,
             enforce_mcp_at_hook: false,
             watch_paths: Vec::new(),
             verdict_capacity: 10_000,
             redis_url: None,
-            verdict_ttl: Duration::from_secs(3_600),
+            verdict_ttl: Duration::from_secs(300),
             session_ttl: Duration::from_secs(604_800),
             intent_capture: true,
             intent_wait: Duration::from_millis(3_000),
@@ -111,7 +118,9 @@ impl CollectorConfig {
             ));
         }
 
-        let verdict_ttl = parse_env("WITHHUMAN_VERDICT_TTL_SECS", 3_600)?;
+        // AgentGateway reads a verdict seconds after the Hook stores it; one kept longer
+        // only risks being used for a Call it no longer fits.
+        let verdict_ttl = parse_env("WITHHUMAN_VERDICT_TTL_SECS", 300)?;
         if verdict_ttl == 0 {
             return Err(invalid(
                 "WITHHUMAN_VERDICT_TTL_SECS must be greater than zero",
@@ -140,7 +149,7 @@ impl CollectorConfig {
                     _ => None,
                 }
             })?,
-            failure_policy: match_env("WITHHUMAN_ON_FAILURE", FailurePolicy::Open, |value| {
+            failure_policy: match_env("WITHHUMAN_ON_FAILURE", FailurePolicy::Closed, |value| {
                 match value {
                     "open" => Some(FailurePolicy::Open),
                     "closed" => Some(FailurePolicy::Closed),
@@ -152,6 +161,8 @@ impl CollectorConfig {
                 "ask" => Some(ReviewPolicy::Ask),
                 _ => None,
             })?,
+            failure_by_grade: env::var("WITHHUMAN_FAILURE_BY_GRADE")
+                .is_ok_and(|value| matches!(value.as_str(), "1" | "true")),
             enforce_mcp_at_hook: env::var("WITHHUMAN_MCP_ENFORCE")
                 .is_ok_and(|value| value == "hook"),
             watch_paths: list_env("WITHHUMAN_WATCH_PATHS"),

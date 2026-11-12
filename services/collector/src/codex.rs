@@ -16,7 +16,7 @@
 //! | `update_plan` / `spawn_agent` / `view_image` | `TodoWrite` / `Task` / `Read` |
 //! | any other, MCP tools included | the same name and input |
 
-use std::fmt;
+use std::{fmt, sync::LazyLock};
 
 use serde_json::{Map, Value, json};
 use withhuman_contracts::{
@@ -115,11 +115,54 @@ impl fmt::Display for TranslateError {
 
 impl std::error::Error for TranslateError {}
 
+/// How Codex events are translated, beyond the shell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CodexOptions {
+    /// A shell command that ran and exited non-zero is sent as a
+    /// PostToolUse carrying its output, as Claude Code reports a Bash command, instead of a
+    /// PostToolUseFailure with only its exit code. A third of Codex's shell commands end
+    /// non-zero (a missing test runner at the end of a reading command), and what they printed
+    /// (an injected instruction included) never reached the graph.
+    pub failed_output_kept: bool,
+}
+
+impl CodexOptions {
+    /// Read once from `WITHHUMAN_CODEX_FAILED_OUTPUT` (`1` on); unset keeps the old translation.
+    pub fn from_env() -> Self {
+        static OPTIONS: LazyLock<CodexOptions> = LazyLock::new(|| CodexOptions {
+            failed_output_kept: matches!(
+                std::env::var("WITHHUMAN_CODEX_FAILED_OUTPUT").as_deref(),
+                Ok("1") | Ok("true")
+            ),
+        });
+        *OPTIONS
+    }
+}
+
+/// The text a shell command printed, as Codex reports it; none when it printed nothing.
+fn printed(response: Option<&Value>) -> Option<String> {
+    let text = match response? {
+        Value::String(output) => output.clone(),
+        other => withhuman_common::origin::tool_output(other)?,
+    };
+    (!text.trim().is_empty()).then_some(text)
+}
+
 /// The Claude Code request for one Codex Hook.
 pub fn translate(
     event: CodexHookEvent,
     input: CodexHookInput,
     shell: CodexShell,
+) -> Result<Translation, TranslateError> {
+    translate_with(event, input, shell, CodexOptions::from_env())
+}
+
+/// [`translate`] with explicit `options`.
+pub fn translate_with(
+    event: CodexHookEvent,
+    input: CodexHookInput,
+    shell: CodexShell,
+    options: CodexOptions,
 ) -> Result<Translation, TranslateError> {
     let mut workdir_unknown = false;
     let request = match event {
@@ -166,7 +209,35 @@ pub fn translate(
             let tool_use_id = input
                 .tool_use_id
                 .ok_or(TranslateError::Missing("tool_use_id"))?;
+            let kept_output = match &input.withhuman_failure {
+                Some(_)
+                    if options.failed_output_kept
+                        && call.shell
+                        && matches!(call.tool_name.as_str(), "Bash" | "PowerShell") =>
+                {
+                    printed(input.tool_response.as_ref())
+                }
+                _ => None,
+            };
             match input.withhuman_failure {
+                Some(error) if kept_output.is_some() => {
+                    Translated::PostToolUse(PostToolUseRequest {
+                        session_id: input.session_id,
+                        hook_event_name: Some(HookEventName::PostToolUse),
+                        tool_response: json!({
+                            "stdout": kept_output.unwrap_or_default(),
+                            "stderr": format!("({error})"),
+                        }),
+                        tool_name: call.tool_name,
+                        tool_input: Some(call.tool_input),
+                        tool_use_id,
+                        cwd: call.cwd,
+                        prompt_id: input.turn_id,
+                        agent_id: input.agent_id,
+                        agent_type: input.agent_type,
+                        permission_mode: input.permission_mode,
+                    })
+                }
                 Some(error) => Translated::PostToolUseFailure(PostToolUseFailureRequest {
                     session_id: input.session_id,
                     hook_event_name: Some(HookEventName::PostToolUseFailure),
