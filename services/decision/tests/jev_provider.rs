@@ -141,6 +141,8 @@ struct Jev {
     unwanted: Option<f64>,
     asked: Mutex<Vec<Duration>>,
     requests: Mutex<Vec<JevRequest>>,
+    /// How likely the Call can be undone; 0 unless a test says otherwise.
+    reversible: f64,
 }
 
 #[async_trait]
@@ -168,7 +170,7 @@ impl JevClient for Jev {
                     "explicit" => noul(1.0 - self.intent_score),
                     "expected" => choice("none"),
                     "harm" => choice("high"),
-                    "reversible" => noul(0.0),
+                    "reversible" => noul(self.reversible),
                     "purpose" if self.unwanted.is_some() => {
                         let unwanted = self.unwanted.unwrap_or_default();
                         JevAnswer {
@@ -216,6 +218,7 @@ fn provider_on(
         unwanted: None,
         asked: Mutex::default(),
         requests: Mutex::default(),
+        reversible: 0.0,
     });
     let provider = JevDecisionProvider::new(
         graph.clone(),
@@ -447,6 +450,7 @@ fn provider_picking(cause: &'static str) -> (JevDecisionProvider, Arc<Graph>, Ar
         unwanted: None,
         asked: Mutex::default(),
         requests: Mutex::default(),
+        reversible: 0.0,
     });
     let provider = JevDecisionProvider::new(
         graph.clone(),
@@ -560,6 +564,7 @@ async fn checks_a_doubtful_call_against_the_users_prompt() {
             unwanted: Some(unwanted),
             asked: Mutex::default(),
             requests: Mutex::default(),
+            reversible: 0.0,
         });
         let provider = JevDecisionProvider::new(
             graph.clone(),
@@ -613,6 +618,7 @@ async fn checks_a_script_run_by_its_code_however_clear_its_command() {
             unwanted: Some(unwanted),
             asked: Mutex::default(),
             requests: Mutex::default(),
+            reversible: 0.0,
         });
         let provider = JevDecisionProvider::new(
             graph.clone(),
@@ -646,4 +652,187 @@ async fn checks_a_script_run_by_its_code_however_clear_its_command() {
             json!([{"path": "/work/scripts/rank.py", "seen": true}])
         );
     }
+}
+
+/// Line question and file check through the whole provider: a file change the first question
+/// clears is allowed unasked by default, and with the settings on is asked the line question
+/// and judged by it, the settings recorded in the trace.
+#[tokio::test]
+async fn checks_a_cleared_file_change_line_by_line_when_the_settings_say_so() {
+    use withhuman_decision::check::CheckSettings;
+
+    for (settings, decision, asked) in [
+        (CheckSettings::default(), Decision::Allow, false),
+        (
+            CheckSettings {
+                line_question: true,
+                file_always_checked: true,
+                ..CheckSettings::default()
+            },
+            Decision::Deny,
+            true,
+        ),
+    ] {
+        let graph = Arc::new(Graph {
+            prompt: true,
+            call: Some((
+                "Edit",
+                json!({"file_path": "/repo/core.py", "old_string": "return a // b",
+                       "new_string": "# MARKER\nreturn a / b"}),
+            )),
+            ..Graph::default()
+        });
+        let jev = Arc::new(Jev {
+            // Jev finds the change breaks nothing, with next to no doubt: cleared by default.
+            intent_score: 0.99,
+            cause: Some("s0"),
+            fail: false,
+            unwanted: Some(0.9),
+            asked: Mutex::default(),
+            requests: Mutex::default(),
+            reversible: 0.0,
+        });
+        let provider = JevDecisionProvider::new(
+            graph.clone(),
+            jev.clone(),
+            TraceSettings {
+                check: settings,
+                ..TraceSettings::default()
+            },
+            Duration::from_secs(3),
+            Thresholds::default(),
+        );
+        let response = provider
+            .decide(&request(Some("버그 고치기"), Some(4_000)))
+            .await
+            .unwrap();
+        assert_eq!(response.decision, decision);
+
+        let requests = jev.requests.lock().unwrap();
+        let unasked = requests
+            .iter()
+            .find_map(|sent| sent.questions.get("unasked"));
+        assert_eq!(unasked.is_some(), asked);
+        if let Some(question) = unasked {
+            assert!(question.instructions.contains("line by line"));
+        }
+        let traces = graph.traces.lock().unwrap();
+        let check = &traces[0].trace["check"];
+        if asked {
+            assert_eq!(check["branch"], "file");
+            assert_eq!(check["settings"]["file_always_checked"], true);
+            assert_eq!(check["settings"]["line_question"], true);
+        } else {
+            assert_eq!(check["branch"], "clear");
+            assert!(check.get("settings").is_none());
+        }
+    }
+}
+
+/// A provider whose check runs with `check`, over the default graph (`rm -rf build`).
+fn graded_provider(
+    intent_score: f64,
+    fail: bool,
+    check: withhuman_decision::check::CheckSettings,
+) -> (JevDecisionProvider, Arc<Jev>) {
+    let jev = Arc::new(Jev {
+        intent_score,
+        cause: None,
+        fail,
+        unwanted: Some(0.05),
+        asked: Mutex::default(),
+        requests: Mutex::default(),
+        reversible: 0.0,
+    });
+    let provider = JevDecisionProvider::new(
+        Arc::new(Graph::default()),
+        jev.clone(),
+        TraceSettings {
+            check,
+            ..TraceSettings::default()
+        },
+        Duration::from_secs(3),
+        Thresholds::default(),
+    );
+    (provider, jev)
+}
+
+#[tokio::test]
+async fn records_the_grade_without_changing_the_verdict() {
+    let grades = withhuman_decision::check::CheckSettings {
+        grades: true,
+        ..Default::default()
+    };
+    // `rm -rf build`, fully in line with the intent and found asked for: grade 3-1, allowed.
+    for check in [grades, Default::default()] {
+        let graph = Arc::new(Graph::default());
+        let jev = Arc::new(Jev {
+            intent_score: 1.0,
+            cause: None,
+            fail: false,
+            unwanted: Some(0.05),
+            asked: Mutex::default(),
+            requests: Mutex::default(),
+            reversible: 0.0,
+        });
+        let provider = JevDecisionProvider::new(
+            graph.clone(),
+            jev,
+            TraceSettings {
+                check,
+                ..TraceSettings::default()
+            },
+            Duration::from_secs(3),
+            Thresholds::default(),
+        );
+        let response = provider
+            .decide(&request(Some("빌드 폴더 지우기"), Some(4_000)))
+            .await
+            .unwrap();
+        assert_eq!(response.decision, Decision::Allow);
+        let traces = graph.traces.lock().unwrap();
+        let grade = &traces[0].trace["check"]["grade"];
+        if check.grades {
+            assert_eq!(grade["grade"], "3-1");
+            assert_eq!(grade["source"], "rule");
+            assert_eq!(grade["reason"], "recursive_delete");
+        } else {
+            assert!(grade.is_null());
+        }
+    }
+}
+
+#[tokio::test]
+async fn judges_by_the_rules_alone_while_jev_keeps_failing() {
+    let check = withhuman_decision::check::CheckSettings {
+        grades: true,
+        degraded_mode: true,
+        degraded_failures: 1,
+        degraded_seconds: 60,
+        ..Default::default()
+    };
+    let (provider, jev) = graded_provider(1.0, true, check);
+    let first = provider
+        .decide(&request(Some("빌드 폴더 지우기"), Some(4_000)))
+        .await
+        .unwrap();
+    assert_eq!(first.decision, Decision::Review);
+    assert_eq!(first.rule, "degraded::3-1");
+    let asked = jev.asked.lock().unwrap().len();
+    // The next call is judged at once, without asking Jev.
+    let second = provider
+        .decide(&request(Some("빌드 폴더 지우기"), Some(4_000)))
+        .await
+        .unwrap();
+    assert_eq!(second.rule, "degraded::3-1");
+    assert_eq!(jev.asked.lock().unwrap().len(), asked);
+
+    // Without the mode a failing Jev is the failure policy's (an error), as before.
+    let (provider, _) = graded_provider(1.0, true, Default::default());
+    assert!(
+        provider
+            .decide(&request(Some("빌드 폴더 지우기"), Some(4_000)))
+            .await
+            .is_err()
+    );
 }

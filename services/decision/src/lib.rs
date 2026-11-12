@@ -5,6 +5,7 @@ pub mod jev;
 mod pg_repository;
 mod provider;
 mod repository;
+mod shell;
 pub mod trace;
 
 pub use config::{DecisionConfig, JevSettings, RuntimeEnvironment};

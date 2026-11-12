@@ -396,6 +396,7 @@ fn recorded_calls_keep_their_safeguard_verdicts() {
                 Effect::FileChange { .. } => "file",
                 Effect::FileChanges { .. } => "files",
                 Effect::Run { .. } => "run",
+                Effect::ShellWrite { .. } => "shell write",
                 Effect::Other => "other",
             };
             *powershell.entry(kind.to_owned()).or_default() += 1;

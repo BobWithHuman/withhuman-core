@@ -91,6 +91,15 @@ SELECT call.\"order\", call.subgraph, call.payload_json, \
    AND r.\"order\" < call.\"order\" ORDER BY r.\"order\" DESC LIMIT 1) \
 FROM call";
 
+// EARLIER_CHANGES: the session's earlier Calls naming a file, that ran: a PostToolUse result
+// with their tool_use_id is in the graph (a denied or failed Call changed nothing).
+const EARLIER_CHANGES: &str = "\
+SELECT c.payload_json, c.cwd FROM nodes c WHERE c.session_id = $1::text AND c.kind = 'Call' \
+AND c.\"order\" < $2::bigint AND strpos(c.payload_json, $3::text) > 0 \
+AND EXISTS (SELECT 1 FROM nodes s WHERE s.session_id = c.session_id AND s.kind = 'Segment' \
+            AND s.tool_use_id = c.tool_use_id) \
+ORDER BY c.\"order\"";
+
 // The session's tool results before the Call that name the file, oldest first.
 const FILE_RESULTS: &str = "\
 SELECT payload_json FROM nodes WHERE session_id = $1::text AND kind = 'Segment' \
@@ -557,6 +566,59 @@ impl DecisionRepository for PgDecisionRepository {
                 result => return result.map_err(failure),
             }
         }
+    }
+
+    async fn earlier_file_changes(
+        &self,
+        session_id: &str,
+        call_order: u64,
+        path: &str,
+    ) -> Result<Vec<check::FileDiff>, RepositoryError> {
+        let client = self.client().await?;
+        // The file's name narrows the search; the paths are compared whole by the check.
+        let name = path.rsplit(['/', '\\']).next().unwrap_or(path).to_owned();
+        let rows = query(
+            &client,
+            EARLIER_CHANGES,
+            &[&session_id, &signed(call_order), &name],
+        )
+        .await?;
+        let mut diffs = Vec::new();
+        for row in &rows {
+            let call_payload = payload(row.get(0));
+            let call = CallInfo {
+                seq: 0,
+                order: 0,
+                subgraph: 0,
+                agent_id: None,
+                tool_name: call_payload
+                    .get("tool_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                tool_input: call_payload
+                    .get("tool_input")
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                prior: None,
+                programs: BTreeMap::new(),
+                cwd: row.get(1),
+            };
+            match check::effect(&call) {
+                check::Effect::FileChange {
+                    path,
+                    added,
+                    removed,
+                } => diffs.push(check::FileDiff {
+                    path,
+                    added,
+                    removed,
+                }),
+                check::Effect::FileChanges { files } => diffs.extend(files),
+                _ => {}
+            }
+        }
+        Ok(diffs)
     }
 
     async fn mark_unresolved(

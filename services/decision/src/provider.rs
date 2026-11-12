@@ -10,10 +10,12 @@ use withhuman_contracts::decisions::{
     CausalStart, Decision, DecisionRequest, DecisionResponse, JevActivity,
 };
 
+use withhuman_common::grade::{Grade, Graded};
+
 use crate::{
     DecisionConfig, DecisionRepository, RepositoryError,
     check::{self, Branch, Effect, Verdict},
-    jev::JevClient,
+    jev::{JevClient, JevError},
     repository::{TraceRecord, TracedParent, TracedSegment},
     trace::{self, Stop, Thresholds, TraceSettings},
 };
@@ -104,6 +106,30 @@ pub struct JevDecisionProvider {
     settings: TraceSettings,
     jev_timeout: Duration,
     thresholds: Thresholds,
+    /// Jev's recent failures, for the rules-only mode.
+    breaker: Arc<std::sync::Mutex<Breaker>>,
+}
+
+/// Jev's failures in a row and, once they reach the limit, until when the rules judge alone.
+#[derive(Debug, Default)]
+struct Breaker {
+    failures: u32,
+    open_until: Option<Instant>,
+}
+
+/// A Call's grade from Jev's harm and reversibility answers, for a Call no rule grades.
+fn jev_grade(harm: f64, irreversible: f64) -> Graded {
+    let grade = if harm >= 0.7 && irreversible >= 0.7 {
+        Grade::THREE_ONE
+    } else if harm >= 0.4 || irreversible >= 0.5 {
+        Grade::TWO_ONE
+    } else {
+        Grade::ONE
+    };
+    Graded {
+        grade,
+        reason: "jev",
+    }
 }
 
 impl JevDecisionProvider {
@@ -120,6 +146,114 @@ impl JevDecisionProvider {
             settings,
             jev_timeout,
             thresholds,
+            breaker: Arc::default(),
+        }
+    }
+
+    fn breaker(&self) -> std::sync::MutexGuard<'_, Breaker> {
+        self.breaker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Whether the rules-only mode is on now. When its time is up the next Call tries Jev again;
+    /// one more failure starts the mode over.
+    fn breaker_open(&self) -> bool {
+        let mut breaker = self.breaker();
+        match breaker.open_until {
+            Some(until) if Instant::now() < until => true,
+            Some(_) => {
+                breaker.open_until = None;
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// Counts a Jev failure; true when it starts the rules-only mode. A refusal for the key or
+    /// the request rate (401, 402, 403, 429) starts it at once: waiting will not fix it.
+    fn breaker_failure(&self, error: &JevError) -> bool {
+        let settings = &self.settings.check;
+        let limit = if settings.degraded_failures == 0 {
+            3
+        } else {
+            settings.degraded_failures
+        };
+        let seconds = if settings.degraded_seconds == 0 {
+            60
+        } else {
+            settings.degraded_seconds
+        };
+        let mut breaker = self.breaker();
+        breaker.failures += 1;
+        let refused = matches!(error, JevError::Rejected(401 | 402 | 403 | 429));
+        if refused || breaker.failures >= limit {
+            breaker.open_until = Some(Instant::now() + Duration::from_secs(seconds));
+            true
+        } else {
+            false
+        }
+    }
+
+    fn breaker_success(&self) {
+        let mut breaker = self.breaker();
+        breaker.failures = 0;
+        breaker.open_until = None;
+    }
+
+    /// The rules-only judgment: a safeguard change is denied; grade 0 and 1 are allowed, except
+    /// a sensitive one (a secret read, a web fetch, an edit of what runs later); grade 2 and 3,
+    /// and a Call no rule grades, are reviewed.
+    async fn degraded(
+        &self,
+        request: &DecisionRequest,
+        graded: Option<Graded>,
+        safeguard: bool,
+        why: &str,
+    ) -> DecisionResponse {
+        let repository = self.repository.clone();
+        let (stored_request, stored_error) = (request.clone(), format!("rules-only: {why}"));
+        let _ = settle(
+            tokio::spawn(async move {
+                repository
+                    .mark_unresolved(&stored_request, &stored_error)
+                    .await
+            }),
+            STORE_WAIT,
+        )
+        .await;
+        let graded = graded.unwrap_or(Graded {
+            grade: Grade::TWO_ONE,
+            reason: "unknown",
+        });
+        let (decision, reason) = if safeguard {
+            (Decision::Deny, SAFEGUARD_REASON.to_owned())
+        } else if graded.grade.level() >= 2 || withhuman_common::grade::is_sensitive(graded.reason)
+        {
+            (
+                Decision::Review,
+                format!(
+                    "WithHuman 판정 모델이 응답하지 않아 규칙으로만 판정했습니다. {}({}: {})이라 사용자 확인이 필요합니다.",
+                    graded.grade.label(),
+                    graded.grade.as_str(),
+                    graded.describe()
+                ),
+            )
+        } else {
+            (Decision::Allow, String::new())
+        };
+        DecisionResponse {
+            decision,
+            reason,
+            rule: format!("degraded::{}", graded.grade.as_str()),
+            start: CausalStart::Unresolved,
+            written: false,
+            jev: Some(JevActivity {
+                asked: false,
+                ms: None,
+                reused_from: None,
+                error: Some(why.to_owned()),
+            }),
         }
     }
 
@@ -224,9 +358,31 @@ impl DecisionProvider for JevDecisionProvider {
         let intents = trace::intents(&graph, request.intent.as_deref(), &self.settings);
         let plan = trace::plan(&graph, &members, intents.text.as_deref(), &self.settings);
         let risky = graph.risky();
-        let effect = check::effect(&graph.call);
+        let effect = check::effect_with(&graph.call, &self.settings.check);
         let safeguard = effect == Effect::Safeguard;
+        // A change that only undoes the session's own earlier changes to the file.
+        let undoes = match &effect {
+            Effect::FileChange { path, .. } if self.settings.check.restore_aware => self
+                .repository
+                .earlier_file_changes(&request.session_id, graph.call.order, path)
+                .await
+                .is_ok_and(|earlier| check::restores(&effect, &earlier)),
+            _ => false,
+        };
 
+        let settings = self.settings.check;
+        // The rule grade, before Jev is asked.
+        let rule_graded = if settings.grades {
+            withhuman_common::grade::grade(&graph.call.tool_name, &graph.call.tool_input)
+        } else {
+            None
+        };
+        // Jev has kept failing, so the rules judge alone for a while.
+        if settings.degraded_mode && self.breaker_open() {
+            return Ok(self
+                .degraded(request, rule_graded, safeguard, "rules-only mode")
+                .await);
+        }
         let remaining = |reserve: Duration| {
             request.deadline_ms.map(|deadline| {
                 Duration::from_millis(deadline)
@@ -254,12 +410,20 @@ impl DecisionProvider for JevDecisionProvider {
             None => None,
             Some(sent) => match self.jev.ask(sent, budget).await {
                 Ok(response) => {
+                    self.breaker_success();
                     exchanges.push(serde_json::json!({
                         "stage": "cause", "request": sent, "response": &response,
                     }));
                     Some(response)
                 }
-                Err(error) => return self.unresolved(request, error, risky, safeguard).await,
+                Err(error) => {
+                    if settings.degraded_mode && self.breaker_failure(&error) {
+                        return Ok(self
+                            .degraded(request, rule_graded, safeguard, &error.to_string())
+                            .await);
+                    }
+                    return self.unresolved(request, error, risky, safeguard).await;
+                }
             },
         };
         let (parents, mut judgements, deviation) = match trace::judge(&plan, response.as_ref()) {
@@ -267,17 +431,47 @@ impl DecisionProvider for JevDecisionProvider {
             Err(error) => return self.unresolved(request, error, risky, safeguard).await,
         };
         let judge_ms = elapsed_ms(judged);
-
+        // The rule grade, or Jev's when no rule grades the Call, recorded in the trace.
+        // Jev may raise the rule grade to 3 (impossible to undo), never lower it: the rules set
+        // the grade. Raising an ordinary edit to 2 on Jev's word made plain fixes stricter.
+        let jev_graded = deviation
+            .as_ref()
+            .map(|deviation| jev_grade(deviation.harm, deviation.irreversible));
+        let graded = if settings.grades {
+            match (rule_graded, jev_graded) {
+                (Some(rule), Some(jev))
+                    if jev.grade.level() >= 3 && jev.grade.level() > rule.grade.level() =>
+                {
+                    Some(jev)
+                }
+                (Some(rule), _) => Some(rule),
+                (None, jev) => jev,
+            }
+        } else {
+            None
+        };
+        let grade_source = match (rule_graded, graded) {
+            (Some(rule), Some(graded)) if graded != rule => "rule+jev",
+            (Some(_), _) => "rule",
+            (None, Some(_)) => "jev",
+            _ => "none",
+        };
         // Unless the trace clears the Call, a second question checks it against the user's
         // prompt, asked while the paragraphs are.
-        let checked = deviation
-            .as_ref()
-            .map(|deviation| check::check(deviation, parents.link, &effect));
+        let checked = deviation.as_ref().map(|deviation| {
+            check::check_call(deviation, parents.link, &effect, &settings, undoes)
+        });
         let checking = Instant::now();
         let check_request = checked
             .zip(judge_request.as_ref())
             .and_then(|(checked, judged)| {
-                check::request(judged, checked.branch, &effect, graph.prompt.as_deref())
+                check::request_with(
+                    judged,
+                    checked.branch,
+                    &effect,
+                    graph.prompt.as_deref(),
+                    &settings,
+                )
             });
         let budget = timeout();
         let check_task = check_request.filter(|_| !budget.is_zero()).map(|sent| {
@@ -389,6 +583,35 @@ impl DecisionProvider for JevDecisionProvider {
             "unwanted": unwanted,
             "verdict": verdict.map(|verdict| format!("{verdict:?}").to_ascii_uppercase()),
         });
+        // Which check settings judged the Call, and its grade; absent when none is on, so a
+        // default deployment records exactly what it did before.
+        if settings != check::CheckSettings::default() {
+            trace_json["check"]["settings"] = serde_json::json!({
+                "line_question": settings.line_question,
+                "file_always_checked": settings.file_always_checked,
+                "shell_writes_checked": settings.shell_writes_checked,
+                "restore_aware": settings.restore_aware,
+                "shell_split": settings.shell_split,
+                "shell_decode": settings.shell_decode,
+                "grades": settings.grades,
+                "degraded_mode": settings.degraded_mode,
+            });
+            if undoes {
+                trace_json["check"]["undoes"] = true.into();
+            }
+            if matches!(effect, Effect::ShellWrite { .. }) {
+                trace_json["check"]["shell_write"] = true.into();
+            }
+        }
+        if settings.grades {
+            trace_json["check"]["grade"] = serde_json::json!({
+                "grade": graded.map(|graded| graded.grade.as_str()),
+                "source": grade_source,
+                "reason": graded.map(|graded| graded.reason),
+                "label": graded.map(|graded| graded.grade.label()),
+                "description": graded.map(|graded| graded.describe()),
+            });
+        }
         if let Effect::Run { programs } = &effect {
             trace_json["check"]["programs"] = programs
                 .iter()
