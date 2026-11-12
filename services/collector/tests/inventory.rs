@@ -442,7 +442,10 @@ async fn a_key_that_cannot_be_checked_follows_the_failure_policy() {
         (status, denial(&body)),
         (StatusCode::OK, ("deny", keys::KEY_UNCHECKED))
     );
-    let open = app(generator.clone(), |config| config.require_key = true);
+    let open = app(generator.clone(), |config| {
+        config.require_key = true;
+        config.failure_policy = FailurePolicy::Open;
+    });
     assert_eq!(
         post(&open, "/v1/hooks/PreToolUse", call("s"), &headers).await,
         (StatusCode::OK, Value::Null)

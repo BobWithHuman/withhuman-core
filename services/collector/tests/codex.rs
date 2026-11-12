@@ -1653,8 +1653,10 @@ impl GeneratorTransport for FailedGenerator {
 
 #[tokio::test]
 async fn codex_denies_errors_even_when_claude_failure_policy_is_open() {
+    // Closed is the default now; this checks Codex under an explicit open.
     let config = CollectorConfig {
         intent_capture: false,
+        failure_policy: withhuman_collector::FailurePolicy::Open,
         ..CollectorConfig::default()
     };
     let router = app_with_transport(CollectorService::new(config, Arc::new(FailedGenerator)));
