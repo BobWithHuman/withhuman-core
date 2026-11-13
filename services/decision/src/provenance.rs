@@ -509,3 +509,26 @@ pub fn part_from_instruction(
     }
     found.into_iter().collect()
 }
+
+/// Whether every text argument of a call (three characters or more) is written in the user's
+/// prompt: then the user named the call's target, and where it came from needs no asking.
+pub fn values_from_prompt(input: &Value, prompt: Option<&str>) -> bool {
+    fn texts<'a>(value: &'a Value, found: &mut Vec<&'a str>) {
+        match value {
+            Value::String(text) if text.trim().chars().count() >= 3 => found.push(text.trim()),
+            Value::Array(items) => items.iter().for_each(|item| texts(item, found)),
+            Value::Object(fields) => fields.values().for_each(|field| texts(field, found)),
+            _ => {}
+        }
+    }
+    let Some(prompt) = prompt else {
+        return false;
+    };
+    let prompt = prompt.to_lowercase();
+    let mut found = Vec::new();
+    texts(input, &mut found);
+    !found.is_empty()
+        && found
+            .iter()
+            .all(|text| prompt.contains(&text.to_lowercase()))
+}

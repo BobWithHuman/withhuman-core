@@ -186,6 +186,17 @@ impl JevClient for Jev {
                         }
                     }
                     "unasked" if self.unwanted.is_some() => noul(self.unwanted.unwrap_or_default()),
+                    // Where the call's target came from: picked among several as likely as unwanted.
+                    "origin" if self.unwanted.is_some() => {
+                        let several = self.unwanted.unwrap_or_default();
+                        JevAnswer {
+                            probabilities: BTreeMap::from([
+                                ("several".to_owned(), several),
+                                ("user".to_owned(), 1.0 - several),
+                            ]),
+                            ..Default::default()
+                        }
+                    }
                     // A shell command's parts: the last part is the one picked.
                     "part" if self.unwanted.is_some() => {
                         let unwanted = self.unwanted.unwrap_or_default();
@@ -808,6 +819,95 @@ async fn checks_a_cleared_file_change_line_by_line() {
         graph.traces.lock().unwrap()[0].trace["check"]["branch"],
         "clear"
     );
+}
+
+/// A service call that is hard to undo is asked where its target came from: one the agent picked
+/// among several the user never chose between goes to the user; a shell command, or a call whose
+/// values the prompt names, is not asked.
+#[tokio::test]
+async fn puts_a_target_picked_among_several_to_the_user() {
+    let withdraw = || {
+        (
+            "mcp__bank__withdraw",
+            json!({ "amount": 2, "address": "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa" }),
+        )
+    };
+    for (call, several, decision, rule, asked) in [
+        (
+            withdraw(),
+            0.9,
+            Decision::Review,
+            "provenance::chosen",
+            true,
+        ),
+        (withdraw(), 0.5, Decision::Allow, "intent::match", true),
+        // Every value is in the prompt (`빌드를 고쳐줘`): the user named the target.
+        (
+            ("mcp__bank__withdraw", json!({ "memo": "빌드를 고쳐줘" })),
+            0.9,
+            Decision::Allow,
+            "intent::match",
+            false,
+        ),
+        // A shell command is judged part by part, not asked this.
+        (
+            ("Bash", json!({ "command": "git push --force origin main" })),
+            0.9,
+            Decision::Allow,
+            "intent::match",
+            false,
+        ),
+    ] {
+        let graph = Arc::new(Graph {
+            prompt: true,
+            call: Some(call),
+            result: Some(
+                "BTC Wallet 1: 1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa, BTC Wallet 2: 3D2oetdNuZUqQHPJmcMDDHYoqkyNVsFk9r",
+            ),
+            ..Graph::default()
+        });
+        let jev = Arc::new(Jev {
+            // In line with the user's word: nothing else would stop it.
+            intent_score: 1.0,
+            cause: Some("s0"),
+            fail: false,
+            unwanted: Some(several),
+            asked: Mutex::default(),
+            requests: Mutex::default(),
+            reversible: 0.0,
+        });
+        let provider = JevDecisionProvider::new(
+            graph.clone(),
+            jev.clone(),
+            TraceSettings::default(),
+            Duration::from_secs(3),
+            Thresholds::default(),
+        );
+        let response = provider
+            .decide(&request(Some("빌드 고치기"), Some(4_000)))
+            .await
+            .unwrap();
+        assert_eq!(
+            (response.decision, response.rule.as_str()),
+            (decision, rule),
+            "{several}"
+        );
+        let requests = jev.requests.lock().unwrap();
+        let origin = requests
+            .iter()
+            .find(|sent| sent.questions.contains_key("origin"));
+        assert_eq!(origin.is_some(), asked, "{several}");
+        if let Some(origin) = origin {
+            assert_eq!(origin.state["user_request"], "빌드를 고쳐줘");
+            assert!(
+                origin.state["paragraphs"]
+                    .to_string()
+                    .contains("BTC Wallet 2")
+            );
+            let traces = graph.traces.lock().unwrap();
+            assert_eq!(traces[0].trace["check"]["chosen"], several);
+        }
+    }
 }
 
 /// A provider whose check runs with `check`, over the default graph (`git push --force origin main`).

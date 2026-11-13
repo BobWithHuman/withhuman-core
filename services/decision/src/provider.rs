@@ -329,6 +329,8 @@ const COPIED_REASON: &str = "WithHuman: 이 변경에 도구 결과나 저장소
      실행 전에 사용자 확인이 필요합니다.";
 const SAFEGUARD_REASON: &str = "WithHuman이 에이전트의 설정이나 훅을 바꾸는 도구 호출을 차단했습니다. 사용자가 직접 바꿔야 합니다.";
 
+const CHOSEN_REASON: &str = "WithHuman: 이 호출의 대상이 도구 결과의 여러 후보 중 사용자가 정하지 않은 \
+                             하나로 보입니다. 어느 것인지 사용자 확인이 필요합니다.";
 const DEVIATION_REVIEW_REASON: &str = "WithHuman이 이 도구 호출이 사용자 의도에서 벗어났을 수 있다고 판단했습니다. 사용자 확인이 필요합니다.";
 
 #[async_trait]
@@ -507,6 +509,31 @@ impl DecisionProvider for JevDecisionProvider {
             )
         });
 
+        // A service call that is hard to undo is asked where its target came from, unless the
+        // user's prompt names every value it is given.
+        let origin_task = judge_request
+            .as_ref()
+            .filter(|_| {
+                !safeguard
+                    && effect == Effect::Other
+                    && !matches!(graph.call.tool_name.as_str(), "Bash" | "PowerShell")
+                    && graded.is_some_and(|graded| graded.grade.level() >= check::ORIGIN_GRADE)
+                    && !provenance::values_from_prompt(
+                        &graph.call.tool_input,
+                        graph.prompt.as_deref(),
+                    )
+                    && !budget.is_zero()
+            })
+            .map(|judged| {
+                let sent = check::origin_request(judged, graph.prompt.as_deref());
+                let jev = self.jev.clone();
+                let asked = sent.clone();
+                (
+                    sent,
+                    tokio::spawn(async move { jev.ask(&asked, budget).await }),
+                )
+            });
+
         // A parent with too many paragraphs to ask about at once was asked about its tool
         // results whole; now which paragraphs of each activated one. The decision does not
         // depend on it, so it is skipped when no time is left.
@@ -584,6 +611,19 @@ impl DecisionProvider for JevDecisionProvider {
             },
             None => None,
         };
+        let origin_response = match origin_task {
+            Some((sent, task)) => match task.await {
+                Ok(Ok(response)) => {
+                    exchanges.push(serde_json::json!({
+                        "stage": "origin", "request": sent, "response": &response,
+                    }));
+                    Some(response)
+                }
+                _ => None,
+            },
+            None => None,
+        };
+        let chosen = check::chosen(origin_response.as_ref());
         let check_ms = elapsed_ms(checking);
         let unwanted =
             checked.and_then(|checked| check::unwanted(checked.branch, check_response.as_ref()));
@@ -660,6 +700,9 @@ impl DecisionProvider for JevDecisionProvider {
         });
         if undoes {
             trace_json["check"]["undoes"] = true.into();
+        }
+        if let Some(chosen) = chosen {
+            trace_json["check"]["chosen"] = chosen.into();
         }
         if provenance != provenance::Provenance::default() {
             trace_json["check"]["provenance"] = provenance::to_json(&provenance);
@@ -794,6 +837,16 @@ impl DecisionProvider for JevDecisionProvider {
                 REVIEW_REASON.to_owned(),
             ),
             (None, None) => (Decision::Allow, "intent::unknown", String::new()),
+        };
+        // A call let through whose target the agent picked among several the user never chose
+        // between goes to the user.
+        let (decision, rule, reason) = match chosen {
+            Some(chosen) if decision == Decision::Allow && chosen >= check::CHOSEN_CUT => (
+                Decision::Review,
+                "provenance::chosen",
+                CHOSEN_REASON.to_owned(),
+            ),
+            _ => (decision, rule, reason),
         };
         Ok(DecisionResponse {
             decision,
