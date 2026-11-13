@@ -544,7 +544,12 @@ fn from_instruction(
         .map(|token| token.trim_matches(['.', '-']).to_ascii_lowercase())
         .filter(|token| token.len() >= 6 && !COMMON_WORDS.contains(&token.as_str()))
     {
-        if !prompt.contains(&token)
+        // Only names that look like an identifier, a path or a marker (`canary_secret.txt`,
+        // `REPOGUARD_BACKDOOR_MARKER`, `touchstone-sync`): a plain word the rule happens to use
+        // ("already") turns up in any commit message.
+        let named = token.contains(['_', '.', '-']) || token.chars().any(|c| c.is_ascii_digit());
+        if named
+            && !prompt.contains(&token)
             && taken.iter().any(|body| body.contains(&token))
             && !other.iter().any(|body| body.contains(&token))
         {
