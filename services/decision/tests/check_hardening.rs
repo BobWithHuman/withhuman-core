@@ -201,11 +201,107 @@ fn an_undoing_is_cleared() {
     use withhuman_decision::check::check_call;
     let doubtful = deviation(0.6, 0.3, 0.2);
     assert_eq!(
-        check_call(&doubtful, Link::None, &change(), true).branch,
+        check_call(&doubtful, Link::None, &change(), true, true).branch,
         Branch::Clear
     );
     assert_eq!(
-        check_call(&doubtful, Link::None, &change(), false).branch,
+        check_call(&doubtful, Link::None, &change(), false, true).branch,
         Branch::File
     );
+}
+
+#[test]
+fn a_file_change_with_nothing_to_carry_out_may_be_cleared_on_the_first_question() {
+    use withhuman_decision::check::check_call;
+    let clear = deviation(0.1, 0.9, 0.05);
+    // No line copied from a tool result and nothing read that instructs an agent: cleared.
+    assert_eq!(
+        check_call(&clear, Link::Segment, &change(), false, false).branch,
+        Branch::Clear
+    );
+    // With such a signal, asked the file question.
+    assert_eq!(
+        check_call(&clear, Link::Segment, &change(), false, true).branch,
+        Branch::File
+    );
+    // Doubt still sends it on.
+    let doubtful = deviation(0.6, 0.3, 0.2);
+    assert_eq!(
+        check_call(&doubtful, Link::Segment, &change(), false, false).branch,
+        Branch::File
+    );
+}
+
+#[test]
+fn a_file_change_is_denied_only_when_something_says_where_its_line_came_from() {
+    use withhuman_decision::check::{FileEvidence, FileVerdict, Verdict};
+    let file = check(&deviation(0.1, 0.9, 0.05), Link::Segment, &change());
+    assert_eq!(file.branch, Branch::File);
+    let backed = |copied, named, grade| FileEvidence {
+        copied_from_instruction: copied,
+        source_named: named,
+        grade_level: grade,
+    };
+    // Jev finds an unasked line and something says where it came from: denied.
+    assert_eq!(
+        file.file_verdict(Some(0.9), backed(true, false, 1)),
+        Some(FileVerdict::Plain(Verdict::Deny))
+    );
+    assert_eq!(
+        file.file_verdict(Some(0.9), backed(false, true, 1)),
+        Some(FileVerdict::Plain(Verdict::Deny))
+    );
+    // Nothing says where: allowed in the workspace, put to the user past it.
+    assert_eq!(
+        file.file_verdict(Some(0.9), backed(false, false, 1)),
+        Some(FileVerdict::Unsupported(Verdict::Allow))
+    );
+    assert_eq!(
+        file.file_verdict(Some(0.9), backed(false, false, 2)),
+        Some(FileVerdict::Unsupported(Verdict::Review))
+    );
+    // Jev finds nothing but a line was copied from an instruction: put to the user.
+    assert_eq!(
+        file.file_verdict(Some(0.1), backed(true, false, 1)),
+        Some(FileVerdict::Copied)
+    );
+    assert_eq!(FileVerdict::Copied.verdict(), Verdict::Review);
+    assert_eq!(
+        file.file_verdict(Some(0.1), backed(false, true, 1)),
+        Some(FileVerdict::Plain(Verdict::Allow))
+    );
+    // No answer: the deviation decides, as before.
+    assert_eq!(file.file_verdict(None, backed(true, true, 3)), None);
+    // Other branches are judged as before.
+    let other = check(&deviation(0.6, 0.3, 0.2), Link::Segment, &Effect::Other);
+    assert_eq!(
+        other.file_verdict(Some(0.9), FileEvidence::default()),
+        Some(FileVerdict::Plain(Verdict::Deny))
+    );
+}
+
+#[test]
+fn reads_the_paragraph_jevs_source_answer_names() {
+    use withhuman_decision::{
+        check::source_named,
+        jev::{JevAnswer, JevResponse},
+    };
+    let answer = |pairs: &[(&str, f64)]| JevResponse {
+        answers: BTreeMap::from([(
+            "source".to_owned(),
+            JevAnswer {
+                probabilities: pairs.iter().map(|(k, v)| ((*k).to_owned(), *v)).collect(),
+                ..Default::default()
+            },
+        )]),
+    };
+    assert_eq!(
+        source_named(Some(&answer(&[("g5p1", 0.8), ("none", 0.1)]))),
+        Some("g5p1".to_owned())
+    );
+    assert_eq!(
+        source_named(Some(&answer(&[("g5p1", 0.2), ("none", 0.77)]))),
+        None
+    );
+    assert_eq!(source_named(None), None);
 }

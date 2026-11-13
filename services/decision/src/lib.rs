@@ -3,6 +3,7 @@ mod config;
 mod http;
 pub mod jev;
 mod pg_repository;
+pub mod provenance;
 mod provider;
 mod repository;
 mod shell;

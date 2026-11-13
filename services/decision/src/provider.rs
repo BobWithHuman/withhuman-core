@@ -16,6 +16,7 @@ use crate::{
     DecisionConfig, DecisionRepository, RepositoryError,
     check::{self, Branch, Effect, Verdict},
     jev::{JevClient, JevError},
+    provenance,
     repository::{TraceRecord, TracedParent, TracedSegment},
     trace::{self, Stop, Thresholds, TraceSettings},
 };
@@ -322,6 +323,10 @@ const REVIEW_REASON: &str =
     "WithHuman이 이 도구 호출의 원인을 확인하지 못했습니다. 사용자 확인이 필요합니다.";
 
 const SAFEGUARD_RULE: &str = "safeguard::change";
+/// Why a file change whose line was copied from an instruction in a tool result is put to the
+/// user; no score, intent or path.
+const COPIED_REASON: &str = "WithHuman: 이 변경에 도구 결과나 저장소 문서의 지시를 그대로 옮긴 줄이 있어 \
+     실행 전에 사용자 확인이 필요합니다.";
 const SAFEGUARD_REASON: &str = "WithHuman이 에이전트의 설정이나 훅을 바꾸는 도구 호출을 차단했습니다. 사용자가 직접 바꿔야 합니다.";
 
 const DEVIATION_REVIEW_REASON: &str = "WithHuman이 이 도구 호출이 사용자 의도에서 벗어났을 수 있다고 판단했습니다. 사용자 확인이 필요합니다.";
@@ -361,14 +366,31 @@ impl DecisionProvider for JevDecisionProvider {
         let effect = check::call_effect(&graph.call);
         let safeguard = effect == Effect::Safeguard;
         // A change that only undoes the session's own earlier changes to the file.
-        let undoes = match &effect {
-            Effect::FileChange { path, .. } => self
-                .repository
-                .earlier_file_changes(&request.session_id, graph.call.order, path)
-                .await
-                .is_ok_and(|earlier| check::restores(&effect, &earlier)),
-            _ => false,
+        // Lines the session took out earlier and now puts back (or put in and now takes out) are
+        // no addition: they are dropped from what is asked about, and a change left with none
+        // undoes the session's own changes. A command that only checks files back out of git
+        // undoes them too.
+        let (judged_effect, restored) = match &effect {
+            Effect::FileChange { path, .. } => {
+                match self
+                    .repository
+                    .earlier_file_changes(&request.session_id, graph.call.order, path)
+                    .await
+                {
+                    Ok(earlier) => provenance::strip_restored(&effect, &earlier),
+                    Err(_) => (effect.clone(), 0),
+                }
+            }
+            _ => (effect.clone(), 0),
         };
+        let git_restore = matches!(graph.call.tool_name.as_str(), "Bash" | "PowerShell")
+            && graph
+                .call
+                .tool_input
+                .get("command")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(provenance::git_restores);
+        let undoes = (restored > 0 && provenance::is_empty_change(&judged_effect)) || git_restore;
 
         // The rule grade, before Jev is asked.
         let rule_graded =
@@ -402,6 +424,17 @@ impl DecisionProvider for JevDecisionProvider {
                 .await;
         }
         let judge_request = trace::judge_request(&plan);
+        // Where the added lines came from, as far as the engine tells by itself.
+        let paragraphs = judge_request
+            .as_ref()
+            .map(provenance::paragraphs)
+            .unwrap_or_default();
+        let provenance = provenance::Provenance {
+            restored,
+            copied: provenance::copied_lines(&judged_effect, &paragraphs, graph.prompt.as_deref()),
+        };
+        let file_signal =
+            !provenance.copied.is_empty() || provenance::instruction_seen(&paragraphs);
         let response = match &judge_request {
             None => None,
             Some(sent) => match self.jev.ask(sent, budget).await {
@@ -450,14 +483,19 @@ impl DecisionProvider for JevDecisionProvider {
         };
         // Unless the trace clears the Call, a second question checks it against the user's
         // prompt, asked while the paragraphs are.
-        let checked = deviation
-            .as_ref()
-            .map(|deviation| check::check_call(deviation, parents.link, &effect, undoes));
+        let checked = deviation.as_ref().map(|deviation| {
+            check::check_call(deviation, parents.link, &judged_effect, undoes, file_signal)
+        });
         let checking = Instant::now();
         let check_request = checked
             .zip(judge_request.as_ref())
             .and_then(|(checked, judged)| {
-                check::request(judged, checked.branch, &effect, graph.prompt.as_deref())
+                check::request(
+                    judged,
+                    checked.branch,
+                    &judged_effect,
+                    graph.prompt.as_deref(),
+                )
             });
         let budget = timeout();
         let check_task = check_request.filter(|_| !budget.is_zero()).map(|sent| {
@@ -549,10 +587,61 @@ impl DecisionProvider for JevDecisionProvider {
         let check_ms = elapsed_ms(checking);
         let unwanted =
             checked.and_then(|checked| check::unwanted(checked.branch, check_response.as_ref()));
+        let source = check::source_named(check_response.as_ref());
+        let evidence = check::FileEvidence {
+            copied_from_instruction: provenance.from_instruction(),
+            source_named: source.is_some(),
+            // An ungraded change is taken as hard to undo.
+            grade_level: graded.map_or(2, |graded| graded.grade.level()),
+        };
+        let file_verdict = if safeguard {
+            None
+        } else {
+            checked.and_then(|checked| checked.file_verdict(unwanted, evidence))
+        };
+        // A shell command judged part by part: denied when the part Jev picks touches something
+        // risky or carries out an instruction a tool result gave; with neither, Jev's doubt alone
+        // is no attack.
+        let part = check::picked_part(check_response.as_ref()).and_then(|(index, none)| {
+            let command = graph.call.tool_input.get("command")?.as_str()?;
+            let text = provenance::shell_parts(command)
+                .into_iter()
+                .nth(index - 1)?;
+            Some(serde_json::json!({
+                "part": format!("p{index}"),
+                "score": 1.0 - none,
+                "marks": provenance::risk_marks(&text),
+                "instruction": provenance::part_from_instruction(
+                    &text,
+                    &paragraphs,
+                    graph.prompt.as_deref(),
+                ),
+                "text": text.chars().take(200).collect::<String>(),
+            }))
+        });
+        let part_verdict = part.as_ref().and_then(|part| {
+            let checked = checked?;
+            let score = part["score"].as_f64()?;
+            let backed = part["marks"]
+                .as_array()
+                .is_some_and(|marks| !marks.is_empty())
+                || part["instruction"]
+                    .as_array()
+                    .is_some_and(|found| !found.is_empty());
+            Some(if score >= check::PART_CUT && backed {
+                Verdict::Deny
+            } else if checked.breach {
+                Verdict::Review
+            } else {
+                Verdict::Allow
+            })
+        });
         let verdict = if safeguard {
             Some(Verdict::Deny)
+        } else if part_verdict.is_some() {
+            part_verdict
         } else {
-            checked.and_then(|checked| checked.verdict(unwanted))
+            file_verdict.map(check::FileVerdict::verdict)
         };
         let outcome = trace::outcome(parents, judgements, deviation);
 
@@ -571,6 +660,24 @@ impl DecisionProvider for JevDecisionProvider {
         });
         if undoes {
             trace_json["check"]["undoes"] = true.into();
+        }
+        if provenance != provenance::Provenance::default() {
+            trace_json["check"]["provenance"] = provenance::to_json(&provenance);
+        }
+        if let Some(part) = &part {
+            trace_json["check"]["part"] = part.clone();
+        }
+        if checked.is_some_and(|checked| checked.branch == Branch::File) {
+            trace_json["check"]["evidence"] = serde_json::json!({
+                "copied_from_instruction": evidence.copied_from_instruction,
+                "source": source,
+                "grade_level": evidence.grade_level,
+                "outcome": match file_verdict {
+                    Some(check::FileVerdict::Unsupported(_)) => "unsupported",
+                    Some(check::FileVerdict::Copied) => "copied",
+                    _ => "plain",
+                },
+            });
         }
         if matches!(effect, Effect::ShellWrite { .. }) {
             trace_json["check"]["shell_write"] = true.into();
@@ -661,6 +768,11 @@ impl DecisionProvider for JevDecisionProvider {
                 (Decision::Deny, SAFEGUARD_RULE, SAFEGUARD_REASON.to_owned())
             }
             (Some(Verdict::Deny), _) => (Decision::Deny, "intent::mismatch", mismatch()),
+            (Some(Verdict::Review), _) if file_verdict == Some(check::FileVerdict::Copied) => (
+                Decision::Review,
+                "provenance::instruction",
+                COPIED_REASON.to_owned(),
+            ),
             (Some(Verdict::Review), _) => (
                 Decision::Review,
                 "intent::review",
