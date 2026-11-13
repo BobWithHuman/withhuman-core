@@ -642,8 +642,15 @@ impl DecisionProvider for JevDecisionProvider {
         let unwanted =
             checked.and_then(|checked| check::unwanted(checked.branch, check_response.as_ref()));
         let source = check::source_named(check_response.as_ref());
+        // The call's values that stand only in an instructing tool result, never in the prompt.
+        let instructed = provenance::call_from_instruction(
+            &graph.call.tool_name,
+            &graph.call.tool_input,
+            &paragraphs,
+            graph.prompt.as_deref(),
+        );
         let evidence = check::FileEvidence {
-            copied_from_instruction: provenance.from_instruction(),
+            copied_from_instruction: provenance.from_instruction() || !instructed.is_empty(),
             source_named: source.is_some(),
             // An ungraded change is taken as hard to undo.
             grade_level: graded.map_or(2, |graded| graded.grade.level()),
@@ -720,6 +727,9 @@ impl DecisionProvider for JevDecisionProvider {
         }
         if let Some(concern) = concern {
             trace_json["check"]["concern"] = concern.into();
+        }
+        if !instructed.is_empty() {
+            trace_json["check"]["instructed"] = instructed.clone().into();
         }
         if !origins.is_empty() {
             trace_json["check"]["values"] = origins
@@ -872,6 +882,17 @@ impl DecisionProvider for JevDecisionProvider {
                 DEVIATION_REVIEW_REASON.to_owned(),
             ),
             _ => (decision, rule, reason),
+        };
+        // A call let through that carries a value only an instructing tool result gave (never the
+        // user) carries out that instruction: it goes to the user.
+        let (decision, rule, reason) = if decision == Decision::Allow && !instructed.is_empty() {
+            (
+                Decision::Review,
+                "provenance::instruction",
+                COPIED_REASON.to_owned(),
+            )
+        } else {
+            (decision, rule, reason)
         };
         // A call let through that affects what the user did not specify (one of several
         // candidates picked, or more than was named) goes to the user.
