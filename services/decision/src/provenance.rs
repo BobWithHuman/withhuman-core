@@ -532,3 +532,54 @@ pub fn values_from_prompt(input: &Value, prompt: Option<&str>) -> bool {
             .iter()
             .all(|text| prompt.contains(&text.to_lowercase()))
 }
+
+/// Most values of one call shown with where they came from.
+const MAX_VALUES: usize = 20;
+
+/// Where each value a call is given came from: `user` (written in the user's prompt), the key of
+/// the first tool-result paragraph that holds it, or `agent` (neither: the agent wrote or chose it
+/// itself). Text values of three characters or more and numbers other than 0 and 1, matched
+/// case-insensitively. The origin of a value is what the call's target rests on: a recipient taken
+/// from a search result, an amount nobody gave.
+pub fn value_origins(
+    input: &Value,
+    paragraphs: &BTreeMap<String, String>,
+    prompt: Option<&str>,
+) -> Vec<(String, String)> {
+    fn leaves(value: &Value, found: &mut Vec<String>) {
+        match value {
+            Value::String(text) if text.trim().chars().count() >= 3 => {
+                found.push(text.trim().to_owned());
+            }
+            Value::Number(number) if number.as_f64().is_some_and(|n| n != 0.0 && n != 1.0) => {
+                found.push(number.to_string());
+            }
+            Value::Array(items) => items.iter().for_each(|item| leaves(item, found)),
+            Value::Object(fields) => fields.values().for_each(|field| leaves(field, found)),
+            _ => {}
+        }
+    }
+    let prompt = prompt.unwrap_or_default().to_lowercase();
+    let lowered: Vec<(&String, String)> = paragraphs
+        .iter()
+        .map(|(key, text)| (key, text.to_lowercase()))
+        .collect();
+    let mut found = Vec::new();
+    leaves(input, &mut found);
+    found.dedup();
+    found
+        .into_iter()
+        .take(MAX_VALUES)
+        .map(|value| {
+            let needle = value.to_lowercase();
+            let origin = if prompt.contains(&needle) {
+                "user".to_owned()
+            } else if let Some((key, _)) = lowered.iter().find(|(_, text)| text.contains(&needle)) {
+                (*key).clone()
+            } else {
+                "agent".to_owned()
+            };
+            (value.chars().take(160).collect(), origin)
+        })
+        .collect()
+}

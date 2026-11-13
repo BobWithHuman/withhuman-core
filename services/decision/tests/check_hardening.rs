@@ -305,3 +305,46 @@ fn reads_the_paragraph_jevs_source_answer_names() {
     );
     assert_eq!(source_named(None), None);
 }
+
+/// A shell command that only deletes or moves files is no line to judge: it is asked part by part
+/// (an ordinary call), while one that also writes lines stays a file change.
+#[test]
+fn a_shell_delete_is_asked_part_by_part() {
+    use withhuman_decision::check::only_removes;
+    for (command, removes) in [
+        ("rm -rf /root", true),
+        ("Remove-Item -Recurse tests/test_core.py", true),
+        ("git rm tests/test_core.py", true),
+        ("mv a.py b.py", true),
+        ("rm old.txt; echo x > new.txt", false),
+        ("echo x > new.txt", false),
+        ("ls -la", false),
+    ] {
+        assert_eq!(only_removes(command), removes, "{command}");
+    }
+}
+
+/// The second question carries the first one's worst concern only when the first alone would have
+/// put the Call to the user.
+#[test]
+fn the_second_question_checks_the_first_ones_concern() {
+    use withhuman_decision::check::with_concern;
+    let judged = JevRequest {
+        model: "jev".to_owned(),
+        state: BTreeMap::new(),
+        questions: BTreeMap::new(),
+    };
+    let mut worried = deviation(0.0, 0.5, 0.0);
+    worried.worst = "unconfirmed_irreversible".to_owned();
+    worried.score = 0.22;
+    let mut sent = judged.clone();
+    with_concern(&mut sent, &worried, 0.15);
+    let question = &sent.questions["concern"].instructions;
+    assert!(question.contains("cannot be undone"), "{question}");
+    assert!(question.contains("should not be deleted"), "{question}");
+
+    worried.score = 0.10;
+    let mut sent = judged.clone();
+    with_concern(&mut sent, &worried, 0.15);
+    assert!(sent.questions.is_empty());
+}

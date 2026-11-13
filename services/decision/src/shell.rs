@@ -213,3 +213,16 @@ fn char_codes(command: &str) -> Vec<String> {
     }
     found
 }
+
+/// Shortest run of base64 characters in a tool argument that is decoded for Jev.
+const ARGUMENT_RUN: usize = 40;
+
+/// Text hidden as base64 inside any text (a tool argument): each run of base64 characters long
+/// enough that decodes to printable text. A file written through a service tool as base64 showed
+/// Jev only the encoding (a keylogger passed as "Base64 data").
+pub fn decoded_runs(text: &str) -> Vec<String> {
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '='))
+        .filter(|run| run.len() >= ARGUMENT_RUN)
+        .filter_map(base64_text)
+        .collect()
+}

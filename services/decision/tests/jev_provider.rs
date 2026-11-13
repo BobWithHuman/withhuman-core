@@ -147,6 +147,8 @@ struct Jev {
     requests: Mutex<Vec<JevRequest>>,
     /// How likely the Call can be undone; 0 unless a test says otherwise.
     reversible: f64,
+    /// How likely the first question's concern holds; 0 unless a test says otherwise.
+    concern: f64,
 }
 
 #[async_trait]
@@ -186,13 +188,15 @@ impl JevClient for Jev {
                         }
                     }
                     "unasked" if self.unwanted.is_some() => noul(self.unwanted.unwrap_or_default()),
+                    // The first question's concern: not borne out unless a test says so.
+                    "concern" => noul(self.concern),
                     // Where the call's target came from: picked among several as likely as unwanted.
-                    "origin" if self.unwanted.is_some() => {
+                    "spec" if self.unwanted.is_some() => {
                         let several = self.unwanted.unwrap_or_default();
                         JevAnswer {
                             probabilities: BTreeMap::from([
-                                ("several".to_owned(), several),
-                                ("user".to_owned(), 1.0 - several),
+                                ("picked".to_owned(), several),
+                                ("specified".to_owned(), 1.0 - several),
                             ]),
                             ..Default::default()
                         }
@@ -252,6 +256,7 @@ fn provider_on(
         asked: Mutex::default(),
         requests: Mutex::default(),
         reversible: 0.0,
+        concern: 0.0,
     });
     let provider = JevDecisionProvider::new(
         graph.clone(),
@@ -484,6 +489,7 @@ fn provider_picking(cause: &'static str) -> (JevDecisionProvider, Arc<Graph>, Ar
         asked: Mutex::default(),
         requests: Mutex::default(),
         reversible: 0.0,
+        concern: 0.0,
     });
     let provider = JevDecisionProvider::new(
         graph.clone(),
@@ -635,6 +641,7 @@ async fn checks_a_doubtful_shell_command_part_by_part() {
             asked: Mutex::default(),
             requests: Mutex::default(),
             reversible: 0.0,
+            concern: 0.0,
         });
         let provider = JevDecisionProvider::new(
             graph.clone(),
@@ -655,7 +662,12 @@ async fn checks_a_doubtful_shell_command_part_by_part() {
 
         let requests = jev.requests.lock().unwrap();
         let checked = requests.last().unwrap();
-        assert_eq!(checked.questions.keys().collect::<Vec<_>>(), ["part"]);
+        // The first question's deviation (0.2, high harm, no undoing) is past the review bar, so
+        // its concern is checked alongside the parts.
+        assert_eq!(
+            checked.questions.keys().collect::<Vec<_>>(),
+            ["concern", "part"]
+        );
         assert!(checked.questions["part"].criteria.contains_key("p2"));
         assert_eq!(checked.state["user_request"], "빌드를 고쳐줘");
         let traces = graph.traces.lock().unwrap();
@@ -692,6 +704,7 @@ async fn checks_a_script_run_by_its_code_however_clear_its_command() {
             asked: Mutex::default(),
             requests: Mutex::default(),
             reversible: 0.0,
+            concern: 0.0,
         });
         let provider = JevDecisionProvider::new(
             graph.clone(),
@@ -759,6 +772,7 @@ async fn checks_a_cleared_file_change_line_by_line() {
             asked: Mutex::default(),
             requests: Mutex::default(),
             reversible: 0.0,
+            concern: 0.0,
         });
         let provider = JevDecisionProvider::new(
             graph.clone(),
@@ -801,6 +815,7 @@ async fn checks_a_cleared_file_change_line_by_line() {
         asked: Mutex::default(),
         requests: Mutex::default(),
         reversible: 0.0,
+        concern: 0.0,
     });
     let provider = JevDecisionProvider::new(
         graph.clone(),
@@ -837,7 +852,7 @@ async fn puts_a_target_picked_among_several_to_the_user() {
             withdraw(),
             0.9,
             Decision::Review,
-            "provenance::chosen",
+            "provenance::unspecified",
             true,
         ),
         (withdraw(), 0.5, Decision::Allow, "intent::match", true),
@@ -875,6 +890,7 @@ async fn puts_a_target_picked_among_several_to_the_user() {
             asked: Mutex::default(),
             requests: Mutex::default(),
             reversible: 0.0,
+            concern: 0.0,
         });
         let provider = JevDecisionProvider::new(
             graph.clone(),
@@ -895,7 +911,7 @@ async fn puts_a_target_picked_among_several_to_the_user() {
         let requests = jev.requests.lock().unwrap();
         let origin = requests
             .iter()
-            .find(|sent| sent.questions.contains_key("origin"));
+            .find(|sent| sent.questions.contains_key("spec"));
         assert_eq!(origin.is_some(), asked, "{several}");
         if let Some(origin) = origin {
             assert_eq!(origin.state["user_request"], "빌드를 고쳐줘");
@@ -905,7 +921,17 @@ async fn puts_a_target_picked_among_several_to_the_user() {
                     .contains("BTC Wallet 2")
             );
             let traces = graph.traces.lock().unwrap();
-            assert_eq!(traces[0].trace["check"]["chosen"], several);
+            assert_eq!(traces[0].trace["check"]["unspecified"], several);
+            let values = traces[0].trace["check"]["values"].as_array().unwrap();
+            let address = values
+                .iter()
+                .find(|value| value["value"] == "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa")
+                .unwrap();
+            // Found in a tool result: neither the user's prompt nor the agent's own.
+            assert!(
+                !["user", "agent"].contains(&address["origin"].as_str().unwrap()),
+                "{address}"
+            );
         }
     }
 }
@@ -924,6 +950,7 @@ fn graded_provider(
         asked: Mutex::default(),
         requests: Mutex::default(),
         reversible: 0.0,
+        concern: 0.0,
     });
     let provider = JevDecisionProvider::new(
         Arc::new(Graph::default()),
@@ -951,6 +978,7 @@ async fn records_the_grade_without_changing_the_verdict() {
             asked: Mutex::default(),
             requests: Mutex::default(),
             reversible: 0.0,
+            concern: 0.0,
         });
         let provider = JevDecisionProvider::new(
             graph.clone(),
@@ -1003,4 +1031,51 @@ async fn judges_by_the_rules_alone_while_jev_keeps_failing() {
             .await
             .is_err()
     );
+}
+
+/// A call the second question lets through goes to the user when the first question's own concern
+/// (past the review bar) is borne out by the second.
+#[tokio::test]
+async fn puts_a_call_to_the_user_when_the_first_concern_holds() {
+    for (concern, decision, rule) in [
+        (0.9, Decision::Review, "intent::concern"),
+        (0.3, Decision::Allow, "intent::match"),
+    ] {
+        let graph = Arc::new(Graph {
+            prompt: true,
+            // Every value is in the prompt, so no spec question is asked.
+            call: Some(("mcp__tasks__delete", json!({ "task": "빌드를 고쳐줘" }))),
+            result: Some("3 | run | run for 1 mile (should not be deleted!) | completed"),
+            ..Graph::default()
+        });
+        let jev = Arc::new(Jev {
+            // The user's word in some doubt (0.2): past the review bar for a high-harm call.
+            intent_score: 0.8,
+            cause: Some("s0"),
+            fail: false,
+            unwanted: Some(0.1),
+            asked: Mutex::default(),
+            requests: Mutex::default(),
+            reversible: 0.0,
+            concern,
+        });
+        let provider = JevDecisionProvider::new(
+            graph.clone(),
+            jev.clone(),
+            TraceSettings::default(),
+            Duration::from_secs(3),
+            Thresholds::default(),
+        );
+        let response = provider
+            .decide(&request(Some("빌드 고치기"), Some(4_000)))
+            .await
+            .unwrap();
+        assert_eq!(
+            (response.decision, response.rule.as_str()),
+            (decision, rule),
+            "{concern}"
+        );
+        let traces = graph.traces.lock().unwrap();
+        assert_eq!(traces[0].trace["check"]["concern"], concern);
+    }
 }

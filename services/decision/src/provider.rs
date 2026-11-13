@@ -329,8 +329,8 @@ const COPIED_REASON: &str = "WithHuman: 이 변경에 도구 결과나 저장소
      실행 전에 사용자 확인이 필요합니다.";
 const SAFEGUARD_REASON: &str = "WithHuman이 에이전트의 설정이나 훅을 바꾸는 도구 호출을 차단했습니다. 사용자가 직접 바꿔야 합니다.";
 
-const CHOSEN_REASON: &str = "WithHuman: 이 호출의 대상이 도구 결과의 여러 후보 중 사용자가 정하지 않은 \
-                             하나로 보입니다. 어느 것인지 사용자 확인이 필요합니다.";
+const UNSPECIFIED_REASON: &str = "WithHuman: 이 호출이 사용자가 정하지 않은 대상이나 범위에 작용하는 것으로 \
+                                  보입니다. 사용자 확인이 필요합니다.";
 const DEVIATION_REVIEW_REASON: &str = "WithHuman이 이 도구 호출이 사용자 의도에서 벗어났을 수 있다고 판단했습니다. 사용자 확인이 필요합니다.";
 
 #[async_trait]
@@ -498,6 +498,15 @@ impl DecisionProvider for JevDecisionProvider {
                     &judged_effect,
                     graph.prompt.as_deref(),
                 )
+            })
+            .map(|mut sent| {
+                // The second question also checks the first one's own concern, when the first
+                // alone would have put the Call to the user.
+                if let Some(deviation) = deviation.as_ref() {
+                    let (_, review_at) = self.thresholds.for_link(parents.link);
+                    check::with_concern(&mut sent, deviation, review_at);
+                }
+                sent
             });
         let budget = timeout();
         let check_task = check_request.filter(|_| !budget.is_zero()).map(|sent| {
@@ -509,15 +518,19 @@ impl DecisionProvider for JevDecisionProvider {
             )
         });
 
-        // A service call that is hard to undo is asked where its target came from, unless the
-        // user's prompt names every value it is given.
-        let origin_task = judge_request
+        // Where each value of the Call came from: the user's prompt, a tool-result paragraph, or
+        // the agent itself.
+        let origins =
+            provenance::value_origins(&graph.call.tool_input, &paragraphs, graph.prompt.as_deref());
+        // A service call that is hard to undo is compared with what the user specified, unless
+        // the user's prompt names every value it is given.
+        let spec_task = judge_request
             .as_ref()
             .filter(|_| {
                 !safeguard
                     && effect == Effect::Other
                     && !matches!(graph.call.tool_name.as_str(), "Bash" | "PowerShell")
-                    && graded.is_some_and(|graded| graded.grade.level() >= check::ORIGIN_GRADE)
+                    && graded.is_some_and(|graded| graded.grade.level() >= check::SPEC_GRADE)
                     && !provenance::values_from_prompt(
                         &graph.call.tool_input,
                         graph.prompt.as_deref(),
@@ -525,7 +538,7 @@ impl DecisionProvider for JevDecisionProvider {
                     && !budget.is_zero()
             })
             .map(|judged| {
-                let sent = check::origin_request(judged, graph.prompt.as_deref());
+                let sent = check::spec_request(judged, graph.prompt.as_deref(), &origins);
                 let jev = self.jev.clone();
                 let asked = sent.clone();
                 (
@@ -611,11 +624,11 @@ impl DecisionProvider for JevDecisionProvider {
             },
             None => None,
         };
-        let origin_response = match origin_task {
+        let spec_response = match spec_task {
             Some((sent, task)) => match task.await {
                 Ok(Ok(response)) => {
                     exchanges.push(serde_json::json!({
-                        "stage": "origin", "request": sent, "response": &response,
+                        "stage": "spec", "request": sent, "response": &response,
                     }));
                     Some(response)
                 }
@@ -623,7 +636,8 @@ impl DecisionProvider for JevDecisionProvider {
             },
             None => None,
         };
-        let chosen = check::chosen(origin_response.as_ref());
+        let unspecified = check::unspecified(spec_response.as_ref());
+        let concern = check::concern(check_response.as_ref());
         let check_ms = elapsed_ms(checking);
         let unwanted =
             checked.and_then(|checked| check::unwanted(checked.branch, check_response.as_ref()));
@@ -701,8 +715,17 @@ impl DecisionProvider for JevDecisionProvider {
         if undoes {
             trace_json["check"]["undoes"] = true.into();
         }
-        if let Some(chosen) = chosen {
-            trace_json["check"]["chosen"] = chosen.into();
+        if let Some(unspecified) = unspecified {
+            trace_json["check"]["unspecified"] = unspecified.into();
+        }
+        if let Some(concern) = concern {
+            trace_json["check"]["concern"] = concern.into();
+        }
+        if !origins.is_empty() {
+            trace_json["check"]["values"] = origins
+                .iter()
+                .map(|(value, origin)| serde_json::json!({"value": value, "origin": origin}))
+                .collect();
         }
         if provenance != provenance::Provenance::default() {
             trace_json["check"]["provenance"] = provenance::to_json(&provenance);
@@ -840,12 +863,28 @@ impl DecisionProvider for JevDecisionProvider {
         };
         // A call let through whose target the agent picked among several the user never chose
         // between goes to the user.
-        let (decision, rule, reason) = match chosen {
-            Some(chosen) if decision == Decision::Allow && chosen >= check::CHOSEN_CUT => (
+        // A call let through although the first question's concern holds, by the second
+        // question's own check, goes to the user.
+        let (decision, rule, reason) = match concern {
+            Some(concern) if decision == Decision::Allow && concern >= check::CONCERN_CUT => (
                 Decision::Review,
-                "provenance::chosen",
-                CHOSEN_REASON.to_owned(),
+                "intent::concern",
+                DEVIATION_REVIEW_REASON.to_owned(),
             ),
+            _ => (decision, rule, reason),
+        };
+        // A call let through that affects what the user did not specify (one of several
+        // candidates picked, or more than was named) goes to the user.
+        let (decision, rule, reason) = match unspecified {
+            Some(unspecified)
+                if decision == Decision::Allow && unspecified >= check::UNSPECIFIED_CUT =>
+            {
+                (
+                    Decision::Review,
+                    "provenance::unspecified",
+                    UNSPECIFIED_REASON.to_owned(),
+                )
+            }
             _ => (decision, rule, reason),
         };
         Ok(DecisionResponse {
