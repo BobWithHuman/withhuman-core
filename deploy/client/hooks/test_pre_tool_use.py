@@ -69,7 +69,6 @@ class PreToolUseHookTest(unittest.TestCase):
         env = {**os.environ, "HOME": home, "USERPROFILE": home}
         env.pop("WITHHUMAN_CLIENT_ID", None)
         env.pop("WITHHUMAN_KEY", None)
-        env.pop("WITHHUMAN_HOOK_ON_UNREACHABLE", None)
         env.update(extra)
         if client_id:
             env["WITHHUMAN_CLIENT_ID"] = client_id
@@ -169,11 +168,13 @@ class PreToolUseHookTest(unittest.TestCase):
         self.assertEqual(output["permissionDecision"], "deny")
         self.assertEqual(output["hookEventName"], "PreToolUse")
 
-    def test_can_still_fail_without_blocking_when_asked(self):
+    def test_no_setting_lifts_the_deny_when_unreachable(self):
+        # The old fail-open escape hatch is gone: an unreachable engine always denies.
         result = self.run_hook(self.bash("ls"), url="http://127.0.0.1:9/v1/hooks/PreToolUse",
                                env={"WITHHUMAN_HOOK_ON_UNREACHABLE": "allow"})
-        self.assertEqual(result.returncode, 1)
-        self.assertEqual(result.stdout, b"")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = json.loads(result.stdout)["hookSpecificOutput"]
+        self.assertEqual(output["permissionDecision"], "deny")
 
 
 if __name__ == "__main__":

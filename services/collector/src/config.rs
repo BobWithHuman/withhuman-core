@@ -30,9 +30,6 @@ pub struct CollectorConfig {
     pub enforcement_mode: EnforcementMode,
     pub failure_policy: FailurePolicy,
     pub review_policy: ReviewPolicy,
-    /// When the engine gives no judgment, ask about grade 2 and 3 Calls (when the
-    /// client asks at all) rather than block them.
-    pub failure_by_grade: bool,
     pub enforce_mcp_at_hook: bool,
     pub watch_paths: Vec<String>,
     pub verdict_capacity: usize,
@@ -74,7 +71,6 @@ impl Default for CollectorConfig {
             enforcement_mode: EnforcementMode::Enforce,
             failure_policy: FailurePolicy::Closed,
             review_policy: ReviewPolicy::Deny,
-            failure_by_grade: false,
             enforce_mcp_at_hook: false,
             watch_paths: Vec::new(),
             verdict_capacity: 10_000,
@@ -161,8 +157,6 @@ impl CollectorConfig {
                 "ask" => Some(ReviewPolicy::Ask),
                 _ => None,
             })?,
-            failure_by_grade: env::var("WITHHUMAN_FAILURE_BY_GRADE")
-                .is_ok_and(|value| matches!(value.as_str(), "1" | "true")),
             enforce_mcp_at_hook: env::var("WITHHUMAN_MCP_ENFORCE")
                 .is_ok_and(|value| value == "hook"),
             watch_paths: list_env("WITHHUMAN_WATCH_PATHS"),

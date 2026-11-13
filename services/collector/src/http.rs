@@ -605,11 +605,7 @@ async fn judge_call(
     let tool_name = request.tool_name.clone();
     let arguments = request.tool_input.clone();
     // The Call's rule grade, for when the engine gives no judgment.
-    let graded = if service.config.failure_by_grade {
-        withhuman_common::grade::grade(&tool_name, &arguments)
-    } else {
-        None
-    };
+    let graded = withhuman_common::grade::grade(&tool_name, &arguments);
     let deadline_ms = u64::try_from(service.config.decision_budget.as_millis()).ok();
     let event = match service
         .normalizer

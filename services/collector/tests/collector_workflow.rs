@@ -894,11 +894,10 @@ impl GeneratorTransport for NoCursorGenerator {
 }
 
 #[tokio::test]
-async fn asks_about_a_hard_to_undo_call_when_the_engine_fails_and_grades_are_on() {
-    let config = |failure_by_grade| CollectorConfig {
+async fn asks_about_a_hard_to_undo_call_when_the_engine_fails() {
+    let config = |review_policy| CollectorConfig {
         failure_policy: FailurePolicy::Closed,
-        review_policy: ReviewPolicy::Ask,
-        failure_by_grade,
+        review_policy,
         ..Default::default()
     };
     let shell = |command: &str, id: &str| {
@@ -910,7 +909,7 @@ async fn asks_about_a_hard_to_undo_call_when_the_engine_fails_and_grades_are_on(
     };
     // Grade 3-1: the person decides.
     let (_, body) = response_json(
-        test_app(config(true), Arc::new(FailingGenerator))
+        test_app(config(ReviewPolicy::Ask), Arc::new(FailingGenerator))
             .oneshot(shell("rm -rf build", "grade-3"))
             .await
             .unwrap(),
@@ -925,17 +924,17 @@ async fn asks_about_a_hard_to_undo_call_when_the_engine_fails_and_grades_are_on(
     );
     // Grade 0: blocked, a read included.
     let (_, body) = response_json(
-        test_app(config(true), Arc::new(FailingGenerator))
+        test_app(config(ReviewPolicy::Ask), Arc::new(FailingGenerator))
             .oneshot(shell("ls", "grade-0"))
             .await
             .unwrap(),
     )
     .await;
     assert_eq!(body["hookSpecificOutput"]["permissionDecision"], "deny");
-    // Without grades every failure is blocked, as before.
+    // A client that cannot ask the person (`WITHHUMAN_ASK=deny`) blocks every failure.
     let (_, body) = response_json(
-        test_app(config(false), Arc::new(FailingGenerator))
-            .oneshot(shell("rm -rf build", "no-grades"))
+        test_app(config(ReviewPolicy::Deny), Arc::new(FailingGenerator))
+            .oneshot(shell("rm -rf build", "no-ask"))
             .await
             .unwrap(),
     )

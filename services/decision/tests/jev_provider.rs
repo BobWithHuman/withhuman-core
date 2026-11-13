@@ -26,7 +26,8 @@ struct Graph {
     /// The latest user prompt is in SubGraph 0.
     prompt: bool,
     no_subgraph: bool,
-    /// The Call's tool and input, when not `rm -rf build` in Bash.
+    /// The Call's tool and input, when not `git push --force origin main` in Bash (a command that
+    /// writes no file, so it is asked the purpose question).
     call: Option<(&'static str, serde_json::Value)>,
     /// The programs the Call runs, with their code as the session saw it.
     programs: BTreeMap<String, Option<String>>,
@@ -61,10 +62,10 @@ impl DecisionRepository for Graph {
                 subgraph: 2,
                 agent_id: None,
                 tool_name: self.call.as_ref().map_or("Bash", |call| call.0).to_owned(),
-                tool_input: self
-                    .call
-                    .as_ref()
-                    .map_or_else(|| json!({"command": "rm -rf build"}), |call| call.1.clone()),
+                tool_input: self.call.as_ref().map_or_else(
+                    || json!({"command": "git push --force origin main"}),
+                    |call| call.1.clone(),
+                ),
                 prior: None,
                 programs: self.programs.clone(),
                 cwd: None,
@@ -655,24 +656,10 @@ async fn checks_a_script_run_by_its_code_however_clear_its_command() {
 }
 
 /// Line question and file check through the whole provider: a file change the first question
-/// clears is allowed unasked by default, and with the settings on is asked the line question
-/// and judged by it, the settings recorded in the trace.
+/// would clear is still asked the line question and judged by it.
 #[tokio::test]
-async fn checks_a_cleared_file_change_line_by_line_when_the_settings_say_so() {
-    use withhuman_decision::check::CheckSettings;
-
-    for (settings, decision, asked) in [
-        (CheckSettings::default(), Decision::Allow, false),
-        (
-            CheckSettings {
-                line_question: true,
-                file_always_checked: true,
-                ..CheckSettings::default()
-            },
-            Decision::Deny,
-            true,
-        ),
-    ] {
+async fn checks_a_cleared_file_change_line_by_line() {
+    {
         let graph = Arc::new(Graph {
             prompt: true,
             call: Some((
@@ -695,10 +682,7 @@ async fn checks_a_cleared_file_change_line_by_line_when_the_settings_say_so() {
         let provider = JevDecisionProvider::new(
             graph.clone(),
             jev.clone(),
-            TraceSettings {
-                check: settings,
-                ..TraceSettings::default()
-            },
+            TraceSettings::default(),
             Duration::from_secs(3),
             Thresholds::default(),
         );
@@ -706,30 +690,19 @@ async fn checks_a_cleared_file_change_line_by_line_when_the_settings_say_so() {
             .decide(&request(Some("버그 고치기"), Some(4_000)))
             .await
             .unwrap();
-        assert_eq!(response.decision, decision);
+        assert_eq!(response.decision, Decision::Deny);
 
         let requests = jev.requests.lock().unwrap();
         let unasked = requests
             .iter()
             .find_map(|sent| sent.questions.get("unasked"));
-        assert_eq!(unasked.is_some(), asked);
-        if let Some(question) = unasked {
-            assert!(question.instructions.contains("line by line"));
-        }
+        assert!(unasked.unwrap().instructions.contains("line by line"));
         let traces = graph.traces.lock().unwrap();
-        let check = &traces[0].trace["check"];
-        if asked {
-            assert_eq!(check["branch"], "file");
-            assert_eq!(check["settings"]["file_always_checked"], true);
-            assert_eq!(check["settings"]["line_question"], true);
-        } else {
-            assert_eq!(check["branch"], "clear");
-            assert!(check.get("settings").is_none());
-        }
+        assert_eq!(traces[0].trace["check"]["branch"], "file");
     }
 }
 
-/// A provider whose check runs with `check`, over the default graph (`rm -rf build`).
+/// A provider whose check runs with `check`, over the default graph (`git push --force origin main`).
 fn graded_provider(
     intent_score: f64,
     fail: bool,
@@ -759,12 +732,8 @@ fn graded_provider(
 
 #[tokio::test]
 async fn records_the_grade_without_changing_the_verdict() {
-    let grades = withhuman_decision::check::CheckSettings {
-        grades: true,
-        ..Default::default()
-    };
-    // `rm -rf build`, fully in line with the intent and found asked for: grade 3-1, allowed.
-    for check in [grades, Default::default()] {
+    // `git push --force`, fully in line with the intent and found asked for: grade 3-1, allowed.
+    {
         let graph = Arc::new(Graph::default());
         let jev = Arc::new(Jev {
             intent_score: 1.0,
@@ -778,42 +747,32 @@ async fn records_the_grade_without_changing_the_verdict() {
         let provider = JevDecisionProvider::new(
             graph.clone(),
             jev,
-            TraceSettings {
-                check,
-                ..TraceSettings::default()
-            },
+            TraceSettings::default(),
             Duration::from_secs(3),
             Thresholds::default(),
         );
         let response = provider
-            .decide(&request(Some("빌드 폴더 지우기"), Some(4_000)))
+            .decide(&request(Some("강제로 올리기"), Some(4_000)))
             .await
             .unwrap();
         assert_eq!(response.decision, Decision::Allow);
         let traces = graph.traces.lock().unwrap();
         let grade = &traces[0].trace["check"]["grade"];
-        if check.grades {
-            assert_eq!(grade["grade"], "3-1");
-            assert_eq!(grade["source"], "rule");
-            assert_eq!(grade["reason"], "recursive_delete");
-        } else {
-            assert!(grade.is_null());
-        }
+        assert_eq!(grade["grade"], "3-1");
+        assert_eq!(grade["source"], "rule");
+        assert_eq!(grade["reason"], "push_force");
     }
 }
 
 #[tokio::test]
 async fn judges_by_the_rules_alone_while_jev_keeps_failing() {
     let check = withhuman_decision::check::CheckSettings {
-        grades: true,
-        degraded_mode: true,
         degraded_failures: 1,
         degraded_seconds: 60,
-        ..Default::default()
     };
     let (provider, jev) = graded_provider(1.0, true, check);
     let first = provider
-        .decide(&request(Some("빌드 폴더 지우기"), Some(4_000)))
+        .decide(&request(Some("강제로 올리기"), Some(4_000)))
         .await
         .unwrap();
     assert_eq!(first.decision, Decision::Review);
@@ -821,17 +780,18 @@ async fn judges_by_the_rules_alone_while_jev_keeps_failing() {
     let asked = jev.asked.lock().unwrap().len();
     // The next call is judged at once, without asking Jev.
     let second = provider
-        .decide(&request(Some("빌드 폴더 지우기"), Some(4_000)))
+        .decide(&request(Some("강제로 올리기"), Some(4_000)))
         .await
         .unwrap();
     assert_eq!(second.rule, "degraded::3-1");
     assert_eq!(jev.asked.lock().unwrap().len(), asked);
 
-    // Without the mode a failing Jev is the failure policy's (an error), as before.
+    // Before the failures in a row add up (3 by default), a failing Jev is the failure
+    // policy's (an error).
     let (provider, _) = graded_provider(1.0, true, Default::default());
     assert!(
         provider
-            .decide(&request(Some("빌드 폴더 지우기"), Some(4_000)))
+            .decide(&request(Some("강제로 올리기"), Some(4_000)))
             .await
             .is_err()
     );

@@ -172,31 +172,12 @@ fn thresholds() -> io::Result<Thresholds> {
     Ok(thresholds)
 }
 
-/// The check settings; unset, the check is as it was.
+/// The rules-only mode's settings.
 fn check_settings() -> io::Result<CheckSettings> {
     Ok(CheckSettings {
-        line_question: flag("WITHHUMAN_CHECK_LINE_QUESTION")?,
-        file_always_checked: flag("WITHHUMAN_CHECK_FILE_ALWAYS")?,
-        shell_writes_checked: flag("WITHHUMAN_CHECK_SHELL_WRITES")?,
-        restore_aware: flag("WITHHUMAN_CHECK_RESTORE_AWARE")?,
-        shell_split: flag("WITHHUMAN_CHECK_SHELL_SPLIT")?,
-        shell_decode: flag("WITHHUMAN_CHECK_SHELL_DECODE")?,
-        grades: flag("WITHHUMAN_GRADES")?,
-        degraded_mode: flag("WITHHUMAN_DEGRADED_MODE")?,
         degraded_failures: parse_range("WITHHUMAN_DEGRADED_FAILURES", 3, 1, 100)?,
         degraded_seconds: parse_range("WITHHUMAN_DEGRADED_SECONDS", 60, 1, 3_600)?,
     })
-}
-
-/// `1`/`true` on, `0`/`false`/unset off.
-fn flag(name: &str) -> io::Result<bool> {
-    match env::var(name).as_deref() {
-        Err(_) | Ok("") | Ok("0") | Ok("false") => Ok(false),
-        Ok("1") | Ok("true") => Ok(true),
-        Ok(value) => Err(invalid(format!(
-            "invalid {name} {value:?}: expected 1 or 0"
-        ))),
-    }
 }
 
 fn parse_env<T>(name: &str, default: T) -> io::Result<T>

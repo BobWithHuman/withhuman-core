@@ -15,8 +15,7 @@ Claude Code gets the same allow, deny or ask as from the HTTP hook.
 
 When the Collector cannot be reached, times out or answers with an error, the hook denies the
 call: with no judgment there is nothing to allow it on, and an engine that is merely switched off
-must not lift every control. WITHHUMAN_HOOK_ON_UNREACHABLE=allow restores the old behaviour (exit
-1, a non-blocking error, as an unreachable HTTP hook is) for setups that want it.
+must not lift every control.
 
 It sends the device's client ID (WITHHUMAN_CLIENT_ID) and the user's WithHuman key
 (WITHHUMAN_KEY, as `Authorization: Bearer`). When Claude Code was started without them in its
@@ -46,10 +45,8 @@ UNREACHABLE_REASON = ("WithHuman에 연결하지 못해 이 도구 호출을 차
 
 
 def unreachable(message):
-    """What the hook answers when the Collector gave no judgment: a deny, unless allowed."""
+    """What the hook answers when the Collector gave no judgment: a deny."""
     print(f"WithHuman: {message}", file=sys.stderr)
-    if os.environ.get("WITHHUMAN_HOOK_ON_UNREACHABLE", "deny").strip().lower() == "allow":
-        return 1
     sys.stdout.write(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "permissionDecision": "deny",

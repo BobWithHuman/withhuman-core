@@ -358,11 +358,11 @@ impl DecisionProvider for JevDecisionProvider {
         let intents = trace::intents(&graph, request.intent.as_deref(), &self.settings);
         let plan = trace::plan(&graph, &members, intents.text.as_deref(), &self.settings);
         let risky = graph.risky();
-        let effect = check::effect_with(&graph.call, &self.settings.check);
+        let effect = check::call_effect(&graph.call);
         let safeguard = effect == Effect::Safeguard;
         // A change that only undoes the session's own earlier changes to the file.
         let undoes = match &effect {
-            Effect::FileChange { path, .. } if self.settings.check.restore_aware => self
+            Effect::FileChange { path, .. } => self
                 .repository
                 .earlier_file_changes(&request.session_id, graph.call.order, path)
                 .await
@@ -370,15 +370,11 @@ impl DecisionProvider for JevDecisionProvider {
             _ => false,
         };
 
-        let settings = self.settings.check;
         // The rule grade, before Jev is asked.
-        let rule_graded = if settings.grades {
-            withhuman_common::grade::grade(&graph.call.tool_name, &graph.call.tool_input)
-        } else {
-            None
-        };
+        let rule_graded =
+            withhuman_common::grade::grade(&graph.call.tool_name, &graph.call.tool_input);
         // Jev has kept failing, so the rules judge alone for a while.
-        if settings.degraded_mode && self.breaker_open() {
+        if self.breaker_open() {
             return Ok(self
                 .degraded(request, rule_graded, safeguard, "rules-only mode")
                 .await);
@@ -417,7 +413,7 @@ impl DecisionProvider for JevDecisionProvider {
                     Some(response)
                 }
                 Err(error) => {
-                    if settings.degraded_mode && self.breaker_failure(&error) {
+                    if self.breaker_failure(&error) {
                         return Ok(self
                             .degraded(request, rule_graded, safeguard, &error.to_string())
                             .await);
@@ -437,18 +433,14 @@ impl DecisionProvider for JevDecisionProvider {
         let jev_graded = deviation
             .as_ref()
             .map(|deviation| jev_grade(deviation.harm, deviation.irreversible));
-        let graded = if settings.grades {
-            match (rule_graded, jev_graded) {
-                (Some(rule), Some(jev))
-                    if jev.grade.level() >= 3 && jev.grade.level() > rule.grade.level() =>
-                {
-                    Some(jev)
-                }
-                (Some(rule), _) => Some(rule),
-                (None, jev) => jev,
+        let graded = match (rule_graded, jev_graded) {
+            (Some(rule), Some(jev))
+                if jev.grade.level() >= 3 && jev.grade.level() > rule.grade.level() =>
+            {
+                Some(jev)
             }
-        } else {
-            None
+            (Some(rule), _) => Some(rule),
+            (None, jev) => jev,
         };
         let grade_source = match (rule_graded, graded) {
             (Some(rule), Some(graded)) if graded != rule => "rule+jev",
@@ -458,20 +450,14 @@ impl DecisionProvider for JevDecisionProvider {
         };
         // Unless the trace clears the Call, a second question checks it against the user's
         // prompt, asked while the paragraphs are.
-        let checked = deviation.as_ref().map(|deviation| {
-            check::check_call(deviation, parents.link, &effect, &settings, undoes)
-        });
+        let checked = deviation
+            .as_ref()
+            .map(|deviation| check::check_call(deviation, parents.link, &effect, undoes));
         let checking = Instant::now();
         let check_request = checked
             .zip(judge_request.as_ref())
             .and_then(|(checked, judged)| {
-                check::request_with(
-                    judged,
-                    checked.branch,
-                    &effect,
-                    graph.prompt.as_deref(),
-                    &settings,
-                )
+                check::request(judged, checked.branch, &effect, graph.prompt.as_deref())
             });
         let budget = timeout();
         let check_task = check_request.filter(|_| !budget.is_zero()).map(|sent| {
@@ -583,35 +569,19 @@ impl DecisionProvider for JevDecisionProvider {
             "unwanted": unwanted,
             "verdict": verdict.map(|verdict| format!("{verdict:?}").to_ascii_uppercase()),
         });
-        // Which check settings judged the Call, and its grade; absent when none is on, so a
-        // default deployment records exactly what it did before.
-        if settings != check::CheckSettings::default() {
-            trace_json["check"]["settings"] = serde_json::json!({
-                "line_question": settings.line_question,
-                "file_always_checked": settings.file_always_checked,
-                "shell_writes_checked": settings.shell_writes_checked,
-                "restore_aware": settings.restore_aware,
-                "shell_split": settings.shell_split,
-                "shell_decode": settings.shell_decode,
-                "grades": settings.grades,
-                "degraded_mode": settings.degraded_mode,
-            });
-            if undoes {
-                trace_json["check"]["undoes"] = true.into();
-            }
-            if matches!(effect, Effect::ShellWrite { .. }) {
-                trace_json["check"]["shell_write"] = true.into();
-            }
+        if undoes {
+            trace_json["check"]["undoes"] = true.into();
         }
-        if settings.grades {
-            trace_json["check"]["grade"] = serde_json::json!({
-                "grade": graded.map(|graded| graded.grade.as_str()),
-                "source": grade_source,
-                "reason": graded.map(|graded| graded.reason),
-                "label": graded.map(|graded| graded.grade.label()),
-                "description": graded.map(|graded| graded.describe()),
-            });
+        if matches!(effect, Effect::ShellWrite { .. }) {
+            trace_json["check"]["shell_write"] = true.into();
         }
+        trace_json["check"]["grade"] = serde_json::json!({
+            "grade": graded.map(|graded| graded.grade.as_str()),
+            "source": grade_source,
+            "reason": graded.map(|graded| graded.reason),
+            "label": graded.map(|graded| graded.grade.label()),
+            "description": graded.map(|graded| graded.describe()),
+        });
         if let Effect::Run { programs } = &effect {
             trace_json["check"]["programs"] = programs
                 .iter()
