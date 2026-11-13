@@ -674,3 +674,13 @@ pub fn value_origins(
         })
         .collect()
 }
+
+/// [`call_from_instruction`] for a file change, by its `path` and the lines it `added`.
+pub fn lines_from_instruction(
+    path: &str,
+    added: &[String],
+    paragraphs: &BTreeMap<String, String>,
+    prompt: Option<&str>,
+) -> Vec<String> {
+    from_instruction(&format!("{path}\n{}", added.join("\n")), paragraphs, prompt)
+}

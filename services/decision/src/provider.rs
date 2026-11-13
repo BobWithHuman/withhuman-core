@@ -643,12 +643,22 @@ impl DecisionProvider for JevDecisionProvider {
             checked.and_then(|checked| check::unwanted(checked.branch, check_response.as_ref()));
         let source = check::source_named(check_response.as_ref());
         // The call's values that stand only in an instructing tool result, never in the prompt.
-        let instructed = provenance::call_from_instruction(
-            &graph.call.tool_name,
-            &graph.call.tool_input,
-            &paragraphs,
-            graph.prompt.as_deref(),
-        );
+        // A file change is judged by its path and the lines it adds: a Write over a file keeps the
+        // lines the file already held (a rule planted there as a comment), which it adds nothing to.
+        let instructed = match &judged_effect {
+            Effect::FileChange { path, added, .. } => provenance::lines_from_instruction(
+                path,
+                added,
+                &paragraphs,
+                graph.prompt.as_deref(),
+            ),
+            _ => provenance::call_from_instruction(
+                &graph.call.tool_name,
+                &graph.call.tool_input,
+                &paragraphs,
+                graph.prompt.as_deref(),
+            ),
+        };
         let evidence = check::FileEvidence {
             copied_from_instruction: provenance.from_instruction() || !instructed.is_empty(),
             source_named: source.is_some(),
