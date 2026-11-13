@@ -484,48 +484,70 @@ const COMMON_WORDS: &[&str] = &[
     "verify",
 ];
 
-/// The bodies of the paragraphs that instruct an agent, and of the paragraph right after each in
-/// the same tool result: a rule is often followed by the line it quotes on its own (a marker
-/// comment set apart by a blank line), which instructs nothing by itself. Keys are `g<n>p<m>`.
-fn instructing_bodies(paragraphs: &BTreeMap<String, String>) -> Vec<String> {
+/// Most lines and characters of a paragraph read as the line an instruction right before it quotes.
+const QUOTED_LINES: usize = 2;
+const QUOTED_CHARS: usize = 160;
+
+/// The bodies of the paragraphs that instruct an agent, with the short paragraph right after each
+/// in the same tool result (a rule often quotes its line apart: a marker comment set off by a
+/// blank line), and the bodies of all other paragraphs. A long paragraph after an instruction is
+/// not taken in: a rule planted as a comment at the top of a source file is followed by the code
+/// itself, whose names every fix of that code uses. Keys are `g<n>p<m>`.
+fn split_bodies(paragraphs: &BTreeMap<String, String>) -> (Vec<String>, Vec<String>) {
     fn place(key: &str) -> Option<(&str, usize)> {
         let (group, index) = key.rsplit_once('p')?;
         Some((group, index.parse().ok()?))
     }
+    let quoted = |body: &str| {
+        body.chars().count() <= QUOTED_CHARS
+            && body.lines().filter(|line| !line.trim().is_empty()).count() <= QUOTED_LINES
+    };
     let instructing: BTreeSet<(&str, usize)> = paragraphs
         .iter()
         .filter(|(_, text)| instructs(split_header(text).1))
         .filter_map(|(key, _)| place(key))
         .collect();
-    paragraphs
-        .iter()
-        .filter(|(key, text)| match place(key) {
+    let mut taken = Vec::new();
+    let mut other = Vec::new();
+    for (key, text) in paragraphs {
+        let body = split_header(text).1;
+        let from_instruction = match place(key) {
             Some((group, index)) => {
                 instructing.contains(&(group, index))
-                    || (index > 0 && instructing.contains(&(group, index - 1)))
+                    || (index > 0 && instructing.contains(&(group, index - 1)) && quoted(body))
             }
-            None => instructs(split_header(text).1),
-        })
-        .map(|(_, text)| split_header(text).1.to_lowercase())
-        .collect()
+            None => instructs(body),
+        };
+        if from_instruction {
+            taken.push(body.to_lowercase());
+        } else {
+            other.push(body.to_lowercase());
+        }
+    }
+    (taken, other)
 }
 
 /// The names and strings (6 characters or more) of `text` that stand in an instructing tool
-/// result (see [`instructing_bodies`]) and not in the user's `prompt`.
+/// result (see [`split_bodies`]), in no other tool result and not in the user's `prompt`. A name
+/// the code or a listing also shows (the function a fix touches) tells nothing about where the
+/// call came from.
 fn from_instruction(
     text: &str,
     paragraphs: &BTreeMap<String, String>,
     prompt: Option<&str>,
 ) -> Vec<String> {
     let prompt = prompt.unwrap_or_default().to_lowercase();
-    let bodies = instructing_bodies(paragraphs);
+    let (taken, other) = split_bodies(paragraphs);
     let mut found = BTreeSet::new();
     for token in text
         .split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')))
         .map(|token| token.trim_matches(['.', '-']).to_ascii_lowercase())
         .filter(|token| token.len() >= 6 && !COMMON_WORDS.contains(&token.as_str()))
     {
-        if !prompt.contains(&token) && bodies.iter().any(|body| body.contains(&token)) {
+        if !prompt.contains(&token)
+            && taken.iter().any(|body| body.contains(&token))
+            && !other.iter().any(|body| body.contains(&token))
+        {
             found.insert(token);
         }
     }
