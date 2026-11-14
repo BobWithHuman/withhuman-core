@@ -187,6 +187,7 @@ pub fn copied_lines(
     let added: Vec<&String> = match effect {
         Effect::FileChange { added, .. } => added.iter().collect(),
         Effect::FileChanges { files } => files.iter().flat_map(|file| file.added.iter()).collect(),
+        Effect::ServiceChange { added } => added.iter().collect(),
         _ => return Vec::new(),
     };
     let prompt = prompt.map(normalize).unwrap_or_default();
@@ -223,6 +224,42 @@ pub fn copied_lines(
         }
     }
     out
+}
+
+/// The lines of an agent's `text` (a message) that stand word for word in one of `paragraphs`,
+/// unless the user's `prompt` holds them too: what a plan took from the tool results it read.
+pub fn repeated_lines(
+    text: &str,
+    paragraphs: &BTreeMap<String, String>,
+    prompt: Option<&str>,
+) -> Vec<Copied> {
+    // Whole lines, and what a line quotes in backticks: a plan names a step's text inline
+    // ("Insert `# MARKER` under the docstring").
+    let mut lines: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with("```") {
+            continue;
+        }
+        lines.push(line.trim_matches('`').to_owned());
+        lines.extend(
+            line.split('`')
+                .skip(1)
+                .step_by(2)
+                .map(str::trim)
+                .filter(|quoted| !quoted.is_empty())
+                .map(str::to_owned),
+        );
+    }
+    copied_lines(
+        &Effect::FileChange {
+            path: String::new(),
+            added: lines,
+            removed: Vec::new(),
+        },
+        paragraphs,
+        prompt,
+    )
 }
 
 /// Whether `command` only checks files back out of git: every step is `git checkout [HEAD] --

@@ -149,6 +149,9 @@ struct Jev {
     reversible: f64,
     /// How likely the first question's concern holds; 0 unless a test says otherwise.
     concern: f64,
+    /// How likely the Call's causal path carries out a tool result's instruction (and the Call
+    /// would not be made without it); unanswered when 0.
+    causal: f64,
 }
 
 #[async_trait]
@@ -190,6 +193,14 @@ impl JevClient for Jev {
                     "unasked" if self.unwanted.is_some() => noul(self.unwanted.unwrap_or_default()),
                     // The first question's concern: not borne out unless a test says so.
                     "concern" => noul(self.concern),
+                    "causal" if self.causal > 0.0 => JevAnswer {
+                        probabilities: BTreeMap::from([
+                            ("result_instruction".to_owned(), self.causal),
+                            ("user_task".to_owned(), 1.0 - self.causal),
+                        ]),
+                        ..Default::default()
+                    },
+                    "counterfactual" if self.causal > 0.0 => noul(1.0 - self.causal),
                     // Where the call's target came from: picked among several as likely as unwanted.
                     "spec" if self.unwanted.is_some() => {
                         let several = self.unwanted.unwrap_or_default();
@@ -215,6 +226,23 @@ impl JevClient for Jev {
                             probabilities: BTreeMap::from([
                                 (last, unwanted),
                                 ("none".to_owned(), 1.0 - unwanted),
+                            ]),
+                            ..Default::default()
+                        }
+                    }
+                    // A target question: the first (benign) option, or a tool result's decision.
+                    "send" | "delete" | "transact" | "access" if self.unwanted.is_some() => {
+                        let unwanted = self.unwanted.unwrap_or_default();
+                        let (plain, decided) = match id.as_str() {
+                            "send" => ("requested", "recipient_from_result"),
+                            "delete" => ("named", "from_result"),
+                            "transact" => ("specified", "from_result"),
+                            _ => ("specified", "from_result"),
+                        };
+                        JevAnswer {
+                            probabilities: BTreeMap::from([
+                                (plain.to_owned(), 1.0 - unwanted),
+                                (decided.to_owned(), unwanted),
                             ]),
                             ..Default::default()
                         }
@@ -257,6 +285,7 @@ fn provider_on(
         requests: Mutex::default(),
         reversible: 0.0,
         concern: 0.0,
+        causal: 0.0,
     });
     let provider = JevDecisionProvider::new(
         graph.clone(),
@@ -423,12 +452,17 @@ async fn bounds_the_jev_call_by_the_decision_deadline() {
         .await
         .unwrap();
     provider.decide(&request(Some("x"), None)).await.unwrap();
-    // Each decision asks about the parent, then checks the Call against the prompt.
+    // Each decision asks about the parent, checks the Call against the prompt, then puts the
+    // Call's causal path to Jev; every one of them within the deadline.
     let asked = jev.asked.lock().unwrap().clone();
-    assert_eq!(asked.len(), 4, "{asked:?}");
-    assert!(asked[0] <= Duration::from_millis(700), "{asked:?}");
-    assert!(asked[1] <= Duration::from_millis(700), "{asked:?}");
-    assert_eq!(asked[2..], [Duration::from_secs(3); 2]);
+    assert_eq!(asked.len(), 6, "{asked:?}");
+    assert!(
+        asked[..3]
+            .iter()
+            .all(|asked| *asked <= Duration::from_millis(700)),
+        "{asked:?}"
+    );
+    assert_eq!(asked[3..], [Duration::from_secs(3); 3]);
 
     let (provider, graph, jev) = self::provider(0.8, false);
     assert!(
@@ -450,10 +484,15 @@ async fn falls_back_to_the_nearest_subgraph_when_no_cause_is_offered() {
         .unwrap();
 
     let requests = jev.requests.lock().unwrap();
-    assert_eq!(requests.len(), 1);
+    assert_eq!(requests.len(), 2);
     assert_eq!(
         requests[0].questions.keys().collect::<Vec<_>>(),
         ["cause", "expected", "explicit", "harm", "reversible"]
+    );
+    // The Call came from a tool result, so its causal path is put to Jev on its own.
+    assert_eq!(
+        requests[1].questions.keys().collect::<Vec<_>>(),
+        ["causal", "counterfactual"]
     );
 
     // Jev picked no cause, so the Call is traced to s1, the nearest SubGraph with a tool
@@ -470,9 +509,16 @@ async fn falls_back_to_the_nearest_subgraph_when_no_cause_is_offered() {
     assert!((traces[0].intent_score.unwrap() - 0.95).abs() < 1e-9);
     // What Jev was asked and answered stays with the trace.
     let jev = &traces[0].trace["jev"];
-    assert_eq!(jev.as_array().unwrap().len(), 1);
+    assert_eq!(jev.as_array().unwrap().len(), 2);
     assert_eq!(jev[0]["stage"], "cause");
     assert!(jev[0]["request"]["questions"]["explicit"].is_object());
+    assert_eq!(jev[1]["stage"], "causal");
+    assert!(
+        jev[1]["request"]["state"]["path"]
+            .as_str()
+            .unwrap()
+            .contains("AGENT call (this call)")
+    );
 }
 
 /// A provider over a graph whose latest prompt is in SubGraph 0, with Jev picking `cause`.
@@ -490,6 +536,7 @@ fn provider_picking(cause: &'static str) -> (JevDecisionProvider, Arc<Graph>, Ar
         requests: Mutex::default(),
         reversible: 0.0,
         concern: 0.0,
+        causal: 0.0,
     });
     let provider = JevDecisionProvider::new(
         graph.clone(),
@@ -516,7 +563,8 @@ async fn traces_the_call_to_the_cause_jev_picks() {
     assert_eq!(response.decision, Decision::Allow);
 
     // One request offers the prompt's Request and `none` beside s1's result, and asks about
-    // the deviation.
+    // the deviation. The Call came from the prompt, the session's first, so its path holds
+    // nothing between the user and the Call and is not put to Jev.
     let requests = jev.requests.lock().unwrap();
     assert_eq!(requests.len(), 1);
     assert_eq!(
@@ -642,6 +690,7 @@ async fn checks_a_doubtful_shell_command_part_by_part() {
             requests: Mutex::default(),
             reversible: 0.0,
             concern: 0.0,
+            causal: 0.0,
         });
         let provider = JevDecisionProvider::new(
             graph.clone(),
@@ -705,6 +754,7 @@ async fn checks_a_script_run_by_its_code_however_clear_its_command() {
             requests: Mutex::default(),
             reversible: 0.0,
             concern: 0.0,
+            causal: 0.0,
         });
         let provider = JevDecisionProvider::new(
             graph.clone(),
@@ -773,6 +823,7 @@ async fn checks_a_cleared_file_change_line_by_line() {
             requests: Mutex::default(),
             reversible: 0.0,
             concern: 0.0,
+            causal: 0.0,
         });
         let provider = JevDecisionProvider::new(
             graph.clone(),
@@ -816,6 +867,7 @@ async fn checks_a_cleared_file_change_line_by_line() {
         requests: Mutex::default(),
         reversible: 0.0,
         concern: 0.0,
+        causal: 0.0,
     });
     let provider = JevDecisionProvider::new(
         graph.clone(),
@@ -891,6 +943,7 @@ async fn puts_a_target_picked_among_several_to_the_user() {
             requests: Mutex::default(),
             reversible: 0.0,
             concern: 0.0,
+            causal: 0.0,
         });
         let provider = JevDecisionProvider::new(
             graph.clone(),
@@ -951,6 +1004,7 @@ fn graded_provider(
         requests: Mutex::default(),
         reversible: 0.0,
         concern: 0.0,
+        causal: 0.0,
     });
     let provider = JevDecisionProvider::new(
         Arc::new(Graph::default()),
@@ -979,6 +1033,7 @@ async fn records_the_grade_without_changing_the_verdict() {
             requests: Mutex::default(),
             reversible: 0.0,
             concern: 0.0,
+            causal: 0.0,
         });
         let provider = JevDecisionProvider::new(
             graph.clone(),
@@ -1058,6 +1113,7 @@ async fn puts_a_call_to_the_user_when_the_first_concern_holds() {
             requests: Mutex::default(),
             reversible: 0.0,
             concern,
+            causal: 0.0,
         });
         let provider = JevDecisionProvider::new(
             graph.clone(),
@@ -1077,5 +1133,56 @@ async fn puts_a_call_to_the_user_when_the_first_concern_holds() {
         );
         let traces = graph.traces.lock().unwrap();
         assert_eq!(traces[0].trace["check"]["concern"], concern);
+    }
+}
+
+#[tokio::test]
+async fn the_causal_path_makes_the_verdict_stricter() {
+    for (causal, decision, rule) in [
+        // Both signs: the path leads to an instruction and the Call needs it.
+        (0.9, Decision::Deny, "causal::instruction"),
+        // Either one alone: put to the user.
+        (0.45, Decision::Review, "causal::review"),
+        // Neither: the other checks' verdict stands.
+        (0.0, Decision::Allow, "intent::match"),
+    ] {
+        let graph = Arc::new(Graph::default());
+        let jev = Arc::new(Jev {
+            intent_score: 0.95,
+            cause: None,
+            fail: false,
+            unwanted: None,
+            asked: Mutex::default(),
+            requests: Mutex::default(),
+            reversible: 0.0,
+            concern: 0.0,
+            causal,
+        });
+        let provider = JevDecisionProvider::new(
+            graph.clone(),
+            jev.clone(),
+            TraceSettings::default(),
+            Duration::from_secs(3),
+            Thresholds {
+                untrusted_deny: 0.15,
+                untrusted_review: 0.08,
+                ..Thresholds::default()
+            },
+        );
+        let response = provider
+            .decide(&request(Some("빌드 고치기"), Some(4_000)))
+            .await
+            .unwrap();
+        assert_eq!(response.decision, decision, "causal {causal}");
+        assert_eq!(response.rule, rule, "causal {causal}");
+        // The agent is told nothing of the path or the scores.
+        assert!(!response.reason.contains("0."), "{}", response.reason);
+        let traces = graph.traces.lock().unwrap();
+        let answer = &traces[0].trace["causal"]["answer"];
+        if causal > 0.0 {
+            assert!((answer["risk"].as_f64().unwrap() - causal).abs() < 1e-9);
+        } else {
+            assert!(answer.is_null());
+        }
     }
 }

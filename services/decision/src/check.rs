@@ -84,6 +84,9 @@ pub enum Effect {
     /// A shell command that writes files in a way not read as one literal file (a .NET write, a
     /// text replace, a redirect, a patch handed to a tool), judged by its own text.
     ShellWrite { command: String },
+    /// A service call that creates or updates something (`ShopifyUpdateProduct`, a note, a
+    /// record): what it writes, each argument under `--- <name>` with its value's lines.
+    ServiceChange { added: Vec<String> },
     /// Anything else: reading, running, calling a service.
     Other,
 }
@@ -800,8 +803,19 @@ pub enum Branch {
     Run,
     /// It writes a file: the second question asks whether the user asked for what it adds.
     File,
+    /// A service call that creates or updates something: asked, like a file change, whether
+    /// the user asked for what it writes.
+    Change,
     /// Any other: the second question asks what it serves.
     Purpose,
+    /// A service call that sends or publishes: asked about its recipients and content.
+    Send,
+    /// A service call that deletes: asked about its target.
+    Delete,
+    /// A service call that moves money or assets: asked about amount, payee and asset.
+    Transact,
+    /// A service call that grants or changes access: asked about grantee and level.
+    Access,
 }
 
 impl Branch {
@@ -811,7 +825,12 @@ impl Branch {
             Self::Clear => "clear",
             Self::Run => "run",
             Self::File => "file",
+            Self::Change => "change",
             Self::Purpose => "purpose",
+            Self::Send => "send",
+            Self::Delete => "delete",
+            Self::Transact => "transact",
+            Self::Access => "access",
         }
     }
 }
@@ -946,6 +965,29 @@ pub fn call_effect(call: &CallInfo) -> Effect {
     if effect != Effect::Other {
         return effect;
     }
+    // A service tool that creates or updates something is asked about what it writes, field by
+    // field, as a file change is about its lines: an instruction planted among the fields of an
+    // ordinary update is lost when the call is asked about whole. So is a hand-off to another
+    // agent (what it tells that agent to do), and a service tool whose name says nothing of what
+    // it does.
+    let group = crate::category::category(&call.tool_name).group;
+    let writes = match group {
+        crate::category::Group::Change | crate::category::Group::Delegate => true,
+        crate::category::Group::Unknown => call.tool_name.starts_with("mcp__"),
+        _ => false,
+    };
+    if !matches!(
+        call.tool_name.as_str(),
+        "Bash" | "PowerShell" | "apply_patch"
+    ) && writes
+    {
+        let added = service_fields(&call.tool_input);
+        return if added.is_empty() {
+            effect
+        } else {
+            Effect::ServiceChange { added }
+        };
+    }
     let command = match call.tool_name.as_str() {
         "Bash" | "PowerShell" | "apply_patch" => call
             .tool_input
@@ -963,6 +1005,42 @@ pub fn call_effect(call: &CallInfo) -> Effect {
     } else {
         effect
     }
+}
+
+/// What a service call writes: each argument with a value, as `--- <name>` (a nested one by its
+/// path, `fields.title`) followed by its value's lines.
+pub fn service_fields(input: &Value) -> Vec<String> {
+    fn walk(value: &Value, name: &str, out: &mut Vec<String>) {
+        match value {
+            Value::Object(fields) => {
+                for (key, value) in fields {
+                    let name = if name.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{name}.{key}")
+                    };
+                    walk(value, &name, out);
+                }
+            }
+            Value::Array(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    walk(item, &format!("{name}[{index}]"), out);
+                }
+            }
+            Value::String(text) if !text.trim().is_empty() => {
+                out.push(format!("--- {name}"));
+                out.extend(text.lines().map(str::to_owned));
+            }
+            Value::Number(_) | Value::Bool(_) => {
+                out.push(format!("--- {name}"));
+                out.push(value.to_string());
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(input, "", &mut out);
+    out
 }
 
 /// Whether `effect` only undoes what `earlier` changes to the same file did: every line it
@@ -1020,16 +1098,44 @@ pub fn check_call(
     undoes: bool,
     file_signal: bool,
 ) -> Check {
+    check_call_in(
+        deviation,
+        link,
+        effect,
+        undoes,
+        file_signal,
+        crate::category::Group::Unknown,
+    )
+}
+
+/// [`check_call`] for a call of `group`: a service call that sends, deletes, moves money or
+/// grants access is asked about its target (`target`), and like a file change is not cleared on
+/// the first question alone when a tool result could have put something in it.
+pub fn check_call_in(
+    deviation: &Deviation,
+    link: Link,
+    effect: &Effect,
+    undoes: bool,
+    file_signal: bool,
+    group: crate::category::Group,
+) -> Check {
+    let target = match effect {
+        Effect::Other => crate::target::branch(group),
+        _ => None,
+    };
     let expected = deviation.expected.values().copied().fold(0.0, f64::max);
     let breach = expected > deviation.none || deviation.explicit >= EXPLICIT_BREACH;
     let doubt = expected.max(deviation.explicit);
     let file = matches!(
         effect,
-        Effect::FileChange { .. } | Effect::FileChanges { .. } | Effect::ShellWrite { .. }
+        Effect::FileChange { .. }
+            | Effect::FileChanges { .. }
+            | Effect::ShellWrite { .. }
+            | Effect::ServiceChange { .. }
     );
     // A file change with something to carry out is never cleared on the first question alone: a
     // planted line among the lines of a fix left the first question little doubt to show.
-    let clearable = !(file && file_signal);
+    let clearable = !((file || target.is_some()) && file_signal);
     let branch = match effect {
         Effect::Safeguard => Branch::Safeguard,
         // Its command line leaves Jev no doubt to show; only its code tells.
@@ -1039,7 +1145,8 @@ pub fn check_call(
         Effect::FileChange { .. } | Effect::FileChanges { .. } | Effect::ShellWrite { .. } => {
             Branch::File
         }
-        Effect::Other => Branch::Purpose,
+        Effect::ServiceChange { .. } => Branch::Change,
+        Effect::Other => target.unwrap_or(Branch::Purpose),
     };
     Check {
         branch,
@@ -1056,8 +1163,10 @@ impl Check {
             Branch::Safeguard => return Some(Verdict::Deny),
             Branch::Clear => return Some(Verdict::Allow),
             Branch::Run => PROGRAM_CUT,
-            Branch::File => UNASKED_CUT,
-            Branch::Purpose => PURPOSE_CUT,
+            Branch::File | Branch::Change => UNASKED_CUT,
+            Branch::Purpose | Branch::Send | Branch::Delete | Branch::Transact | Branch::Access => {
+                PURPOSE_CUT
+            }
         };
         Some(match unwanted? {
             unwanted if unwanted >= cut => Verdict::Deny,
@@ -1077,7 +1186,7 @@ impl Check {
         unwanted: Option<f64>,
         evidence: FileEvidence,
     ) -> Option<FileVerdict> {
-        if self.branch != Branch::File {
+        if !matches!(self.branch, Branch::File | Branch::Change) {
             return self.verdict(unwanted).map(FileVerdict::Plain);
         }
         let unwanted = unwanted?;
@@ -1171,7 +1280,10 @@ pub fn request(
     effect: &Effect,
     prompt: Option<&str>,
 ) -> Option<JevRequest> {
-    if !matches!(branch, Branch::Run | Branch::File | Branch::Purpose) {
+    if !matches!(
+        branch,
+        Branch::Run | Branch::File | Branch::Change | Branch::Purpose
+    ) {
         return None;
     }
     let action = judged
@@ -1287,7 +1399,10 @@ pub fn request(
                 )]),
             });
         }
-        Effect::FileChange { .. } | Effect::FileChanges { .. } | Effect::ShellWrite { .. } => {
+        Effect::FileChange { .. }
+        | Effect::FileChanges { .. }
+        | Effect::ShellWrite { .. }
+        | Effect::ServiceChange { .. } => {
             let first = action.lines().next().unwrap_or_default();
             state.insert("action".to_owned(), Value::String(truncate(first, 300)));
             let lines = |lines: &[String]| match lines.join("\n") {
@@ -1312,6 +1427,7 @@ pub fn request(
                     (side(|file| &file.added), side(|file| &file.removed))
                 }
                 Effect::FileChange { added, removed, .. } => (lines(added), lines(removed)),
+                Effect::ServiceChange { added } => (lines(added), lines(&[])),
                 // What a computed write puts in a file is only in the command: show it whole.
                 Effect::ShellWrite { command } => {
                     let decoded = crate::shell::decoded(command);
@@ -1336,11 +1452,19 @@ pub fn request(
             };
             state.insert("added".to_owned(), Value::String(added));
             state.insert("removed".to_owned(), Value::String(removed));
-            let context = format!(
-                "`added` lists the lines this tool call (`action`) adds to a file and `removed` \
-                 the lines it removes. `paragraphs` are the tool results the agent read before \
-                 it. {warning}"
-            );
+            let context = if matches!(effect, Effect::ServiceChange { .. }) {
+                format!(
+                    "`added` lists what this tool call (`action`) writes: each argument it sets, \
+                     under `--- <name>`, with its value's lines; `removed` is empty. \
+                     `paragraphs` are the tool results the agent read before it. {warning}"
+                )
+            } else {
+                format!(
+                    "`added` lists the lines this tool call (`action`) adds to a file and \
+                     `removed` the lines it removes. `paragraphs` are the tool results the agent \
+                     read before it. {warning}"
+                )
+            };
             let asked_by = if prompt.is_some() {
                 "(`user_request`, `intents`)"
             } else {
@@ -1525,7 +1649,7 @@ pub fn unwanted(branch: Branch, response: Option<&JevResponse>) -> Option<f64> {
                 .map(|harm| program.get(*harm).copied().unwrap_or_default())
                 .sum()
         }
-        Branch::File => answers.get(UNASKED)?.noul?,
+        Branch::File | Branch::Change => answers.get(UNASKED)?.noul?,
         Branch::Purpose if answers.contains_key(PART) => 1.0 - picked_part(response)?.1,
         Branch::Purpose => {
             let purpose = &answers.get(PURPOSE)?.probabilities;
@@ -1534,6 +1658,10 @@ pub fn unwanted(branch: Branch, response: Option<&JevResponse>) -> Option<f64> {
             }
             purpose.get("result_goal").copied().unwrap_or_default()
                 + purpose.get("against_user").copied().unwrap_or_default()
+        }
+        Branch::Send | Branch::Delete | Branch::Transact | Branch::Access => {
+            let scores = crate::target::scores(branch, response)?;
+            scores.from_result + scores.unchosen
         }
         Branch::Safeguard | Branch::Clear => return None,
     };

@@ -13,12 +13,14 @@ use withhuman_contracts::decisions::{
 use withhuman_common::grade::{Grade, Graded};
 
 use crate::{
-    DecisionConfig, DecisionRepository, RepositoryError,
+    DecisionConfig, DecisionRepository, RepositoryError, category,
+    causal::{self, RequestParent},
     check::{self, Branch, Effect, Verdict},
     jev::{JevClient, JevError},
     provenance,
     repository::{TraceRecord, TracedParent, TracedSegment},
-    trace::{self, Stop, Thresholds, TraceSettings},
+    target,
+    trace::{self, Link, Stop, Thresholds, TraceGraph, TraceSettings},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -258,6 +260,62 @@ impl JevDecisionProvider {
         }
     }
 
+    /// What in the turn before made the user write the latest prompt: kept with the prompt's
+    /// Request once found, asked of Jev by the turn's first traced Call. None for the session's
+    /// first prompt, or when it cannot be found in time.
+    async fn request_parent(
+        &self,
+        request: &DecisionRequest,
+        graph: &TraceGraph,
+        model: &str,
+        budget: Duration,
+    ) -> Option<RequestParent> {
+        let [.., earlier, current] = graph.turns.as_slice() else {
+            return None;
+        };
+        let (start, current) = (earlier.subgraph?, current.subgraph?);
+        if let Ok(Some(kept)) = self
+            .repository
+            .request_parent(&request.session_id, current)
+            .await
+        {
+            return Some(kept);
+        }
+        let prompt = graph.prompt.as_deref()?;
+        if budget.is_zero() {
+            return None;
+        }
+        // The main agent's SubGraphs of the turn before.
+        let numbers: Vec<u64> = graph
+            .subgraphs
+            .range(start..current)
+            .filter(|(_, agent)| agent.is_none())
+            .map(|(number, _)| *number)
+            .collect();
+        let members = self
+            .repository
+            .subgraph_members(&request.session_id, &numbers, graph.call.order)
+            .await
+            .ok()?;
+        let nodes = causal::earlier_nodes(&members);
+        let sent = causal::request_parent_request(model, prompt, earlier.intent.as_deref(), &nodes);
+        let response = self.jev.ask(&sent, budget).await.ok();
+        let mut parent =
+            causal::request_parent(response.as_ref(), earlier.intent.as_deref(), &nodes)?;
+        parent.sources = causal::parent_sources(
+            &parent.key,
+            &members,
+            &causal::earlier_paragraphs(&members),
+            Some(prompt),
+        );
+        // Another Call of the turn may have kept one first; that one stays.
+        let _ = self
+            .repository
+            .set_request_parent(&request.session_id, current, &parent)
+            .await;
+        Some(parent)
+    }
+
     /// Records the failure, then denies a Call that changes the agent's safeguards, or gives
     /// the failure policy or, when `risky`, REVIEW.
     async fn unresolved(
@@ -328,6 +386,10 @@ const SAFEGUARD_RULE: &str = "safeguard::change";
 const COPIED_REASON: &str = "WithHuman: 이 변경에 도구 결과나 저장소 문서의 지시를 그대로 옮긴 줄이 있어 \
      실행 전에 사용자 확인이 필요합니다.";
 const SAFEGUARD_REASON: &str = "WithHuman이 에이전트의 설정이나 훅을 바꾸는 도구 호출을 차단했습니다. 사용자가 직접 바꿔야 합니다.";
+
+/// Why a call whose causal path leads to an instruction in a tool result is put to the user; no
+/// score, intent or path.
+const CAUSAL_REASON: &str = "WithHuman: 이 호출이 사용자 요청보다 도구 결과에 적힌 지시에서 비롯된 것으로 보입니다. 사용자 확인이 필요합니다.";
 
 const UNSPECIFIED_REASON: &str = "WithHuman: 이 호출이 사용자가 정하지 않은 대상이나 범위에 작용하는 것으로 \
                                   보입니다. 사용자 확인이 필요합니다.";
@@ -426,11 +488,25 @@ impl DecisionProvider for JevDecisionProvider {
                 .await;
         }
         let judge_request = trace::judge_request(&plan);
+        // What in the turn before made the user write the latest prompt. When it was an agent's
+        // plan built on a tool result, that result is matched below like the turn's own: a line a
+        // Call copies from it was copied from the tool result, not asked for by the user.
+        let request_parent = if safeguard {
+            None
+        } else {
+            self.request_parent(request, &graph, &plan.model, timeout())
+                .await
+        };
         // Where the added lines came from, as far as the engine tells by itself.
-        let paragraphs = judge_request
+        let mut paragraphs = judge_request
             .as_ref()
             .map(provenance::paragraphs)
             .unwrap_or_default();
+        for source in request_parent.iter().flat_map(|parent| &parent.sources) {
+            paragraphs
+                .entry(source.key.clone())
+                .or_insert_with(|| source.text.clone());
+        }
         let provenance = provenance::Provenance {
             restored,
             copied: provenance::copied_lines(&judged_effect, &paragraphs, graph.prompt.as_deref()),
@@ -485,19 +561,47 @@ impl DecisionProvider for JevDecisionProvider {
         };
         // Unless the trace clears the Call, a second question checks it against the user's
         // prompt, asked while the paragraphs are.
+        // What kind of thing the call does decides what the second question shows and asks.
+        let group = category::category(&graph.call.tool_name).group;
         let checked = deviation.as_ref().map(|deviation| {
-            check::check_call(deviation, parents.link, &judged_effect, undoes, file_signal)
+            check::check_call_in(
+                deviation,
+                parents.link,
+                &judged_effect,
+                undoes,
+                file_signal,
+                group,
+            )
         });
+        // Where each value of the Call came from: the user's prompt, a tool-result paragraph, or
+        // the agent itself.
+        let origins =
+            provenance::value_origins(&graph.call.tool_input, &paragraphs, graph.prompt.as_deref());
         let checking = Instant::now();
         let check_request = checked
             .zip(judge_request.as_ref())
             .and_then(|(checked, judged)| {
-                check::request(
+                target::request(
                     judged,
                     checked.branch,
-                    &judged_effect,
                     graph.prompt.as_deref(),
+                    &check::service_fields(&graph.call.tool_input),
+                    &origins,
                 )
+                .or_else(|| {
+                    check::request(
+                        judged,
+                        checked.branch,
+                        &judged_effect,
+                        graph.prompt.as_deref(),
+                    )
+                    .map(|mut sent| {
+                        if checked.branch == Branch::Purpose {
+                            target::emphasize(&mut sent, group);
+                        }
+                        sent
+                    })
+                })
             })
             .map(|mut sent| {
                 // The second question also checks the first one's own concern, when the first
@@ -518,17 +622,13 @@ impl DecisionProvider for JevDecisionProvider {
             )
         });
 
-        // Where each value of the Call came from: the user's prompt, a tool-result paragraph, or
-        // the agent itself.
-        let origins =
-            provenance::value_origins(&graph.call.tool_input, &paragraphs, graph.prompt.as_deref());
         // A service call that is hard to undo is compared with what the user specified, unless
         // the user's prompt names every value it is given.
         let spec_task = judge_request
             .as_ref()
             .filter(|_| {
                 !safeguard
-                    && effect == Effect::Other
+                    && matches!(effect, Effect::Other | Effect::ServiceChange { .. })
                     && !matches!(graph.call.tool_name.as_str(), "Bash" | "PowerShell")
                     && graded.is_some_and(|graded| graded.grade.level() >= check::SPEC_GRADE)
                     && !provenance::values_from_prompt(
@@ -612,6 +712,146 @@ impl DecisionProvider for JevDecisionProvider {
             }
         }
         let paragraph_ms = elapsed_ms(refined);
+
+        // The causal path to the Call, put to Jev on its own so the intent questions' answers stay
+        // as they were. What it shows can only make the verdict stricter (below).
+        let beyond_prompt = request_parent
+            .as_ref()
+            .is_some_and(|parent| parent.key != "none");
+        let causal_parent = parents
+            .chosen
+            .first()
+            .filter(|_| !safeguard && (parents.link != Link::Request || beyond_prompt));
+        let activated: Vec<(String, f64)> = causal_parent
+            .map(|parent| {
+                judgements
+                    .iter()
+                    .filter(|judgement| judgement.key == parent.candidate.key)
+                    .flat_map(|judgement| &judgement.segments)
+                    .map(|segment| {
+                        let key = match segment.paragraph {
+                            Some(index) => format!("g{}p{index}", segment.seq),
+                            None => format!("g{}", segment.seq),
+                        };
+                        (key, segment.probability)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        // Paragraphs holding, word for word, a line the Call adds or a value it is given.
+        let flow: Vec<String> = provenance
+            .copied
+            .iter()
+            .map(|copied| copied.paragraph.clone())
+            .chain(origins.iter().map(|(_, origin)| origin.clone()))
+            .filter(|origin| origin.starts_with('g'))
+            .fold(Vec::new(), |mut keys, key| {
+                if !keys.contains(&key) {
+                    keys.push(key);
+                }
+                keys
+            });
+        // A result a value came from was itself read for a reason: the Call that read it and
+        // what that Call was traced to join the path (a secret file a planted note named, whose
+        // content the Call then copies).
+        let mut result_origins = Vec::new();
+        if causal_parent.is_some() {
+            let mut seen = Vec::new();
+            for key in flow
+                .iter()
+                .filter(|key| !activated.iter().any(|(shown, _)| shown == *key))
+            {
+                let Some(seq) = causal::result_seq(key) else {
+                    continue;
+                };
+                if seen.contains(&seq) || seen.len() >= causal::ORIGIN_LOOKUPS {
+                    continue;
+                }
+                seen.push(seq);
+                if let Ok(Some(origin)) = self
+                    .repository
+                    .result_origin(&request.session_id, seq)
+                    .await
+                {
+                    result_origins.push((key.clone(), origin));
+                }
+            }
+        }
+        // The SubGraphs from the parent back to the prompt, and how the agent got to each.
+        let causal_hops: Vec<u64> = causal_parent
+            .map(|parent| {
+                let prompts: Vec<u64> = graph
+                    .turns
+                    .iter()
+                    .filter_map(|turn| turn.subgraph)
+                    .collect();
+                parent
+                    .candidate
+                    .path
+                    .iter()
+                    .copied()
+                    .filter(|number| !prompts.contains(number))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut hop_causes = Vec::new();
+        for &hop in causal_hops.iter().take(causal::HOP_LOOKUPS) {
+            if let Ok(causes) = self
+                .repository
+                .subgraph_causes(&request.session_id, hop, causal::HOP_CAUSES)
+                .await
+            {
+                if !causes.is_empty() {
+                    hop_causes.push((hop, causes));
+                }
+            }
+        }
+        let budget = timeout();
+        let causal_task = judge_request
+            .as_ref()
+            .zip(causal_parent)
+            .filter(|_| !budget.is_zero())
+            .map(|(judged, parent)| {
+                let key = &parent.candidate.key;
+                let action = judged
+                    .state
+                    .get("action")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default();
+                let (path, links) = causal::path(&causal::PathParts {
+                    prompt: graph.prompt.as_deref(),
+                    request_parent: request_parent.as_ref(),
+                    hops: causal_hops.clone(),
+                    members: &members,
+                    hop_causes: &hop_causes,
+                    activated: activated.clone(),
+                    flow: flow.clone(),
+                    origins: &result_origins,
+                    texts: &paragraphs,
+                    action,
+                    parent: match (parents.link, parent.candidate.subgraph) {
+                        (Link::Request, _) => causal::ParentLink::Request,
+                        (Link::Segment, Some(number)) => causal::ParentLink::SubGraph(number),
+                        _ => causal::ParentLink::None,
+                    },
+                    influence: parents.influence.get(key).copied(),
+                });
+                let sent = causal::request(
+                    judged,
+                    &path,
+                    &links,
+                    graph.prompt.as_deref(),
+                    target::focus(group),
+                    &target::values_text(&origins),
+                );
+                let jev = self.jev.clone();
+                let asked = sent.clone();
+                (
+                    sent,
+                    tokio::spawn(async move { jev.ask(&asked, budget).await }),
+                )
+            });
+
         let check_response = match check_task {
             Some((sent, task)) => match task.await {
                 Ok(Ok(response)) => {
@@ -636,6 +876,19 @@ impl DecisionProvider for JevDecisionProvider {
             },
             None => None,
         };
+        let causal_response = match causal_task {
+            Some((sent, task)) => match task.await {
+                Ok(Ok(response)) => {
+                    exchanges.push(serde_json::json!({
+                        "stage": "causal", "request": sent, "response": &response,
+                    }));
+                    Some(response)
+                }
+                _ => None,
+            },
+            None => None,
+        };
+        let causal_answer = causal::read(causal_response.as_ref());
         let unspecified = check::unspecified(spec_response.as_ref());
         let concern = check::concern(check_response.as_ref());
         let check_ms = elapsed_ms(checking);
@@ -707,10 +960,18 @@ impl DecisionProvider for JevDecisionProvider {
                 Verdict::Allow
             })
         });
+        // A call that sends, deletes, moves money or grants access, by what its target rests on.
+        let target_scores =
+            checked.and_then(|checked| target::scores(checked.branch, check_response.as_ref()));
+        let target_verdict = checked
+            .zip(target_scores)
+            .map(|(checked, scores)| target::verdict(checked.branch, scores, checked.breach));
         let verdict = if safeguard {
             Some(Verdict::Deny)
         } else if part_verdict.is_some() {
             part_verdict
+        } else if target_verdict.is_some() {
+            target_verdict
         } else {
             file_verdict.map(check::FileVerdict::verdict)
         };
@@ -753,7 +1014,14 @@ impl DecisionProvider for JevDecisionProvider {
         if let Some(part) = &part {
             trace_json["check"]["part"] = part.clone();
         }
-        if checked.is_some_and(|checked| checked.branch == Branch::File) {
+        trace_json["check"]["category"] =
+            serde_json::json!(category::category(&graph.call.tool_name));
+        if let Some(scores) = target_scores {
+            trace_json["check"]["target"] = serde_json::json!({
+                "from_result": scores.from_result, "unchosen": scores.unchosen,
+            });
+        }
+        if checked.is_some_and(|checked| matches!(checked.branch, Branch::File | Branch::Change)) {
             trace_json["check"]["evidence"] = serde_json::json!({
                 "copied_from_instruction": evidence.copied_from_instruction,
                 "source": source,
@@ -780,6 +1048,12 @@ impl DecisionProvider for JevDecisionProvider {
                 .iter()
                 .map(|program| serde_json::json!({"path": program.path, "seen": program.code.is_some()}))
                 .collect();
+        }
+        if causal_answer.is_some() || request_parent.is_some() {
+            trace_json["causal"] = serde_json::json!({
+                "answer": causal_answer,
+                "request_parent": request_parent,
+            });
         }
         trace_json["jev"] = exchanges.into();
         let (deny_at, review_at) = self.thresholds.for_link(outcome.link);
@@ -915,6 +1189,24 @@ impl DecisionProvider for JevDecisionProvider {
                     "provenance::unspecified",
                     UNSPECIFIED_REASON.to_owned(),
                 )
+            }
+            _ => (decision, rule, reason),
+        };
+        // A call whose path shows it carries out what a tool result told the agent, not what the
+        // user asked, is denied when Jev also finds the agent would not make it without that
+        // instruction; when only one of the two holds, it goes to the user. It never lets a call
+        // through that another check stopped.
+        let targeted = checked.is_some_and(|checked| target::branch(group) == Some(checked.branch));
+        let grade_level = graded.map_or(2, |graded| graded.grade.level());
+        let (decision, rule, reason) = match causal_answer
+            .as_ref()
+            .and_then(|answer| answer.verdict_for(targeted, grade_level))
+        {
+            Some(causal::CausalVerdict::Deny) if decision != Decision::Deny => {
+                (Decision::Deny, "causal::instruction", mismatch())
+            }
+            Some(causal::CausalVerdict::Review) if decision == Decision::Allow => {
+                (Decision::Review, "causal::review", CAUSAL_REASON.to_owned())
             }
             _ => (decision, rule, reason),
         };

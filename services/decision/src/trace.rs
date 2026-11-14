@@ -1591,7 +1591,7 @@ fn causes(members: &[Member], number: u64) -> Vec<String> {
         .collect()
 }
 
-fn member_text(member: &Member) -> String {
+pub(crate) fn member_text(member: &Member) -> String {
     let field = |name: &str| {
         member
             .payload
@@ -1658,7 +1658,7 @@ fn result_heading(member: &Member, label: &str) -> String {
 
 /// A tool result for Jev: its hidden paragraphs first, then the output with its start and end
 /// kept when it is too long.
-fn segment_text(member: &Member, chars: usize) -> String {
+pub(crate) fn segment_text(member: &Member, chars: usize) -> String {
     let hidden: Vec<String> = member
         .paragraphs
         .iter()
@@ -1676,7 +1676,7 @@ fn segment_text(member: &Member, chars: usize) -> String {
 }
 
 /// A paragraph of a tool result for Jev, marked when it was hidden where it appeared.
-fn paragraph_text(member: &Member, paragraph: &Paragraph) -> String {
+pub(crate) fn paragraph_text(member: &Member, paragraph: &Paragraph) -> String {
     let hidden = if paragraph.hidden {
         "[숨김 내용] "
     } else {

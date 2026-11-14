@@ -9,6 +9,11 @@ use withhuman_decision::{
 #[tokio::main]
 async fn main() -> io::Result<()> {
     let config = DecisionConfig::from_env()?;
+    // A table of known tools, read before their names are: what each one does.
+    if let Some(path) = std::env::var_os("WITHHUMAN_TOOL_CATEGORIES") {
+        let count = withhuman_decision::category::load(std::path::Path::new(&path))?;
+        eprintln!("decision read {count} tool categories");
+    }
     let settings = PostgresSettings::from_env()?;
     let repository: Arc<dyn DecisionRepository> = Arc::new(
         PgDecisionRepository::connect(&settings.database_url, settings.pool_size)

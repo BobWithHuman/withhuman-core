@@ -1,3 +1,5 @@
+pub mod category;
+mod causal;
 pub mod check;
 mod config;
 mod http;
@@ -7,6 +9,7 @@ pub mod provenance;
 mod provider;
 mod repository;
 mod shell;
+mod target;
 pub mod trace;
 
 pub use config::{DecisionConfig, JevSettings, RuntimeEnvironment};

@@ -1,3 +1,4 @@
+use crate::causal::{RequestParent, ResultOrigin};
 use crate::trace::{Member, TraceGraph};
 use async_trait::async_trait;
 use serde_json::Value;
@@ -80,6 +81,45 @@ pub trait DecisionRepository: Send + Sync + 'static {
         _call_order: u64,
         _path: &str,
     ) -> Result<Vec<crate::check::FileDiff>, RepositoryError> {
+        Ok(Vec::new())
+    }
+
+    /// What made the user write the prompt of SubGraph `subgraph`, when it was found before.
+    async fn request_parent(
+        &self,
+        _session_id: &str,
+        _subgraph: u64,
+    ) -> Result<Option<RequestParent>, RepositoryError> {
+        Ok(None)
+    }
+
+    /// Keeps `parent` with the prompt of SubGraph `subgraph`, unless one was kept first.
+    async fn set_request_parent(
+        &self,
+        _session_id: &str,
+        _subgraph: u64,
+        _parent: &RequestParent,
+    ) -> Result<(), RepositoryError> {
+        Ok(())
+    }
+
+    /// The Call whose result is node `seq`, and the paragraphs that Call was traced to.
+    async fn result_origin(
+        &self,
+        _session_id: &str,
+        _seq: u64,
+    ) -> Result<Option<ResultOrigin>, RepositoryError> {
+        Ok(None)
+    }
+
+    /// The paragraphs the Calls of SubGraph `number` were traced to (`g<seq>p<index>`, text,
+    /// probability), the most likely first, at most `limit`.
+    async fn subgraph_causes(
+        &self,
+        _session_id: &str,
+        _number: u64,
+        _limit: usize,
+    ) -> Result<Vec<(String, String, f64)>, RepositoryError> {
         Ok(Vec::new())
     }
 
