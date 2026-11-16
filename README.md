@@ -229,9 +229,15 @@ line, so Claude Code or Codex installed with npm (`node`) is not seen running th
 
 `edr_sightings` keeps what `running_at` overwrites: one row per device and process scan that
 found a coding agent running, `agent_id`, `running_at` (the scan's time), `agent`, `name` (the
-device's name then) and `synced_at` (the sync that first saw it), keyed by `agent_id` and
-`running_at`. A scan seen again by a later sync adds nothing, a device with `running_at` NULL
-adds nothing, and a device the manager no longer lists keeps its rows. Each sync deletes the
+device's name then), `synced_at` (the sync that first saw it) and `command`, keyed by `agent_id`
+and `running_at`. `command` is the command line of the process the scan found (`claude -p …`,
+`claude --resume <session>`, `codex exec …`): its `cmd` and `argvs` joined by spaces, cut to
+1000 characters; among several processes of the scan, one of the agent named and with
+arguments. What Wazuh reports differs by system: Linux gives the whole command line, Windows
+the executable's path only and macOS the process's name only, so there `command` is a path or
+NULL. A scan seen again by a later sync adds nothing and keeps the command line first seen, a
+device with `running_at` NULL adds nothing, and a device the manager no longer lists keeps its
+rows. Each sync deletes the
 rows whose scan is more than 30 days before it (`SIGHTING_RETENTION`). The engine only records
 the scans: telling them apart from Hook sessions, and grouping consecutive ones, is the
 viewer's.
