@@ -18,13 +18,16 @@ const TRY_LOCK: &str = "SELECT pg_try_advisory_lock($1::int4, hashtext(current_s
 const LATEST_SYNC: &str = "SELECT max(synced_at) FROM edr_devices";
 
 const UPSERT_DEVICES: &str = "\
-INSERT INTO edr_devices (agent_id, name, os, status, serial, last_seen, agent, synced_at) \
-SELECT d.agent_id, d.name, d.os, d.status, d.serial, d.last_seen, d.agent, $8::bigint \
+INSERT INTO edr_devices (agent_id, name, os, status, serial, last_seen, agent, running_at, \
+  synced_at) \
+SELECT d.agent_id, d.name, d.os, d.status, d.serial, d.last_seen, d.agent, d.running_at, \
+  $9::bigint \
 FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::bigint[], \
-  $7::text[]) AS d(agent_id, name, os, status, serial, last_seen, agent) \
+  $7::text[], $8::bigint[]) AS d(agent_id, name, os, status, serial, last_seen, agent, running_at) \
 ON CONFLICT (agent_id) DO UPDATE SET \
   name = EXCLUDED.name, os = EXCLUDED.os, status = EXCLUDED.status, serial = EXCLUDED.serial, \
-  last_seen = EXCLUDED.last_seen, agent = EXCLUDED.agent, synced_at = EXCLUDED.synced_at";
+  last_seen = EXCLUDED.last_seen, agent = EXCLUDED.agent, running_at = EXCLUDED.running_at, \
+  synced_at = EXCLUDED.synced_at";
 
 // A device the manager no longer lists is gone from the mirror.
 const DELETE_UNLISTED: &str = "DELETE FROM edr_devices WHERE agent_id <> ALL($1::text[])";
@@ -93,6 +96,7 @@ impl PgGraphRepository {
             };
             let ids: Vec<&str> = devices.iter().map(|d| d.agent_id.as_str()).collect();
             let last_seen: Vec<Option<i64>> = devices.iter().map(|d| d.last_seen).collect();
+            let running_at: Vec<Option<i64>> = devices.iter().map(|d| d.running_at).collect();
             run(
                 &tx,
                 UPSERT_DEVICES,
@@ -104,6 +108,7 @@ impl PgGraphRepository {
                     &column(|d| &d.serial),
                     &last_seen,
                     &column(|d| &d.agent),
+                    &running_at,
                     &now,
                 ],
             )

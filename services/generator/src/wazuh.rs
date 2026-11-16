@@ -40,8 +40,14 @@ const PAGE_SIZE: usize = 500;
 /// An agent that never connected has sent no inventory.
 const NEVER_CONNECTED: &str = "never_connected";
 const AGENT_FIELDS: &str = "id,name,status,lastKeepAlive,os.name,os.version,os.platform";
-/// Processes and packages whose name holds either word (`~` is "like", `,` is "or").
+/// Packages whose name holds either word (`~` is "like", case-insensitive; `,` is "or").
 const PROGRAM_QUERY: &str = "name~claude,name~codex";
+/// Processes with either word in their name, executable or arguments. The manager's match is
+/// loose (`Claude Helper` passes), so each is judged again by [`process_agent`].
+const PROCESS_QUERY: &str = "name~claude,name~codex,cmd~claude,cmd~codex,argvs~claude,argvs~codex";
+const PROCESS_FIELDS: &str = "name,cmd,argvs,scan.time";
+const CLAUDE_CODE: &str = "claude-code";
+const CODEX: &str = "codex";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WazuhError {
@@ -145,7 +151,7 @@ impl WazuhClient {
                     self.program(&agent.id).await?,
                 )
             } else {
-                (None, None)
+                (None, Sighting::default())
             };
             devices.push(EdrDevice {
                 name: clean(agent.name),
@@ -153,7 +159,8 @@ impl WazuhClient {
                 status: clean(agent.status),
                 serial,
                 last_seen: agent.last_keep_alive.as_deref().and_then(epoch_millis),
-                agent: program.map(str::to_owned),
+                agent: program.agent.map(str::to_owned),
+                running_at: program.running_at,
                 agent_id: agent.id,
             });
         }
@@ -208,24 +215,35 @@ impl WazuhClient {
             .find_map(|hardware| clean(hardware.board_serial)))
     }
 
-    /// `claude-code` or `codex` when a process running at the agent's last scan, or else an
-    /// installed package, has that word in its name. Both present reads as `claude-code`.
-    /// Nothing found is not proof of absence: a program not running at the scan and installed
-    /// outside a package manager the agent reads leaves no trace here.
-    async fn program(&mut self, agent_id: &str) -> Result<Option<&'static str>, WazuhError> {
-        let query = [("q", PROGRAM_QUERY), ("select", "name"), ("limit", "500")];
-        let mut names: Vec<Named> = self
+    /// Which coding agent the agent's last scans show, and when one was seen running.
+    ///
+    /// A process running at the last process scan decides first, by [`process_agent`]; failing
+    /// that, an installed package, by [`package_agent`]. Nothing found is not proof of absence:
+    /// a program not running at the scan and installed outside a package manager the agent
+    /// reads leaves no trace here.
+    async fn program(&mut self, agent_id: &str) -> Result<Sighting, WazuhError> {
+        let query = [
+            ("q", PROCESS_QUERY),
+            ("select", PROCESS_FIELDS),
+            ("limit", "500"),
+        ];
+        let processes: Vec<Process> = self
             .inventory(agent_id, "processes", &query)
             .await?
             .unwrap_or_default();
-        if coding_agent(&names) != Some("claude-code") {
-            names.extend(
-                self.inventory::<Named>(agent_id, "packages", &query)
-                    .await?
-                    .unwrap_or_default(),
-            );
+        let running = running(&processes);
+        if running.agent.is_some() {
+            return Ok(running);
         }
-        Ok(coding_agent(&names))
+        let query = [("q", PROGRAM_QUERY), ("select", "name"), ("limit", "500")];
+        let packages: Vec<Named> = self
+            .inventory(agent_id, "packages", &query)
+            .await?
+            .unwrap_or_default();
+        Ok(Sighting {
+            agent: package_agent(&packages),
+            running_at: None,
+        })
     }
 
     /// One agent's inventory of a kind; none when the manager cannot answer for this agent.
@@ -501,21 +519,163 @@ struct Named {
     name: Option<String>,
 }
 
-/// The known coding-agent program among these names, Claude Code first.
-fn coding_agent(names: &[Named]) -> Option<&'static str> {
-    let has = |word: &str| {
-        names
-            .iter()
-            .filter_map(|named| named.name.as_deref())
-            .any(|name| name.to_lowercase().contains(word))
-    };
-    if has("claude") {
-        Some("claude-code")
-    } else if has("codex") {
-        Some("codex")
+/// A process at the agent's last process scan, as `select=name,cmd,argvs,scan.time` gives it.
+///
+/// What the agent fills differs by system (Wazuh 4.14's `data_provider`): on Linux `name` is
+/// the kernel's short name, `cmd` the first word of the command line and `argvs` the others
+/// joined by spaces; on Windows `name` is the executable's file name (`claude.exe`) and `cmd`
+/// its full path, without arguments; on macOS only `name` is filled.
+#[derive(Deserialize, Default)]
+struct Process {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    cmd: Option<String>,
+    #[serde(default)]
+    argvs: Option<Argvs>,
+    #[serde(default)]
+    scan: Option<Scan>,
+}
+
+/// The API documents a string; a list is read as well.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Argvs {
+    Line(String),
+    List(Vec<String>),
+}
+
+impl Argvs {
+    fn words(&self) -> Vec<&str> {
+        match self {
+            Self::Line(line) => line.split_whitespace().collect(),
+            Self::List(list) => list.iter().map(String::as_str).collect(),
+        }
+    }
+}
+
+#[derive(Deserialize, Default)]
+struct Scan {
+    #[serde(default)]
+    time: Option<String>,
+}
+
+/// What a device's inventory says about coding agents: a row's `agent` and `running_at`.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Sighting {
+    agent: Option<&'static str>,
+    /// The latest scan, epoch milliseconds, that found a coding-agent process running.
+    running_at: Option<i64>,
+}
+
+/// The coding agent among the processes, Claude Code first, and the latest scan time of the
+/// processes that are one.
+fn running(processes: &[Process]) -> Sighting {
+    let mut sighting = Sighting::default();
+    for process in processes {
+        let Some(agent) = process_agent(process) else {
+            continue;
+        };
+        if sighting.agent != Some(CLAUDE_CODE) {
+            sighting.agent = Some(agent);
+        }
+        let scanned = process
+            .scan
+            .as_ref()
+            .and_then(|scan| scan.time.as_deref())
+            .and_then(epoch_millis);
+        sighting.running_at = sighting.running_at.max(scanned);
+    }
+    sighting
+}
+
+/// Whether a process is Claude Code (`claude-code`) or Codex (`codex`), Claude Code first.
+///
+/// It is when its `name` is exactly `claude` or `codex` (`claude.exe` on Windows), or when its
+/// `cmd` or one of its `argvs` is such a program: a path whose last segment is exactly that
+/// name, a path into Claude Code's native install (`…/claude/versions/2.1.3`, which runs
+/// under its version's name), or a path into the npm packages `@anthropic-ai/claude-code` or
+/// `@openai/codex` (installed with npm, both run under `node`). The case counts: the Claude
+/// desktop app's processes (`Claude`, `Claude Helper (Renderer)`) are not Claude Code.
+fn process_agent(process: &Process) -> Option<&'static str> {
+    let mut found = process
+        .name
+        .as_deref()
+        .and_then(|name| program_agent(name.trim()))
+        .into_iter()
+        .chain(process.cmd.as_deref().and_then(path_agent))
+        .chain(
+            process
+                .argvs
+                .iter()
+                .flat_map(Argvs::words)
+                .filter_map(path_agent),
+        );
+    let first = found.next()?;
+    if first == CLAUDE_CODE || found.any(|agent| agent == CLAUDE_CODE) {
+        Some(CLAUDE_CODE)
+    } else {
+        Some(first)
+    }
+}
+
+/// A program's file name, exactly `claude` or `codex` once a Windows `.exe` is taken off.
+fn program_agent(file_name: &str) -> Option<&'static str> {
+    let file_name = file_name
+        .strip_suffix(".exe")
+        .or_else(|| file_name.strip_suffix(".EXE"))
+        .unwrap_or(file_name);
+    match file_name {
+        "claude" => Some(CLAUDE_CODE),
+        "codex" => Some(CODEX),
+        _ => None,
+    }
+}
+
+/// A path (or a bare name) that runs a coding agent. `/` and `\` both separate segments.
+fn path_agent(path: &str) -> Option<&'static str> {
+    let path = path.trim().trim_matches(['"', '\'']).replace('\\', "/");
+    if path.contains("@anthropic-ai/claude-code") {
+        return Some(CLAUDE_CODE);
+    }
+    if path.contains("@openai/codex") {
+        return Some(CODEX);
+    }
+    let segments: Vec<&str> = path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    match segments[..] {
+        [.., "claude", "versions", _] => Some(CLAUDE_CODE),
+        [.., last] => program_agent(last),
+        [] => None,
+    }
+}
+
+/// The coding agent among installed packages, Claude Code first: a name holding `claude` or
+/// `codex` in any case (`@anthropic-ai/claude-code`, `claude-code`, `codex`, `Codex CLI`).
+/// The Claude desktop app's package (`Claude`, or `Claude ` and more that is not
+/// `Claude Code`) is not Claude Code.
+fn package_agent(packages: &[Named]) -> Option<&'static str> {
+    let names: Vec<String> = packages
+        .iter()
+        .filter_map(|package| package.name.as_deref())
+        .map(str::trim)
+        .filter(|name| !is_claude_desktop(name))
+        .map(str::to_lowercase)
+        .collect();
+    if names.iter().any(|name| name.contains("claude")) {
+        Some(CLAUDE_CODE)
+    } else if names.iter().any(|name| name.contains("codex")) {
+        Some(CODEX)
     } else {
         None
     }
+}
+
+fn is_claude_desktop(package: &str) -> bool {
+    package == "Claude"
+        || (package.starts_with("Claude ") && !package.to_lowercase().contains("claude code"))
 }
 
 /// An agent ID is digits (`001`); anything else is not put into a path.
@@ -730,9 +890,143 @@ IqrADJzA8KwFbVE/cGxF1OOGU8eh5qnMQg7U\n\
         }
     }
 
+    fn process(name: &str, cmd: &str, argvs: &str) -> Process {
+        let text = |text: &str| (!text.is_empty()).then(|| text.to_owned());
+        Process {
+            name: text(name),
+            cmd: text(cmd),
+            argvs: text(argvs).map(Argvs::Line),
+            scan: None,
+        }
+    }
+
     #[test]
-    fn names_the_coding_agent_by_a_word_in_a_name() {
-        let names = |names: &[&str]| -> Vec<Named> {
+    fn a_process_is_a_coding_agent_by_its_exact_program() {
+        let agent = |name, cmd, argvs| process_agent(&process(name, cmd, argvs));
+        // By name, as every system fills it.
+        assert_eq!(agent("claude", "", ""), Some("claude-code"));
+        assert_eq!(agent("codex", "", ""), Some("codex"));
+        assert_eq!(agent("claude.exe", "", ""), Some("claude-code"));
+        // The Claude desktop app is not Claude Code, nor is a name that only holds the word.
+        for desktop in [
+            "Claude",
+            "Claude Helper",
+            "Claude Helper (Renderer)",
+            "Claude.exe",
+            "claude-helper",
+            "codex-tui",
+        ] {
+            assert_eq!(agent(desktop, "", ""), None, "{desktop}");
+        }
+        assert_eq!(
+            agent(
+                "Claude Helper (Renderer)",
+                "/Applications/Claude.app/Contents/Frameworks/Claude Helper (Renderer).app/\
+                 Contents/MacOS/Claude Helper (Renderer)",
+                "--type=renderer --user-data-dir=/Users/ana/Library/Application Support/Claude"
+            ),
+            None
+        );
+        // By the executable's path.
+        assert_eq!(agent("", "/usr/local/bin/codex", ""), Some("codex"));
+        assert_eq!(
+            agent("claude.exe", r"C:\Users\ana\.local\bin\claude.exe", ""),
+            Some("claude-code")
+        );
+        assert_eq!(
+            agent(
+                "Claude.exe",
+                r"C:\Users\ana\AppData\Local\AnthropicClaude\Claude.exe",
+                ""
+            ),
+            None
+        );
+        // Claude Code's native install runs under its version's name.
+        assert_eq!(
+            agent(
+                "2.1.325",
+                "/home/ana/.local/share/claude/versions/2.1.325",
+                "--resume"
+            ),
+            Some("claude-code")
+        );
+        assert_eq!(agent("2.1.325", "/opt/other/versions/2.1.325", ""), None);
+        // Installed with npm, it runs under node.
+        assert_eq!(
+            agent("node", "node", "/opt/homebrew/bin/claude --resume"),
+            Some("claude-code")
+        );
+        assert_eq!(
+            agent(
+                "node",
+                "/usr/bin/node",
+                "/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js -p hello"
+            ),
+            Some("claude-code")
+        );
+        assert_eq!(
+            agent(
+                "node",
+                "/usr/bin/node",
+                "/usr/lib/node_modules/@openai/codex/bin/codex.js"
+            ),
+            Some("codex")
+        );
+        assert_eq!(
+            agent("node", "/usr/bin/node", "server.js --port 3000"),
+            None
+        );
+        // Both in one process: Claude Code.
+        assert_eq!(
+            agent("codex", "codex", "/opt/homebrew/bin/claude"),
+            Some("claude-code")
+        );
+        // An argument as the API documents it, or as a list.
+        let listed = Process {
+            argvs: Some(Argvs::List(vec!["/opt/homebrew/bin/claude".into()])),
+            ..process("node", "node", "")
+        };
+        assert_eq!(process_agent(&listed), Some("claude-code"));
+    }
+
+    #[test]
+    fn a_running_coding_agent_is_dated_by_its_latest_scan() {
+        let scanned = |name: &str, time: &str| Process {
+            scan: Some(Scan {
+                time: Some(time.to_owned()),
+            }),
+            ..process(name, "", "")
+        };
+        assert_eq!(
+            running(&[
+                scanned("Claude", "2021-05-26T12:50:00Z"),
+                scanned("codex", "2021-05-26T12:40:40Z"),
+                scanned("claude", "2021-05-26T12:40:00Z"),
+            ]),
+            Sighting {
+                agent: Some("claude-code"),
+                running_at: Some(1_622_032_840_000),
+            }
+        );
+        // The desktop app alone: nothing running, whatever its scan time.
+        assert_eq!(
+            running(&[scanned("Claude Helper", "2021-05-26T12:50:00Z")]),
+            Sighting::default()
+        );
+        // A coding agent whose scan time cannot be read is still one.
+        assert_eq!(
+            running(&[process("codex", "", "")]),
+            Sighting {
+                agent: Some("codex"),
+                running_at: None,
+            }
+        );
+        assert_eq!(running(&[]), Sighting::default());
+    }
+
+    #[test]
+    fn a_package_names_the_coding_agent_unless_it_is_the_claude_desktop_app() {
+        let packages = |names: &[&str]| -> Vec<Named> {
             names
                 .iter()
                 .map(|name| Named {
@@ -740,21 +1034,22 @@ IqrADJzA8KwFbVE/cGxF1OOGU8eh5qnMQg7U\n\
                 })
                 .collect()
         };
-        assert_eq!(
-            coding_agent(&names(&["zsh", "claude"])),
-            Some("claude-code")
-        );
-        assert_eq!(
-            coding_agent(&names(&["@anthropic-ai/claude-code"])),
-            Some("claude-code")
-        );
-        assert_eq!(coding_agent(&names(&["Codex"])), Some("codex"));
-        assert_eq!(
-            coding_agent(&names(&["codex", "Claude"])),
-            Some("claude-code")
-        );
-        assert_eq!(coding_agent(&names(&["code", "cloud-init"])), None);
-        assert_eq!(coding_agent(&[]), None);
+        for (names, expected) in [
+            (&["@anthropic-ai/claude-code"][..], Some("claude-code")),
+            (&["claude-code"], Some("claude-code")),
+            (&["Claude Code"], Some("claude-code")),
+            (&["codex"], Some("codex")),
+            (&["Codex CLI", "7-Zip"], Some("codex")),
+            (&["codex", "@anthropic-ai/claude-code"], Some("claude-code")),
+            // The desktop app.
+            (&["Claude"], None),
+            (&["Claude Desktop"], None),
+            (&["Claude", "Codex CLI"], Some("codex")),
+            (&["code", "cloud-init"], None),
+            (&[], None),
+        ] {
+            assert_eq!(package_agent(&packages(names)), expected, "{names:?}");
+        }
     }
 
     #[test]

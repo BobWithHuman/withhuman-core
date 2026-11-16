@@ -228,12 +228,26 @@ CREATE TABLE IF NOT EXISTS edr_devices (
   serial     text,
   -- When the manager last heard from the agent, epoch milliseconds.
   last_seen  bigint,
-  -- `claude-code` or `codex` when the EDR's process or package inventory shows that program;
-  -- NULL says only that none was seen.
+  -- `claude-code` or `codex` when the EDR's inventory shows that program: a process running at
+  -- the last scan that is exactly that program (named `claude` or `codex`, run from such a
+  -- path, from Claude Code's native install, or from the npm package under `node`; the
+  -- Claude desktop app's `Claude…` processes are not), else an installed package with either
+  -- word in its name other than the desktop app's `Claude`. NULL says only that none was seen.
   agent      text,
   -- The sync that last wrote the row: the same for every row.
-  synced_at  bigint NOT NULL
+  synced_at  bigint NOT NULL,
+  -- The latest process scan that found such a process running, epoch milliseconds; NULL when
+  -- none was running at the last scan, including when only a package shows the program.
+  running_at bigint
 );
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                 AND table_name = 'edr_devices' AND column_name = 'running_at') THEN
+    ALTER TABLE edr_devices ADD COLUMN running_at bigint;
+  END IF;
+END
+$$;
 
 -- INSTALLED_IN: a project folder a setup wrote the Hooks into.
 CREATE TABLE IF NOT EXISTS client_projects (
