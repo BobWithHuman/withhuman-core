@@ -83,6 +83,9 @@ decision:
   jevUrl: https://api.typesafe.ai
   jevTimeoutMs: 3000
   intentBlockThreshold: 0.5
+  # A call the engine would allow, caused by a result from a source the security team distrusts
+  # (`POST /v1/admin/sources/distrust`), is held for review; `true` denies it instead.
+  distrustedSourceDeny: false
 
 agentgateway:
   image: cr.agentgateway.dev/agentgateway:v1.6.0

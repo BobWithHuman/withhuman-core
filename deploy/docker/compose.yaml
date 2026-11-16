@@ -71,6 +71,8 @@ services:
       WITHHUMAN_CHECK_SHELL_DECODE: ${WITHHUMAN_CHECK_SHELL_DECODE:-0}
       WITHHUMAN_GRADES: ${WITHHUMAN_GRADES:-0}
       WITHHUMAN_DEGRADED_MODE: ${WITHHUMAN_DEGRADED_MODE:-0}
+      # Deny, rather than hold for review, what a distrusted source caused; see "Triage".
+      WITHHUMAN_DISTRUSTED_SOURCE_DENY: ${WITHHUMAN_DISTRUSTED_SOURCE_DENY:-0}
     depends_on:
       postgres:
         condition: service_healthy

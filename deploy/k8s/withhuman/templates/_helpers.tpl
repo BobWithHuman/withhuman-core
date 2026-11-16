@@ -113,6 +113,8 @@ helm.sh/chart: {{ printf "%s-%s" .root.Chart.Name .root.Chart.Version }}
   value: {{ .Values.decision.jevTimeoutMs | quote }}
 - name: WITHHUMAN_INTENT_BLOCK_THRESHOLD
   value: {{ .Values.decision.intentBlockThreshold | quote }}
+- name: WITHHUMAN_DISTRUSTED_SOURCE_DENY
+  value: {{ ternary "1" "0" .Values.decision.distrustedSourceDeny | quote }}
 {{- if eq .Values.decision.provider "jev" }}
 - name: JEV_API_KEY
   valueFrom:
