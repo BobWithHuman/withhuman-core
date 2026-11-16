@@ -79,7 +79,8 @@ python3 deploy/client/configure.py \
 
 The engine records which device and which user run each agent session. Every setup registers
 its device (`POST /v1/clients/register`: client ID, team, host name, OS, OS user, hook version,
-project folder); a setup that cannot reach the engine still completes and says so.
+project folder and, where the user may read it, the hardware serial number); a setup that cannot
+reach the engine still completes and says so.
 
 Per-user keys tie Hooks to a person and let the security team stop that person's agents. Set
 `WITHHUMAN_ADMIN_TOKEN` in `.env`, then issue a key and hand it to the user:
