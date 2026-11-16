@@ -9,12 +9,13 @@ use async_trait::async_trait;
 use deadpool_postgres::{GenericClient, Manager, ManagerConfig, Pool, RecyclingMethod};
 use serde_json::Value;
 use tokio_postgres::{NoTls, Row, error::SqlState, types::ToSql};
+use withhuman_common::source;
 use withhuman_contracts::decisions::{DecisionRequest, DecisionResponse};
 
 use crate::{
     causal::{RequestParent, ResultOrigin},
     check,
-    repository::{DecisionRepository, RepositoryError, TraceRecord},
+    repository::{DecisionRepository, DistrustedCause, RepositoryError, TraceRecord},
     trace::{
         self, CallInfo, Member, MemberKind, Paragraph, ParentKey, TOKEN_KINDS, TraceGraph, Turn,
     },
@@ -197,6 +198,18 @@ ORDER BY c.\"order\" LIMIT 1";
 
 // The paragraphs a SubGraph's Calls were traced to, the most likely first.
 const SUBGRAPH_CAUSES: &str = "SELECT e.target_seq, e.target_index, max(e.probability) AS probability, min(p.text) FROM nodes c JOIN cause_edges e ON e.session_id = c.session_id AND e.call_seq = c.seq   AND e.target_index >= 0 JOIN paragraphs p ON p.session_id = e.session_id AND p.seq = e.target_seq   AND p.\"index\" = e.target_index WHERE c.session_id = $1::text AND c.kind = 'Call' AND c.subgraph = $2::bigint GROUP BY e.target_seq, e.target_index ORDER BY probability DESC LIMIT $3::bigint";
+
+// The tool results with the Call whose result each was (its payload, seq and folder), as the
+// Generator's evidence reads them.
+const RESULT_SOURCES: &str = "\
+SELECT t.seq, t.payload_json, told.payload_json, told.seq, coalesce(told.cwd, t.cwd) \
+FROM nodes t \
+LEFT JOIN LATERAL ( \
+  SELECT c.seq, c.payload_json, c.cwd FROM nodes c \
+  WHERE c.session_id = t.session_id AND c.kind = 'Call' AND c.tool_use_id = t.tool_use_id \
+  ORDER BY c.\"order\" LIMIT 1 \
+) told ON true \
+WHERE t.session_id = $1::text AND t.kind IN ('Segment', 'Error') AND t.seq = ANY($2::bigint[])";
 
 const MARK_UNRESOLVED: &str = "\
 UPDATE nodes SET parent = 'unresolved', trace_error = $3::text \
@@ -737,6 +750,57 @@ impl DecisionRepository for PgDecisionRepository {
                 let probability: Option<f64> = row.get(2);
                 let text: Option<String> = row.get(3);
                 Some((format!("g{seq}p{index}"), text?, probability?))
+            })
+            .collect())
+    }
+
+    async fn distrusted_causes(
+        &self,
+        session_id: &str,
+        seqs: &[u64],
+    ) -> Result<Vec<DistrustedCause>, RepositoryError> {
+        if seqs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let seqs: Vec<i64> = seqs.iter().copied().map(signed).collect();
+        let client = self.client().await?;
+        let rows = query(&client, RESULT_SOURCES, &[&session_id, &seqs]).await?;
+        // Each result with every name its source may be distrusted under.
+        let named: Vec<(u64, Option<u64>, Vec<String>)> = rows
+            .iter()
+            .filter_map(|row| {
+                let (result, call) = (payload(row.get(1)), payload(row.get(2)));
+                let cwd: Option<String> = row.get(4);
+                Some((
+                    u64::try_from(row.get::<_, i64>(0)).ok()?,
+                    row.get::<_, Option<i64>>(3)
+                        .and_then(|seq| u64::try_from(seq).ok()),
+                    source::names(source::telling(&call, &result), cwd.as_deref()),
+                ))
+            })
+            .collect();
+        let all: Vec<&str> = named
+            .iter()
+            .flat_map(|(_, _, names)| names)
+            .map(String::as_str)
+            .collect();
+        if all.is_empty() {
+            return Ok(Vec::new());
+        }
+        let distrusted: Vec<String> = query(&client, source::DISTRUSTED_SQL, &[&all])
+            .await?
+            .iter()
+            .map(|row| row.get(0))
+            .collect();
+        Ok(named
+            .into_iter()
+            .filter_map(|(seq, call_seq, names)| {
+                let source = names.into_iter().find(|name| distrusted.contains(name))?;
+                Some(DistrustedCause {
+                    seq,
+                    call_seq,
+                    source,
+                })
             })
             .collect())
     }

@@ -165,6 +165,9 @@ pub struct TraceSettings {
     pub max_intents: usize,
     /// Experimental changes to the second question and the verdict, all off by default.
     pub check: crate::check::CheckSettings,
+    /// A Call that a result from a source the security team distrusts caused, and that would
+    /// be allowed, is denied rather than held for review (`WITHHUMAN_DISTRUSTED_SOURCE_DENY`).
+    pub distrusted_deny: bool,
 }
 
 impl Default for TraceSettings {
@@ -178,6 +181,7 @@ impl Default for TraceSettings {
             max_hops: 50,
             max_intents: 20,
             check: crate::check::CheckSettings::default(),
+            distrusted_deny: false,
         }
     }
 }

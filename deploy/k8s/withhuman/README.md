@@ -19,6 +19,11 @@ Add `--from-literal=viewer-password=...` to create the viewer's read-only login
 (`withhuman_viewer`), and `--from-literal=admin-token=...` to turn on the key administration API (`/v1/admin`), and set
 `collector.requireKey: "on"` to refuse Hooks without a valid per-user key.
 
+To sync the company's device list from a Wazuh manager, add
+`--from-literal=wazuh-password=...` and set `generator.wazuh.url` and `generator.wazuh.user`.
+For a manager with a self-signed certificate, add `--from-file=wazuh-ca=<its certificate.pem>`
+and set `generator.wazuh.caFromSecret: true`.
+
 Each environment's values live in the `withhuman-gitops` repository, and Argo CD installs the chart
 from there. To install by hand, pass the same values:
 

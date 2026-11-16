@@ -109,6 +109,7 @@ impl DecisionConfig {
             max_hops: parse_range("WITHHUMAN_PARENT_MAX_HOPS", defaults.max_hops, 1, 1_000)?,
             max_intents: parse_range("WITHHUMAN_TRACE_MAX_INTENTS", defaults.max_intents, 1, 200)?,
             check: check_settings()?,
+            distrusted_deny: flag("WITHHUMAN_DISTRUSTED_SOURCE_DENY")?,
         };
         let mock_decision = match env::var("MOCK_DECISION")
             .unwrap_or_else(|_| "ALLOW".into())
@@ -178,6 +179,16 @@ fn check_settings() -> io::Result<CheckSettings> {
         degraded_failures: parse_range("WITHHUMAN_DEGRADED_FAILURES", 3, 1, 100)?,
         degraded_seconds: parse_range("WITHHUMAN_DEGRADED_SECONDS", 60, 1, 3_600)?,
     })
+}
+
+fn flag(name: &str) -> io::Result<bool> {
+    match env::var(name).as_deref() {
+        Err(_) | Ok("") | Ok("0") | Ok("false") => Ok(false),
+        Ok("1") | Ok("true") => Ok(true),
+        Ok(value) => Err(invalid(format!(
+            "invalid {name} {value:?}: expected 1 or 0"
+        ))),
+    }
 }
 
 fn parse_env<T>(name: &str, default: T) -> io::Result<T>

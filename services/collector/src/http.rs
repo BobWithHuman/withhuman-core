@@ -32,9 +32,10 @@ use crate::{
     InMemoryVerdictStore, NormalizeError, Normalizer, RedisSessionStore, RedisVerdictStore,
     ReviewPolicy, StoreError, StoredVerdict, VerdictStore,
     codex::{self, Translated},
+    devices::DeviceStops,
     inventory::{self, USER_HEADER},
     keys::KeyVerifier,
-    redis_connection,
+    redis_connection, triage,
 };
 
 pub(crate) const CLIENT_HEADER: &str = "x-withhuman-client";
@@ -66,6 +67,7 @@ pub struct CollectorService {
     pub generator: Arc<dyn GeneratorTransport>,
     pub verdicts: Arc<dyn VerdictStore>,
     pub keys: KeyVerifier,
+    pub devices: DeviceStops,
     deliveries: Arc<crate::codex_delivery::Deliveries>,
 }
 
@@ -74,6 +76,7 @@ impl CollectorService {
         let verdicts = Arc::new(InMemoryVerdictStore::new(config.verdict_capacity));
         Self {
             keys: KeyVerifier::new(generator.clone(), config.key_cache),
+            devices: DeviceStops::new(generator.clone(), config.key_cache),
             normalizer: Normalizer::default()
                 .with_history(generator.clone())
                 .with_network_commands(config.network_commands.clone())
@@ -96,6 +99,7 @@ impl CollectorService {
         let connection = redis_connection(&url)?;
         Ok(Self {
             keys: KeyVerifier::new(generator.clone(), config.key_cache),
+            devices: DeviceStops::new(generator.clone(), config.key_cache),
             deliveries: Arc::new(crate::codex_delivery::Deliveries::redis(connection.clone())),
             verdicts: Arc::new(RedisVerdictStore::new(
                 connection.clone(),
@@ -141,6 +145,14 @@ pub fn app_with_transport(service: CollectorService) -> Router {
         .merge(hooks)
         .route("/v1/clients/register", post(inventory::register_client))
         .route("/v1/admin/clients", get(inventory::clients))
+        .route(
+            "/v1/admin/clients/{client_id}/owner",
+            post(inventory::set_client_owner),
+        )
+        .route(
+            "/v1/admin/clients/{client_id}/stop",
+            post(inventory::stop_client),
+        )
         .route("/v1/admin/keys", get(inventory::all_keys))
         .route(
             "/v1/admin/keys/{key_id}/revoke",
@@ -153,6 +165,16 @@ pub fn app_with_transport(service: CollectorService) -> Router {
         .route(
             "/v1/admin/users/{email}/revoke",
             post(inventory::revoke_user),
+        )
+        .route(
+            "/v1/admin/sessions/{session_id}/mark",
+            post(triage::mark_session),
+        )
+        .route("/v1/admin/sessions/mark", post(triage::mark_sessions))
+        .route("/v1/admin/sources/distrust", post(triage::distrust_source))
+        .route(
+            "/v1/admin/sessions/{session_id}/calls/{seq}/evidence",
+            get(triage::evidence),
         )
         .route("/api-docs/openapi.json", get(openapi_document))
         .route("/swagger-ui", get(swagger_ui))
@@ -183,11 +205,18 @@ pub fn app_with_transport(service: CollectorService) -> Router {
         inventory::all_keys,
         inventory::revoke_key,
         inventory::revoke_user,
-        inventory::clients
+        inventory::clients,
+        inventory::set_client_owner,
+        inventory::stop_client,
+        triage::mark_session,
+        triage::mark_sessions,
+        triage::distrust_source,
+        triage::evidence
     ),
     tags(
         (name = "Collector", description = "Claude Code Hook ingestion and enforcement API"),
-        (name = "Inventory", description = "Device registration and per-user WithHuman keys")
+        (name = "Inventory", description = "Device registration and per-user WithHuman keys"),
+        (name = "Triage", description = "The security team's session marks, distrusted sources and Call evidence")
     )
 )]
 struct CollectorApiDoc;

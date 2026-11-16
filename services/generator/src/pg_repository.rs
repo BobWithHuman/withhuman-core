@@ -13,8 +13,13 @@ use withhuman_contracts::{
         RequestContinuationResponse, SessionCursor, SubGraphCursor, ToolCall,
     },
     inventory::{
-        ClientRecord, ClientRegistrationRecord, KeyDenial, KeyRecord, NewKey, RevokeKeyRequest,
-        VerifyKeyRequest, VerifyKeyResponse,
+        ClientRecord, ClientRegistrationRecord, ClientState, KeyDenial, KeyRecord, NewKey,
+        RevokeKeyRequest, SetOwnerRequest, StopClientRequest, StopDenial, VerifyKeyRequest,
+        VerifyKeyResponse,
+    },
+    triage::{
+        DistrustSourceRequest, Evidence, MarkSessionRequest, MarkSessionsRequest, MarkedSession,
+        MarkedSessions, SourceTrust,
     },
 };
 
@@ -839,6 +844,65 @@ impl GraphRepository for PgGraphRepository {
 
     async fn clients(&self) -> Result<Vec<ClientRecord>, RepositoryError> {
         self.all_clients().await
+    }
+
+    async fn set_client_owner(
+        &self,
+        client_id: &str,
+        request: SetOwnerRequest,
+        set_at: u64,
+    ) -> Result<ClientRecord, RepositoryError> {
+        self.set_owner(client_id, request, set_at).await
+    }
+
+    async fn stop_client(
+        &self,
+        client_id: &str,
+        request: StopClientRequest,
+        at: u64,
+    ) -> Result<ClientRecord, RepositoryError> {
+        self.set_stopped(client_id, request, at).await
+    }
+
+    async fn client_state(&self, client_id: &str) -> Result<ClientState, RepositoryError> {
+        self.client_stopped(client_id).await
+    }
+
+    async fn record_stop_denial(
+        &self,
+        client_id: &str,
+        denial: StopDenial,
+    ) -> Result<(), RepositoryError> {
+        self.deny_stopped(client_id, denial).await
+    }
+
+    async fn mark_session(
+        &self,
+        session_id: &str,
+        request: MarkSessionRequest,
+        set_at: u64,
+    ) -> Result<MarkedSession, RepositoryError> {
+        self.mark(session_id, request, set_at).await
+    }
+
+    async fn mark_sessions(
+        &self,
+        request: MarkSessionsRequest,
+        set_at: u64,
+    ) -> Result<MarkedSessions, RepositoryError> {
+        self.mark_many(request, set_at).await
+    }
+
+    async fn distrust_source(
+        &self,
+        request: DistrustSourceRequest,
+        set_at: u64,
+    ) -> Result<SourceTrust, RepositoryError> {
+        self.distrust(request, set_at).await
+    }
+
+    async fn evidence(&self, session_id: &str, seq: u64) -> Result<Evidence, RepositoryError> {
+        self.call_evidence(session_id, seq).await
     }
 
     async fn verify_key(

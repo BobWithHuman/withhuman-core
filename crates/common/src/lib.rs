@@ -7,6 +7,7 @@ pub mod hidden;
 pub mod intent;
 pub mod origin;
 pub mod shutdown;
+pub mod source;
 pub mod tokens;
 
 /// The execution graph tables, initialized on startup by Generator and Decision.

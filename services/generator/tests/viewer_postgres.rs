@@ -4,7 +4,7 @@
 use tokio_postgres::{Client, NoTls, error::SqlState};
 use withhuman_generator::PgGraphRepository;
 
-const READABLE: [&str; 16] = [
+const READABLE: [&str; 19] = [
     "sessions",
     "event_commits",
     "nodes",
@@ -21,6 +21,9 @@ const READABLE: [&str; 16] = [
     "client_projects",
     "users",
     "key_events",
+    "edr_devices",
+    "session_marks",
+    "distrusted_sources",
 ];
 
 #[tokio::test]
@@ -62,6 +65,15 @@ async fn the_viewer_reads_and_never_writes() {
         )
         .await
         .unwrap();
+    // The viewer learns of a stopped device from these columns, by these names.
+    viewer
+        .query_one(
+            "SELECT count(stopped_at), count(stopped_by), count(stop_reason), \
+               count(stop_denied_count), count(stop_last_denied_at) FROM clients",
+            &[],
+        )
+        .await
+        .unwrap();
     // Without the read-only default, the grants alone still refuse writes.
     viewer
         .batch_execute("SET default_transaction_read_only = off")
@@ -73,6 +85,7 @@ async fn the_viewer_reads_and_never_writes() {
         "INSERT INTO sessions (session_id) VALUES ('v')",
         "DELETE FROM sessions",
         "UPDATE api_keys SET revoked_at = 1",
+        "UPDATE clients SET stopped_at = NULL",
         "DELETE FROM key_events",
         "CREATE TABLE viewer_made (x int)",
     ] {
