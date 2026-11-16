@@ -12,7 +12,8 @@ mod wazuh;
 pub use config::{GeneratorConfig, WazuhConfig, WazuhTls};
 pub use decision::{DecisionClient, DecisionError, HttpDecisionClient};
 pub use edr::{
-    ClientIdentity, EdrDevice, EdrMatch, EdrSync, EdrSyncError, match_clients, sync_edr_devices,
+    ClientIdentity, EdrDevice, EdrMatch, EdrSync, EdrSyncError, match_clients, run_edr_sync,
+    sync_edr_devices,
 };
 pub use event::GeneratorEvent;
 pub use http::{GeneratorService, app};

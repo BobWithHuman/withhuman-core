@@ -1,10 +1,20 @@
 //! The company's device list from its EDR (a Wazuh manager), matched to the devices that
 //! registered with the engine.
 
-use std::{collections::HashMap, error::Error, fmt, net::IpAddr};
+use std::{
+    collections::HashMap,
+    error::Error,
+    fmt,
+    net::IpAddr,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use tokio::time::MissedTickBehavior;
 
 use crate::{
-    config::WazuhConfig, pg_repository::PgGraphRepository, repository::RepositoryError,
+    config::{WazuhConfig, WazuhTls},
+    pg_repository::PgGraphRepository,
+    repository::RepositoryError,
     wazuh::WazuhClient,
 };
 
@@ -188,6 +198,42 @@ pub async fn sync_edr_devices(
             Ok::<_, crate::wazuh::WazuhError>(devices)
         })
         .await
+}
+
+/// Syncs now and then every `sync_interval`, for as long as the service runs. A sync that
+/// fails, or panics, is logged and tried again at the next interval.
+pub async fn run_edr_sync(repository: PgGraphRepository, config: WazuhConfig) {
+    eprintln!(
+        "Wazuh device sync: {} every {}s",
+        config.url,
+        config.sync_interval.as_secs()
+    );
+    if config.tls == WazuhTls::SkipVerification {
+        eprintln!(
+            "Wazuh device sync: WARNING: WITHHUMAN_WAZUH_TLS_SKIP_VERIFY=1, the manager's \
+             certificate is not verified"
+        );
+    }
+    let mut ticks = tokio::time::interval(config.sync_interval);
+    ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    loop {
+        ticks.tick().await;
+        let (repository, config) = (repository.clone(), config.clone());
+        let sync = tokio::spawn(async move {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |since| since.as_millis() as u64);
+            sync_edr_devices(&repository, &config, now).await
+        });
+        match sync.await {
+            Ok(Ok(EdrSync::Synced { devices, matched })) => eprintln!(
+                "Wazuh device sync: {devices} devices, {matched} registered clients matched"
+            ),
+            Ok(Ok(EdrSync::Busy | EdrSync::Fresh)) => {}
+            Ok(Err(error)) => eprintln!("Wazuh device sync failed, trying again later: {error}"),
+            Err(error) => eprintln!("Wazuh device sync stopped, trying again later: {error}"),
+        }
+    }
 }
 
 #[cfg(test)]
