@@ -1,6 +1,7 @@
 //! The security team's triage API (`/v1/admin/...`, with `WITHHUMAN_ADMIN_TOKEN`): marking a
 //! session (reviewing, attack, benign or closed), distrusting a source, and one Call's evidence. All of it is
-//! passed on to the Generator, which stores it. None of it changes how a Call is decided.
+//! passed on to the Generator, which stores it. A mark changes no decision; a distrusted source
+//! holds the Calls its results cause from then on, which Decision reads from the same table.
 
 use axum::{
     extract::{Path, State},

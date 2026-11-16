@@ -16,8 +16,8 @@ use crate::{
     DecisionConfig, DecisionRepository, RepositoryError,
     check::{self, Branch, Effect, Verdict},
     jev::{JevClient, JevError},
-    repository::{TraceRecord, TracedParent, TracedSegment},
-    trace::{self, Stop, Thresholds, TraceSettings},
+    repository::{DistrustedCause, TraceRecord, TracedParent, TracedSegment},
+    trace::{self, Link, Stop, Thresholds, TraceSettings},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,6 +94,11 @@ impl DecisionProvider for MockDecisionProvider {
 /// changing the agent's safeguards is denied, one the check finds unwanted denied, one it does
 /// not allowed, or reviewed when the trace found a breach. Without the check's answer the
 /// deviation decides against thresholds that may depend on the Call's link.
+///
+/// A Call that would be allowed and that the trace says a tool result caused is held for
+/// review instead (`source::distrusted`) when that result came from a source the security team
+/// distrusts, or denied with `WITHHUMAN_DISTRUSTED_SOURCE_DENY`. A Call already denied or held
+/// keeps its verdict, and when the list cannot be read the Call is decided without it.
 ///
 /// When tracing fails, the Call gets the Collector's failure policy (an error), or REVIEW when
 /// an earlier SubGraph of the Call's agent holds hidden content or a sensitive value. Jev sees prompts only through the
@@ -257,6 +262,41 @@ impl JevDecisionProvider {
         }
     }
 
+    /// The most probable of the tool results the Call was traced to that came from a source the
+    /// security team distrusts; none when none did. An error when the list could not be read
+    /// in the time the decision has left for it.
+    async fn distrusted_cause(
+        &self,
+        request: &DecisionRequest,
+        outcome: &trace::Outcome,
+        left: Option<Duration>,
+    ) -> Result<Option<DistrustedCause>, String> {
+        // The results in the order the trace ranks them, each once.
+        let mut seqs: Vec<u64> = Vec::new();
+        for segment in &outcome.segments {
+            if !seqs.contains(&segment.seq) {
+                seqs.push(segment.seq);
+            }
+        }
+        if seqs.is_empty() {
+            return Ok(None);
+        }
+        let wait = left.map_or(SOURCE_WAIT, |left| left.min(SOURCE_WAIT));
+        if wait.is_zero() {
+            return Err("no time left".to_owned());
+        }
+        let lookup = self
+            .repository
+            .distrusted_causes(&request.session_id, &seqs);
+        let found = tokio::time::timeout(wait, lookup)
+            .await
+            .map_err(|_| "timed out".to_owned())?
+            .map_err(|error| error.to_string())?;
+        Ok(seqs
+            .iter()
+            .find_map(|seq| found.iter().find(|cause| cause.seq == *seq).cloned()))
+    }
+
     /// Records the failure, then denies a Call that changes the agent's safeguards, or gives
     /// the failure policy or, when `risky`, REVIEW.
     async fn unresolved(
@@ -325,6 +365,19 @@ const SAFEGUARD_RULE: &str = "safeguard::change";
 const SAFEGUARD_REASON: &str = "WithHuman이 에이전트의 설정이나 훅을 바꾸는 도구 호출을 차단했습니다. 사용자가 직접 바꿔야 합니다.";
 
 const DEVIATION_REVIEW_REASON: &str = "WithHuman이 이 도구 호출이 사용자 의도에서 벗어났을 수 있다고 판단했습니다. 사용자 확인이 필요합니다.";
+
+const SOURCE_RULE: &str = "source::distrusted";
+const SOURCE_REVIEW_REASON: &str = "WithHuman이 보안팀이 신뢰하지 않는 출처의 내용이 이 도구 호출을 일으켰다고 판단했습니다. 사용자 확인이 필요합니다.";
+/// How long a decision waits to learn whether its cause's source is distrusted.
+const SOURCE_WAIT: Duration = Duration::from_millis(250);
+
+// Like the other reasons, it does not name the source: the agent sees it too.
+fn source_denied(request: &DecisionRequest) -> String {
+    format!(
+        "WithHuman이 보안팀이 신뢰하지 않는 출처의 내용이 일으킨 도구 호출로 판단해 차단했습니다. (세션 {}, 호출 {})",
+        request.session_id, request.call_seq
+    )
+}
 
 #[async_trait]
 impl DecisionProvider for JevDecisionProvider {
@@ -621,6 +674,79 @@ impl DecisionProvider for JevDecisionProvider {
         trace_json["jev"] = exchanges.into();
         let (deny_at, review_at) = self.thresholds.for_link(outcome.link);
         trace_json["thresholds"] = serde_json::json!({"deny": deny_at, "review": review_at});
+        // The agent sees the reason, so it names no score, intent or path it could learn to
+        // avoid; those stay with the Call's trace.
+        let mismatch = || {
+            format!(
+                "WithHuman이 사용자 의도와 다른 행동으로 판단해 차단했습니다. (세션 {}, 호출 {})",
+                request.session_id, request.call_seq
+            )
+        };
+        // The check decides when it could; without its answer, the deviation does.
+        let (mut decision, mut rule, mut reason) = match (verdict, &outcome.deviation) {
+            (Some(Verdict::Deny), _) if safeguard => {
+                (Decision::Deny, SAFEGUARD_RULE, SAFEGUARD_REASON.to_owned())
+            }
+            (Some(Verdict::Deny), _) => (Decision::Deny, "intent::mismatch", mismatch()),
+            (Some(Verdict::Review), _) => (
+                Decision::Review,
+                "intent::review",
+                DEVIATION_REVIEW_REASON.to_owned(),
+            ),
+            (Some(Verdict::Allow), _) => (Decision::Allow, "intent::match", String::new()),
+            (None, Some(deviation)) if deviation.score >= deny_at => {
+                (Decision::Deny, "intent::mismatch", mismatch())
+            }
+            (None, Some(deviation)) if deviation.score >= review_at => (
+                Decision::Review,
+                "intent::review",
+                DEVIATION_REVIEW_REASON.to_owned(),
+            ),
+            (None, Some(_)) => (Decision::Allow, "intent::match", String::new()),
+            (None, None) if risky => (
+                Decision::Review,
+                "intent::unknown",
+                REVIEW_REASON.to_owned(),
+            ),
+            (None, None) => (Decision::Allow, "intent::unknown", String::new()),
+        };
+        // What a distrusted source caused is held. Only a Call that would be allowed is looked
+        // up, so the rule can only make a verdict stricter, and only one traced to a tool result
+        // waits on the lookup. Reading the source itself is some other Call, judged as ever.
+        if decision == Decision::Allow && outcome.link == Link::Segment {
+            match self
+                .distrusted_cause(request, &outcome, remaining(PERSIST_RESERVE))
+                .await
+            {
+                Ok(Some(cause)) => {
+                    let deny = self.settings.distrusted_deny;
+                    trace_json["source"] = serde_json::json!({
+                        "distrusted": cause.source,
+                        "seq": cause.seq,
+                        "call_seq": cause.call_seq,
+                        "effect": if deny { "DENY" } else { "REVIEW" },
+                    });
+                    (decision, rule, reason) = if deny {
+                        (Decision::Deny, SOURCE_RULE, source_denied(request))
+                    } else {
+                        (
+                            Decision::Review,
+                            SOURCE_RULE,
+                            SOURCE_REVIEW_REASON.to_owned(),
+                        )
+                    };
+                }
+                Ok(None) => {}
+                // The list could not be read: the Call is decided as it would have been.
+                Err(error) => {
+                    eprintln!(
+                        "warning: distrusted sources not checked for session {} call {}: {error}",
+                        request.session_id, request.call_seq
+                    );
+                    trace_json["source"] = serde_json::json!({ "error": error });
+                }
+            }
+        }
         let record = TraceRecord {
             subgraph: graph.call.subgraph,
             parent: outcome.primary().key.clone(),
@@ -677,42 +803,6 @@ impl DecisionProvider for JevDecisionProvider {
                 .err()
                 .map(|error| format!("trace not stored: {error}")),
         });
-        // The agent sees the reason, so it names no score, intent or path it could learn to
-        // avoid; those stay with the Call's trace.
-        let mismatch = || {
-            format!(
-                "WithHuman이 사용자 의도와 다른 행동으로 판단해 차단했습니다. (세션 {}, 호출 {})",
-                request.session_id, request.call_seq
-            )
-        };
-        // The check decides when it could; without its answer, the deviation does.
-        let (decision, rule, reason) = match (verdict, &outcome.deviation) {
-            (Some(Verdict::Deny), _) if safeguard => {
-                (Decision::Deny, SAFEGUARD_RULE, SAFEGUARD_REASON.to_owned())
-            }
-            (Some(Verdict::Deny), _) => (Decision::Deny, "intent::mismatch", mismatch()),
-            (Some(Verdict::Review), _) => (
-                Decision::Review,
-                "intent::review",
-                DEVIATION_REVIEW_REASON.to_owned(),
-            ),
-            (Some(Verdict::Allow), _) => (Decision::Allow, "intent::match", String::new()),
-            (None, Some(deviation)) if deviation.score >= deny_at => {
-                (Decision::Deny, "intent::mismatch", mismatch())
-            }
-            (None, Some(deviation)) if deviation.score >= review_at => (
-                Decision::Review,
-                "intent::review",
-                DEVIATION_REVIEW_REASON.to_owned(),
-            ),
-            (None, Some(_)) => (Decision::Allow, "intent::match", String::new()),
-            (None, None) if risky => (
-                Decision::Review,
-                "intent::unknown",
-                REVIEW_REASON.to_owned(),
-            ),
-            (None, None) => (Decision::Allow, "intent::unknown", String::new()),
-        };
         Ok(DecisionResponse {
             decision,
             reason,

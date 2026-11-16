@@ -9,11 +9,12 @@ use async_trait::async_trait;
 use deadpool_postgres::{GenericClient, Manager, ManagerConfig, Pool, RecyclingMethod};
 use serde_json::Value;
 use tokio_postgres::{NoTls, Row, error::SqlState, types::ToSql};
+use withhuman_common::source;
 use withhuman_contracts::decisions::{DecisionRequest, DecisionResponse};
 
 use crate::{
     check,
-    repository::{DecisionRepository, RepositoryError, TraceRecord},
+    repository::{DecisionRepository, DistrustedCause, RepositoryError, TraceRecord},
     trace::{
         self, CallInfo, Member, MemberKind, Paragraph, ParentKey, TOKEN_KINDS, TraceGraph, Turn,
     },
@@ -170,6 +171,18 @@ FROM nodes result WHERE result.session_id = $1::text AND result.kind IN ('Segmen
   AND result.seq = $3::bigint \
 ON CONFLICT (session_id, call_seq, target_seq, target_index) DO UPDATE SET \
   probability = EXCLUDED.probability, rank = EXCLUDED.rank, parent = EXCLUDED.parent";
+
+// The tool results with the Call whose result each was (its payload, seq and folder), as the
+// Generator's evidence reads them.
+const RESULT_SOURCES: &str = "\
+SELECT t.seq, t.payload_json, told.payload_json, told.seq, coalesce(told.cwd, t.cwd) \
+FROM nodes t \
+LEFT JOIN LATERAL ( \
+  SELECT c.seq, c.payload_json, c.cwd FROM nodes c \
+  WHERE c.session_id = t.session_id AND c.kind = 'Call' AND c.tool_use_id = t.tool_use_id \
+  ORDER BY c.\"order\" LIMIT 1 \
+) told ON true \
+WHERE t.session_id = $1::text AND t.kind IN ('Segment', 'Error') AND t.seq = ANY($2::bigint[])";
 
 const MARK_UNRESOLVED: &str = "\
 UPDATE nodes SET parent = 'unresolved', trace_error = $3::text \
@@ -619,6 +632,57 @@ impl DecisionRepository for PgDecisionRepository {
             }
         }
         Ok(diffs)
+    }
+
+    async fn distrusted_causes(
+        &self,
+        session_id: &str,
+        seqs: &[u64],
+    ) -> Result<Vec<DistrustedCause>, RepositoryError> {
+        if seqs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let seqs: Vec<i64> = seqs.iter().copied().map(signed).collect();
+        let client = self.client().await?;
+        let rows = query(&client, RESULT_SOURCES, &[&session_id, &seqs]).await?;
+        // Each result with every name its source may be distrusted under.
+        let named: Vec<(u64, Option<u64>, Vec<String>)> = rows
+            .iter()
+            .filter_map(|row| {
+                let (result, call) = (payload(row.get(1)), payload(row.get(2)));
+                let cwd: Option<String> = row.get(4);
+                Some((
+                    u64::try_from(row.get::<_, i64>(0)).ok()?,
+                    row.get::<_, Option<i64>>(3)
+                        .and_then(|seq| u64::try_from(seq).ok()),
+                    source::names(source::telling(&call, &result), cwd.as_deref()),
+                ))
+            })
+            .collect();
+        let all: Vec<&str> = named
+            .iter()
+            .flat_map(|(_, _, names)| names)
+            .map(String::as_str)
+            .collect();
+        if all.is_empty() {
+            return Ok(Vec::new());
+        }
+        let distrusted: Vec<String> = query(&client, source::DISTRUSTED_SQL, &[&all])
+            .await?
+            .iter()
+            .map(|row| row.get(0))
+            .collect();
+        Ok(named
+            .into_iter()
+            .filter_map(|(seq, call_seq, names)| {
+                let source = names.into_iter().find(|name| distrusted.contains(name))?;
+                Some(DistrustedCause {
+                    seq,
+                    call_seq,
+                    source,
+                })
+            })
+            .collect())
     }
 
     async fn mark_unresolved(

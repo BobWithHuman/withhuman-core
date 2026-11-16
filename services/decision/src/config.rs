@@ -109,6 +109,7 @@ impl DecisionConfig {
             max_hops: parse_range("WITHHUMAN_PARENT_MAX_HOPS", defaults.max_hops, 1, 1_000)?,
             max_intents: parse_range("WITHHUMAN_TRACE_MAX_INTENTS", defaults.max_intents, 1, 200)?,
             check: check_settings()?,
+            distrusted_deny: flag("WITHHUMAN_DISTRUSTED_SOURCE_DENY")?,
         };
         let mock_decision = match env::var("MOCK_DECISION")
             .unwrap_or_else(|_| "ALLOW".into())

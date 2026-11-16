@@ -1,9 +1,12 @@
 //! Keys on the Hooks (the user they name, the kill switch, `WITHHUMAN_REQUIRE_KEY`), the
-//! inventory API and the session facts the Hooks now carry.
+//! inventory API, stopping a device and the session facts the Hooks now carry.
 
 use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
+    collections::{HashMap, HashSet},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -17,13 +20,15 @@ use serde_json::{Value, json};
 use tower::ServiceExt as _;
 use withhuman_collector::{
     CollectorConfig, CollectorService, FailurePolicy, GeneratorError, GeneratorTransport,
-    NormalizedEvent, app_with_transport, keys,
+    NormalizedEvent, app_with_transport, devices, keys,
 };
 use withhuman_common::chunking::sha256;
 use withhuman_contracts::{
     decisions::{CausalStart, Decision, DecisionResponse},
     events::EventResponse,
-    inventory::{KeyDenial, KeyStatus, VerifyKeyRequest, VerifyKeyResponse},
+    inventory::{
+        ClientState, KeyDenial, KeyStatus, StopDenial, VerifyKeyRequest, VerifyKeyResponse,
+    },
 };
 
 const ACTIVE: &str =
@@ -45,6 +50,13 @@ struct Generator {
     inventory: Mutex<Vec<Forwarded>>,
     keys: Mutex<HashMap<String, VerifyKeyResponse>>,
     unavailable: bool,
+    /// The client IDs the security team stopped.
+    stopped: Mutex<HashSet<String>>,
+    /// The client IDs whose state the Collector asked for.
+    states: Mutex<Vec<String>>,
+    stop_denials: Mutex<Vec<(String, StopDenial)>>,
+    /// The Generator cannot say whether a device is stopped.
+    state_down: AtomicBool,
 }
 
 impl Generator {
@@ -128,6 +140,28 @@ impl GeneratorTransport for Generator {
         Ok(())
     }
 
+    async fn client_state(&self, client_id: &str) -> Result<ClientState, GeneratorError> {
+        self.states.lock().unwrap().push(client_id.to_owned());
+        if self.state_down.load(Ordering::SeqCst) {
+            return Err(GeneratorError::Unavailable("down".into()));
+        }
+        Ok(ClientState {
+            stopped: self.stopped.lock().unwrap().contains(client_id),
+        })
+    }
+
+    async fn record_stop_denial(
+        &self,
+        client_id: &str,
+        denial: StopDenial,
+    ) -> Result<(), GeneratorError> {
+        self.stop_denials
+            .lock()
+            .unwrap()
+            .push((client_id.to_owned(), denial));
+        Ok(())
+    }
+
     async fn inventory(
         &self,
         method: reqwest::Method,
@@ -162,6 +196,22 @@ impl GeneratorTransport for Generator {
                 let body = body.unwrap();
                 json!({"client_id": client_id, "owner": body["owner"],
                        "owner_set_by": body["actor"], "projects": []})
+            }
+            ["clients", client_id, "stop"] if *client_id != "team/1234" => {
+                return Ok((404, json!({"error": "graph_resource_not_found"})));
+            }
+            ["clients", client_id, "stop"] => {
+                let body = body.unwrap();
+                let mut stopped = self.stopped.lock().unwrap();
+                if body["stopped"] == true {
+                    stopped.insert((*client_id).to_owned());
+                    json!({"client_id": client_id, "stopped_at": 5, "stopped_by": body["actor"],
+                           "stop_reason": body["reason"], "stop_denied_count": 0, "projects": []})
+                } else {
+                    stopped.remove(*client_id);
+                    json!({"client_id": client_id, "stopped_at": null, "stopped_by": null,
+                           "stop_reason": null, "stop_denied_count": 0, "projects": []})
+                }
             }
             _ => json!([]),
         };
@@ -745,4 +795,362 @@ async fn administrators_name_and_clear_a_devices_owner() {
     assert!(documented.is_object());
     let schema = &document["components"]["schemas"]["SetOwnerRequest"];
     assert_eq!(schema["required"], json!(["owner"]), "{schema}");
+}
+
+/// The PreToolUse events that reached the Generator.
+fn calls(generator: &Generator) -> usize {
+    generator
+        .events()
+        .iter()
+        .filter(|event| matches!(event, NormalizedEvent::PreToolUse(_)))
+        .count()
+}
+
+const STOP: &str = "/v1/admin/clients/team%2F1234/stop";
+
+#[tokio::test]
+async fn a_stopped_device_is_refused_every_call_until_it_is_released() {
+    let generator = Arc::new(Generator::with_keys());
+    // Observing modes never block a verdict; a stop is an administrator's decision.
+    let app = app(generator.clone(), |config| {
+        config.enforcement_mode = withhuman_contracts::events::EnforcementMode::Shadow;
+        config.admin_token = Some(ADMIN.into());
+    });
+    let admin = bearer(ADMIN);
+    let admin = [("authorization", admin.as_str())];
+    let key = bearer(ACTIVE);
+    let device = [
+        ("authorization", key.as_str()),
+        ("x-withhuman-client", "team/1234"),
+    ];
+    // The same device without a key, where none is required.
+    let keyless = [("x-withhuman-client", "team/1234")];
+    let other = [
+        ("authorization", key.as_str()),
+        ("x-withhuman-client", "team/5678"),
+    ];
+
+    // Running, its calls pass; the answer is kept for the next ones.
+    for headers in [&device[..], &keyless[..]] {
+        let (status, body) = post(&app, "/v1/hooks/PreToolUse", call("s1"), headers).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_ne!(denial(&body).0, "deny", "{body}");
+    }
+    assert_eq!(calls(&generator), 2);
+    assert_eq!(*generator.states.lock().unwrap(), ["team/1234"]);
+
+    let (status, body) = post(
+        &app,
+        STOP,
+        json!({"stopped": true, "actor": "sec@example.com", "reason": "lost laptop"}),
+        &admin,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["client_id"], "team/1234");
+    assert_eq!(body["stopped_at"], 5);
+    assert_eq!(body["stopped_by"], "sec@example.com");
+    assert_eq!(body["stop_reason"], "lost laptop");
+
+    // The stop made here applies at once, not when the kept answer runs out: with a key,
+    // without one, and from Codex.
+    for headers in [&device[..], &keyless[..]] {
+        let (status, body) = post(&app, "/v1/hooks/PreToolUse", call("s1"), headers).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(denial(&body), ("deny", devices::DEVICE_STOPPED));
+        // The team's reason stays with the team.
+        assert!(!body.to_string().contains("lost laptop"));
+    }
+    let (status, body) = post(
+        &app,
+        "/v1/hooks/codex/PreToolUse",
+        json!({"session_id": "c1", "tool_name": "shell", "tool_use_id": "t",
+               "tool_input": {"command": "ls"}, "cwd": "/p"}),
+        &device,
+    )
+    .await;
+    assert_eq!(
+        (status, denial(&body)),
+        (StatusCode::OK, ("deny", devices::DEVICE_STOPPED))
+    );
+    assert_eq!(calls(&generator), 2, "no call reached the Generator");
+    {
+        let denials = generator.stop_denials.lock().unwrap();
+        assert_eq!(denials.len(), 3);
+        assert!(denials.iter().all(|(client, _)| client == "team/1234"));
+        assert!(denials[0].1.denied_at > 0);
+    }
+
+    // What the device still does is recorded, under its key's user.
+    let before = generator.events().len();
+    let (status, _) = post(
+        &app,
+        "/v1/hooks/UserPromptSubmit",
+        json!({"session_id": "s1", "prompt": "why?"}),
+        &device,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let events = generator.events();
+    assert_eq!(events.len(), before + 1);
+    assert_eq!(
+        user_of(events.last().unwrap()).as_deref(),
+        Some("ana@example.com")
+    );
+    // Another device of the same user, and a Hook that names no device, are not stopped.
+    for headers in [&other[..], &[("authorization", key.as_str())][..]] {
+        let (_, body) = post(&app, "/v1/hooks/PreToolUse", call("s2"), headers).await;
+        assert_ne!(denial(&body).0, "deny", "{body}");
+    }
+    assert_eq!(calls(&generator), 4);
+
+    // Released, it is allowed again at once.
+    let (status, body) = post(&app, STOP, json!({"stopped": false}), &admin).await;
+    assert_eq!(
+        (status, &body["stopped_at"]),
+        (StatusCode::OK, &Value::Null)
+    );
+    let (_, body) = post(&app, "/v1/hooks/PreToolUse", call("s1"), &device).await;
+    assert_ne!(denial(&body).0, "deny", "{body}");
+    assert_eq!(calls(&generator), 5);
+    assert_eq!(generator.stop_denials.lock().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn a_revoked_key_on_a_stopped_device_is_refused_for_its_key() {
+    let generator = Arc::new(Generator::with_keys());
+    generator.stopped.lock().unwrap().insert("team/1234".into());
+    let app = app(generator.clone(), |_| {});
+    let key = bearer(REVOKED);
+    let headers = [
+        ("authorization", key.as_str()),
+        ("x-withhuman-client", "team/1234"),
+    ];
+    let (_, body) = post(&app, "/v1/hooks/PreToolUse", call("s1"), &headers).await;
+    assert_eq!(denial(&body), ("deny", keys::KEY_REVOKED));
+    assert_eq!(generator.denials.lock().unwrap().len(), 1);
+    assert!(generator.stop_denials.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_stop_made_elsewhere_applies_when_the_kept_answer_runs_out() {
+    let device = [("x-withhuman-client", "team/1234")];
+    // Kept: the Generator is asked once, and a stop another replica took is not seen yet.
+    let generator = Arc::new(Generator::with_keys());
+    let kept = app(generator.clone(), |config| {
+        config.key_cache = Duration::from_secs(60);
+    });
+    let (_, body) = post(&kept, "/v1/hooks/PreToolUse", call("s1"), &device).await;
+    assert_ne!(denial(&body).0, "deny");
+    generator.stopped.lock().unwrap().insert("team/1234".into());
+    let (_, body) = post(&kept, "/v1/hooks/PreToolUse", call("s1"), &device).await;
+    assert_ne!(denial(&body).0, "deny");
+    assert_eq!(generator.states.lock().unwrap().len(), 1);
+    // Only a call asks: the device's other Hooks pass without the question.
+    post(
+        &kept,
+        "/v1/hooks/UserPromptSubmit",
+        json!({"session_id": "s1", "prompt": "hello"}),
+        &device,
+    )
+    .await;
+    assert_eq!(generator.states.lock().unwrap().len(), 1);
+
+    // Not kept: every call asks, so the stop is seen by the next one, and so is the release.
+    let generator = Arc::new(Generator::with_keys());
+    let fresh = app(generator.clone(), |config| {
+        config.key_cache = Duration::ZERO;
+    });
+    let (_, body) = post(&fresh, "/v1/hooks/PreToolUse", call("s1"), &device).await;
+    assert_ne!(denial(&body).0, "deny");
+    generator.stopped.lock().unwrap().insert("team/1234".into());
+    let (_, body) = post(&fresh, "/v1/hooks/PreToolUse", call("s1"), &device).await;
+    assert_eq!(denial(&body), ("deny", devices::DEVICE_STOPPED));
+
+    // While the Generator cannot answer, a device it said was stopped stays stopped, and one
+    // it never answered for goes on to be decided like any other call.
+    generator.state_down.store(true, Ordering::SeqCst);
+    let (_, body) = post(&fresh, "/v1/hooks/PreToolUse", call("s1"), &device).await;
+    assert_eq!(denial(&body), ("deny", devices::DEVICE_STOPPED));
+    let before = calls(&generator);
+    let unknown = [("x-withhuman-client", "team/9999")];
+    let (_, body) = post(&fresh, "/v1/hooks/PreToolUse", call("s3"), &unknown).await;
+    assert_ne!(denial(&body).0, "deny");
+    assert_eq!(calls(&generator), before + 1);
+    generator.state_down.store(false, Ordering::SeqCst);
+    generator.stopped.lock().unwrap().clear();
+    let (_, body) = post(&fresh, "/v1/hooks/PreToolUse", call("s1"), &device).await;
+    assert_ne!(denial(&body).0, "deny");
+}
+
+#[tokio::test]
+async fn administrators_stop_and_release_a_device_with_the_admin_token() {
+    let generator = Arc::new(Generator::with_keys());
+    let stop = json!({"stopped": true, "actor": "sec@example.com", "reason": "lost laptop"});
+    let disabled = app(generator.clone(), |_| {});
+    let (status, body) = post(&disabled, STOP, stop.clone(), &[]).await;
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (StatusCode::NOT_FOUND, Some("admin_api_disabled"))
+    );
+
+    let app = app(generator.clone(), |config| {
+        config.admin_token = Some(ADMIN.into())
+    });
+    let admin = bearer(ADMIN);
+    let admin = [("authorization", admin.as_str())];
+    for headers in [&[][..], &[("authorization", "Bearer wrong")][..]] {
+        let (status, body) = post(&app, STOP, stop.clone(), headers).await;
+        assert_eq!(
+            (status, body["error"].as_str()),
+            (StatusCode::UNAUTHORIZED, Some("admin_token_invalid"))
+        );
+    }
+    // A user's key is not the admin token.
+    let user = bearer(ACTIVE);
+    let (status, _) = post(
+        &app,
+        STOP,
+        stop.clone(),
+        &[("authorization", user.as_str())],
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(generator.inventory.lock().unwrap().is_empty());
+    assert!(generator.stopped.lock().unwrap().is_empty());
+
+    // A body that does not say which, or says it as something else: nothing is changed.
+    for body in [
+        json!({"actor": "sec@example.com"}),
+        json!({"stopped": "yes"}),
+        json!({"stopped": null}),
+    ] {
+        let (status, _) = post(&app, STOP, body, &admin).await;
+        assert!(status.is_client_error(), "{status}");
+    }
+    assert!(generator.inventory.lock().unwrap().is_empty());
+
+    let (status, _) = post(&app, STOP, stop.clone(), &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = post(&app, STOP, json!({"stopped": false}), &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    {
+        let calls = generator.inventory.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        for (method, segments, _) in calls.iter() {
+            assert_eq!(method, "POST");
+            // The client ID reaches the Generator whole, as one segment.
+            assert_eq!(segments, &["clients", "team/1234", "stop"]);
+        }
+        assert_eq!(calls[0].2, Some(stop.clone()));
+        assert_eq!(
+            calls[1].2,
+            Some(json!({"stopped": false, "actor": null, "reason": null}))
+        );
+    }
+
+    // An unencoded slash is another path, and an unknown device is the Generator's 404.
+    let (status, _) = post(
+        &app,
+        "/v1/admin/clients/team/1234/stop",
+        stop.clone(),
+        &admin,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(generator.inventory.lock().unwrap().len(), 2);
+    let (status, body) = post(&app, "/v1/admin/clients/team%2Fnone/stop", stop, &admin).await;
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (StatusCode::NOT_FOUND, Some("graph_resource_not_found"))
+    );
+    assert!(generator.stopped.lock().unwrap().is_empty());
+
+    let (_, document) = get(&app, "/api-docs/openapi.json", &[]).await;
+    let documented = &document["paths"]["/v1/admin/clients/{client_id}/stop"]["post"];
+    assert!(documented.is_object());
+    let schema = &document["components"]["schemas"]["StopClientRequest"];
+    assert_eq!(schema["required"], json!(["stopped"]), "{schema}");
+    let record = &document["components"]["schemas"]["ClientRecord"]["properties"];
+    for field in [
+        "stopped_at",
+        "stopped_by",
+        "stop_reason",
+        "stop_denied_count",
+        "stop_last_denied_at",
+    ] {
+        assert!(record[field].is_object(), "{field}");
+    }
+}
+
+/// Over HTTP, as the Collector reaches a real Generator: the client ID, slash and all, is one
+/// path segment of each request.
+#[tokio::test]
+async fn asks_the_generator_for_a_devices_state_by_its_whole_client_id() {
+    use axum::{Json, extract::Path, extract::State, routing};
+    type Seen = Arc<Mutex<Vec<String>>>;
+    let seen = Seen::default();
+    let stub = Router::new()
+        .route(
+            "/v1/clients/{client_id}/state",
+            routing::get(
+                |State(seen): State<Seen>, Path(client_id): Path<String>| async move {
+                    seen.lock().unwrap().push(format!("state {client_id}"));
+                    Json(json!({"stopped": client_id == "team/1234"}))
+                },
+            ),
+        )
+        .route(
+            "/v1/clients/{client_id}/stop-denials",
+            routing::post(
+                |State(seen): State<Seen>,
+                 Path(client_id): Path<String>,
+                 Json(body): Json<Value>| async move {
+                    assert!(body["denied_at"].as_u64().unwrap() > 0);
+                    seen.lock().unwrap().push(format!("denied {client_id}"));
+                    StatusCode::NO_CONTENT
+                },
+            ),
+        )
+        .route(
+            "/v1/clients/{client_id}/stop",
+            routing::post(
+                |State(seen): State<Seen>,
+                 Path(client_id): Path<String>,
+                 Json(body): Json<Value>| async move {
+                    seen.lock().unwrap().push(format!("stop {client_id}"));
+                    Json(json!({"client_id": client_id, "stopped_at": 5,
+                        "stopped_by": body["actor"], "projects": []}))
+                },
+            ),
+        )
+        .with_state(seen.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, stub).await.unwrap() });
+
+    let app = withhuman_collector::app(CollectorConfig {
+        generator_url: format!("http://{address}"),
+        admin_token: Some(ADMIN.into()),
+        intent_capture: false,
+        ..CollectorConfig::default()
+    });
+    let device = [("x-withhuman-client", "team/1234")];
+    let (status, body) = post(&app, "/v1/hooks/PreToolUse", call("s1"), &device).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(denial(&body), ("deny", devices::DEVICE_STOPPED));
+    let admin = bearer(ADMIN);
+    let (status, body) = post(
+        &app,
+        STOP,
+        json!({"stopped": true, "actor": "sec@example.com"}),
+        &[("authorization", admin.as_str())],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["client_id"], "team/1234");
+    assert_eq!(
+        *seen.lock().unwrap(),
+        ["state team/1234", "denied team/1234", "stop team/1234"]
+    );
 }

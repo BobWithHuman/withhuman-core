@@ -2,8 +2,9 @@
 
 use tokio_postgres::Row;
 use withhuman_contracts::inventory::{
-    ClientRecord, ClientRegistrationRecord, KeyDenial, KeyRecord, KeyStatus, NewKey,
-    RevokeKeyRequest, SetOwnerRequest, VerifyKeyRequest, VerifyKeyResponse,
+    ClientRecord, ClientRegistrationRecord, ClientState, KeyDenial, KeyRecord, KeyStatus, NewKey,
+    RevokeKeyRequest, SetOwnerRequest, StopClientRequest, StopDenial, VerifyKeyRequest,
+    VerifyKeyResponse,
 };
 
 use crate::{
@@ -42,7 +43,8 @@ SELECT c.client_id, c.team, c.hostname, c.os, c.os_user, c.hook_version, c.user_
   c.registered_at, c.updated_at, c.first_seen, c.last_seen, \
   coalesce(array_agg(p.project ORDER BY p.updated_at DESC) FILTER (WHERE p.project IS NOT NULL), \
     '{}'), \
-  c.serial, c.owner_email, c.owner_set_by, c.owner_set_at \
+  c.serial, c.owner_email, c.owner_set_by, c.owner_set_at, \
+  c.stopped_at, c.stopped_by, c.stop_reason, c.stop_denied_count, c.stop_last_denied_at \
 FROM clients c LEFT JOIN client_projects p ON p.client_id = c.client_id \
 WHERE $1::text IS NULL OR c.client_id = $1::text \
 GROUP BY c.client_id \
@@ -52,6 +54,24 @@ LIMIT 10000";
 const SET_OWNER: &str = "\
 UPDATE clients SET owner_email = $2::text, owner_set_by = $3::text, owner_set_at = $4::bigint \
 WHERE client_id = $1::text RETURNING client_id";
+
+// A device already stopped keeps its first stop, as a revoked key keeps its revocation.
+const STOP_CLIENT: &str = "\
+UPDATE clients SET stopped_at = $2::bigint, stopped_by = $3::text, stop_reason = $4::text \
+WHERE client_id = $1::text AND stopped_at IS NULL";
+
+const RELEASE_CLIENT: &str = "\
+UPDATE clients SET stopped_at = NULL, stopped_by = NULL, stop_reason = NULL \
+WHERE client_id = $1::text";
+
+const CLIENT_STOPPED: &str =
+    "SELECT stopped_at IS NOT NULL FROM clients WHERE client_id = $1::text";
+
+// Counted only while the device is stopped: a refusal that raced a release is not one.
+const DENY_STOPPED: &str = "\
+UPDATE clients SET stop_denied_count = stop_denied_count + 1, \
+  stop_last_denied_at = greatest(coalesce(stop_last_denied_at, 0), $2::bigint) \
+WHERE client_id = $1::text AND stopped_at IS NOT NULL";
 
 // Using a key moves its `last_used_at`, at most once a minute.
 const VERIFY_KEY: &str = "\
@@ -184,6 +204,72 @@ impl PgGraphRepository {
         }
         .await;
         result?.ok_or(RepositoryError::NotFound)
+    }
+
+    /// Stops the device, or releases it; `NotFound` for an unknown device. Stopping a stopped
+    /// device and releasing a running one change nothing.
+    pub(crate) async fn set_stopped(
+        &self,
+        client_id: &str,
+        request: StopClientRequest,
+        at: u64,
+    ) -> Result<ClientRecord, RepositoryError> {
+        let at = signed(at)?;
+        let text = |value: &Option<String>| {
+            value
+                .as_deref()
+                .map(|value| withhuman_common::postgres_text(value).into_owned())
+        };
+        let result: Result<Option<ClientRecord>, PgError> = async {
+            let mut client = self.client().await?;
+            let tx = client.transaction().await?;
+            if request.stopped {
+                let (actor, reason) = (text(&request.actor), text(&request.reason));
+                run(&tx, STOP_CLIENT, &[&client_id, &at, &actor, &reason]).await?;
+            } else {
+                run(&tx, RELEASE_CLIENT, &[&client_id]).await?;
+            }
+            let Some(row) = optional(&tx, CLIENTS, &[&Some(client_id)]).await? else {
+                return Ok(None);
+            };
+            tx.commit().await?;
+            client_record(&row).map(Some)
+        }
+        .await;
+        result?.ok_or(RepositoryError::NotFound)
+    }
+
+    /// Whether the device is stopped; a device the store does not hold is not.
+    pub(crate) async fn client_stopped(
+        &self,
+        client_id: &str,
+    ) -> Result<ClientState, RepositoryError> {
+        let result: Result<Option<Row>, PgError> = async {
+            let client = self.client().await?;
+            optional(&client, CLIENT_STOPPED, &[&client_id]).await
+        }
+        .await;
+        Ok(ClientState {
+            stopped: result?.is_some_and(|row| row.get(0)),
+        })
+    }
+
+    /// Counts a PreToolUse refused for the stopped device; `NotFound` when it is not stopped.
+    pub(crate) async fn deny_stopped(
+        &self,
+        client_id: &str,
+        denial: StopDenial,
+    ) -> Result<(), RepositoryError> {
+        let at = signed(denial.denied_at)?;
+        let result: Result<u64, PgError> = async {
+            let client = self.client().await?;
+            run(&client, DENY_STOPPED, &[&client_id, &at]).await
+        }
+        .await;
+        if result? == 0 {
+            return Err(RepositoryError::NotFound);
+        }
+        Ok(())
     }
 
     pub(crate) async fn verify(
@@ -401,6 +487,11 @@ fn client_record(row: &Row) -> Result<ClientRecord, PgError> {
         owner: row.get(13),
         owner_set_by: row.get(14),
         owner_set_at: millis(row, 15)?,
+        stopped_at: millis(row, 16)?,
+        stopped_by: row.get(17),
+        stop_reason: row.get(18),
+        stop_denied_count: millis(row, 19)?.unwrap_or_default(),
+        stop_last_denied_at: millis(row, 20)?,
         registered_at: millis(row, 7)?,
         updated_at: millis(row, 8)?,
         first_seen: millis(row, 9)?,

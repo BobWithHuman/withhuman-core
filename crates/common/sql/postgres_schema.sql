@@ -209,7 +209,8 @@ CREATE TABLE IF NOT EXISTS clients (
   first_seen     bigint,
   last_seen      bigint
   -- `serial`, `owner_email`, `owner_set_by` and `owner_set_at` are added below, and so are
-  -- `edr_agent_id` and `edr_status`.
+  -- `edr_agent_id` and `edr_status`, and the stop: `stopped_at`, `stopped_by`, `stop_reason`,
+  -- `stop_denied_count` and `stop_last_denied_at`.
 );
 CREATE INDEX IF NOT EXISTS clients_last_seen ON clients (last_seen);
 
@@ -300,7 +301,8 @@ CREATE TABLE IF NOT EXISTS session_marks (
 );
 
 -- The sources the security team distrusts: a document's path, a URL or a tool's name whose
--- result told an agent to act. Kept for the team; a row does not change a decision.
+-- result told an agent to act. Decision reads it: a Call it would allow, and that the result of
+-- a Call on one of these caused, is held for review (rule `source::distrusted`).
 CREATE TABLE IF NOT EXISTS distrusted_sources (
   source      text   PRIMARY KEY,
   set_by      text,
@@ -374,6 +376,20 @@ BEGIN
       -- list, and for every device while no EDR is configured.
       ADD COLUMN edr_agent_id  text,
       ADD COLUMN edr_status    text;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                 AND table_name = 'clients' AND column_name = 'stopped_at') THEN
+    ALTER TABLE clients
+      -- The security team stopped the device: the Collector refuses every PreToolUse carrying
+      -- this client ID until it is released (all three NULL again). Set through the admin API
+      -- only, epoch milliseconds; a registration leaves them alone. The client ID is what the
+      -- device's Hooks send, so this stops a device that keeps sending its own.
+      ADD COLUMN stopped_at           bigint,
+      ADD COLUMN stopped_by           text,
+      ADD COLUMN stop_reason          text,
+      -- PreToolUse Hooks refused for it over every stop, and the latest; a release keeps both.
+      ADD COLUMN stop_denied_count    bigint NOT NULL DEFAULT 0,
+      ADD COLUMN stop_last_denied_at  bigint;
   END IF;
 END
 $$;
