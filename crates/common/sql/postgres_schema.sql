@@ -249,6 +249,25 @@ BEGIN
 END
 $$;
 
+-- Each process scan that found a coding agent running on an EDR device, as the syncs saw it: a
+-- row per device and scan, never updated. A device the manager no longer lists keeps its rows;
+-- every sync deletes the rows whose scan is more than 30 days before it. Set against the
+-- device's Hook sessions, consecutive rows show a coding agent running without them.
+CREATE TABLE IF NOT EXISTS edr_sightings (
+  -- `edr_devices.agent_id` at the time.
+  agent_id    text   NOT NULL,
+  -- The scan's time (`edr_devices.running_at`), epoch milliseconds.
+  running_at  bigint NOT NULL,
+  -- `claude-code` or `codex`.
+  agent       text   NOT NULL,
+  -- The device's name at the time.
+  name        text,
+  -- The sync that first saw the scan.
+  synced_at   bigint NOT NULL,
+  PRIMARY KEY (agent_id, running_at)
+);
+CREATE INDEX IF NOT EXISTS edr_sightings_running_at ON edr_sightings (running_at);
+
 -- INSTALLED_IN: a project folder a setup wrote the Hooks into.
 CREATE TABLE IF NOT EXISTS client_projects (
   client_id     text   NOT NULL,
@@ -431,7 +450,7 @@ BEGIN
     GRANT SELECT ON
       sessions, event_commits, nodes, subgraphs, paragraphs, tokens, token_mentions, files,
       file_refs, cause_edges, pending_paragraph_enrichments, pending_request_continuations,
-      clients, client_projects, users, key_events, edr_devices, session_marks,
+      clients, client_projects, users, key_events, edr_devices, edr_sightings, session_marks,
       distrusted_sources
     TO withhuman_viewer;
     GRANT SELECT (key_id, user_email, created_at, created_by, note, last_used_at, revoked_at,

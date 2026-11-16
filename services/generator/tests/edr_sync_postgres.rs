@@ -528,6 +528,77 @@ async fn one_generator_syncs_at_a_time_and_not_again_too_soon() {
 }
 
 #[tokio::test]
+async fn each_scan_that_saw_a_coding_agent_is_kept_for_thirty_days() {
+    let Some(stack) = Stack::start().await else {
+        return;
+    };
+    // Ten minutes before the first sync, and fifty after.
+    const FIRST: &str = "2027-01-15T07:50:00Z";
+    const FIRST_AT: u64 = T0 - 600_000;
+    const SECOND: &str = "2027-01-15T08:50:00Z";
+    const SECOND_AT: u64 = T0 + 3_000_000;
+    const DAY: u64 = 24 * HOUR;
+    stack.fake.set(|fake| {
+        fake.agents = company();
+        fake.processes = HashMap::from([
+            ("001", vec![process("claude", "", "", FIRST)]),
+            (
+                "004",
+                vec![process("cargo", "/usr/bin/cargo", "build", FIRST)],
+            ),
+        ]);
+        // Installed, not running: no sighting.
+        fake.packages = HashMap::from([("004", vec!["@anthropic-ai/claude-code"])]);
+    });
+    let first = json!(["001", FIRST_AT, "claude-code", "Anas-MacBook-Pro.local", T0]);
+    sync_edr_devices(&stack.repository, &stack.config, T0)
+        .await
+        .unwrap();
+    assert_eq!(stack.sightings().await, json!([first]));
+
+    // The manager has not scanned again: the same scan is one row.
+    sync_edr_devices(&stack.repository, &stack.config, T0 + HOUR)
+        .await
+        .unwrap();
+    assert_eq!(stack.sightings().await, json!([first]));
+
+    // A later scan is another row.
+    stack.fake.set(|fake| {
+        fake.processes
+            .insert("001", vec![process("claude", "", "", SECOND)]);
+    });
+    sync_edr_devices(&stack.repository, &stack.config, T0 + 2 * HOUR)
+        .await
+        .unwrap();
+    let second = json!([
+        "001",
+        SECOND_AT,
+        "claude-code",
+        "Anas-MacBook-Pro.local",
+        T0 + 2 * HOUR
+    ]);
+    assert_eq!(stack.sightings().await, json!([first, second]));
+
+    // The manager drops the device: its record stays, and goes only once 30 days old.
+    stack
+        .fake
+        .set(|fake| fake.agents.retain(|agent| agent["id"] != "001"));
+    sync_edr_devices(&stack.repository, &stack.config, T0 + 3 * HOUR)
+        .await
+        .unwrap();
+    assert_eq!(stack.sightings().await, json!([first, second]));
+    sync_edr_devices(&stack.repository, &stack.config, FIRST_AT + 30 * DAY + 1)
+        .await
+        .unwrap();
+    assert_eq!(stack.sightings().await, json!([second]));
+    sync_edr_devices(&stack.repository, &stack.config, SECOND_AT + 30 * DAY + 1)
+        .await
+        .unwrap();
+    assert_eq!(stack.sightings().await, Value::Null);
+    stack.stop().await;
+}
+
+#[tokio::test]
 async fn the_schema_names_what_the_viewer_reads() {
     let Some(stack) = Stack::start().await else {
         return;
@@ -560,6 +631,16 @@ async fn the_schema_names_what_the_viewer_reads() {
             "agent text",
             "synced_at bigint",
             "running_at bigint"
+        ])
+    );
+    assert_eq!(
+        columns("edr_sightings").await,
+        json!([
+            "agent_id text",
+            "running_at bigint",
+            "agent text",
+            "name text",
+            "synced_at bigint"
         ])
     );
     // A database from before `running_at` gains it, keeping its devices.
@@ -882,6 +963,20 @@ impl Stack {
             .query_one(
                 "SELECT jsonb_agg(jsonb_build_array(agent_id, name, os, status, serial, \
                  last_seen, agent, synced_at, running_at) ORDER BY agent_id) FROM edr_devices",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get::<_, Option<Value>>(0)
+            .unwrap_or(Value::Null)
+    }
+
+    /// Every row of `edr_sightings`, by agent ID and scan.
+    async fn sightings(&self) -> Value {
+        self.db
+            .query_one(
+                "SELECT jsonb_agg(jsonb_build_array(agent_id, running_at, agent, name, synced_at) \
+                 ORDER BY agent_id, running_at) FROM edr_sightings",
                 &[],
             )
             .await

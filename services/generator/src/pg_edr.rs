@@ -1,5 +1,6 @@
-//! The EDR's devices in PostgreSQL: `edr_devices` mirrors the manager, and `clients` carries
-//! each registered device's match (`edr_agent_id`, `edr_status`).
+//! The EDR's devices in PostgreSQL: `edr_devices` mirrors the manager, `edr_sightings` keeps
+//! each scan that found a coding agent running, and `clients` carries each registered device's
+//! match (`edr_agent_id`, `edr_status`).
 
 use std::{fmt::Display, future::Future, time::Duration};
 
@@ -29,6 +30,20 @@ ON CONFLICT (agent_id) DO UPDATE SET \
   last_seen = EXCLUDED.last_seen, agent = EXCLUDED.agent, running_at = EXCLUDED.running_at, \
   synced_at = EXCLUDED.synced_at";
 
+/// How long a sighting is kept: rows whose scan is older than this before a sync are deleted.
+pub(crate) const SIGHTING_RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
+// One row per device and scan; a scan seen again by a later sync is already there.
+const INSERT_SIGHTINGS: &str = "\
+INSERT INTO edr_sightings (agent_id, running_at, agent, name, synced_at) \
+SELECT s.agent_id, s.running_at, s.agent, s.name, $5::bigint \
+FROM unnest($1::text[], $2::bigint[], $3::text[], $4::text[]) \
+  AS s(agent_id, running_at, agent, name) \
+ON CONFLICT (agent_id, running_at) DO NOTHING";
+
+// By age only: a device gone from the manager keeps its record until then.
+const DELETE_OLD_SIGHTINGS: &str = "DELETE FROM edr_sightings WHERE running_at < $1::bigint";
+
 // A device the manager no longer lists is gone from the mirror.
 const DELETE_UNLISTED: &str = "DELETE FROM edr_devices WHERE agent_id <> ALL($1::text[])";
 
@@ -45,8 +60,9 @@ UPDATE clients SET edr_agent_id = NULL, edr_status = NULL \
 WHERE (edr_agent_id IS NOT NULL OR edr_status IS NOT NULL) AND client_id <> ALL($1::text[])";
 
 impl PgGraphRepository {
-    /// Replaces `edr_devices` with what `fetch` returns and matches the registered clients to
-    /// it, in one transaction: a reader sees the previous list or the new one, and a failed
+    /// Replaces `edr_devices` with what `fetch` returns, adds its sightings to `edr_sightings`
+    /// (dropping those past [`SIGHTING_RETENTION`]) and matches the registered clients to it,
+    /// in one transaction: a reader sees the previous list or the new one, and a failed
     /// `fetch` leaves the previous one.
     ///
     /// One Generator syncs at a time. The lock is a session's advisory lock on a connection
@@ -114,6 +130,24 @@ impl PgGraphRepository {
             )
             .await?;
             run(&tx, DELETE_UNLISTED, &[&ids]).await?;
+
+            let seen: Vec<(&EdrDevice, i64, &str)> = devices
+                .iter()
+                .filter_map(|d| Some((d, d.running_at?, d.agent.as_deref()?)))
+                .collect();
+            let seen_ids: Vec<&str> = seen.iter().map(|(d, ..)| d.agent_id.as_str()).collect();
+            let seen_at: Vec<i64> = seen.iter().map(|(_, at, _)| *at).collect();
+            let seen_agents: Vec<&str> = seen.iter().map(|(.., agent)| *agent).collect();
+            let seen_names: Vec<Option<&str>> =
+                seen.iter().map(|(d, ..)| d.name.as_deref()).collect();
+            run(
+                &tx,
+                INSERT_SIGHTINGS,
+                &[&seen_ids, &seen_at, &seen_agents, &seen_names, &now],
+            )
+            .await?;
+            let retention = i64::try_from(SIGHTING_RETENTION.as_millis()).unwrap_or(i64::MAX);
+            run(&tx, DELETE_OLD_SIGHTINGS, &[&now.saturating_sub(retention)]).await?;
 
             let clients: Vec<ClientIdentity> = tx
                 .query(CLIENT_IDENTITIES, &[])
