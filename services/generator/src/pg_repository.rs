@@ -14,7 +14,7 @@ use withhuman_contracts::{
     },
     inventory::{
         ClientRecord, ClientRegistrationRecord, KeyDenial, KeyRecord, NewKey, RevokeKeyRequest,
-        VerifyKeyRequest, VerifyKeyResponse,
+        SetOwnerRequest, VerifyKeyRequest, VerifyKeyResponse,
     },
 };
 
@@ -839,6 +839,15 @@ impl GraphRepository for PgGraphRepository {
 
     async fn clients(&self) -> Result<Vec<ClientRecord>, RepositoryError> {
         self.all_clients().await
+    }
+
+    async fn set_client_owner(
+        &self,
+        client_id: &str,
+        request: SetOwnerRequest,
+        set_at: u64,
+    ) -> Result<ClientRecord, RepositoryError> {
+        self.set_owner(client_id, request, set_at).await
     }
 
     async fn verify_key(

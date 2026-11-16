@@ -141,6 +141,10 @@ pub fn app_with_transport(service: CollectorService) -> Router {
         .merge(hooks)
         .route("/v1/clients/register", post(inventory::register_client))
         .route("/v1/admin/clients", get(inventory::clients))
+        .route(
+            "/v1/admin/clients/{client_id}/owner",
+            post(inventory::set_client_owner),
+        )
         .route("/v1/admin/keys", get(inventory::all_keys))
         .route(
             "/v1/admin/keys/{key_id}/revoke",
@@ -183,7 +187,8 @@ pub fn app_with_transport(service: CollectorService) -> Router {
         inventory::all_keys,
         inventory::revoke_key,
         inventory::revoke_user,
-        inventory::clients
+        inventory::clients,
+        inventory::set_client_owner
     ),
     tags(
         (name = "Collector", description = "Claude Code Hook ingestion and enforcement API"),

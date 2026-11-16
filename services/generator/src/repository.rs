@@ -8,7 +8,7 @@ use withhuman_contracts::{
     },
     inventory::{
         ClientRecord, ClientRegistrationRecord, KeyDenial, KeyRecord, NewKey, RevokeKeyRequest,
-        VerifyKeyRequest, VerifyKeyResponse,
+        SetOwnerRequest, VerifyKeyRequest, VerifyKeyResponse,
     },
 };
 
@@ -72,6 +72,16 @@ pub trait GraphRepository: Send + Sync + 'static {
 
     /// Registered and seen devices, last active first.
     async fn clients(&self) -> Result<Vec<ClientRecord>, RepositoryError> {
+        Err(RepositoryError::NotFound)
+    }
+
+    /// Names the device's owner, or clears it; `NotFound` for an unknown device.
+    async fn set_client_owner(
+        &self,
+        _client_id: &str,
+        _request: SetOwnerRequest,
+        _set_at: u64,
+    ) -> Result<ClientRecord, RepositoryError> {
         Err(RepositoryError::NotFound)
     }
 

@@ -79,7 +79,8 @@ python3 deploy/client/configure.py \
 
 The engine records which device and which user run each agent session. Every setup registers
 its device (`POST /v1/clients/register`: client ID, team, host name, OS, OS user, hook version,
-project folder); a setup that cannot reach the engine still completes and says so.
+project folder and, where the user may read it, the hardware serial number); a setup that cannot
+reach the engine still completes and says so.
 
 Per-user keys tie Hooks to a person and let the security team stop that person's agents. Set
 `WITHHUMAN_ADMIN_TOKEN` in `.env`, then issue a key and hand it to the user:
@@ -99,6 +100,17 @@ tool call the user's agents make from then on (within `WITHHUMAN_KEY_CACHE_MS`, 
 Hooks without a valid key are taken without a user unless `WITHHUMAN_REQUIRE_KEY=on`, which
 denies their tool calls and refuses their other Hooks; turn it on before relying on revocation,
 since otherwise a user could drop the key.
+
+The inventory keeps two people for a device: `user`, whoever's key it presented last, and
+`owner`, the person the security team names for the machine. Name or clear the owner with
+`POST /v1/admin/clients/<client_id>/owner` and `{"owner": "<email>" | null, "actor": ...}`. A
+client ID holds a slash (`<team>/<uuid>`), sent as one path segment: `team%2F<uuid>`.
+
+```sh
+curl -X POST -H "Authorization: Bearer $WITHHUMAN_ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"owner": "ana@example.com", "actor": "security@example.com"}' \
+  http://127.0.0.1:3000/v1/admin/clients/platform%2F6f1c0d1e-0000-4000-8000-000000000000/owner
+```
 
 ### The security team's viewer
 
