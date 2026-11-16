@@ -16,6 +16,10 @@ use withhuman_contracts::{
         ClientRecord, ClientRegistrationRecord, KeyDenial, KeyRecord, NewKey, RevokeKeyRequest,
         SetOwnerRequest, VerifyKeyRequest, VerifyKeyResponse,
     },
+    triage::{
+        DistrustSourceRequest, Evidence, MarkSessionRequest, MarkSessionsRequest, MarkedSession,
+        MarkedSessions, SourceTrust,
+    },
 };
 
 use crate::{
@@ -848,6 +852,35 @@ impl GraphRepository for PgGraphRepository {
         set_at: u64,
     ) -> Result<ClientRecord, RepositoryError> {
         self.set_owner(client_id, request, set_at).await
+    }
+
+    async fn mark_session(
+        &self,
+        session_id: &str,
+        request: MarkSessionRequest,
+        set_at: u64,
+    ) -> Result<MarkedSession, RepositoryError> {
+        self.mark(session_id, request, set_at).await
+    }
+
+    async fn mark_sessions(
+        &self,
+        request: MarkSessionsRequest,
+        set_at: u64,
+    ) -> Result<MarkedSessions, RepositoryError> {
+        self.mark_many(request, set_at).await
+    }
+
+    async fn distrust_source(
+        &self,
+        request: DistrustSourceRequest,
+        set_at: u64,
+    ) -> Result<SourceTrust, RepositoryError> {
+        self.distrust(request, set_at).await
+    }
+
+    async fn evidence(&self, session_id: &str, seq: u64) -> Result<Evidence, RepositoryError> {
+        self.call_evidence(session_id, seq).await
     }
 
     async fn verify_key(

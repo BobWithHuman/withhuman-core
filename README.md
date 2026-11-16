@@ -112,11 +112,47 @@ curl -X POST -H "Authorization: Bearer $WITHHUMAN_ADMIN_TOKEN" -H 'Content-Type:
   http://127.0.0.1:3000/v1/admin/clients/platform%2F6f1c0d1e-0000-4000-8000-000000000000/owner
 ```
 
+### Triage
+
+The security team records what it decided about a session it looked at, for the whole team:
+`session_marks` and `distrusted_sources` in PostgreSQL, which the viewer reads. Both are set
+through the admin API. They are a record only: neither changes how a tool call is decided.
+
+`POST /v1/admin/sessions/<session_id>/mark` with `{"state": ..., "actor": ...}` marks a session
+`reviewing`, `attack`, `benign` or `closed`, replaces its mark, or with `"state": null` takes it
+off (a session without a mark was not handled yet); a session the engine does not hold is a 404.
+`POST /v1/admin/sessions/mark` with `{"session_ids": [...], "state": ..., "actor": ...}` does the
+same for up to 1000 sessions together and answers with `sessions` (each with its mark) and
+`unknown`, the ones the engine does not hold, which it leaves alone. `POST /v1/admin/sources/distrust` with
+`{"source": ..., "on": true | false, "actor": ..., "session_id": ..., "seq": ...}` distrusts a
+source (a document's path, a URL or a tool's name) or with `on: false` trusts it again;
+`session_id` and `seq`, the tool call that showed the source, are optional. The source goes in
+the body as written, since it may be a URL or a path.
+
+```sh
+curl -X POST -H "Authorization: Bearer $WITHHUMAN_ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"state": "attack", "actor": "security@example.com"}' \
+  http://127.0.0.1:3000/v1/admin/sessions/0b9f6c1e-0000-4000-8000-000000000001/mark
+curl -X POST -H "Authorization: Bearer $WITHHUMAN_ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"source": "https://example.com/setup.md", "on": true, "actor": "security@example.com"}' \
+  http://127.0.0.1:3000/v1/admin/sources/distrust
+```
+
+`GET /v1/admin/sessions/<session_id>/calls/<seq>/evidence` returns one tool call's evidence as
+JSON for other systems (`"schema": "withhuman.evidence/v1"`): the call (tool, input, target,
+time, device, user), the engine's decision (reason, rule, mode), the person's request before
+it, what the engine traced the call to (`cause.link`: `request`, `segment` or `none`; for
+`segment` the tool results in `cause.told_by`, each with the call whose result it was, the
+paragraph, its text and the probability), the session's mark, and whether the cause's source
+is distrusted. `seq` is the call's number in its session (`nodes.seq`). An unknown session or
+call is a 404. Text is as the engine stored it, sensitive values already replaced; no key or
+key hash is in it. The full shape is in the Collector's OpenAPI document (`/swagger-ui`).
+
 ### The security team's viewer
 
 The viewer reads PostgreSQL directly, read-only, as `withhuman_viewer`. The Generator creates that
-login when `WITHHUMAN_VIEWER_PASSWORD` is set, and the schema grants it SELECT on the graph and
-inventory tables (`api_keys` without its hash) and nothing else. The personal stack publishes
+login when `WITHHUMAN_VIEWER_PASSWORD` is set, and the schema grants it SELECT on the graph,
+inventory and triage tables (`api_keys` without its hash) and nothing else. The personal stack publishes
 PostgreSQL on `127.0.0.1:15432` (`POSTGRES_PORT`):
 `postgres://withhuman_viewer:<WITHHUMAN_VIEWER_PASSWORD>@127.0.0.1:15432/withhuman`.
 

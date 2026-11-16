@@ -197,7 +197,7 @@ pub async fn register_client(
 
 /// The answer to a request that is not an administrator's, who presents
 /// `Authorization: Bearer <WITHHUMAN_ADMIN_TOKEN>`; none for an administrator's.
-fn not_admin(service: &CollectorService, headers: &HeaderMap) -> Option<Response> {
+pub(crate) fn not_admin(service: &CollectorService, headers: &HeaderMap) -> Option<Response> {
     let Some(token) = &service.config.admin_token else {
         return Some(error(StatusCode::NOT_FOUND, "admin_api_disabled"));
     };
@@ -444,7 +444,7 @@ pub async fn set_client_owner(
     .await
 }
 
-async fn forward(
+pub(crate) async fn forward(
     service: &CollectorService,
     method: reqwest::Method,
     segments: &[&str],
@@ -464,6 +464,6 @@ fn passed(status: u16, body: Value) -> Response {
     (status, Json(body)).into_response()
 }
 
-fn error(status: StatusCode, error: &'static str) -> Response {
+pub(crate) fn error(status: StatusCode, error: &'static str) -> Response {
     (status, Json(json!({ "error": error }))).into_response()
 }

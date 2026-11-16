@@ -11,6 +11,7 @@ mod normalize;
 mod state;
 mod store;
 mod transport;
+mod triage;
 mod verdicts;
 
 pub use config::{CollectorConfig, FailurePolicy, ReviewPolicy};
