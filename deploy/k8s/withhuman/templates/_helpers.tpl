@@ -78,6 +78,26 @@ helm.sh/chart: {{ printf "%s-%s" .root.Chart.Name .root.Chart.Version }}
       name: {{ .Values.existingSecret }}
       key: viewer-password
       optional: true
+# The EDR device sync runs when `generator.wazuh.url` is set; its password is the Secret's
+# `wazuh-password`.
+- name: WITHHUMAN_WAZUH_URL
+  value: {{ .Values.generator.wazuh.url | quote }}
+- name: WITHHUMAN_WAZUH_USER
+  value: {{ .Values.generator.wazuh.user | quote }}
+- name: WITHHUMAN_WAZUH_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.existingSecret }}
+      key: wazuh-password
+      optional: true
+- name: WITHHUMAN_WAZUH_SYNC_INTERVAL_SECS
+  value: {{ .Values.generator.wazuh.syncIntervalSecs | quote }}
+- name: WITHHUMAN_WAZUH_MAX_REQUESTS_PER_MINUTE
+  value: {{ .Values.generator.wazuh.maxRequestsPerMinute | quote }}
+- name: WITHHUMAN_WAZUH_CA_FILE
+  value: {{ ternary "/etc/withhuman/wazuh/ca.pem" "" .Values.generator.wazuh.caFromSecret | quote }}
+- name: WITHHUMAN_WAZUH_TLS_SKIP_VERIFY
+  value: {{ ternary "1" "0" .Values.generator.wazuh.tlsSkipVerify | quote }}
 {{- end -}}
 
 {{- define "withhuman.env.decision" -}}

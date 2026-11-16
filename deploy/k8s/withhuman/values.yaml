@@ -53,6 +53,19 @@ generator:
     minReplicas: 2
     maxReplicas: 10
     targetCPUUtilizationPercentage: 60
+  # The company's device list from its EDR, a Wazuh manager. Off while `url` is empty; with a
+  # URL, `user` and the Secret's `wazuh-password` are required. One replica syncs at a time.
+  wazuh:
+    url: "" # the server API, such as https://wazuh.example.com:55000
+    user: "" # an API user with the role `readonly`
+    syncIntervalSecs: 900
+    # Kept under the manager's own limit (300 by default); 0 sends without pacing.
+    maxRequestsPerMinute: 150
+    # Verify the manager against the Secret's `wazuh-ca` alone: a PEM of its authority, or of
+    # its own self-signed certificate.
+    caFromSecret: false
+    # Skip verifying the manager's certificate. Not with `caFromSecret`.
+    tlsSkipVerify: false
 
 decision:
   image: ghcr.io/bobwithhuman/withhuman-decision
