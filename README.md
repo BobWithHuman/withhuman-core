@@ -112,6 +112,29 @@ curl -X POST -H "Authorization: Bearer $WITHHUMAN_ADMIN_TOKEN" -H 'Content-Type:
   http://127.0.0.1:3000/v1/admin/clients/platform%2F6f1c0d1e-0000-4000-8000-000000000000/owner
 ```
 
+The security team can also stop one device: `POST /v1/admin/clients/<client_id>/stop` with
+`{"stopped": true, "actor": ..., "reason": ...}` denies every tool call whose Hook carries that
+client ID, in every mode, until `{"stopped": false}` releases it. The device's other Hooks are
+still recorded. An unknown device is a 404; a device already stopped keeps its first stop. The
+stop applies at once on the Collector that took it and within `WITHHUMAN_KEY_CACHE_MS` on the
+others; a tool call already past its PreToolUse Hook is not interrupted. The device shows a fixed
+message, never the team's `reason`. `clients.stopped_at`, `stopped_by` and `stop_reason` hold the
+stop (all null while the device runs), and `stop_denied_count` and `stop_last_denied_at` the calls
+refused for it.
+
+```sh
+curl -X POST -H "Authorization: Bearer $WITHHUMAN_ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"stopped": true, "actor": "security@example.com", "reason": "lost laptop"}' \
+  http://127.0.0.1:3000/v1/admin/clients/platform%2F6f1c0d1e-0000-4000-8000-000000000000/stop
+```
+
+A stop is not a lock on the machine. The client ID is a header the device's own Hooks send
+(`~/.config/withhuman/client-id`), so a device that sends another ID, or none, or whose Hooks were
+removed, is not stopped, and `WITHHUMAN_REQUIRE_KEY` does not change that: a key names a person,
+not a machine. It stops a device that keeps running its installed Hooks. To stop a person
+whatever they run, revoke their keys with `WITHHUMAN_REQUIRE_KEY=on`. Tool calls that reach the
+engine through AgentGateway alone (MCP, without a Hook) are not covered, as with a revoked key.
+
 ### Triage
 
 The security team records what it decided about a session it looked at, for the whole team:

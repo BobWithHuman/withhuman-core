@@ -2,6 +2,7 @@ pub mod codex;
 mod codex_delivery;
 pub mod codex_write;
 mod config;
+pub mod devices;
 mod ext_authz;
 mod http;
 mod intent;

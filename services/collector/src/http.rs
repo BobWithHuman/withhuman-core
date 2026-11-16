@@ -32,6 +32,7 @@ use crate::{
     InMemoryVerdictStore, NormalizeError, Normalizer, RedisSessionStore, RedisVerdictStore,
     ReviewPolicy, StoreError, StoredVerdict, VerdictStore,
     codex::{self, Translated},
+    devices::DeviceStops,
     inventory::{self, USER_HEADER},
     keys::KeyVerifier,
     redis_connection, triage,
@@ -66,6 +67,7 @@ pub struct CollectorService {
     pub generator: Arc<dyn GeneratorTransport>,
     pub verdicts: Arc<dyn VerdictStore>,
     pub keys: KeyVerifier,
+    pub devices: DeviceStops,
     deliveries: Arc<crate::codex_delivery::Deliveries>,
 }
 
@@ -74,6 +76,7 @@ impl CollectorService {
         let verdicts = Arc::new(InMemoryVerdictStore::new(config.verdict_capacity));
         Self {
             keys: KeyVerifier::new(generator.clone(), config.key_cache),
+            devices: DeviceStops::new(generator.clone(), config.key_cache),
             normalizer: Normalizer::default()
                 .with_history(generator.clone())
                 .with_network_commands(config.network_commands.clone())
@@ -96,6 +99,7 @@ impl CollectorService {
         let connection = redis_connection(&url)?;
         Ok(Self {
             keys: KeyVerifier::new(generator.clone(), config.key_cache),
+            devices: DeviceStops::new(generator.clone(), config.key_cache),
             deliveries: Arc::new(crate::codex_delivery::Deliveries::redis(connection.clone())),
             verdicts: Arc::new(RedisVerdictStore::new(
                 connection.clone(),
@@ -144,6 +148,10 @@ pub fn app_with_transport(service: CollectorService) -> Router {
         .route(
             "/v1/admin/clients/{client_id}/owner",
             post(inventory::set_client_owner),
+        )
+        .route(
+            "/v1/admin/clients/{client_id}/stop",
+            post(inventory::stop_client),
         )
         .route("/v1/admin/keys", get(inventory::all_keys))
         .route(
@@ -199,6 +207,7 @@ pub fn app_with_transport(service: CollectorService) -> Router {
         inventory::revoke_user,
         inventory::clients,
         inventory::set_client_owner,
+        inventory::stop_client,
         triage::mark_session,
         triage::mark_sessions,
         triage::distrust_source,
