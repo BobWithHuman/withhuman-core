@@ -398,12 +398,9 @@ fn caused_by_result(row: &Row, kind: String) -> Result<(CausedByResult, Vec<Stri
     let document = target_of(payload, &SOURCE_FIELDS);
     let cwd: Option<String> = row.get(8);
     let mut candidates: Vec<String> = Vec::new();
-    let mut offer = |name: Option<String>| {
-        if let Some(name) = name.filter(|name| !name.trim().is_empty())
-            && !candidates.contains(&name)
-        {
-            candidates.push(name);
-        }
+    let mut offer = |name: Option<String>| match name.filter(|name| !name.trim().is_empty()) {
+        Some(name) if !candidates.contains(&name) => candidates.push(name),
+        _ => {}
     };
     offer(document.clone());
     offer(target.clone());
