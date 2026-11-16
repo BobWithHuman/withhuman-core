@@ -172,26 +172,39 @@ async fn registers_a_device_and_its_projects() {
         return;
     };
     let client_id = format!("team-r/{}", unique("device"));
-    let registration = |project: &str, at: u64, user: Value| {
+    let registration = |project: &str, at: u64, user: Value, serial: Value| {
         json!({"client_id": client_id, "team": "team-r", "hostname": "mac-1",
                "os": "darwin 25.1", "os_user": "ana", "hook_version": "abc", "agent": "claude",
-               "project": project, "user": user, "registered_at": at})
+               "project": project, "serial": serial, "user": user, "registered_at": at})
     };
     let first = send(
         &url,
         "POST",
         "/v1/clients",
-        Some(registration("/p/one", 100, json!(null))),
+        Some(registration(
+            "/p/one",
+            100,
+            json!(null),
+            json!("C02TEST1234"),
+        )),
     )
     .await;
     assert_eq!(first.0, 200);
     assert_eq!(first.1["registered_at"], 100);
     assert_eq!(first.1["first_seen"], Value::Null);
+    assert_eq!(first.1["serial"], "C02TEST1234");
+    assert_eq!(first.1["owner"], Value::Null);
+    // A later setup that could not read the serial keeps the one already known.
     let (status, again) = send(
         &url,
         "POST",
         "/v1/clients",
-        Some(registration("/p/two", 200, json!("ana@example.com"))),
+        Some(registration(
+            "/p/two",
+            200,
+            json!("ana@example.com"),
+            json!(null),
+        )),
     )
     .await;
     assert_eq!(status, 200);
@@ -199,6 +212,7 @@ async fn registers_a_device_and_its_projects() {
     assert_eq!(again["updated_at"], 200);
     assert_eq!(again["user"], "ana@example.com");
     assert_eq!(again["hostname"], "mac-1");
+    assert_eq!(again["serial"], "C02TEST1234");
     assert_eq!(again["projects"], json!(["/p/two", "/p/one"]));
     let (status, all) = send(&url, "GET", "/v1/clients", None).await;
     assert_eq!(status, 200);
@@ -208,6 +222,87 @@ async fn registers_a_device_and_its_projects() {
             .iter()
             .any(|client| client["client_id"] == client_id.as_str())
     );
+
+    // The security team names the owner; the client ID travels as one path segment.
+    let owner_path = format!("/v1/clients/{}/owner", client_id.replace('/', "%2F"));
+    let (status, owned) = send(
+        &url,
+        "POST",
+        &owner_path,
+        Some(json!({"owner": "bo@example.com", "actor": "sec@example.com"})),
+    )
+    .await;
+    assert_eq!(status, 200, "{owned}");
+    assert_eq!(owned["client_id"], client_id.as_str());
+    assert_eq!(owned["owner"], "bo@example.com");
+    assert_eq!(owned["owner_set_by"], "sec@example.com");
+    assert!(owned["owner_set_at"].as_u64().unwrap() > 200);
+    assert_eq!(owned["user"], "ana@example.com");
+    assert_eq!(owned["updated_at"], 200);
+    // The viewer reads these columns by name.
+    let stored = "SELECT jsonb_build_array(serial, owner_email, owner_set_by, user_email) \
+                  FROM clients WHERE client_id = $1";
+    assert_eq!(
+        db.row(stored, &[&client_id]).await,
+        json!([
+            "C02TEST1234",
+            "bo@example.com",
+            "sec@example.com",
+            "ana@example.com"
+        ])
+    );
+    // A registration never touches the owner, and a new serial replaces the old one.
+    let (status, moved) = send(
+        &url,
+        "POST",
+        "/v1/clients",
+        Some(registration(
+            "/p/two",
+            300,
+            json!("cy@example.com"),
+            json!("C02TEST5678"),
+        )),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(moved["user"], "cy@example.com");
+    assert_eq!(moved["serial"], "C02TEST5678");
+    assert_eq!(moved["owner"], "bo@example.com");
+    assert_eq!(moved["owner_set_by"], "sec@example.com");
+    assert_eq!(moved["owner_set_at"], owned["owner_set_at"]);
+
+    let (status, cleared) = send(
+        &url,
+        "POST",
+        &owner_path,
+        Some(json!({"owner": null, "actor": "lead@example.com"})),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(cleared["owner"], Value::Null);
+    assert_eq!(cleared["owner_set_by"], "lead@example.com");
+    assert_eq!(
+        db.row(stored, &[&client_id]).await,
+        json!(["C02TEST5678", null, "lead@example.com", "cy@example.com"])
+    );
+    // A body that does not say the owner changes nothing; an unknown device is not made.
+    let (status, _) = send(&url, "POST", &owner_path, Some(json!({"actor": "x"}))).await;
+    assert!((400..500).contains(&status), "{status}");
+    let (status, _) = send(
+        &url,
+        "POST",
+        "/v1/clients/team-r%2Fno-such-device/owner",
+        Some(json!({"owner": "bo@example.com"})),
+    )
+    .await;
+    assert_eq!(status, 404);
+    let unknown = db
+        .row(
+            "SELECT to_jsonb(count(*)) FROM clients WHERE client_id = 'team-r/no-such-device'",
+            &[],
+        )
+        .await;
+    assert_eq!(unknown, json!(0));
 
     db.exec(
         "DELETE FROM client_projects WHERE client_id = $1",
@@ -457,6 +552,60 @@ async fn upgrades_a_database_recorded_before_the_inventory() {
         )
         .await;
     assert_eq!(columns, json!(2));
+
+    admin
+        .exec(&format!("DROP SCHEMA {schema} CASCADE"), &[])
+        .await;
+}
+
+/// A database that already had the inventory gains the clients' serial and owner columns and
+/// keeps its devices.
+#[tokio::test]
+async fn upgrades_clients_recorded_before_the_serial_and_owner() {
+    let Ok(base) = std::env::var("POSTGRES_INTEGRATION_URL") else {
+        return;
+    };
+    let schema = unique("owner").replace('-', "_");
+    let admin = Db::connect(&base).await;
+    admin.exec(&format!("CREATE SCHEMA {schema}"), &[]).await;
+    let separator = if base.contains('?') { '&' } else { '?' };
+    let url = format!("{base}{separator}options=-csearch_path%3D{schema}");
+    let old = Db::connect(&url).await;
+    // The schema as it was: without the block that adds the columns.
+    let (before, rest) = withhuman_common::POSTGRES_SCHEMA
+        .split_once("  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()\n                 AND table_name = 'clients'")
+        .unwrap();
+    let (_, after) = rest.split_once("  END IF;\n").unwrap();
+    old.0
+        .batch_execute(&format!("{before}{after}"))
+        .await
+        .unwrap();
+    let columns = "SELECT to_jsonb(count(*)) FROM information_schema.columns \
+                   WHERE table_schema = $1 AND table_name = 'clients' \
+                   AND column_name IN ('serial', 'owner_email', 'owner_set_by', 'owner_set_at')";
+    assert_eq!(old.row(columns, &[&schema]).await, json!(0));
+    old.exec(
+        "INSERT INTO clients (client_id, team, hostname, user_email, registered_at, updated_at) \
+         VALUES ('team/dev-1', 'team', 'mac-1', 'ana@example.com', 1, 2)",
+        &[],
+    )
+    .await;
+
+    PgGraphRepository::connect(&url, 1).await.unwrap();
+    // Applying it again changes nothing.
+    PgGraphRepository::connect(&url, 1).await.unwrap();
+    assert_eq!(old.row(columns, &[&schema]).await, json!(4));
+    let clients = old
+        .row(
+            "SELECT jsonb_agg(jsonb_build_array(client_id, hostname, user_email, updated_at, \
+             serial, owner_email)) FROM clients",
+            &[],
+        )
+        .await;
+    assert_eq!(
+        clients,
+        json!([["team/dev-1", "mac-1", "ana@example.com", 2, null, null]])
+    );
 
     admin
         .exec(&format!("DROP SCHEMA {schema} CASCADE"), &[])

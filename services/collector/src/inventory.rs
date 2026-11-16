@@ -142,6 +142,7 @@ pub async fn register_client(
         &registration.hook_version,
         &registration.agent,
         &registration.project,
+        &registration.serial,
     ];
     let client_id = registration.client_id.trim();
     if client_id.is_empty()
@@ -169,9 +170,17 @@ pub async fn register_client(
         // Without a required key a bad one is ignored, as on the Hooks.
         _ => None,
     };
+    // A blank serial is none, so it cannot replace one an earlier setup read.
+    let serial = registration
+        .serial
+        .as_deref()
+        .map(str::trim)
+        .filter(|serial| !serial.is_empty())
+        .map(str::to_owned);
     let record = ClientRegistrationRecord {
         registration: ClientRegistration {
             client_id: client_id.to_owned(),
+            serial,
             ..registration
         },
         user,

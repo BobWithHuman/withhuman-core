@@ -208,6 +208,7 @@ CREATE TABLE IF NOT EXISTS clients (
   -- First and latest Hook event.
   first_seen     bigint,
   last_seen      bigint
+  -- `serial`, `owner_email`, `owner_set_by` and `owner_set_at` are added below.
 );
 CREATE INDEX IF NOT EXISTS clients_last_seen ON clients (last_seen);
 
@@ -306,6 +307,18 @@ BEGIN
                  AND table_name = 'nodes' AND column_name = 'permission_mode') THEN
     -- The values at the node's event: a Call's permission mode, and the session's model.
     ALTER TABLE nodes ADD COLUMN permission_mode text, ADD COLUMN model text;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                 AND table_name = 'clients' AND column_name = 'serial') THEN
+    ALTER TABLE clients
+      -- The machine's hardware serial number, from the latest setup that could read one.
+      ADD COLUMN serial        text,
+      -- The person the security team named as the machine's owner (`user_email` is whoever's
+      -- key the device presented last). Set through the admin API only, with who set or
+      -- cleared it last and when; a registration leaves all three alone.
+      ADD COLUMN owner_email   text,
+      ADD COLUMN owner_set_by  text,
+      ADD COLUMN owner_set_at  bigint;
   END IF;
 END
 $$;

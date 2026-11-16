@@ -22,7 +22,8 @@ use withhuman_contracts::{
 };
 
 use withhuman_contracts::inventory::{
-    ClientRegistrationRecord, KeyDenial, NewKey, RevokeKeyRequest, VerifyKeyRequest,
+    ClientRegistrationRecord, KeyDenial, NewKey, RevokeKeyRequest, SetOwnerRequest,
+    VerifyKeyRequest,
 };
 
 use crate::{DecisionClient, GeneratorEvent, GraphRepository, KeyScope, RepositoryError};
@@ -111,6 +112,7 @@ pub fn app(service: GeneratorService) -> Router {
             get(tool_call),
         )
         .route("/v1/clients", post(register_client).get(clients))
+        .route("/v1/clients/{client_id}/owner", post(set_client_owner))
         .route("/v1/keys", get(all_keys))
         .route("/v1/keys/verify", post(verify_key))
         .route("/v1/keys/{key_id}/denials", post(record_key_denial))
@@ -146,6 +148,7 @@ pub fn app(service: GeneratorService) -> Router {
         tool_call,
         register_client,
         clients,
+        set_client_owner,
         verify_key,
         record_key_denial,
         issue_key,
@@ -457,6 +460,27 @@ async fn register_client(
 )]
 async fn clients(State(service): State<GeneratorService>) -> Response {
     reply(service.repository.clients().await)
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/clients/{client_id}/owner",
+    tag = "Generator",
+    params(("client_id" = String, Path, description = "As one path segment: `team%2Fuuid`")),
+    request_body = SetOwnerRequest,
+    responses((status = 200, body = withhuman_contracts::inventory::ClientRecord), (status = 404, body = ErrorResponse))
+)]
+async fn set_client_owner(
+    State(service): State<GeneratorService>,
+    Path(client_id): Path<String>,
+    StrictJson(request): StrictJson<SetOwnerRequest>,
+) -> Response {
+    reply(
+        service
+            .repository
+            .set_client_owner(&client_id, request, now())
+            .await,
+    )
 }
 
 #[utoipa::path(

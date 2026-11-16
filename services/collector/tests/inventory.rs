@@ -578,7 +578,7 @@ async fn devices_register_with_their_keys_user() {
     let app = app(generator.clone(), |_| {});
     let registration = json!({"client_id": " team/1234 ", "team": "team", "hostname": "mac-1",
         "os": "darwin 25.1", "os_user": "ana", "hook_version": "abc", "agent": "claude",
-        "project": "/Users/ana/app"});
+        "project": "/Users/ana/app", "serial": " C02TEST1234 "});
     let key = bearer(ACTIVE);
     let (status, body) = post(
         &app,
@@ -595,8 +595,25 @@ async fn devices_register_with_their_keys_user() {
         let sent = calls[0].2.as_ref().unwrap();
         assert_eq!(sent["hostname"], "mac-1");
         assert_eq!(sent["project"], "/Users/ana/app");
+        assert_eq!(sent["serial"], "C02TEST1234");
         assert!(sent["registered_at"].as_u64().unwrap() > 0);
     }
+    // A device whose serial could not be read registers without one; a blank one is none.
+    for serial in [json!(null), json!("  ")] {
+        let mut without = registration.clone();
+        without["serial"] = serial;
+        let (status, _) = post(&app, "/v1/clients/register", without, &[]).await;
+        assert_eq!(status, StatusCode::OK);
+        let calls = generator.inventory.lock().unwrap();
+        assert_eq!(
+            calls.last().unwrap().2.as_ref().unwrap()["serial"],
+            Value::Null
+        );
+    }
+    let mut long = registration.clone();
+    long["serial"] = json!("9".repeat(1_025));
+    let (status, _) = post(&app, "/v1/clients/register", long, &[]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
     // Without a key a device still registers, with no user.
     let (status, body) = post(&app, "/v1/clients/register", registration.clone(), &[]).await;
     assert_eq!((status, &body["user"]), (StatusCode::OK, &Value::Null));
