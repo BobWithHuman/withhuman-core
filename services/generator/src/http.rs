@@ -112,6 +112,10 @@ pub fn app(service: GeneratorService) -> Router {
             "/v1/sessions/{session_id}/calls/{tool_use_id}",
             get(tool_call),
         )
+        .route(
+            "/v1/sessions/{session_id}/calls/{seq}/evidence",
+            get(evidence),
+        )
         .route("/v1/sessions/{session_id}/mark", post(mark_session))
         .route("/v1/sources/distrust", post(distrust_source))
         .route("/v1/clients", post(register_client).get(clients))
@@ -160,7 +164,8 @@ pub fn app(service: GeneratorService) -> Router {
         revoke_key,
         revoke_user,
         mark_session,
-        distrust_source
+        distrust_source,
+        evidence
     ),
     tags((name = "Generator", description = "Normalized event persistence and graph enrichment API"))
 )]
@@ -654,6 +659,23 @@ async fn distrust_source(
         ));
     }
     reply(service.repository.distrust_source(request, now()).await)
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/sessions/{session_id}/calls/{seq}/evidence",
+    tag = "Generator",
+    params(("session_id" = String, Path), ("seq" = u64, Path, description = "The Call's number in its session")),
+    responses(
+        (status = 200, description = "The Call's evidence", body = withhuman_contracts::triage::Evidence),
+        (status = 404, description = "No such session, or no Call with this number in it", body = ErrorResponse)
+    )
+)]
+async fn evidence(
+    State(service): State<GeneratorService>,
+    Path((session_id, seq)): Path<(String, u64)>,
+) -> Response {
+    reply(service.repository.evidence(&session_id, seq).await)
 }
 
 fn reply<T: Serialize>(result: Result<T, RepositoryError>) -> Response {

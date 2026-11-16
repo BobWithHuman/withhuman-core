@@ -135,6 +135,16 @@ curl -X POST -H "Authorization: Bearer $WITHHUMAN_ADMIN_TOKEN" -H 'Content-Type:
   http://127.0.0.1:3000/v1/admin/sources/distrust
 ```
 
+`GET /v1/admin/sessions/<session_id>/calls/<seq>/evidence` returns one tool call's evidence as
+JSON for other systems (`"schema": "withhuman.evidence/v1"`): the call (tool, input, target,
+time, device, user), the engine's decision (reason, rule, mode), the person's request before
+it, what the engine traced the call to (`cause.link`: `request`, `segment` or `none`; for
+`segment` the tool results in `cause.told_by`, each with the call whose result it was, the
+paragraph, its text and the probability), the session's mark, and whether the cause's source
+is distrusted. `seq` is the call's number in its session (`nodes.seq`). An unknown session or
+call is a 404. Text is as the engine stored it, sensitive values already replaced; no key or
+key hash is in it. The full shape is in the Collector's OpenAPI document (`/swagger-ui`).
+
 ### The security team's viewer
 
 The viewer reads PostgreSQL directly, read-only, as `withhuman_viewer`. The Generator creates that

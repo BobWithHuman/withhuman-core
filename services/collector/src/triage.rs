@@ -9,7 +9,7 @@ use axum::{
 };
 use serde_json::json;
 use withhuman_contracts::triage::{
-    DistrustSourceRequest, MarkSessionRequest, MarkedSession, SourceTrust,
+    DistrustSourceRequest, Evidence, MarkSessionRequest, MarkedSession, SourceTrust,
 };
 
 use crate::{
@@ -86,6 +86,43 @@ pub async fn distrust_source(
         reqwest::Method::POST,
         &["sources", "distrust"],
         Some(json!(request)),
+    )
+    .await
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/admin/sessions/{session_id}/calls/{seq}/evidence",
+    tag = "Triage",
+    params(
+        ("session_id" = String, Path, description = "The session's ID as one path segment, percent-encoded"),
+        ("seq" = u64, Path, description = "The Call's number in its session (`nodes.seq`)"),
+        ("Authorization" = String, Header, description = "`Bearer <WITHHUMAN_ADMIN_TOKEN>`")
+    ),
+    responses(
+        (status = 200, description = "The Call's evidence: the Call, its verdict, the person's request before it, what the engine traced it to, the session's mark and whether the cause's source is distrusted. No key or key hash is in it", body = Evidence),
+        (status = 401, description = "Admin token missing or wrong"),
+        (status = 404, description = "No such session, no Call with this number in it, or admin API disabled"),
+        (status = 502, description = "Generator unavailable")
+    )
+)]
+pub async fn evidence(
+    State(service): State<CollectorService>,
+    Path((session_id, seq)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    if let Some(response) = not_admin(&service, &headers) {
+        return response;
+    }
+    // A number that is no Call's, and what is no number at all, are the same to the caller.
+    if seq.parse::<u64>().is_err() {
+        return error(StatusCode::NOT_FOUND, "graph_resource_not_found");
+    }
+    forward(
+        &service,
+        reqwest::Method::GET,
+        &["sessions", &session_id, "calls", &seq, "evidence"],
+        None,
     )
     .await
 }

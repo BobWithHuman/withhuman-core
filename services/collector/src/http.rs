@@ -163,6 +163,10 @@ pub fn app_with_transport(service: CollectorService) -> Router {
             post(triage::mark_session),
         )
         .route("/v1/admin/sources/distrust", post(triage::distrust_source))
+        .route(
+            "/v1/admin/sessions/{session_id}/calls/{seq}/evidence",
+            get(triage::evidence),
+        )
         .route("/api-docs/openapi.json", get(openapi_document))
         .route("/swagger-ui", get(swagger_ui))
         .route("/swagger-ui/", get(swagger_ui))
@@ -195,7 +199,8 @@ pub fn app_with_transport(service: CollectorService) -> Router {
         inventory::clients,
         inventory::set_client_owner,
         triage::mark_session,
-        triage::distrust_source
+        triage::distrust_source,
+        triage::evidence
     ),
     tags(
         (name = "Collector", description = "Claude Code Hook ingestion and enforcement API"),

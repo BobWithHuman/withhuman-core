@@ -625,6 +625,37 @@ async fn evidence_lays_out_a_call_with_what_caused_it() {
             "{session} {seq}"
         );
     }
+
+    // The route the Collector passes an administrator's request on to serves the same.
+    let path = |session: &str, seq: &str| format!("/v1/sessions/{session}/calls/{seq}/evidence");
+    let (status, body) = send(&stack.url, "GET", &path(session, &curl.to_string()), None).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        body,
+        json!(stack.repository.evidence(session, curl).await.unwrap())
+    );
+    assert_eq!(body["cause"]["told_by"][0]["call_seq"], read);
+    for (session, seq) in [
+        (session.as_str(), result.to_string()),
+        (session.as_str(), "9999".to_owned()),
+        ("no-such-session", curl.to_string()),
+    ] {
+        let (status, body) = send(&stack.url, "GET", &path(session, &seq), None).await;
+        assert_eq!(
+            (status, body["error"].as_str()),
+            (404, Some("graph_resource_not_found")),
+            "{session} {seq}"
+        );
+    }
+    // The route that reads a Call by its tool_use_id still does.
+    let (status, body) = send(
+        &stack.url,
+        "GET",
+        &format!("/v1/sessions/{session}/calls/t2"),
+        None,
+    )
+    .await;
+    assert_eq!((status, &body["tool_name"]), (200, &json!("Bash")));
     stack.db.remove(session).await;
 }
 
