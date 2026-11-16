@@ -2,7 +2,7 @@ use std::{env, io};
 
 use withhuman_common::graph_store::PostgresSettings;
 use withhuman_generator::{
-    GeneratorConfig, GeneratorService, HttpDecisionClient, PgGraphRepository, app,
+    GeneratorConfig, GeneratorService, HttpDecisionClient, PgGraphRepository, app, run_edr_sync,
 };
 
 #[tokio::main]
@@ -30,6 +30,10 @@ async fn main() -> io::Result<()> {
             report.reindexed, report.scanned
         );
         return Ok(());
+    }
+    // The company's device list from its EDR; nothing runs without WITHHUMAN_WAZUH_URL.
+    if let Some(wazuh) = config.wazuh.clone() {
+        tokio::spawn(run_edr_sync(repository.clone(), wazuh));
     }
     let decision = HttpDecisionClient::new(&config).map_err(io::Error::other)?;
     let service = GeneratorService::with_decision(repository, decision);

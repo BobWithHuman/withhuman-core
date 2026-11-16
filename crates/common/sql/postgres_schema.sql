@@ -208,9 +208,31 @@ CREATE TABLE IF NOT EXISTS clients (
   -- First and latest Hook event.
   first_seen     bigint,
   last_seen      bigint
-  -- `serial`, `owner_email`, `owner_set_by` and `owner_set_at` are added below.
+  -- `serial`, `owner_email`, `owner_set_by` and `owner_set_at` are added below, and so are
+  -- `edr_agent_id` and `edr_status`.
 );
 CREATE INDEX IF NOT EXISTS clients_last_seen ON clients (last_seen);
+
+-- The company's devices as its EDR (a Wazuh manager) lists them, replaced whole by each sync
+-- (WITHHUMAN_WAZUH_URL): a device the manager no longer lists is gone. Empty without an EDR.
+CREATE TABLE IF NOT EXISTS edr_devices (
+  -- The manager's ID of the agent on the device (`001`).
+  agent_id   text PRIMARY KEY,
+  -- The name the agent enrolled under: the hostname unless someone chose another.
+  name       text,
+  os         text,
+  -- `active`, `disconnected`, `never_connected` or `pending`.
+  status     text,
+  -- The motherboard's serial number from the EDR's hardware inventory, as reported.
+  serial     text,
+  -- When the manager last heard from the agent, epoch milliseconds.
+  last_seen  bigint,
+  -- `claude-code` or `codex` when the EDR's process or package inventory shows that program;
+  -- NULL says only that none was seen.
+  agent      text,
+  -- The sync that last wrote the row: the same for every row.
+  synced_at  bigint NOT NULL
+);
 
 -- INSTALLED_IN: a project folder a setup wrote the Hooks into.
 CREATE TABLE IF NOT EXISTS client_projects (
@@ -320,6 +342,15 @@ BEGIN
       ADD COLUMN owner_set_by  text,
       ADD COLUMN owner_set_at  bigint;
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                 AND table_name = 'clients' AND column_name = 'edr_agent_id') THEN
+    ALTER TABLE clients
+      -- The EDR device this one is (`edr_devices.agent_id`) and its status there, as of the
+      -- latest sync: by serial number, else by hostname. NULL for a device the EDR does not
+      -- list, and for every device while no EDR is configured.
+      ADD COLUMN edr_agent_id  text,
+      ADD COLUMN edr_status    text;
+  END IF;
 END
 $$;
 CREATE INDEX IF NOT EXISTS sessions_client ON sessions (client_id);
@@ -346,7 +377,7 @@ BEGIN
     GRANT SELECT ON
       sessions, event_commits, nodes, subgraphs, paragraphs, tokens, token_mentions, files,
       file_refs, cause_edges, pending_paragraph_enrichments, pending_request_continuations,
-      clients, client_projects, users, key_events
+      clients, client_projects, users, key_events, edr_devices
     TO withhuman_viewer;
     GRANT SELECT (key_id, user_email, created_at, created_by, note, last_used_at, revoked_at,
       revoked_by, revoke_reason, first_denied_at, last_denied_at, denied_count)

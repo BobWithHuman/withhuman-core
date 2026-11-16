@@ -84,6 +84,15 @@ services:
       DECISION_URL: http://decision:8082
       # Creates the viewer's read-only login; none while unset.
       WITHHUMAN_VIEWER_PASSWORD: ${WITHHUMAN_VIEWER_PASSWORD:-}
+      # The company's device list from its EDR (a Wazuh manager); no sync while the URL is unset.
+      WITHHUMAN_WAZUH_URL: ${WITHHUMAN_WAZUH_URL:-}
+      WITHHUMAN_WAZUH_USER: ${WITHHUMAN_WAZUH_USER:-}
+      WITHHUMAN_WAZUH_PASSWORD: ${WITHHUMAN_WAZUH_PASSWORD:-}
+      WITHHUMAN_WAZUH_SYNC_INTERVAL_SECS: ${WITHHUMAN_WAZUH_SYNC_INTERVAL_SECS:-}
+      WITHHUMAN_WAZUH_MAX_REQUESTS_PER_MINUTE: ${WITHHUMAN_WAZUH_MAX_REQUESTS_PER_MINUTE:-}
+      # A path inside the container: mount the file with a Compose override.
+      WITHHUMAN_WAZUH_CA_FILE: ${WITHHUMAN_WAZUH_CA_FILE:-}
+      WITHHUMAN_WAZUH_TLS_SKIP_VERIFY: ${WITHHUMAN_WAZUH_TLS_SKIP_VERIFY:-}
       WITHHUMAN_CHUNK_BREAK_AT_RULES: ${WITHHUMAN_CHUNK_BREAK_AT_RULES:-0}
     depends_on:
       postgres:

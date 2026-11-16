@@ -40,6 +40,7 @@ async fn persists_and_replays_execution_graph_through_real_http() {
     let config = GeneratorConfig {
         bind_address: "127.0.0.1:0".parse().unwrap(),
         decision_url,
+        wazuh: None,
     };
     let decision = HttpDecisionClient::new(&config).unwrap();
     let generator_url =

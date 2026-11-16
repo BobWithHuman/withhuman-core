@@ -120,6 +120,39 @@ inventory tables (`api_keys` without its hash) and nothing else. The personal st
 PostgreSQL on `127.0.0.1:15432` (`POSTGRES_PORT`):
 `postgres://withhuman_viewer:<WITHHUMAN_VIEWER_PASSWORD>@127.0.0.1:15432/withhuman`.
 
+### Devices from Wazuh
+
+With `WITHHUMAN_WAZUH_URL` set, the Generator reads the company's device list from a Wazuh
+manager every `WITHHUMAN_WAZUH_SYNC_INTERVAL_SECS` and keeps it in `edr_devices`, one row per
+Wazuh agent: `agent_id`, `name`, `os`, `status` (`active`, `disconnected`, `never_connected`,
+`pending`), `serial` (the board serial of the hardware inventory), `last_seen`, `agent` and
+`synced_at`. The table mirrors the manager: a device it no longer lists is removed, and a sync
+that fails changes nothing and is tried again at the next interval. Without the URL nothing runs.
+
+Each sync then matches the registered devices: `clients.edr_agent_id` and `clients.edr_status`
+name the Wazuh agent of a client and its status, or are NULL. Two serial numbers that are both
+known must be equal (firmware placeholders such as `To Be Filled By O.E.M.` count as unknown);
+when either is unknown, the hostnames decide, compared without case or domain (`Mac-1.local` is
+`mac-1`). Every client row of a machine, one per OS account, gets the same agent.
+
+`edr_devices.agent` is `claude-code` or `codex` when a process running at the agent's last
+inventory scan, or an installed package, has `claude` or `codex` in its name. NULL means only that
+none was seen: a program that was not running at the scan and was installed outside a package
+manager Wazuh reads leaves no trace, and a name is all that is compared.
+
+| Variable | Default | |
+|---|---|---|
+| `WITHHUMAN_WAZUH_URL` | empty: no sync | The Wazuh server API, `https://<manager>:55000` |
+| `WITHHUMAN_WAZUH_USER`, `WITHHUMAN_WAZUH_PASSWORD` | required with the URL | An API user that may read agents and their inventory (`agent:read`, `syscollector:read`): the default role `readonly` |
+| `WITHHUMAN_WAZUH_SYNC_INTERVAL_SECS` | `900` | At least 60 |
+| `WITHHUMAN_WAZUH_MAX_REQUESTS_PER_MINUTE` | `150` | The manager refuses everyone past its own limit (300 by default); `0` for no pacing |
+| `WITHHUMAN_WAZUH_CA_FILE` | empty: public authorities | A PEM file trusted instead: authorities, or the manager's own self-signed certificate |
+| `WITHHUMAN_WAZUH_TLS_SKIP_VERIFY` | `0` | `1` skips verifying the certificate, with a warning at start; not with a CA file |
+
+A sync costs one login, one request per 500 agents and up to three per agent. Generators
+running together take turns: one syncs at a time, and none repeats a sync finished less than
+half an interval ago.
+
 ### Hardening switches
 
 When the engine gives no judgment (unreachable, an error, no answer in time) a tool call is
