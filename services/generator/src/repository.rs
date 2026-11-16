@@ -10,6 +10,7 @@ use withhuman_contracts::{
         ClientRecord, ClientRegistrationRecord, KeyDenial, KeyRecord, NewKey, RevokeKeyRequest,
         SetOwnerRequest, VerifyKeyRequest, VerifyKeyResponse,
     },
+    triage::{DistrustSourceRequest, Evidence, MarkSessionRequest, MarkedSession, SourceTrust},
 };
 
 /// The keys a revocation covers.
@@ -118,6 +119,30 @@ pub trait GraphRepository: Send + Sync + 'static {
 
     /// Every key, or a user's, newest first.
     async fn keys(&self, _user: Option<&str>) -> Result<Vec<KeyRecord>, RepositoryError> {
+        Err(RepositoryError::NotFound)
+    }
+
+    /// Sets the session's mark, or takes it off; `NotFound` for an unknown session.
+    async fn mark_session(
+        &self,
+        _session_id: &str,
+        _request: MarkSessionRequest,
+        _set_at: u64,
+    ) -> Result<MarkedSession, RepositoryError> {
+        Err(RepositoryError::NotFound)
+    }
+
+    /// Distrusts a source, or trusts it again.
+    async fn distrust_source(
+        &self,
+        _request: DistrustSourceRequest,
+        _set_at: u64,
+    ) -> Result<SourceTrust, RepositoryError> {
+        Err(RepositoryError::NotFound)
+    }
+
+    /// One Call's evidence; `NotFound` for an unknown session or Call.
+    async fn evidence(&self, _session_id: &str, _seq: u64) -> Result<Evidence, RepositoryError> {
         Err(RepositoryError::NotFound)
     }
 }

@@ -6,6 +6,7 @@ mod http;
 mod pg_edr;
 mod pg_inventory;
 mod pg_repository;
+mod pg_triage;
 mod repository;
 mod wazuh;
 

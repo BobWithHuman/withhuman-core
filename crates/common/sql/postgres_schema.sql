@@ -286,6 +286,30 @@ CREATE TABLE IF NOT EXISTS key_events (
 CREATE INDEX IF NOT EXISTS key_events_key ON key_events (key_id, kind);
 CREATE INDEX IF NOT EXISTS key_events_at ON key_events (at);
 
+-- Where the security team stands on a session it looked at: still looking, an attack, nothing
+-- wrong, or done with. Set and cleared through the admin API only; a session without a row
+-- was not handled yet.
+CREATE TABLE IF NOT EXISTS session_marks (
+  session_id  text   PRIMARY KEY,
+  -- `reviewing`, `attack`, `benign` or `closed`.
+  state       text   NOT NULL
+              CHECK (state IN ('reviewing', 'attack', 'benign', 'closed')),
+  -- Who set it last and when, epoch milliseconds.
+  set_by      text,
+  set_at      bigint NOT NULL
+);
+
+-- The sources the security team distrusts: a document's path, a URL or a tool's name whose
+-- result told an agent to act. Kept for the team; a row does not change a decision.
+CREATE TABLE IF NOT EXISTS distrusted_sources (
+  source      text   PRIMARY KEY,
+  set_by      text,
+  set_at      bigint NOT NULL,
+  -- The Call that showed the source to the team, when it named one.
+  session_id  text,
+  seq         bigint
+);
+
 -- Columns added to tables that held data before the inventory. Each table's columns are
 -- added together, once: ALTER TABLE locks the table even when there is nothing to add. The
 -- sessions recorded before get their client, last activity and start source from their
@@ -377,7 +401,8 @@ BEGIN
     GRANT SELECT ON
       sessions, event_commits, nodes, subgraphs, paragraphs, tokens, token_mentions, files,
       file_refs, cause_edges, pending_paragraph_enrichments, pending_request_continuations,
-      clients, client_projects, users, key_events, edr_devices
+      clients, client_projects, users, key_events, edr_devices, session_marks,
+      distrusted_sources
     TO withhuman_viewer;
     GRANT SELECT (key_id, user_email, created_at, created_by, note, last_used_at, revoked_at,
       revoked_by, revoke_reason, first_denied_at, last_denied_at, denied_count)
