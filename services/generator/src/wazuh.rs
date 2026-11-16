@@ -161,6 +161,7 @@ impl WazuhClient {
                 last_seen: agent.last_keep_alive.as_deref().and_then(epoch_millis),
                 agent: program.agent.map(str::to_owned),
                 running_at: program.running_at,
+                command: program.command,
                 agent_id: agent.id,
             });
         }
@@ -242,7 +243,7 @@ impl WazuhClient {
             .unwrap_or_default();
         Ok(Sighting {
             agent: package_agent(&packages),
-            running_at: None,
+            ..Sighting::default()
         })
     }
 
@@ -566,27 +567,73 @@ struct Sighting {
     agent: Option<&'static str>,
     /// The latest scan, epoch milliseconds, that found a coding-agent process running.
     running_at: Option<i64>,
+    /// The command line of the process that scan found, by [`command_line`].
+    command: Option<String>,
 }
 
-/// The coding agent among the processes, Claude Code first, and the latest scan time of the
-/// processes that are one.
+/// The longest command line kept, in characters.
+const COMMAND_CHARS: usize = 1000;
+
+/// The coding agent among the processes, Claude Code first, the latest scan time of the
+/// processes that are one, and the command line of one of them.
+///
+/// The command line is that of a process of the latest scan; among several, one of the agent
+/// named (Claude Code before Codex), and then one with arguments, which is what tells a prompt
+/// (`claude -p …`) or a resumed session (`claude --resume …`) apart.
 fn running(processes: &[Process]) -> Sighting {
-    let mut sighting = Sighting::default();
-    for process in processes {
-        let Some(agent) = process_agent(process) else {
-            continue;
-        };
-        if sighting.agent != Some(CLAUDE_CODE) {
-            sighting.agent = Some(agent);
-        }
-        let scanned = process
-            .scan
-            .as_ref()
-            .and_then(|scan| scan.time.as_deref())
-            .and_then(epoch_millis);
-        sighting.running_at = sighting.running_at.max(scanned);
+    let found: Vec<(&Process, &'static str, Option<i64>)> = processes
+        .iter()
+        .filter_map(|process| {
+            let agent = process_agent(process)?;
+            let scanned = process
+                .scan
+                .as_ref()
+                .and_then(|scan| scan.time.as_deref())
+                .and_then(epoch_millis);
+            Some((process, agent, scanned))
+        })
+        .collect();
+    let agent = if found.iter().any(|(_, agent, _)| *agent == CLAUDE_CODE) {
+        Some(CLAUDE_CODE)
+    } else {
+        found.first().map(|(_, agent, _)| *agent)
+    };
+    // The first of the best (`max_by_key` keeps the last), so the manager's order breaks a tie.
+    let command = found
+        .iter()
+        .rev()
+        .max_by_key(|(process, process_agent, scanned)| {
+            (
+                *scanned,
+                Some(*process_agent) == agent,
+                process
+                    .argvs
+                    .as_ref()
+                    .is_some_and(|argvs| !argvs.words().is_empty()),
+            )
+        })
+        .and_then(|(process, ..)| command_line(process));
+    Sighting {
+        agent,
+        running_at: found.iter().filter_map(|(.., scanned)| *scanned).max(),
+        command,
     }
-    sighting
+}
+
+/// `cmd` and `argvs` joined by spaces (a list of `argvs` too), without NUL, trimmed and cut to
+/// [`COMMAND_CHARS`]; none when both are empty.
+fn command_line(process: &Process) -> Option<String> {
+    let argvs = process.argvs.as_ref().map(|argvs| match argvs {
+        Argvs::Line(line) => line.clone(),
+        Argvs::List(list) => list.join(" "),
+    });
+    let line = [process.cmd.clone(), argvs]
+        .into_iter()
+        .flatten()
+        .filter_map(|part| clean(Some(part)))
+        .collect::<Vec<_>>()
+        .join(" ");
+    clean(Some(line.chars().take(COMMAND_CHARS).collect()))
 }
 
 /// Whether a process is Claude Code (`claude-code`) or Codex (`codex`), Claude Code first.
@@ -1006,6 +1053,7 @@ IqrADJzA8KwFbVE/cGxF1OOGU8eh5qnMQg7U\n\
             Sighting {
                 agent: Some("claude-code"),
                 running_at: Some(1_622_032_840_000),
+                command: None,
             }
         );
         // The desktop app alone: nothing running, whatever its scan time.
@@ -1019,9 +1067,91 @@ IqrADJzA8KwFbVE/cGxF1OOGU8eh5qnMQg7U\n\
             Sighting {
                 agent: Some("codex"),
                 running_at: None,
+                command: None,
             }
         );
         assert_eq!(running(&[]), Sighting::default());
+    }
+
+    #[test]
+    fn a_sighting_keeps_the_command_line_of_the_process_it_saw() {
+        let line = |cmd: &str, argvs: Option<Argvs>| {
+            command_line(&Process {
+                argvs,
+                ..process("claude", cmd, "")
+            })
+        };
+        let list = |words: &[&str]| Some(Argvs::List(words.iter().map(|w| (*w).into()).collect()));
+        assert_eq!(
+            line("claude", list(&["-p", "고객 목록 백업해줘"])),
+            Some("claude -p 고객 목록 백업해줘".into())
+        );
+        assert_eq!(
+            line(
+                "/usr/bin/node",
+                Some(Argvs::Line(
+                    " /opt/homebrew/bin/claude --resume 4a03 ".into()
+                ))
+            ),
+            Some("/usr/bin/node /opt/homebrew/bin/claude --resume 4a03".into())
+        );
+        // Windows: the executable's path only. macOS: nothing.
+        assert_eq!(
+            line(r"C:\Users\ana\.local\bin\claude.exe", None),
+            Some(r"C:\Users\ana\.local\bin\claude.exe".into())
+        );
+        assert_eq!(line("", None), None);
+        assert_eq!(line(" ", list(&["", " "])), None);
+        assert_eq!(line("", list(&["exec", "a\0b"])), Some("exec ab".into()));
+        let long = "가".repeat(2 * COMMAND_CHARS);
+        assert_eq!(
+            line("codex", list(&["exec", &long])).map(|line| line.chars().count()),
+            Some(COMMAND_CHARS)
+        );
+
+        // Of a scan's processes: the latest scan, the agent named, then one with arguments.
+        let seen = |name: &str, cmd: &str, argvs: &str, time: &str| Process {
+            scan: Some(Scan {
+                time: Some(time.to_owned()),
+            }),
+            ..process(name, cmd, argvs)
+        };
+        let command = |processes: &[Process]| running(processes).command;
+        assert_eq!(
+            command(&[
+                seen("claude", "claude", "", "2021-05-26T12:40:40Z"),
+                seen("claude", "claude", "--resume 4a03", "2021-05-26T12:40:40Z"),
+                seen("claude", "claude", "", "2021-05-26T12:40:40Z"),
+            ]),
+            Some("claude --resume 4a03".into())
+        );
+        assert_eq!(
+            command(&[
+                seen("claude", "claude", "-p old", "2021-05-26T11:40:40Z"),
+                seen("claude", "claude", "", "2021-05-26T12:40:40Z"),
+            ]),
+            Some("claude".into())
+        );
+        assert_eq!(
+            command(&[
+                seen("codex", "codex", "exec hello", "2021-05-26T12:40:40Z"),
+                seen("claude", "claude", "", "2021-05-26T12:40:40Z"),
+            ]),
+            Some("claude".into())
+        );
+        // The desktop app's command line is none of it.
+        assert_eq!(
+            command(&[
+                seen(
+                    "Claude Helper",
+                    "/Applications/Claude.app/x",
+                    "--type=gpu",
+                    "2021-05-26T12:50:00Z"
+                ),
+                seen("claude", "", "", "2021-05-26T12:40:40Z"),
+            ]),
+            None
+        );
     }
 
     #[test]

@@ -264,8 +264,21 @@ CREATE TABLE IF NOT EXISTS edr_sightings (
   name        text,
   -- The sync that first saw the scan.
   synced_at   bigint NOT NULL,
+  -- The command line of the coding-agent process the scan found: `cmd` and `argvs` joined by
+  -- spaces, cut to 1000 characters, as the sync first saw it (`claude -p …`,
+  -- `claude --resume …`). NULL when Wazuh gave neither: macOS reports a process's name only,
+  -- Windows its executable's path without arguments.
+  command     text,
   PRIMARY KEY (agent_id, running_at)
 );
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                 AND table_name = 'edr_sightings' AND column_name = 'command') THEN
+    ALTER TABLE edr_sightings ADD COLUMN command text;
+  END IF;
+END
+$$;
 CREATE INDEX IF NOT EXISTS edr_sightings_running_at ON edr_sightings (running_at);
 
 -- INSTALLED_IN: a project folder a setup wrote the Hooks into.

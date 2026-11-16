@@ -35,10 +35,10 @@ pub(crate) const SIGHTING_RETENTION: Duration = Duration::from_secs(30 * 24 * 60
 
 // One row per device and scan; a scan seen again by a later sync is already there.
 const INSERT_SIGHTINGS: &str = "\
-INSERT INTO edr_sightings (agent_id, running_at, agent, name, synced_at) \
-SELECT s.agent_id, s.running_at, s.agent, s.name, $5::bigint \
-FROM unnest($1::text[], $2::bigint[], $3::text[], $4::text[]) \
-  AS s(agent_id, running_at, agent, name) \
+INSERT INTO edr_sightings (agent_id, running_at, agent, name, command, synced_at) \
+SELECT s.agent_id, s.running_at, s.agent, s.name, s.command, $6::bigint \
+FROM unnest($1::text[], $2::bigint[], $3::text[], $4::text[], $5::text[]) \
+  AS s(agent_id, running_at, agent, name, command) \
 ON CONFLICT (agent_id, running_at) DO NOTHING";
 
 // By age only: a device gone from the manager keeps its record until then.
@@ -140,10 +140,19 @@ impl PgGraphRepository {
             let seen_agents: Vec<&str> = seen.iter().map(|(.., agent)| *agent).collect();
             let seen_names: Vec<Option<&str>> =
                 seen.iter().map(|(d, ..)| d.name.as_deref()).collect();
+            let seen_commands: Vec<Option<&str>> =
+                seen.iter().map(|(d, ..)| d.command.as_deref()).collect();
             run(
                 &tx,
                 INSERT_SIGHTINGS,
-                &[&seen_ids, &seen_at, &seen_agents, &seen_names, &now],
+                &[
+                    &seen_ids,
+                    &seen_at,
+                    &seen_agents,
+                    &seen_names,
+                    &seen_commands,
+                    &now,
+                ],
             )
             .await?;
             let retention = i64::try_from(SIGHTING_RETENTION.as_millis()).unwrap_or(i64::MAX);

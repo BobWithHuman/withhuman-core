@@ -541,7 +541,26 @@ async fn each_scan_that_saw_a_coding_agent_is_kept_for_thirty_days() {
     stack.fake.set(|fake| {
         fake.agents = company();
         fake.processes = HashMap::from([
-            ("001", vec![process("claude", "", "", FIRST)]),
+            // Windows: the executable's path, no arguments.
+            (
+                "000",
+                vec![process(
+                    "codex.exe",
+                    r"C:\Users\ana\.local\bin\codex.exe",
+                    "",
+                    FIRST,
+                )],
+            ),
+            // Linux: two Claude Code processes of one scan; the one with arguments speaks.
+            (
+                "001",
+                vec![
+                    process("claude", "claude", "", FIRST),
+                    json!({"name": "claude", "cmd": "claude",
+                           "argvs": ["-p", "고객 목록 백업해줘"],
+                           "scan": {"id": 0, "time": FIRST}}),
+                ],
+            ),
             (
                 "004",
                 vec![process("cargo", "/usr/bin/cargo", "build", FIRST)],
@@ -550,19 +569,42 @@ async fn each_scan_that_saw_a_coding_agent_is_kept_for_thirty_days() {
         // Installed, not running: no sighting.
         fake.packages = HashMap::from([("004", vec!["@anthropic-ai/claude-code"])]);
     });
-    let first = json!(["001", FIRST_AT, "claude-code", "Anas-MacBook-Pro.local", T0]);
+    let windows = json!([
+        "000",
+        FIRST_AT,
+        "codex",
+        "wazuh-manager",
+        T0,
+        r"C:\Users\ana\.local\bin\codex.exe"
+    ]);
+    let first = json!([
+        "001",
+        FIRST_AT,
+        "claude-code",
+        "Anas-MacBook-Pro.local",
+        T0,
+        "claude -p 고객 목록 백업해줘"
+    ]);
     sync_edr_devices(&stack.repository, &stack.config, T0)
         .await
         .unwrap();
-    assert_eq!(stack.sightings().await, json!([first]));
+    assert_eq!(stack.sightings().await, json!([windows, first]));
 
-    // The manager has not scanned again: the same scan is one row.
+    // The manager has not scanned again: the same scan is one row, with the command line it
+    // was first seen with.
+    stack.fake.set(|fake| {
+        fake.processes.remove("000");
+        fake.processes.insert(
+            "001",
+            vec![process("claude", "claude", "--resume 4a03", FIRST)],
+        );
+    });
     sync_edr_devices(&stack.repository, &stack.config, T0 + HOUR)
         .await
         .unwrap();
-    assert_eq!(stack.sightings().await, json!([first]));
+    assert_eq!(stack.sightings().await, json!([windows, first]));
 
-    // A later scan is another row.
+    // A later scan is another row; macOS gives a name only, so no command line.
     stack.fake.set(|fake| {
         fake.processes
             .insert("001", vec![process("claude", "", "", SECOND)]);
@@ -575,9 +617,10 @@ async fn each_scan_that_saw_a_coding_agent_is_kept_for_thirty_days() {
         SECOND_AT,
         "claude-code",
         "Anas-MacBook-Pro.local",
-        T0 + 2 * HOUR
+        T0 + 2 * HOUR,
+        null
     ]);
-    assert_eq!(stack.sightings().await, json!([first, second]));
+    assert_eq!(stack.sightings().await, json!([windows, first, second]));
 
     // The manager drops the device: its record stays, and goes only once 30 days old.
     stack
@@ -586,7 +629,7 @@ async fn each_scan_that_saw_a_coding_agent_is_kept_for_thirty_days() {
     sync_edr_devices(&stack.repository, &stack.config, T0 + 3 * HOUR)
         .await
         .unwrap();
-    assert_eq!(stack.sightings().await, json!([first, second]));
+    assert_eq!(stack.sightings().await, json!([windows, first, second]));
     sync_edr_devices(&stack.repository, &stack.config, FIRST_AT + 30 * DAY + 1)
         .await
         .unwrap();
@@ -640,8 +683,28 @@ async fn the_schema_names_what_the_viewer_reads() {
             "running_at bigint",
             "agent text",
             "name text",
-            "synced_at bigint"
+            "synced_at bigint",
+            "command text"
         ])
+    );
+    // A database from before `command` gains it, keeping its sightings.
+    stack
+        .db
+        .batch_execute(
+            "INSERT INTO edr_sightings (agent_id, running_at, agent, synced_at) \
+             VALUES ('001', 4, 'codex', 5); \
+             ALTER TABLE edr_sightings DROP COLUMN command",
+        )
+        .await
+        .unwrap();
+    PgGraphRepository::connect(&stack.url, 1).await.unwrap();
+    assert_eq!(
+        columns("edr_sightings").await.as_array().unwrap().last(),
+        Some(&json!("command text"))
+    );
+    assert_eq!(
+        stack.sightings().await,
+        json!([["001", 4, "codex", null, 5, null]])
     );
     // A database from before `running_at` gains it, keeping its devices.
     stack
@@ -975,8 +1038,8 @@ impl Stack {
     async fn sightings(&self) -> Value {
         self.db
             .query_one(
-                "SELECT jsonb_agg(jsonb_build_array(agent_id, running_at, agent, name, synced_at) \
-                 ORDER BY agent_id, running_at) FROM edr_sightings",
+                "SELECT jsonb_agg(jsonb_build_array(agent_id, running_at, agent, name, synced_at, \
+                 command) ORDER BY agent_id, running_at) FROM edr_sightings",
                 &[],
             )
             .await
