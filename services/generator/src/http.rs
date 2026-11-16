@@ -23,7 +23,7 @@ use withhuman_contracts::{
 
 use withhuman_contracts::inventory::{
     ClientRegistrationRecord, KeyDenial, NewKey, RevokeKeyRequest, SetOwnerRequest,
-    VerifyKeyRequest,
+    StopClientRequest, StopDenial, VerifyKeyRequest,
 };
 use withhuman_contracts::triage::{DistrustSourceRequest, MarkSessionRequest, MarkSessionsRequest};
 
@@ -121,6 +121,12 @@ pub fn app(service: GeneratorService) -> Router {
         .route("/v1/sources/distrust", post(distrust_source))
         .route("/v1/clients", post(register_client).get(clients))
         .route("/v1/clients/{client_id}/owner", post(set_client_owner))
+        .route("/v1/clients/{client_id}/stop", post(stop_client))
+        .route("/v1/clients/{client_id}/state", get(client_state))
+        .route(
+            "/v1/clients/{client_id}/stop-denials",
+            post(record_stop_denial),
+        )
         .route("/v1/keys", get(all_keys))
         .route("/v1/keys/verify", post(verify_key))
         .route("/v1/keys/{key_id}/denials", post(record_key_denial))
@@ -157,6 +163,9 @@ pub fn app(service: GeneratorService) -> Router {
         register_client,
         clients,
         set_client_owner,
+        stop_client,
+        client_state,
+        record_stop_denial,
         verify_key,
         record_key_denial,
         issue_key,
@@ -493,6 +502,64 @@ async fn set_client_owner(
             .set_client_owner(&client_id, request, now())
             .await,
     )
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/clients/{client_id}/stop",
+    tag = "Generator",
+    params(("client_id" = String, Path, description = "As one path segment: `team%2Fuuid`")),
+    request_body = StopClientRequest,
+    responses((status = 200, description = "The device, stopped or released", body = withhuman_contracts::inventory::ClientRecord), (status = 404, body = ErrorResponse))
+)]
+async fn stop_client(
+    State(service): State<GeneratorService>,
+    Path(client_id): Path<String>,
+    StrictJson(request): StrictJson<StopClientRequest>,
+) -> Response {
+    reply(
+        service
+            .repository
+            .stop_client(&client_id, request, now())
+            .await,
+    )
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/clients/{client_id}/state",
+    tag = "Generator",
+    params(("client_id" = String, Path, description = "As one path segment: `team%2Fuuid`")),
+    responses((status = 200, description = "Whether the device is stopped; an unknown one is not", body = withhuman_contracts::inventory::ClientState), (status = 500, body = ErrorResponse))
+)]
+async fn client_state(
+    State(service): State<GeneratorService>,
+    Path(client_id): Path<String>,
+) -> Response {
+    reply(service.repository.client_state(&client_id).await)
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/clients/{client_id}/stop-denials",
+    tag = "Generator",
+    params(("client_id" = String, Path, description = "As one path segment: `team%2Fuuid`")),
+    request_body = StopDenial,
+    responses((status = 204, description = "Refusal counted"), (status = 404, description = "The device is not stopped", body = ErrorResponse))
+)]
+async fn record_stop_denial(
+    State(service): State<GeneratorService>,
+    Path(client_id): Path<String>,
+    StrictJson(denial): StrictJson<StopDenial>,
+) -> Response {
+    match service
+        .repository
+        .record_stop_denial(&client_id, denial)
+        .await
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => repository_error_response(error),
+    }
 }
 
 #[utoipa::path(

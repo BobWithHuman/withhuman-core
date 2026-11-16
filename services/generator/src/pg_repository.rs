@@ -13,8 +13,9 @@ use withhuman_contracts::{
         RequestContinuationResponse, SessionCursor, SubGraphCursor, ToolCall,
     },
     inventory::{
-        ClientRecord, ClientRegistrationRecord, KeyDenial, KeyRecord, NewKey, RevokeKeyRequest,
-        SetOwnerRequest, VerifyKeyRequest, VerifyKeyResponse,
+        ClientRecord, ClientRegistrationRecord, ClientState, KeyDenial, KeyRecord, NewKey,
+        RevokeKeyRequest, SetOwnerRequest, StopClientRequest, StopDenial, VerifyKeyRequest,
+        VerifyKeyResponse,
     },
     triage::{
         DistrustSourceRequest, Evidence, MarkSessionRequest, MarkSessionsRequest, MarkedSession,
@@ -852,6 +853,27 @@ impl GraphRepository for PgGraphRepository {
         set_at: u64,
     ) -> Result<ClientRecord, RepositoryError> {
         self.set_owner(client_id, request, set_at).await
+    }
+
+    async fn stop_client(
+        &self,
+        client_id: &str,
+        request: StopClientRequest,
+        at: u64,
+    ) -> Result<ClientRecord, RepositoryError> {
+        self.set_stopped(client_id, request, at).await
+    }
+
+    async fn client_state(&self, client_id: &str) -> Result<ClientState, RepositoryError> {
+        self.client_stopped(client_id).await
+    }
+
+    async fn record_stop_denial(
+        &self,
+        client_id: &str,
+        denial: StopDenial,
+    ) -> Result<(), RepositoryError> {
+        self.deny_stopped(client_id, denial).await
     }
 
     async fn mark_session(

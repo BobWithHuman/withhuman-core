@@ -7,8 +7,9 @@ use withhuman_contracts::{
         RequestContinuationRequest, RequestContinuationResponse, SessionCursor, ToolCall,
     },
     inventory::{
-        ClientRecord, ClientRegistrationRecord, KeyDenial, KeyRecord, NewKey, RevokeKeyRequest,
-        SetOwnerRequest, VerifyKeyRequest, VerifyKeyResponse,
+        ClientRecord, ClientRegistrationRecord, ClientState, KeyDenial, KeyRecord, NewKey,
+        RevokeKeyRequest, SetOwnerRequest, StopClientRequest, StopDenial, VerifyKeyRequest,
+        VerifyKeyResponse,
     },
     triage::{
         DistrustSourceRequest, Evidence, MarkSessionRequest, MarkSessionsRequest, MarkedSession,
@@ -86,6 +87,30 @@ pub trait GraphRepository: Send + Sync + 'static {
         _request: SetOwnerRequest,
         _set_at: u64,
     ) -> Result<ClientRecord, RepositoryError> {
+        Err(RepositoryError::NotFound)
+    }
+
+    /// Stops the device, or releases it; `NotFound` for an unknown device.
+    async fn stop_client(
+        &self,
+        _client_id: &str,
+        _request: StopClientRequest,
+        _at: u64,
+    ) -> Result<ClientRecord, RepositoryError> {
+        Err(RepositoryError::NotFound)
+    }
+
+    /// Whether the device is stopped; an unknown device is not.
+    async fn client_state(&self, _client_id: &str) -> Result<ClientState, RepositoryError> {
+        Err(RepositoryError::NotFound)
+    }
+
+    /// Counts a PreToolUse refused for a stopped device; `NotFound` when it is not stopped.
+    async fn record_stop_denial(
+        &self,
+        _client_id: &str,
+        _denial: StopDenial,
+    ) -> Result<(), RepositoryError> {
         Err(RepositoryError::NotFound)
     }
 

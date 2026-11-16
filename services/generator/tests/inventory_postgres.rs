@@ -612,6 +612,212 @@ async fn upgrades_clients_recorded_before_the_serial_and_owner() {
         .await;
 }
 
+/// The security team stops a device and releases it; the Collector reads its state and counts
+/// the calls it refused.
+#[tokio::test]
+async fn stops_and_releases_a_device_and_counts_what_it_refused() {
+    let Some((db, url)) = start().await else {
+        return;
+    };
+    let client_id = format!("team-s/{}", unique("device"));
+    let encoded = client_id.replace('/', "%2F");
+    let path = |end: &str| format!("/v1/clients/{encoded}/{end}");
+    let stored = "SELECT jsonb_build_array(stopped_at, stopped_by, stop_reason, \
+                  stop_denied_count, stop_last_denied_at) FROM clients WHERE client_id = $1";
+
+    // A device the engine does not hold is not stopped, cannot be, and is not made by asking.
+    let (status, state) = send(&url, "GET", &path("state"), None).await;
+    assert_eq!((status, &state), (200, &json!({"stopped": false})));
+    for stopped in [true, false] {
+        let body = json!({"stopped": stopped, "actor": "sec@example.com"});
+        let (status, body) = send(&url, "POST", &path("stop"), Some(body)).await;
+        assert_eq!(status, 404, "{body}");
+        assert_eq!(body["error"], "graph_resource_not_found");
+    }
+    let (status, _) = send(
+        &url,
+        "POST",
+        &path("stop-denials"),
+        Some(json!({"denied_at": 5})),
+    )
+    .await;
+    assert_eq!(status, 404);
+    let held = "SELECT to_jsonb(count(*)) FROM clients WHERE client_id = $1";
+    assert_eq!(db.row(held, &[&client_id]).await, json!(0));
+
+    let registration = json!({"client_id": client_id, "team": "team-s", "hostname": "mac-s",
+        "registered_at": 100, "user": "ana@example.com"});
+    let (status, registered) = send(&url, "POST", "/v1/clients", Some(registration.clone())).await;
+    assert_eq!(status, 200);
+    assert_eq!(registered["stopped_at"], Value::Null);
+    assert_eq!(registered["stop_denied_count"], 0);
+    assert_eq!(
+        db.row(stored, &[&client_id]).await,
+        json!([null, null, null, 0, null])
+    );
+    // A call refused for a device that is not stopped is not counted.
+    let (status, _) = send(
+        &url,
+        "POST",
+        &path("stop-denials"),
+        Some(json!({"denied_at": 5})),
+    )
+    .await;
+    assert_eq!(status, 404);
+
+    let (status, stopped) = send(
+        &url,
+        "POST",
+        &path("stop"),
+        Some(json!({"stopped": true, "actor": "sec@example.com", "reason": "lost laptop"})),
+    )
+    .await;
+    assert_eq!(status, 200, "{stopped}");
+    assert_eq!(stopped["client_id"], client_id.as_str());
+    let stopped_at = stopped["stopped_at"].as_u64().unwrap();
+    assert!(stopped_at > 1_600_000_000_000, "{stopped}");
+    assert_eq!(stopped["stopped_by"], "sec@example.com");
+    assert_eq!(stopped["stop_reason"], "lost laptop");
+    let (_, state) = send(&url, "GET", &path("state"), None).await;
+    assert_eq!(state, json!({"stopped": true}));
+    // The list of devices says so too.
+    let (_, clients) = send(&url, "GET", "/v1/clients", None).await;
+    let listed = clients
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|client| client["client_id"] == client_id.as_str())
+        .unwrap();
+    assert_eq!(listed["stopped_at"], stopped_at);
+
+    // Stopped again, it keeps its first stop; a new setup does not release it.
+    let (status, again) = send(
+        &url,
+        "POST",
+        &path("stop"),
+        Some(json!({"stopped": true, "actor": "lead@example.com", "reason": "again"})),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(again["stopped_at"], stopped_at);
+    assert_eq!(again["stopped_by"], "sec@example.com");
+    assert_eq!(again["stop_reason"], "lost laptop");
+    let (_, registered) = send(&url, "POST", "/v1/clients", Some(registration)).await;
+    assert_eq!(registered["stopped_at"], stopped_at);
+
+    for at in [700_u64, 900, 800] {
+        let (status, _) = send(
+            &url,
+            "POST",
+            &path("stop-denials"),
+            Some(json!({"denied_at": at})),
+        )
+        .await;
+        assert_eq!(status, 204);
+    }
+    assert_eq!(
+        db.row(stored, &[&client_id]).await,
+        json!([stopped_at, "sec@example.com", "lost laptop", 3, 900])
+    );
+
+    // A body that does not say which changes nothing.
+    let (status, _) = send(&url, "POST", &path("stop"), Some(json!({"actor": "x"}))).await;
+    assert!((400..500).contains(&status), "{status}");
+    let (_, state) = send(&url, "GET", &path("state"), None).await;
+    assert_eq!(state, json!({"stopped": true}));
+
+    // Released, the stop is gone and what it refused is kept; releasing again is the same.
+    for _ in 0..2 {
+        let (status, released) = send(
+            &url,
+            "POST",
+            &path("stop"),
+            Some(json!({"stopped": false, "actor": "lead@example.com"})),
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(released["stopped_at"], Value::Null);
+        assert_eq!(released["stopped_by"], Value::Null);
+        assert_eq!(released["stop_reason"], Value::Null);
+        assert_eq!(released["stop_denied_count"], 3);
+        assert_eq!(released["stop_last_denied_at"], 900);
+    }
+    let (_, state) = send(&url, "GET", &path("state"), None).await;
+    assert_eq!(state, json!({"stopped": false}));
+    assert_eq!(
+        db.row(stored, &[&client_id]).await,
+        json!([null, null, null, 3, 900])
+    );
+
+    db.exec("DELETE FROM clients WHERE client_id = $1", &[&client_id])
+        .await;
+}
+
+/// A database that already had devices gains the stop columns and keeps its devices running.
+#[tokio::test]
+async fn upgrades_clients_recorded_before_a_device_could_be_stopped() {
+    let Ok(base) = std::env::var("POSTGRES_INTEGRATION_URL") else {
+        return;
+    };
+    let schema = unique("stop").replace('-', "_");
+    let admin = Db::connect(&base).await;
+    admin.exec(&format!("CREATE SCHEMA {schema}"), &[]).await;
+    let separator = if base.contains('?') { '&' } else { '?' };
+    let url = format!("{base}{separator}options=-csearch_path%3D{schema}");
+    let old = Db::connect(&url).await;
+    // The schema as it was: without the block that adds the columns.
+    let (before, rest) = withhuman_common::POSTGRES_SCHEMA
+        .split_once("  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()\n                 AND table_name = 'clients' AND column_name = 'stopped_at')")
+        .unwrap();
+    let (_, after) = rest.split_once("  END IF;\n").unwrap();
+    old.0
+        .batch_execute(&format!("{before}{after}"))
+        .await
+        .unwrap();
+    let columns = "SELECT to_jsonb(count(*)) FROM information_schema.columns \
+                   WHERE table_schema = $1 AND table_name = 'clients' \
+                   AND column_name IN ('stopped_at', 'stopped_by', 'stop_reason', \
+                     'stop_denied_count', 'stop_last_denied_at')";
+    assert_eq!(old.row(columns, &[&schema]).await, json!(0));
+    old.exec(
+        "INSERT INTO clients (client_id, team, hostname, serial, owner_email) \
+         VALUES ('team/dev-1', 'team', 'mac-1', 'C02TEST1234', 'bo@example.com')",
+        &[],
+    )
+    .await;
+
+    PgGraphRepository::connect(&url, 1).await.unwrap();
+    // Applying it again changes nothing.
+    PgGraphRepository::connect(&url, 1).await.unwrap();
+    assert_eq!(old.row(columns, &[&schema]).await, json!(5));
+    let clients = old
+        .row(
+            "SELECT jsonb_agg(jsonb_build_array(client_id, hostname, serial, owner_email, \
+             stopped_at, stopped_by, stop_reason, stop_denied_count, stop_last_denied_at)) \
+             FROM clients",
+            &[],
+        )
+        .await;
+    assert_eq!(
+        clients,
+        json!([[
+            "team/dev-1",
+            "mac-1",
+            "C02TEST1234",
+            "bo@example.com",
+            null,
+            null,
+            null,
+            0,
+            null
+        ]])
+    );
+
+    admin
+        .exec(&format!("DROP SCHEMA {schema} CASCADE"), &[])
+        .await;
+}
+
 async fn start() -> Option<(Db, String)> {
     let url = std::env::var("POSTGRES_INTEGRATION_URL").ok()?;
     let repository = PgGraphRepository::connect(&url, 4).await.unwrap();
