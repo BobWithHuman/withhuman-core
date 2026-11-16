@@ -31,6 +31,17 @@ async fn main() -> io::Result<()> {
         );
         return Ok(());
     }
+    if env::args().nth(1).as_deref() == Some("backtrack-secrets") {
+        let report = repository
+            .backtrack_secrets()
+            .await
+            .map_err(io::Error::other)?;
+        println!(
+            "found {} of {} agent-first values again; {} traced to an earlier node, {} stored rows masked",
+            report.recovered, report.scanned, report.traced, report.masked
+        );
+        return Ok(());
+    }
     // The company's device list from its EDR; nothing runs without WITHHUMAN_WAZUH_URL.
     if let Some(wazuh) = config.wazuh.clone() {
         tokio::spawn(run_edr_sync(repository.clone(), wazuh));

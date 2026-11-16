@@ -67,6 +67,20 @@ The PostgreSQL `reindex-paragraphs` command runs with the Generator and Decision
 paragraphs and removes their old classifications and paragraph-level cause links. It retains
 original token keys and result-level links.
 
+Passwords and generic API keys are recognized only by a label (`password: X`, `"api_key":"X"`).
+When the Generator recognizes one for the first time in a session, it looks for the same value,
+standalone, in everything the session stored before: commits, node payloads, Decision's traces and
+paragraphs. It masks every copy as the token is masked and records each earlier node as mentioning
+it, in the slot of who wrote it there (`user` for a prompt, `external` for a tool result), so a
+password typed into a prompt is no longer kept in clear nor shown as written by the agent. The
+value is only held in memory for the search. Values shorter than six characters, or made of one
+kind of character and shorter than 16, are not looked for, since they would match unrelated text.
+The PostgreSQL `backtrack-secrets` command does the same for sessions recorded before: for each
+password, API key or JWT whose first mention in its session is the agent's, it finds the value
+again from the token's masked ends and key hash, then masks and records as above. It can run with
+the Generator and Decision up, one token per transaction under its session's lock, and a second
+run changes nothing. It prints counts only.
+
 Configure a Claude Code project against the local gateway:
 
 ```sh

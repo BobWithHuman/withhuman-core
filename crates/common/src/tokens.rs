@@ -12,7 +12,14 @@
 //! account numbers, IMSI, passport numbers, unhyphenated ID numbers) need a context keyword next
 //! to them.
 
-use std::{borrow::Cow, collections::BTreeSet, net::IpAddr, ops::Range, sync::LazyLock};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+    net::IpAddr,
+    ops::Range,
+    sync::LazyLock,
+};
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use regex::Regex;
@@ -76,6 +83,229 @@ pub struct Token {
 /// Every token found in `text`, deduplicated and in a stable order.
 pub fn extract_tokens(text: &str) -> Vec<Token> {
     scan(text).tokens.into_iter().collect()
+}
+
+/// A sensitive value as the detector found it: its token and the normalized value itself.
+///
+/// It exists so text stored before the value was recognized (a prompt that typed a password
+/// without a label, a tool result that printed one) can be found and masked. It holds the secret:
+/// keep it in memory only while searching, and never store, log or print [`Secret::value`].
+/// `Debug` leaves the value out.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Secret {
+    pub token: Token,
+    value: String,
+}
+
+impl Secret {
+    /// The secret itself.
+    pub fn value(&self) -> &str {
+        &self.value
+    }
+
+    /// Whether the value is worth looking for in other text. Its kind must be one [`recover`]
+    /// can find again by its masked form ([`TRACEABLE_KINDS`]), so a stored copy masked from it
+    /// can still be matched, and the value distinctive: at least [`TRACEABLE_CHARS`] characters
+    /// mixing letters, digits or symbols, or a long one. A short or plain word (`changeme`,
+    /// `123456`) would match unrelated text and give the value a source it never had.
+    pub fn traceable(&self) -> bool {
+        TRACEABLE_KINDS.contains(&self.token.kind) && traceable(&self.value)
+    }
+}
+
+impl fmt::Debug for Secret {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Secret")
+            .field("token", &self.token)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The kinds a value is looked for in other text: those found only by a label (`password: X`,
+/// `api_key=X`), so the same value written without one goes unrecognized, and JWTs. Their
+/// normalized value is the text as matched, masked by its ends.
+pub const TRACEABLE_KINDS: [&str; 3] = ["password", "api_key", "jwt"];
+
+/// Fewest characters a value needs before it is looked for in other text.
+pub const TRACEABLE_CHARS: usize = 6;
+
+fn traceable(value: &str) -> bool {
+    let chars = value.chars().count();
+    let letters = value.chars().any(char::is_alphabetic);
+    let digits = value.chars().any(|c| c.is_ascii_digit());
+    let symbols = value.chars().any(|c| !c.is_alphanumeric());
+    let classes = usize::from(letters) + usize::from(digits) + usize::from(symbols);
+    chars >= TRACEABLE_CHARS && (classes >= 2 || chars >= 16)
+}
+
+/// The tokens of [`extract_tokens`] and, for the sensitive ones, the values behind them, one per
+/// token.
+pub fn extract_secrets(text: &str) -> (Vec<Token>, Vec<Secret>) {
+    let found = scan(text);
+    (
+        found.tokens.into_iter().collect(),
+        found.secrets.into_values().collect(),
+    )
+}
+
+/// `text` with every standalone occurrence of `value` replaced by `masked`, or `None` when it
+/// has none. JSON text holds the value escaped, so the escaped form is replaced too (by `masked`
+/// escaped). An occurrence inside a longer word is a different value and stays.
+pub fn mask_value(text: &str, value: &str, masked: &str) -> Option<String> {
+    let mut current = Cow::Borrowed(text);
+    for (needle, replacement) in forms(value, masked) {
+        if let Some(replaced) = replace_standalone(&current, &needle, &replacement) {
+            current = Cow::Owned(replaced);
+        }
+    }
+    match current {
+        Cow::Owned(masked) => Some(masked),
+        Cow::Borrowed(_) => None,
+    }
+}
+
+/// Whether `text` holds `value` standalone, as written or JSON-escaped.
+pub fn mentions(text: &str, value: &str) -> bool {
+    !value.is_empty()
+        && forms(value, "").iter().any(|(needle, _)| {
+            text.match_indices(needle.as_str())
+                .any(|(start, _)| standalone(text, start, start + needle.len()))
+        })
+}
+
+/// The secret behind a stored token, found again in `text` without the original: candidates
+/// that fit the token's mask (`head…tail`, or one `*` per character) are hashed and only an
+/// exact match of `key` is taken. Only [`TRACEABLE_KINDS`] are recovered.
+pub fn recover(text: &str, kind: &str, key: &str, decoded: &str) -> Option<Secret> {
+    let kind: &'static str = match kind {
+        "password" => "password",
+        "api_key" => "api_key",
+        "jwt" => "jwt",
+        _ => return None,
+    };
+    let hash = key.strip_prefix("sha256:")?;
+    let mask = if kind == "jwt" {
+        decoded.split_once(") ").map(|(_, mask)| mask)?
+    } else {
+        decoded
+    };
+    let secret = |value: String| Secret {
+        token: Token {
+            kind,
+            category: Category::Credential,
+            key: key.to_owned(),
+            decoded: decoded.to_owned(),
+        },
+        value,
+    };
+    // A value as the text holds it, or as JSON text escapes it.
+    let matches = |candidate: &str| -> Option<String> {
+        if candidate.contains(char::is_whitespace) || candidate.contains('"') {
+            return None;
+        }
+        if sha256(candidate) == hash {
+            return Some(candidate.to_owned());
+        }
+        if candidate.contains('\\') {
+            let unescaped: String = serde_json::from_str(&format!("\"{candidate}\"")).ok()?;
+            return (sha256(&unescaped) == hash).then_some(unescaped);
+        }
+        None
+    };
+    if let Some((head, tail)) = mask.split_once('…') {
+        if head.chars().count() != 4 || tail.chars().count() != 4 {
+            return None;
+        }
+        for (start, _) in text.match_indices(head) {
+            let after_head = start + head.len();
+            for (offset, _) in text[after_head..].match_indices(tail) {
+                let end = after_head + offset + tail.len();
+                if end - start > RECOVER_MAX_BYTES {
+                    break;
+                }
+                let candidate = &text[start..end];
+                // `mask_ends` keeps both ends only of values longer than eight characters.
+                if candidate.chars().count() <= 8 || !standalone(text, start, end) {
+                    continue;
+                }
+                if let Some(value) = matches(candidate) {
+                    return Some(secret(value));
+                }
+            }
+        }
+    } else if !mask.is_empty() && mask.chars().all(|c| c == '*') {
+        let length = mask.chars().count();
+        for (start, _) in text.char_indices() {
+            let Some(end) = text[start..]
+                .char_indices()
+                .nth(length)
+                .map(|(offset, _)| start + offset)
+                .or_else(|| (text[start..].chars().count() == length).then_some(text.len()))
+            else {
+                break;
+            };
+            if !standalone(text, start, end) {
+                continue;
+            }
+            if let Some(value) = matches(&text[start..end]) {
+                return Some(secret(value));
+            }
+        }
+    }
+    None
+}
+
+/// Longest candidate [`recover`] hashes: a JWT, escaped.
+const RECOVER_MAX_BYTES: usize = 8192;
+
+/// `value` and `masked` as written and, when it differs, as a JSON string holds them.
+fn forms(value: &str, masked: &str) -> Vec<(String, String)> {
+    let escape = |text: &str| {
+        let quoted = serde_json::to_string(text).expect("a string serializes");
+        quoted[1..quoted.len() - 1].to_owned()
+    };
+    let mut forms = vec![(value.to_owned(), masked.to_owned())];
+    let escaped = escape(value);
+    if escaped != value {
+        forms.push((escaped, escape(masked)));
+    }
+    forms
+}
+
+fn replace_standalone(text: &str, needle: &str, replacement: &str) -> Option<String> {
+    if needle.is_empty() {
+        return None;
+    }
+    let mut replaced = String::new();
+    let mut cursor = 0;
+    for (start, _) in text.match_indices(needle) {
+        let end = start + needle.len();
+        if start < cursor || !standalone(text, start, end) {
+            continue;
+        }
+        replaced.push_str(&text[cursor..start]);
+        replaced.push_str(replacement);
+        cursor = end;
+    }
+    if cursor == 0 {
+        return None;
+    }
+    replaced.push_str(&text[cursor..]);
+    Some(replaced)
+}
+
+/// Whether `text[start..end]` is not part of a longer word. JSON escapes (`\n`, `\t`) end a
+/// word although their letter is alphanumeric.
+fn standalone(text: &str, start: usize, end: usize) -> bool {
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    let before = match previous_char(text, start) {
+        Some(c) if word(c) => {
+            "nrtbf".contains(c) && previous_char(text, start - c.len_utf8()) == Some('\\')
+        }
+        _ => true,
+    };
+    before && !next_char(text, end).is_some_and(word)
 }
 
 /// `text` with every sensitive value (credential, PII, financial, device identifier, DSN
@@ -169,6 +399,8 @@ struct Tokens {
     tokens: BTreeSet<Token>,
     /// Byte spans of sensitive values in the scanned text and their masked replacement.
     redactions: Vec<(Range<usize>, String)>,
+    /// The sensitive values themselves, by kind and key.
+    secrets: BTreeMap<(&'static str, String), Secret>,
 }
 
 impl Tokens {
@@ -190,12 +422,19 @@ impl Tokens {
         span: Range<usize>,
     ) {
         self.redactions.push((span, masked.clone()));
-        self.tokens.insert(Token {
+        let token = Token {
             kind,
             category,
             key: format!("sha256:{}", sha256(normalized)),
             decoded: masked,
-        });
+        };
+        self.secrets
+            .entry((kind, token.key.clone()))
+            .or_insert_with(|| Secret {
+                token: token.clone(),
+                value: normalized.to_owned(),
+            });
+        self.tokens.insert(token);
     }
 
     fn contains(&self, kind: &str, key: &str) -> bool {
