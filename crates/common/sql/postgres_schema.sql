@@ -300,7 +300,8 @@ CREATE TABLE IF NOT EXISTS session_marks (
 );
 
 -- The sources the security team distrusts: a document's path, a URL or a tool's name whose
--- result told an agent to act. Kept for the team; a row does not change a decision.
+-- result told an agent to act. Decision reads it: a Call it would allow, and that the result of
+-- a Call on one of these caused, is held for review (rule `source::distrusted`).
 CREATE TABLE IF NOT EXISTS distrusted_sources (
   source      text   PRIMARY KEY,
   set_by      text,

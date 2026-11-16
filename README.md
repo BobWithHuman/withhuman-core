@@ -116,7 +116,18 @@ curl -X POST -H "Authorization: Bearer $WITHHUMAN_ADMIN_TOKEN" -H 'Content-Type:
 
 The security team records what it decided about a session it looked at, for the whole team:
 `session_marks` and `distrusted_sources` in PostgreSQL, which the viewer reads. Both are set
-through the admin API. They are a record only: neither changes how a tool call is decided.
+through the admin API. A mark is a record only. A distrusted source also holds what it causes:
+when the engine traces a tool call to a tool result (`cause.link` is `segment`) and the call that
+produced that result is on a distrusted source, a call the engine would otherwise allow is put to
+the user for review instead (rule `source::distrusted`), or denied with
+`WITHHUMAN_DISTRUSTED_SOURCE_DENY=1`. The rule only makes a verdict stricter: a call already
+denied or held keeps its verdict and rule. Reading the source is not blocked, only what its
+content then causes. A result's source is the path, URL or folder-relative path its call named, or
+its tool's name, as the evidence shows it. A source distrusted now holds the calls decided from
+now on; the list is read for each such call, so there is nothing to wait out. If the list cannot
+be read within 250 ms the call is decided without it, with a warning in Decision's log and
+`source.error` in the call's trace. The matched source is kept in the call's trace
+(`nodes.trace_json`, `source.distrusted`) and never shown to the agent.
 
 `POST /v1/admin/sessions/<session_id>/mark` with `{"state": ..., "actor": ...}` marks a session
 `reviewing`, `attack`, `benign` or `closed`, replaces its mark, or with `"state": null` takes it
@@ -207,6 +218,7 @@ These switches are off by default; off, the check is as before. Set them in `.en
 | `WITHHUMAN_CHECK_SHELL_SPLIT` / `_SHELL_DECODE` | Jev sees a several-step command step by step, and text built from base64, character codes or joined literals |
 | `WITHHUMAN_GRADES` | Each call is graded 0, 1, 2-1, 2-2, 3-1 or 3-2 by how far its effect can be undone (KISA agentic-AI zero-trust guide, table 2-5) and the grade is recorded in the trace; it does not change a verdict |
 | `WITHHUMAN_DEGRADED_MODE` | After `WITHHUMAN_DEGRADED_FAILURES` (3) Jev failures in a row, or at once on 401/402/403/429, the rules judge alone for `WITHHUMAN_DEGRADED_SECONDS` (60): grade 0 and 1 are allowed (except a secret read, a web fetch or an edit of CI or hooks), grade 2 and 3 are reviewed, a safeguard change is denied |
+| `WITHHUMAN_DISTRUSTED_SOURCE_DENY` | A call that a result from a distrusted source caused, and that would be allowed, is denied instead of put to the user (see "Triage") |
 | `WITHHUMAN_CHUNK_BREAK_AT_RULES` (Generator) | A `---`, `***` or `___` line starts a new paragraph, so a note appended after it is traced apart from the text before |
 | `WITHHUMAN_CODEX_FAILED_OUTPUT` (Collector) | A Codex shell command that exits non-zero is recorded with its output, as Claude Code records a failed Bash command |
 | `WITHHUMAN_FAILURE_BY_GRADE` (Collector) | With `WITHHUMAN_ASK=ask`, a grade 2 or 3 call the engine could not judge is put to the user instead of denied (Claude Code only) |

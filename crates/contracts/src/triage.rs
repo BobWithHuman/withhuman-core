@@ -2,7 +2,8 @@
 //! it distrusts, and one Call's evidence as an export for other systems.
 //!
 //! The Collector serves these to administrators (`/v1/admin/...`) and the Generator stores
-//! them. They record the team's judgement; none of them changes how a Call is decided.
+//! them. A mark and the evidence record the team's judgement and change no decision; a
+//! distrusted source holds the Calls its results cause (Decision, rule `source::distrusted`).
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -100,7 +101,8 @@ pub struct MarkedSessions {
     pub unknown: Vec<String>,
 }
 
-/// `POST /v1/admin/sources/distrust`.
+/// `POST /v1/admin/sources/distrust`. From then on a Call the engine would allow, and that a
+/// result from the source caused, is held for review (rule `source::distrusted`).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 pub struct DistrustSourceRequest {
     /// A document's path, a URL or a tool's name, compared as written.

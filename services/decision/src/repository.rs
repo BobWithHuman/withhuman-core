@@ -40,6 +40,17 @@ pub struct TracedSegment {
     pub parent: String,
 }
 
+/// A tool result whose source the security team distrusts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DistrustedCause {
+    /// The tool result's node seq.
+    pub seq: u64,
+    /// The Call whose result it was; none when the session does not hold it.
+    pub call_seq: Option<u64>,
+    /// The entry of `distrusted_sources` that names it.
+    pub source: String,
+}
+
 #[async_trait]
 pub trait DecisionRepository: Send + Sync + 'static {
     async fn health(&self) -> Result<(), RepositoryError>;
@@ -80,6 +91,17 @@ pub trait DecisionRepository: Send + Sync + 'static {
         _call_order: u64,
         _path: &str,
     ) -> Result<Vec<crate::check::FileDiff>, RepositoryError> {
+        Ok(Vec::new())
+    }
+
+    /// Those of the session's tool results `seqs` that came from a source the security team
+    /// distrusts: the Call whose result each was is named, by any of
+    /// `withhuman_common::source::names`, in `distrusted_sources`.
+    async fn distrusted_causes(
+        &self,
+        _session_id: &str,
+        _seqs: &[u64],
+    ) -> Result<Vec<DistrustedCause>, RepositoryError> {
         Ok(Vec::new())
     }
 

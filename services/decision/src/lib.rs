@@ -13,5 +13,5 @@ pub use http::{DecisionService, app};
 pub use pg_repository::PgDecisionRepository;
 pub use provider::{DecisionProvider, JevDecisionProvider, MockDecisionProvider, ProviderError};
 pub use repository::{
-    DecisionRepository, RepositoryError, TraceRecord, TracedParent, TracedSegment,
+    DecisionRepository, DistrustedCause, RepositoryError, TraceRecord, TracedParent, TracedSegment,
 };
