@@ -227,6 +227,15 @@ only that nothing was seen: the agent's process inventory is a snapshot every sc
 while it is not running, and on macOS Wazuh reports a process's name only, without its command
 line, so Claude Code or Codex installed with npm (`node`) is not seen running there.
 
+`edr_sightings` keeps what `running_at` overwrites: one row per device and process scan that
+found a coding agent running, `agent_id`, `running_at` (the scan's time), `agent`, `name` (the
+device's name then) and `synced_at` (the sync that first saw it), keyed by `agent_id` and
+`running_at`. A scan seen again by a later sync adds nothing, a device with `running_at` NULL
+adds nothing, and a device the manager no longer lists keeps its rows. Each sync deletes the
+rows whose scan is more than 30 days before it (`SIGHTING_RETENTION`). The engine only records
+the scans: telling them apart from Hook sessions, and grouping consecutive ones, is the
+viewer's.
+
 | Variable | Default | |
 |---|---|---|
 | `WITHHUMAN_WAZUH_URL` | empty: no sync | The Wazuh server API, `https://<manager>:55000` |
