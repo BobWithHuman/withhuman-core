@@ -79,6 +79,27 @@ pub struct MarkedSession {
     pub mark: Option<SessionMark>,
 }
 
+/// `POST /v1/admin/sessions/mark`: one mark for several sessions, as for a group of them.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+pub struct MarkSessionsRequest {
+    /// The sessions to mark; one named twice is marked once.
+    pub session_ids: Vec<String>,
+    /// As [`MarkSessionRequest::state`]: required, null takes the marks off.
+    #[serde(deserialize_with = "stated")]
+    #[schema(required = true)]
+    pub state: Option<MarkState>,
+    #[serde(default)]
+    pub actor: Option<String>,
+}
+
+/// The sessions marked together, in the order they were named, and those of them the store
+/// does not hold, which were left alone.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+pub struct MarkedSessions {
+    pub sessions: Vec<MarkedSession>,
+    pub unknown: Vec<String>,
+}
+
 /// `POST /v1/admin/sources/distrust`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 pub struct DistrustSourceRequest {

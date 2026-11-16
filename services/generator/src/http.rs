@@ -25,7 +25,7 @@ use withhuman_contracts::inventory::{
     ClientRegistrationRecord, KeyDenial, NewKey, RevokeKeyRequest, SetOwnerRequest,
     VerifyKeyRequest,
 };
-use withhuman_contracts::triage::{DistrustSourceRequest, MarkSessionRequest};
+use withhuman_contracts::triage::{DistrustSourceRequest, MarkSessionRequest, MarkSessionsRequest};
 
 use crate::{DecisionClient, GeneratorEvent, GraphRepository, KeyScope, RepositoryError};
 
@@ -117,6 +117,7 @@ pub fn app(service: GeneratorService) -> Router {
             get(evidence),
         )
         .route("/v1/sessions/{session_id}/mark", post(mark_session))
+        .route("/v1/sessions/mark", post(mark_sessions))
         .route("/v1/sources/distrust", post(distrust_source))
         .route("/v1/clients", post(register_client).get(clients))
         .route("/v1/clients/{client_id}/owner", post(set_client_owner))
@@ -164,6 +165,7 @@ pub fn app(service: GeneratorService) -> Router {
         revoke_key,
         revoke_user,
         mark_session,
+        mark_sessions,
         distrust_source,
         evidence
     ),
@@ -637,6 +639,28 @@ async fn mark_session(
             .mark_session(&session_id, request, now())
             .await,
     )
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/sessions/mark",
+    tag = "Generator",
+    request_body = MarkSessionsRequest,
+    responses(
+        (status = 200, description = "The sessions marked, and the unknown ones left alone", body = withhuman_contracts::triage::MarkedSessions),
+        (status = 400, description = "No session named", body = ErrorResponse)
+    )
+)]
+async fn mark_sessions(
+    State(service): State<GeneratorService>,
+    StrictJson(request): StrictJson<MarkSessionsRequest>,
+) -> Response {
+    if request.session_ids.is_empty() {
+        return repository_error_response(RepositoryError::InvalidEvent(
+            "no session named".to_owned(),
+        ));
+    }
+    reply(service.repository.mark_sessions(request, now()).await)
 }
 
 #[utoipa::path(

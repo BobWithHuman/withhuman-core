@@ -6,7 +6,8 @@ use tokio_postgres::Row;
 use withhuman_contracts::triage::{
     CausedByRequest, CausedByResult, DistrustSourceRequest, EVIDENCE_SCHEMA, Evidence,
     EvidenceCall, EvidenceCause, EvidenceDecision, EvidenceDeviation, EvidenceRequest,
-    MarkSessionRequest, MarkState, MarkedSession, SessionMark, SourceTrust,
+    MarkSessionRequest, MarkSessionsRequest, MarkState, MarkedSession, MarkedSessions, SessionMark,
+    SourceTrust,
 };
 
 use crate::{
@@ -27,6 +28,23 @@ ON CONFLICT (session_id) DO UPDATE SET state = EXCLUDED.state, set_by = EXCLUDED
 RETURNING state, set_by, set_at";
 
 const CLEAR_MARK: &str = "DELETE FROM session_marks WHERE session_id = $1::text";
+
+// One statement for a group, so its sessions are marked together or not at all.
+const SET_MARKS: &str = "\
+INSERT INTO session_marks (session_id, state, set_by, set_at) \
+SELECT s.session_id, $2::text, $3::text, $4::bigint FROM sessions s \
+WHERE s.session_id = ANY($1::text[]) \
+ON CONFLICT (session_id) DO UPDATE SET state = EXCLUDED.state, set_by = EXCLUDED.set_by, \
+  set_at = EXCLUDED.set_at \
+RETURNING session_id, state, set_by, set_at";
+
+// The sessions the store holds, or held a mark for, once their marks are off.
+const CLEAR_MARKS: &str = "\
+WITH cleared AS ( \
+  DELETE FROM session_marks WHERE session_id = ANY($1::text[]) RETURNING session_id \
+) \
+SELECT session_id FROM cleared \
+UNION SELECT session_id FROM sessions WHERE session_id = ANY($1::text[])";
 
 const MARK: &str = "SELECT state, set_by, set_at FROM session_marks WHERE session_id = $1::text";
 
@@ -120,6 +138,70 @@ impl PgGraphRepository {
             session_id: session_id.to_owned(),
             mark,
         })
+    }
+
+    /// Marks every named session the store holds, or takes their marks off, in one statement;
+    /// the rest are returned as unknown and left alone.
+    pub(crate) async fn mark_many(
+        &self,
+        request: MarkSessionsRequest,
+        set_at: u64,
+    ) -> Result<MarkedSessions, RepositoryError> {
+        let at = signed(set_at)?;
+        let ids = &request.session_ids;
+        let result: Result<Vec<(String, Option<SessionMark>)>, PgError> = async {
+            let client = self.client().await?;
+            match request.state {
+                Some(state) => client
+                    .query(
+                        &client.prepare_cached(SET_MARKS).await?,
+                        &[ids, &state.as_str(), &text(&request.actor), &at],
+                    )
+                    .await?
+                    .iter()
+                    .map(|row| {
+                        let mark = SessionMark {
+                            state: MarkState::parse(row.get(1))
+                                .ok_or_else(|| invalid("session mark"))?,
+                            set_by: row.get(2),
+                            set_at: millis(row, 3)?.unwrap_or_default(),
+                        };
+                        Ok((row.get(0), Some(mark)))
+                    })
+                    .collect(),
+                None => Ok(client
+                    .query(&client.prepare_cached(CLEAR_MARKS).await?, &[ids])
+                    .await?
+                    .iter()
+                    .map(|row| (row.get(0), None))
+                    .collect()),
+            }
+        }
+        .await;
+        let mut found: std::collections::HashMap<String, Option<SessionMark>> =
+            result?.into_iter().collect();
+        let mut marked = MarkedSessions {
+            sessions: Vec::new(),
+            unknown: Vec::new(),
+        };
+        for session_id in ids {
+            match found.remove(session_id) {
+                Some(mark) => marked.sessions.push(MarkedSession {
+                    session_id: session_id.clone(),
+                    mark,
+                }),
+                // Named twice: already listed.
+                None if marked
+                    .sessions
+                    .iter()
+                    .any(|session| &session.session_id == session_id) => {}
+                None if !marked.unknown.contains(session_id) => {
+                    marked.unknown.push(session_id.clone());
+                }
+                None => {}
+            }
+        }
+        Ok(marked)
     }
 
     /// Distrusts the source, or trusts it again. Neither fails for a source already so.

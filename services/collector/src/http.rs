@@ -162,6 +162,7 @@ pub fn app_with_transport(service: CollectorService) -> Router {
             "/v1/admin/sessions/{session_id}/mark",
             post(triage::mark_session),
         )
+        .route("/v1/admin/sessions/mark", post(triage::mark_sessions))
         .route("/v1/admin/sources/distrust", post(triage::distrust_source))
         .route(
             "/v1/admin/sessions/{session_id}/calls/{seq}/evidence",
@@ -199,6 +200,7 @@ pub fn app_with_transport(service: CollectorService) -> Router {
         inventory::clients,
         inventory::set_client_owner,
         triage::mark_session,
+        triage::mark_sessions,
         triage::distrust_source,
         triage::evidence
     ),

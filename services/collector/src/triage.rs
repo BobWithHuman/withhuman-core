@@ -9,7 +9,8 @@ use axum::{
 };
 use serde_json::json;
 use withhuman_contracts::triage::{
-    DistrustSourceRequest, Evidence, MarkSessionRequest, MarkedSession, SourceTrust,
+    DistrustSourceRequest, Evidence, MarkSessionRequest, MarkSessionsRequest, MarkedSession,
+    MarkedSessions, SourceTrust,
 };
 
 use crate::{
@@ -19,6 +20,8 @@ use crate::{
 
 /// Longest source the team may name, in bytes: room for a long URL.
 const SOURCE_LIMIT: usize = 4_096;
+/// Most sessions one request may mark.
+const SESSIONS_LIMIT: usize = 1_000;
 
 #[utoipa::path(
     post,
@@ -50,6 +53,41 @@ pub async fn mark_session(
         &service,
         reqwest::Method::POST,
         &["sessions", &session_id, "mark"],
+        Some(json!(request)),
+    )
+    .await
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/admin/sessions/mark",
+    tag = "Triage",
+    params(("Authorization" = String, Header, description = "`Bearer <WITHHUMAN_ADMIN_TOKEN>`")),
+    request_body = MarkSessionsRequest,
+    responses(
+        (status = 200, description = "One mark set on every named session the engine holds (or, with `state: null`, taken off them), together; `sessions` lists them in the order named and `unknown` the ones it does not hold, which are left alone. 200 even when all are unknown", body = MarkedSessions),
+        (status = 400, description = "`session_ids` empty, over 1000 or holding an empty ID (`invalid_sessions`); `state` missing or not one of the four or null"),
+        (status = 401, description = "Admin token missing or wrong"),
+        (status = 404, description = "Admin API disabled"),
+        (status = 502, description = "Generator unavailable")
+    )
+)]
+pub async fn mark_sessions(
+    State(service): State<CollectorService>,
+    headers: HeaderMap,
+    StrictJson(request): StrictJson<MarkSessionsRequest>,
+) -> Response {
+    if let Some(response) = not_admin(&service, &headers) {
+        return response;
+    }
+    let ids = &request.session_ids;
+    if ids.is_empty() || ids.len() > SESSIONS_LIMIT || ids.iter().any(String::is_empty) {
+        return error(StatusCode::BAD_REQUEST, "invalid_sessions");
+    }
+    forward(
+        &service,
+        reqwest::Method::POST,
+        &["sessions", "mark"],
         Some(json!(request)),
     )
     .await

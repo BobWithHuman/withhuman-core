@@ -10,7 +10,10 @@ use withhuman_contracts::{
         ClientRecord, ClientRegistrationRecord, KeyDenial, KeyRecord, NewKey, RevokeKeyRequest,
         SetOwnerRequest, VerifyKeyRequest, VerifyKeyResponse,
     },
-    triage::{DistrustSourceRequest, Evidence, MarkSessionRequest, MarkedSession, SourceTrust},
+    triage::{
+        DistrustSourceRequest, Evidence, MarkSessionRequest, MarkSessionsRequest, MarkedSession,
+        MarkedSessions, SourceTrust,
+    },
 };
 
 /// The keys a revocation covers.
@@ -129,6 +132,16 @@ pub trait GraphRepository: Send + Sync + 'static {
         _request: MarkSessionRequest,
         _set_at: u64,
     ) -> Result<MarkedSession, RepositoryError> {
+        Err(RepositoryError::NotFound)
+    }
+
+    /// Sets one mark on several sessions, or takes theirs off; the sessions the store does not
+    /// hold are returned as unknown.
+    async fn mark_sessions(
+        &self,
+        _request: MarkSessionsRequest,
+        _set_at: u64,
+    ) -> Result<MarkedSessions, RepositoryError> {
         Err(RepositoryError::NotFound)
     }
 

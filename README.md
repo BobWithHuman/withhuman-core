@@ -120,7 +120,10 @@ through the admin API. They are a record only: neither changes how a tool call i
 
 `POST /v1/admin/sessions/<session_id>/mark` with `{"state": ..., "actor": ...}` marks a session
 `reviewing`, `attack`, `benign` or `closed`, replaces its mark, or with `"state": null` takes it
-off (a session without a mark was not handled yet); a session the engine does not hold is a 404. `POST /v1/admin/sources/distrust` with
+off (a session without a mark was not handled yet); a session the engine does not hold is a 404.
+`POST /v1/admin/sessions/mark` with `{"session_ids": [...], "state": ..., "actor": ...}` does the
+same for up to 1000 sessions together and answers with `sessions` (each with its mark) and
+`unknown`, the ones the engine does not hold, which it leaves alone. `POST /v1/admin/sources/distrust` with
 `{"source": ..., "on": true | false, "actor": ..., "session_id": ..., "seq": ...}` distrusts a
 source (a document's path, a URL or a tool's name) or with `on: false` trusts it again;
 `session_id` and `seq`, the tool call that showed the source, are optional. The source goes in

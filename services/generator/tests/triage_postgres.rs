@@ -10,7 +10,7 @@ use std::{
 use serde_json::{Value, json};
 use tokio_postgres::{NoTls, types::ToSql};
 use withhuman_contracts::triage::{
-    DistrustSourceRequest, MarkSessionRequest, MarkState, SessionMark,
+    DistrustSourceRequest, MarkSessionRequest, MarkSessionsRequest, MarkState, SessionMark,
 };
 use withhuman_generator::{
     GeneratorService, GraphRepository, PgGraphRepository, RepositoryError, app,
@@ -260,6 +260,149 @@ async fn a_source_is_distrusted_and_trusted_again() {
         .distrust_source(request(&path, false), 140)
         .await
         .unwrap();
+}
+
+/// A group of sessions gets one mark in one go; the ones the store does not hold are named.
+#[tokio::test]
+async fn several_sessions_are_marked_together() {
+    let Some(stack) = Stack::start().await else {
+        return;
+    };
+    let (a, b, c) = (unique("group-a"), unique("group-b"), unique("group-c"));
+    let unknown = unique("group-unknown");
+    for session in [&a, &b, &c] {
+        stack.session(session).await;
+    }
+    let marks = async |ids: &[&String]| {
+        let ids: Vec<String> = ids.iter().map(|id| (*id).clone()).collect();
+        stack
+            .db
+            .row(
+                "SELECT coalesce(jsonb_object_agg(session_id, jsonb_build_array(state, set_by, \
+                 set_at)), '{}') FROM session_marks WHERE session_id = ANY($1)",
+                &[&ids],
+            )
+            .await
+    };
+    // One of them already has a mark of its own.
+    stack
+        .repository
+        .mark_session(
+            &b,
+            MarkSessionRequest {
+                state: Some(MarkState::Attack),
+                actor: Some("sec@example.com".into()),
+            },
+            10,
+        )
+        .await
+        .unwrap();
+
+    let request = |ids: &[&String], state: Option<MarkState>| MarkSessionsRequest {
+        session_ids: ids.iter().map(|id| (*id).clone()).collect(),
+        state,
+        actor: Some("lead@example.com".into()),
+    };
+    // Named out of order, one of them twice, and one the store does not hold.
+    let marked = stack
+        .repository
+        .mark_sessions(
+            request(
+                &[&b, &unknown, &a, &b, &unknown],
+                Some(MarkState::Reviewing),
+            ),
+            20,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        json!(marked),
+        json!({
+            "sessions": [
+                {"session_id": b, "mark": {"state": "reviewing", "set_by": "lead@example.com",
+                                           "set_at": 20}},
+                {"session_id": a, "mark": {"state": "reviewing", "set_by": "lead@example.com",
+                                           "set_at": 20}}
+            ],
+            "unknown": [unknown]
+        })
+    );
+    let reviewing = json!(["reviewing", "lead@example.com", 20]);
+    assert_eq!(
+        marks(&[&a, &b, &c, &unknown]).await,
+        json!({a.clone(): reviewing, b.clone(): reviewing})
+    );
+
+    // The same over HTTP, with the Generator's clock.
+    let (status, body) = send(
+        &stack.url,
+        "POST",
+        "/v1/sessions/mark",
+        Some(json!({"session_ids": [a, b, c], "state": "closed", "actor": "sec@example.com"})),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["unknown"], json!([]));
+    let listed: Vec<(&Value, &Value)> = body["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|session| (&session["session_id"], &session["mark"]["state"]))
+        .collect();
+    let closed = json!("closed");
+    assert_eq!(
+        listed,
+        [
+            (&json!(a), &closed),
+            (&json!(b), &closed),
+            (&json!(c), &closed)
+        ]
+    );
+    // Every session unknown is no error: nothing was marked, and the answer says so.
+    let (status, body) = send(
+        &stack.url,
+        "POST",
+        "/v1/sessions/mark",
+        Some(json!({"session_ids": [unknown], "state": "attack"})),
+    )
+    .await;
+    assert_eq!(
+        (status, &body),
+        (200, &json!({"sessions": [], "unknown": [unknown]}))
+    );
+    for (body, error) in [
+        (
+            json!({"session_ids": [], "state": "attack"}),
+            "invalid_enrichment",
+        ),
+        (
+            json!({"session_ids": [a], "state": "unsure"}),
+            "invalid_json",
+        ),
+        (json!({"session_ids": [a]}), "invalid_json"),
+        (json!({"state": "attack"}), "invalid_json"),
+    ] {
+        let (status, answer) = send(&stack.url, "POST", "/v1/sessions/mark", Some(body)).await;
+        assert_eq!((status, answer["error"].as_str()), (400, Some(error)));
+    }
+
+    // Null takes the marks off the ones named and leaves the rest.
+    let cleared = stack
+        .repository
+        .mark_sessions(request(&[&a, &unknown, &c], None), 30)
+        .await
+        .unwrap();
+    assert_eq!(
+        json!(cleared),
+        json!({"sessions": [{"session_id": a, "mark": null}, {"session_id": c, "mark": null}],
+               "unknown": [unknown]})
+    );
+    let left = marks(&[&a, &b, &c]).await;
+    assert_eq!(left.as_object().unwrap().len(), 1);
+    assert_eq!(left[&b][0], "closed");
+    for session in [&a, &b, &c] {
+        stack.db.remove(session).await;
+    }
 }
 
 /// The routes the Collector passes the administrators' requests on to.

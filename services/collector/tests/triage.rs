@@ -19,6 +19,7 @@ use withhuman_contracts::events::EventResponse;
 
 const ADMIN: &str = "admin-secret";
 const SESSION: &str = "0b9f6c1e-0000-4000-8000-000000000001";
+const OTHER: &str = "0b9f6c1e-0000-4000-8000-000000000002";
 
 /// A request the Collector passed on: method, path segments and body.
 type Forwarded = (String, Vec<String>, Option<Value>);
@@ -61,6 +62,23 @@ impl GeneratorTransport for Generator {
                 json!({"session_id": session, "mark": mark})
             }
             ["sessions", _, "mark"] => return missing,
+            ["sessions", "mark"] => {
+                let body = body.unwrap();
+                let (known, unknown): (Vec<_>, Vec<_>) = body["session_ids"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .partition(|id| *id == SESSION || *id == OTHER);
+                let mark = match &body["state"] {
+                    Value::Null => Value::Null,
+                    state => json!({"state": state, "set_by": body["actor"], "set_at": 7}),
+                };
+                let sessions: Vec<Value> = known
+                    .into_iter()
+                    .map(|id| json!({"session_id": id, "mark": mark}))
+                    .collect();
+                json!({"sessions": sessions, "unknown": unknown})
+            }
             ["sources", "distrust"] => {
                 let body = body.unwrap();
                 if body["on"] == true {
@@ -206,6 +224,101 @@ async fn administrators_mark_a_session_and_take_the_mark_off() {
     assert_eq!(
         schemas["MarkedSession"]["required"],
         json!(["session_id", "mark"])
+    );
+}
+
+#[tokio::test]
+async fn administrators_mark_several_sessions_at_once() {
+    let generator = Arc::new(Generator::default());
+    let path = "/v1/admin/sessions/mark";
+    let group = json!({"session_ids": [SESSION, "no-such-session", OTHER], "state": "reviewing",
+                       "actor": "sec@example.com"});
+    refuses_all_but_administrators(&generator, "POST", path, Some(group.clone())).await;
+
+    let app = app(generator.clone(), true);
+    let (status, body) = post(&app, path, group.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    let mark = json!({"state": "reviewing", "set_by": "sec@example.com", "set_at": 7});
+    assert_eq!(
+        body,
+        json!({"sessions": [{"session_id": SESSION, "mark": mark},
+                            {"session_id": OTHER, "mark": mark}],
+               "unknown": ["no-such-session"]})
+    );
+    let (status, body) = post(&app, path, json!({"session_ids": [OTHER], "state": null})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body,
+        json!({"sessions": [{"session_id": OTHER, "mark": null}], "unknown": []})
+    );
+    {
+        let forwarded = generator.forwarded.lock().unwrap();
+        assert_eq!(forwarded.len(), 2);
+        assert_eq!(
+            forwarded[0],
+            (
+                "POST".to_owned(),
+                vec!["sessions".to_owned(), "mark".to_owned()],
+                Some(group)
+            )
+        );
+        assert_eq!(
+            forwarded[1].2,
+            Some(json!({"session_ids": [OTHER], "state": null, "actor": null}))
+        );
+    }
+
+    // No session, too many, an empty ID, or no stated state: nothing is passed on.
+    let many: Vec<String> = (0..1_001).map(|n| format!("s-{n}")).collect();
+    for (body, error) in [
+        (
+            json!({"session_ids": [], "state": "attack"}),
+            "invalid_sessions",
+        ),
+        (
+            json!({"session_ids": many, "state": "attack"}),
+            "invalid_sessions",
+        ),
+        (
+            json!({"session_ids": [SESSION, ""], "state": "attack"}),
+            "invalid_sessions",
+        ),
+        (json!({"session_ids": [SESSION]}), "invalid_json"),
+        (
+            json!({"session_ids": [SESSION], "state": "unsure"}),
+            "invalid_json",
+        ),
+        (
+            json!({"session_ids": SESSION, "state": "attack"}),
+            "invalid_json",
+        ),
+        (json!({"state": "attack"}), "invalid_json"),
+    ] {
+        let (status, answer) = post(&app, path, body).await;
+        assert_eq!(
+            (status, answer["error"].as_str()),
+            (StatusCode::BAD_REQUEST, Some(error))
+        );
+    }
+    assert_eq!(generator.forwarded.lock().unwrap().len(), 2);
+    let (status, _) = post(
+        &app,
+        path,
+        json!({"session_ids": many[..1_000], "state": "closed"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (_, document) = send(&app, "GET", "/api-docs/openapi.json", None, true).await;
+    assert!(document["paths"][path]["post"].is_object());
+    let schemas = &document["components"]["schemas"];
+    assert_eq!(
+        schemas["MarkSessionsRequest"]["required"],
+        json!(["session_ids", "state"])
+    );
+    assert_eq!(
+        schemas["MarkedSessions"]["required"],
+        json!(["sessions", "unknown"])
     );
 }
 
