@@ -155,6 +155,7 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
     let generator_config = GeneratorConfig {
         bind_address: "127.0.0.1:0".parse().unwrap(),
         decision_url,
+        wazuh: None,
     };
     let generator_repository = PgGraphRepository::connect(&database_url, 4).await.unwrap();
     // History is written without decisions; the last Call goes through the Decision service.
