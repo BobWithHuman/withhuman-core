@@ -101,6 +101,17 @@ Hooks without a valid key are taken without a user unless `WITHHUMAN_REQUIRE_KEY
 denies their tool calls and refuses their other Hooks; turn it on before relying on revocation,
 since otherwise a user could drop the key.
 
+The inventory keeps two people for a device: `user`, whoever's key it presented last, and
+`owner`, the person the security team names for the machine. Name or clear the owner with
+`POST /v1/admin/clients/<client_id>/owner` and `{"owner": "<email>" | null, "actor": ...}`. A
+client ID holds a slash (`<team>/<uuid>`), sent as one path segment: `team%2F<uuid>`.
+
+```sh
+curl -X POST -H "Authorization: Bearer $WITHHUMAN_ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"owner": "ana@example.com", "actor": "security@example.com"}' \
+  http://127.0.0.1:3000/v1/admin/clients/platform%2F6f1c0d1e-0000-4000-8000-000000000000/owner
+```
+
 ### The security team's viewer
 
 The viewer reads PostgreSQL directly, read-only, as `withhuman_viewer`. The Generator creates that

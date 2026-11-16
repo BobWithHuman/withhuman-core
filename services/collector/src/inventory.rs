@@ -27,7 +27,7 @@ use withhuman_contracts::{
     hooks::PermissionDecision,
     inventory::{
         ClientRegistration, ClientRegistrationRecord, IssueKeyRequest, IssuedKey, KeyDenial,
-        KeyRecord, NewKey, RevokeKeyRequest,
+        KeyRecord, NewKey, RevokeKeyRequest, SetOwnerRequest,
     },
 };
 
@@ -402,6 +402,46 @@ pub async fn clients(State(service): State<CollectorService>, headers: HeaderMap
         return response;
     }
     forward(&service, reqwest::Method::GET, &["clients"], None).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/admin/clients/{client_id}/owner",
+    tag = "Inventory",
+    params(
+        ("client_id" = String, Path, description = "The device's client ID as one path segment, its slash percent-encoded: `team%2Fuuid`"),
+        ("Authorization" = String, Header, description = "`Bearer <WITHHUMAN_ADMIN_TOKEN>`")
+    ),
+    request_body = SetOwnerRequest,
+    responses(
+        (status = 200, description = "The device, with the owner named or (`owner: null`) cleared", body = withhuman_contracts::inventory::ClientRecord),
+        (status = 400, description = "Not an email address"),
+        (status = 401, description = "Admin token missing or wrong"),
+        (status = 404, description = "No such device, or admin API disabled")
+    )
+)]
+pub async fn set_client_owner(
+    State(service): State<CollectorService>,
+    Path(client_id): Path<String>,
+    headers: HeaderMap,
+    StrictJson(request): StrictJson<SetOwnerRequest>,
+) -> Response {
+    if let Some(response) = not_admin(&service, &headers) {
+        return response;
+    }
+    let owner = match request.owner.as_deref().map(user_email) {
+        Some(None) => return error(StatusCode::BAD_REQUEST, "invalid_email"),
+        Some(owner) => owner,
+        None => None,
+    };
+    let request = SetOwnerRequest { owner, ..request };
+    forward(
+        &service,
+        reqwest::Method::POST,
+        &["clients", &client_id, "owner"],
+        Some(json!(request)),
+    )
+    .await
 }
 
 async fn forward(

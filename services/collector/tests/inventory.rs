@@ -155,6 +155,14 @@ impl GeneratorTransport for Generator {
                 let body = body.unwrap();
                 json!({"client_id": body["client_id"], "user": body["user"], "projects": []})
             }
+            ["clients", client_id, "owner"] if *client_id != "team/1234" => {
+                return Ok((404, json!({"error": "graph_resource_not_found"})));
+            }
+            ["clients", client_id, "owner"] => {
+                let body = body.unwrap();
+                json!({"client_id": client_id, "owner": body["owner"],
+                       "owner_set_by": body["actor"], "projects": []})
+            }
             _ => json!([]),
         };
         Ok((200, answer))
@@ -632,4 +640,109 @@ async fn devices_register_with_their_keys_user() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     let (status, _) = post(&app, "/v1/clients/register", json!({"client_id": ""}), &[]).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn administrators_name_and_clear_a_devices_owner() {
+    let generator = Arc::new(Generator::with_keys());
+    // The client ID is one path segment: its slash is sent as %2F.
+    let path = "/v1/admin/clients/team%2F1234/owner";
+    let named = json!({"owner": " Bo@Example.com ", "actor": "sec@example.com"});
+    let disabled = app(generator.clone(), |_| {});
+    let (status, body) = post(&disabled, path, named.clone(), &[]).await;
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (StatusCode::NOT_FOUND, Some("admin_api_disabled"))
+    );
+
+    let app = app(generator.clone(), |config| {
+        config.admin_token = Some(ADMIN.into())
+    });
+    let admin = bearer(ADMIN);
+    let admin = [("authorization", admin.as_str())];
+    for headers in [&[][..], &[("authorization", "Bearer wrong")][..]] {
+        let (status, body) = post(&app, path, named.clone(), headers).await;
+        assert_eq!(
+            (status, body["error"].as_str()),
+            (StatusCode::UNAUTHORIZED, Some("admin_token_invalid"))
+        );
+    }
+    // A user's key is not the admin token.
+    let user = bearer(ACTIVE);
+    let (status, _) = post(
+        &app,
+        path,
+        named.clone(),
+        &[("authorization", user.as_str())],
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(generator.inventory.lock().unwrap().is_empty());
+
+    let (status, body) = post(&app, path, named, &admin).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["client_id"], "team/1234");
+    assert_eq!(body["owner"], "bo@example.com");
+    assert_eq!(body["owner_set_by"], "sec@example.com");
+    let (status, body) = post(
+        &app,
+        path,
+        json!({"owner": null, "actor": "sec@example.com"}),
+        &admin,
+    )
+    .await;
+    assert_eq!((status, &body["owner"]), (StatusCode::OK, &Value::Null));
+    {
+        let calls = generator.inventory.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        for (method, segments, _) in calls.iter() {
+            assert_eq!(method, "POST");
+            assert_eq!(segments, &["clients", "team/1234", "owner"]);
+        }
+        assert_eq!(
+            calls[0].2,
+            Some(json!({"owner": "bo@example.com", "actor": "sec@example.com"}))
+        );
+        assert_eq!(
+            calls[1].2,
+            Some(json!({"owner": null, "actor": "sec@example.com"}))
+        );
+    }
+
+    // Not an email, or a body that does not say the owner: nothing reaches the Generator.
+    let (status, body) = post(&app, path, json!({"owner": "bo"}), &admin).await;
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_email"))
+    );
+    let (status, _) = post(&app, path, json!({"actor": "sec@example.com"}), &admin).await;
+    assert!(status.is_client_error(), "{status}");
+    assert_eq!(generator.inventory.lock().unwrap().len(), 2);
+    // An unencoded slash is another path, and an unknown device is the Generator's 404.
+    let (status, _) = post(
+        &app,
+        "/v1/admin/clients/team/1234/owner",
+        json!({"owner": null}),
+        &admin,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(generator.inventory.lock().unwrap().len(), 2);
+    let (status, body) = post(
+        &app,
+        "/v1/admin/clients/team%2Fnone/owner",
+        json!({"owner": "bo@example.com"}),
+        &admin,
+    )
+    .await;
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (StatusCode::NOT_FOUND, Some("graph_resource_not_found"))
+    );
+
+    let (_, document) = get(&app, "/api-docs/openapi.json", &[]).await;
+    let documented = &document["paths"]["/v1/admin/clients/{client_id}/owner"]["post"];
+    assert!(documented.is_object());
+    let schema = &document["components"]["schemas"]["SetOwnerRequest"];
+    assert_eq!(schema["required"], json!(["owner"]), "{schema}");
 }
