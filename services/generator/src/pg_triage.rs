@@ -1,5 +1,6 @@
 //! PostgreSQL storage for the security team's triage: session marks, distrusted sources and
-//! one Call's evidence. Storing and serving only; nothing here is read when a Call is decided.
+//! one Call's evidence. Storing and serving only: Decision reads `distrusted_sources` itself when
+//! it decides a Call a tool result caused.
 
 use serde_json::Value;
 use tokio_postgres::Row;
@@ -9,6 +10,8 @@ use withhuman_contracts::triage::{
     MarkSessionRequest, MarkSessionsRequest, MarkState, MarkedSession, MarkedSessions, SessionMark,
     SourceTrust,
 };
+
+use withhuman_common::source;
 
 use crate::{
     PgGraphRepository,
@@ -58,8 +61,6 @@ RETURNING source, set_by, set_at, session_id, seq";
 
 const TRUST: &str = "DELETE FROM distrusted_sources WHERE source = $1::text";
 
-const DISTRUSTED: &str = "SELECT source FROM distrusted_sources WHERE source = ANY($1::text[])";
-
 // The Call with its verdict and trace, and its session's user. `agent_id` names a subagent
 // only when a SubagentStart announced it, as Decision reads it.
 const EVIDENCE_CALL: &str = "\
@@ -96,11 +97,6 @@ LEFT JOIN paragraphs p ON p.session_id = e.session_id AND p.seq = e.target_seq \
   AND p.\"index\" = e.target_index \
 WHERE e.session_id = $1::text AND e.call_seq = $2::bigint \
 ORDER BY e.rank NULLS LAST, e.probability DESC NULLS LAST, e.target_seq, e.target_index";
-
-/// The fields of a tool's input that say what a Call acts on, the first present one first.
-const TARGET_FIELDS: [&str; 6] = ["command", "file_path", "url", "path", "pattern", "query"];
-/// Those of them that name a document or a page: what a result came from.
-const SOURCE_FIELDS: [&str; 3] = ["file_path", "url", "path"];
 
 impl PgGraphRepository {
     /// Marks the session, or takes its mark off; `NotFound` for a session the store does not
@@ -301,7 +297,7 @@ impl PgGraphRepository {
             let distrusted: Vec<String> = if all.is_empty() {
                 Vec::new()
             } else {
-                tx.query(&tx.prepare_cached(DISTRUSTED).await?, &[&all])
+                tx.query(&tx.prepare_cached(source::DISTRUSTED_SQL).await?, &[&all])
                     .await?
                     .iter()
                     .map(|row| row.get(0))
@@ -326,8 +322,8 @@ impl PgGraphRepository {
                 seq,
                 call: EvidenceCall {
                     tool_use_id: call.get(0),
-                    tool: string(&payload, "tool_name"),
-                    target: target_of(&payload, &TARGET_FIELDS),
+                    tool: source::tool(&payload),
+                    target: source::target(&payload),
                     input: input(&payload),
                     cwd: call.get(2),
                     at: millis(&call, 3)?,
@@ -382,36 +378,14 @@ impl PgGraphRepository {
 }
 
 /// A row of `EVIDENCE_CAUSES` for a tool result, and every name its source may be distrusted
-/// under: the telling Call's target, that target below its `cwd`, its document or page, and
-/// its tool.
+/// under (`withhuman_common::source::names`, which Decision reads a source by too).
 fn caused_by_result(row: &Row, kind: String) -> Result<(CausedByResult, Vec<String>), PgError> {
     let result_payload = json(row.get(5));
     let call_payload = json(row.get(7));
-    // A result whose Call the session does not hold still carries the tool and its input.
-    let payload = if call_payload.is_object() {
-        &call_payload
-    } else {
-        &result_payload
-    };
-    let tool = string(payload, "tool_name");
-    let target = target_of(payload, &TARGET_FIELDS);
-    let document = target_of(payload, &SOURCE_FIELDS);
+    let payload = source::telling(&call_payload, &result_payload);
+    let tool = source::tool(payload);
     let cwd: Option<String> = row.get(8);
-    let mut candidates: Vec<String> = Vec::new();
-    let mut offer = |name: Option<String>| match name.filter(|name| !name.trim().is_empty()) {
-        Some(name) if !candidates.contains(&name) => candidates.push(name),
-        _ => {}
-    };
-    offer(document.clone());
-    offer(target.clone());
-    for name in [&document, &target] {
-        offer(
-            name.as_deref()
-                .zip(cwd.as_deref())
-                .and_then(|(name, cwd)| below(name, cwd)),
-        );
-    }
-    offer(tool.clone());
+    let candidates = source::names(payload, cwd.as_deref());
     let index: i64 = row.get(1);
     let paragraph = (index >= 0).then(|| unsigned(index)).transpose()?;
     Ok((
@@ -420,33 +394,18 @@ fn caused_by_result(row: &Row, kind: String) -> Result<(CausedByResult, Vec<Stri
             result_kind: kind,
             call_seq: millis(row, 6)?,
             input: input(payload),
-            target,
+            target: source::target(payload),
             paragraph,
             quote: paragraph.and(row.get(9)),
             hidden: paragraph.and(row.get(10)),
             probability: row.get(2),
             rank: millis(row, 3)?,
-            source: document.or_else(|| tool.clone()),
+            source: source::document(payload).or_else(|| tool.clone()),
             source_distrusted: false,
             tool,
         },
         candidates,
     ))
-}
-
-/// `name` as written from the folder `cwd`: `.` for the folder itself, none outside it.
-fn below(name: &str, cwd: &str) -> Option<String> {
-    let cwd = cwd.trim_end_matches('/');
-    if cwd.is_empty() {
-        return None;
-    }
-    if name == cwd {
-        return Some(".".to_owned());
-    }
-    name.strip_prefix(cwd)?
-        .strip_prefix('/')
-        .filter(|rest| !rest.is_empty())
-        .map(str::to_owned)
 }
 
 fn json(text: Option<String>) -> Value {
@@ -465,13 +424,6 @@ fn input(payload: &Value) -> Value {
         .filter(|input| input.is_object())
         .cloned()
         .unwrap_or_else(|| Value::Object(Default::default()))
-}
-
-fn target_of(payload: &Value, fields: &[&str]) -> Option<String> {
-    let input = payload.get("tool_input")?;
-    fields
-        .iter()
-        .find_map(|field| string(input, field).filter(|value| !value.is_empty()))
 }
 
 fn text(value: &Option<String>) -> Option<String> {
@@ -504,32 +456,11 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn a_target_is_the_first_field_that_says_what_the_call_acts_on() {
-        let read = json!({"tool_name": "Read", "tool_input": {"file_path": "/r/a.md", "limit": 5}});
-        assert_eq!(target_of(&read, &TARGET_FIELDS).as_deref(), Some("/r/a.md"));
-        let fetch = json!({"tool_name": "WebFetch",
-            "tool_input": {"url": "https://example.com/a", "prompt": "summarise"}});
-        assert_eq!(
-            target_of(&fetch, &SOURCE_FIELDS).as_deref(),
-            Some("https://example.com/a")
-        );
-        let bash = json!({"tool_name": "Bash", "tool_input": {"command": "ls"}});
-        assert_eq!(target_of(&bash, &TARGET_FIELDS).as_deref(), Some("ls"));
-        assert_eq!(target_of(&bash, &SOURCE_FIELDS), None);
-        assert_eq!(
-            target_of(&json!({"tool_name": "Task"}), &TARGET_FIELDS),
-            None
-        );
+    fn a_payload_without_an_input_has_an_empty_one() {
         assert_eq!(input(&json!({"tool_name": "Task"})), json!({}));
-    }
-
-    #[test]
-    fn a_path_is_also_named_from_the_calls_folder() {
-        assert_eq!(below("/r/docs/a.md", "/r").as_deref(), Some("docs/a.md"));
-        assert_eq!(below("/r/docs/a.md", "/r/").as_deref(), Some("docs/a.md"));
-        assert_eq!(below("/r", "/r").as_deref(), Some("."));
-        assert_eq!(below("/rr/a.md", "/r"), None);
-        assert_eq!(below("https://example.com/a", "/r"), None);
-        assert_eq!(below("/r/a.md", ""), None);
+        assert_eq!(
+            input(&json!({"tool_name": "Read", "tool_input": {"file_path": "/r/a.md"}})),
+            json!({"file_path": "/r/a.md"})
+        );
     }
 }
