@@ -42,9 +42,45 @@ async fn a_sync_mirrors_the_manager_and_matches_registered_clients() {
             ("002", json!({"board_serial": "To Be Filled By O.E.M."})),
             ("004", json!({"board_serial": " PF3ABC "})),
         ]);
-        fake.processes = HashMap::from([("001", vec!["zsh", "claude"]), ("004", vec!["cargo"])]);
+        fake.processes = HashMap::from([
+            // Codex installed with npm, running under node.
+            (
+                "000",
+                vec![process(
+                    "node",
+                    "/usr/bin/node",
+                    "/usr/lib/node_modules/@openai/codex/bin/codex.js",
+                    SCANNED,
+                )],
+            ),
+            // Claude Code next to the Claude desktop app, which the manager's match lets
+            // through too.
+            (
+                "001",
+                vec![
+                    process("zsh", "", "", SCANNED),
+                    process("Claude Helper (Renderer)", "", "", LATER),
+                    process("claude", "", "", SCANNED),
+                ],
+            ),
+            // The desktop app alone.
+            (
+                "002",
+                vec![process(
+                    "Claude.exe",
+                    r"C:\Users\ana\AppData\Local\AnthropicClaude\Claude.exe",
+                    "",
+                    LATER,
+                )],
+            ),
+            (
+                "004",
+                vec![process("cargo", "/usr/bin/cargo", "build", SCANNED)],
+            ),
+        ]);
         fake.packages = HashMap::from([
-            ("002", vec!["Codex CLI", "7-Zip"]),
+            // The desktop app's package is not Claude Code.
+            ("002", vec!["Codex CLI", "7-Zip", "Claude"]),
             ("004", vec!["codex", "@anthropic-ai/claude-code"]),
         ]);
         // The manager cannot answer for this agent's inventory.
@@ -84,8 +120,9 @@ async fn a_sync_mirrors_the_manager_and_matches_registered_clients() {
                 "active",
                 null,
                 null,
-                null,
-                T0
+                "codex",
+                T0,
+                SCANNED_AT
             ],
             [
                 "001",
@@ -95,7 +132,8 @@ async fn a_sync_mirrors_the_manager_and_matches_registered_clients() {
                 "C02XK1",
                 1_622_032_840_000_u64,
                 "claude-code",
-                T0
+                T0,
+                SCANNED_AT
             ],
             [
                 "002",
@@ -105,7 +143,8 @@ async fn a_sync_mirrors_the_manager_and_matches_registered_clients() {
                 "To Be Filled By O.E.M.",
                 1_622_032_800_000_u64,
                 "codex",
-                T0
+                T0,
+                null
             ],
             [
                 "003",
@@ -115,7 +154,8 @@ async fn a_sync_mirrors_the_manager_and_matches_registered_clients() {
                 null,
                 null,
                 null,
-                T0
+                T0,
+                null
             ],
             [
                 "004",
@@ -124,8 +164,10 @@ async fn a_sync_mirrors_the_manager_and_matches_registered_clients() {
                 "pending",
                 "PF3ABC",
                 1_622_032_840_000_u64,
+                // Only a package shows it: nothing was running at the scan.
                 "claude-code",
-                T0
+                T0,
+                null
             ],
             [
                 "005",
@@ -135,7 +177,8 @@ async fn a_sync_mirrors_the_manager_and_matches_registered_clients() {
                 null,
                 1_622_032_840_000_u64,
                 null,
-                T0
+                T0,
+                null
             ],
         ])
     );
@@ -182,6 +225,16 @@ async fn a_sync_mirrors_the_manager_and_matches_registered_clients() {
         assert!(
             fake.requests
                 .contains(&"GET /syscollector/001/hardware?select=board_serial".to_owned())
+        );
+        assert!(
+            fake.requests.contains(
+                &"GET /syscollector/001/processes?q=name%7Eclaude%2Cname%7Ecodex%2Ccmd%7Eclaude\
+                  %2Ccmd%7Ecodex%2Cargvs%7Eclaude%2Cargvs%7Ecodex\
+                  &select=name%2Ccmd%2Cargvs%2Cscan.time&limit=500"
+                    .to_owned()
+            ),
+            "{:?}",
+            fake.requests
         );
         // Claude Code found among the processes: the packages are not asked for.
         assert!(
@@ -475,6 +528,120 @@ async fn one_generator_syncs_at_a_time_and_not_again_too_soon() {
 }
 
 #[tokio::test]
+async fn each_scan_that_saw_a_coding_agent_is_kept_for_thirty_days() {
+    let Some(stack) = Stack::start().await else {
+        return;
+    };
+    // Ten minutes before the first sync, and fifty after.
+    const FIRST: &str = "2027-01-15T07:50:00Z";
+    const FIRST_AT: u64 = T0 - 600_000;
+    const SECOND: &str = "2027-01-15T08:50:00Z";
+    const SECOND_AT: u64 = T0 + 3_000_000;
+    const DAY: u64 = 24 * HOUR;
+    stack.fake.set(|fake| {
+        fake.agents = company();
+        fake.processes = HashMap::from([
+            // Windows: the executable's path, no arguments.
+            (
+                "000",
+                vec![process(
+                    "codex.exe",
+                    r"C:\Users\ana\.local\bin\codex.exe",
+                    "",
+                    FIRST,
+                )],
+            ),
+            // Linux: two Claude Code processes of one scan; the one with arguments speaks.
+            (
+                "001",
+                vec![
+                    process("claude", "claude", "", FIRST),
+                    json!({"name": "claude", "cmd": "claude",
+                           "argvs": ["-p", "고객 목록 백업해줘"],
+                           "scan": {"id": 0, "time": FIRST}}),
+                ],
+            ),
+            (
+                "004",
+                vec![process("cargo", "/usr/bin/cargo", "build", FIRST)],
+            ),
+        ]);
+        // Installed, not running: no sighting.
+        fake.packages = HashMap::from([("004", vec!["@anthropic-ai/claude-code"])]);
+    });
+    let windows = json!([
+        "000",
+        FIRST_AT,
+        "codex",
+        "wazuh-manager",
+        T0,
+        r"C:\Users\ana\.local\bin\codex.exe"
+    ]);
+    let first = json!([
+        "001",
+        FIRST_AT,
+        "claude-code",
+        "Anas-MacBook-Pro.local",
+        T0,
+        "claude -p 고객 목록 백업해줘"
+    ]);
+    sync_edr_devices(&stack.repository, &stack.config, T0)
+        .await
+        .unwrap();
+    assert_eq!(stack.sightings().await, json!([windows, first]));
+
+    // The manager has not scanned again: the same scan is one row, with the command line it
+    // was first seen with.
+    stack.fake.set(|fake| {
+        fake.processes.remove("000");
+        fake.processes.insert(
+            "001",
+            vec![process("claude", "claude", "--resume 4a03", FIRST)],
+        );
+    });
+    sync_edr_devices(&stack.repository, &stack.config, T0 + HOUR)
+        .await
+        .unwrap();
+    assert_eq!(stack.sightings().await, json!([windows, first]));
+
+    // A later scan is another row; macOS gives a name only, so no command line.
+    stack.fake.set(|fake| {
+        fake.processes
+            .insert("001", vec![process("claude", "", "", SECOND)]);
+    });
+    sync_edr_devices(&stack.repository, &stack.config, T0 + 2 * HOUR)
+        .await
+        .unwrap();
+    let second = json!([
+        "001",
+        SECOND_AT,
+        "claude-code",
+        "Anas-MacBook-Pro.local",
+        T0 + 2 * HOUR,
+        null
+    ]);
+    assert_eq!(stack.sightings().await, json!([windows, first, second]));
+
+    // The manager drops the device: its record stays, and goes only once 30 days old.
+    stack
+        .fake
+        .set(|fake| fake.agents.retain(|agent| agent["id"] != "001"));
+    sync_edr_devices(&stack.repository, &stack.config, T0 + 3 * HOUR)
+        .await
+        .unwrap();
+    assert_eq!(stack.sightings().await, json!([windows, first, second]));
+    sync_edr_devices(&stack.repository, &stack.config, FIRST_AT + 30 * DAY + 1)
+        .await
+        .unwrap();
+    assert_eq!(stack.sightings().await, json!([second]));
+    sync_edr_devices(&stack.repository, &stack.config, SECOND_AT + 30 * DAY + 1)
+        .await
+        .unwrap();
+    assert_eq!(stack.sightings().await, Value::Null);
+    stack.stop().await;
+}
+
+#[tokio::test]
 async fn the_schema_names_what_the_viewer_reads() {
     let Some(stack) = Stack::start().await else {
         return;
@@ -505,8 +672,57 @@ async fn the_schema_names_what_the_viewer_reads() {
             "serial text",
             "last_seen bigint",
             "agent text",
-            "synced_at bigint"
+            "synced_at bigint",
+            "running_at bigint"
         ])
+    );
+    assert_eq!(
+        columns("edr_sightings").await,
+        json!([
+            "agent_id text",
+            "running_at bigint",
+            "agent text",
+            "name text",
+            "synced_at bigint",
+            "command text"
+        ])
+    );
+    // A database from before `command` gains it, keeping its sightings.
+    stack
+        .db
+        .batch_execute(
+            "INSERT INTO edr_sightings (agent_id, running_at, agent, synced_at) \
+             VALUES ('001', 4, 'codex', 5); \
+             ALTER TABLE edr_sightings DROP COLUMN command",
+        )
+        .await
+        .unwrap();
+    PgGraphRepository::connect(&stack.url, 1).await.unwrap();
+    assert_eq!(
+        columns("edr_sightings").await.as_array().unwrap().last(),
+        Some(&json!("command text"))
+    );
+    assert_eq!(
+        stack.sightings().await,
+        json!([["001", 4, "codex", null, 5, null]])
+    );
+    // A database from before `running_at` gains it, keeping its devices.
+    stack
+        .db
+        .batch_execute(
+            "INSERT INTO edr_devices (agent_id, agent, synced_at) VALUES ('001', 'codex', 5); \
+             ALTER TABLE edr_devices DROP COLUMN running_at",
+        )
+        .await
+        .unwrap();
+    PgGraphRepository::connect(&stack.url, 1).await.unwrap();
+    assert_eq!(
+        columns("edr_devices").await.as_array().unwrap().last(),
+        Some(&json!("running_at bigint"))
+    );
+    assert_eq!(
+        stack.devices().await,
+        json!([["001", null, null, null, null, null, "codex", 5, null]])
     );
     let clients = columns("clients").await;
     for column in ["edr_agent_id text", "edr_status text"] {
@@ -531,6 +747,16 @@ async fn the_schema_names_what_the_viewer_reads() {
     assert_eq!(stack.clients().await, json!([["t/old", null, null]]));
     assert_eq!(stack.devices().await, Value::Null);
     stack.stop().await;
+}
+
+/// When the process scans of the first sync ran.
+const SCANNED: &str = "2021-05-26T12:30:00Z";
+const SCANNED_AT: i64 = 1_622_032_200_000;
+const LATER: &str = "2021-05-26T12:35:00Z";
+
+/// A process as `GET /syscollector/{agent_id}/processes` lists it.
+fn process(name: &str, cmd: &str, argvs: &str, scanned: &str) -> Value {
+    json!({"name": name, "cmd": cmd, "argvs": argvs, "scan": {"id": 0, "time": scanned}})
 }
 
 /// Six agents as `GET /agents` lists them: the manager itself, and one of each status.
@@ -560,7 +786,7 @@ fn company() -> Vec<Value> {
 struct Fake {
     agents: Vec<Value>,
     hardware: HashMap<&'static str, Value>,
-    processes: HashMap<&'static str, Vec<&'static str>>,
+    processes: HashMap<&'static str, Vec<Value>>,
     packages: HashMap<&'static str, Vec<&'static str>>,
     /// Agents whose inventory the manager answers with HTTP 400.
     refused: Vec<&'static str>,
@@ -690,30 +916,56 @@ async fn answer(
     if fake.refused.contains(&agent) {
         return problem(400, "Bad Request", "agent has no inventory");
     }
-    let named = |names: Option<&Vec<&'static str>>| {
-        // As the manager applies `q=name~claude,name~codex`.
-        if query.get("q").map(String::as_str) != Some("name%7Eclaude%2Cname%7Ecodex") {
-            return problem(400, "Bad Request", "unexpected q");
-        }
-        let found: Vec<Value> = names
-            .into_iter()
-            .flatten()
-            .filter(|name| {
-                let name = name.to_lowercase();
-                name.contains("claude") || name.contains("codex")
-            })
-            .map(|name| json!({"name": name}))
-            .collect();
-        let total = found.len();
-        items(found, total)
+    // As the manager applies `q`: any of these fields holding either word, in any case.
+    let like = |fields: &[&str], item: &Value| {
+        fields.iter().any(|field| {
+            let value = item[*field].as_str().unwrap_or_default().to_lowercase();
+            value.contains("claude") || value.contains("codex")
+        })
+    };
+    let expected = |q: &str, select: &str| {
+        query.get("q").map(String::as_str) == Some(q)
+            && query.get("select").map(String::as_str) == Some(select)
     };
     match kind {
         "hardware" => match fake.hardware.get(agent) {
             Some(hardware) => items(vec![hardware.clone()], 1),
             None => items(vec![], 0),
         },
-        "processes" => named(fake.processes.get(agent)),
-        "packages" => named(fake.packages.get(agent)),
+        "processes" => {
+            if !expected(
+                "name%7Eclaude%2Cname%7Ecodex%2Ccmd%7Eclaude%2Ccmd%7Ecodex%2Cargvs%7Eclaude\
+                 %2Cargvs%7Ecodex",
+                "name%2Ccmd%2Cargvs%2Cscan.time",
+            ) {
+                return problem(400, "Bad Request", "unexpected q or select");
+            }
+            let found: Vec<Value> = fake
+                .processes
+                .get(agent)
+                .into_iter()
+                .flatten()
+                .filter(|process| like(&["name", "cmd", "argvs"], process))
+                .cloned()
+                .collect();
+            let total = found.len();
+            items(found, total)
+        }
+        "packages" => {
+            if !expected("name%7Eclaude%2Cname%7Ecodex", "name") {
+                return problem(400, "Bad Request", "unexpected q or select");
+            }
+            let found: Vec<Value> = fake
+                .packages
+                .get(agent)
+                .into_iter()
+                .flatten()
+                .map(|name| json!({"name": name}))
+                .filter(|package| like(&["name"], package))
+                .collect();
+            let total = found.len();
+            items(found, total)
+        }
         _ => problem(404, "Not Found", "no such inventory"),
     }
 }
@@ -773,7 +1025,21 @@ impl Stack {
         self.db
             .query_one(
                 "SELECT jsonb_agg(jsonb_build_array(agent_id, name, os, status, serial, \
-                 last_seen, agent, synced_at) ORDER BY agent_id) FROM edr_devices",
+                 last_seen, agent, synced_at, running_at) ORDER BY agent_id) FROM edr_devices",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get::<_, Option<Value>>(0)
+            .unwrap_or(Value::Null)
+    }
+
+    /// Every row of `edr_sightings`, by agent ID and scan.
+    async fn sightings(&self) -> Value {
+        self.db
+            .query_one(
+                "SELECT jsonb_agg(jsonb_build_array(agent_id, running_at, agent, name, synced_at, \
+                 command) ORDER BY agent_id, running_at) FROM edr_sightings",
                 &[],
             )
             .await

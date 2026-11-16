@@ -32,8 +32,15 @@ pub struct EdrDevice {
     pub serial: Option<String>,
     /// When the EDR last heard from it, epoch milliseconds.
     pub last_seen: Option<i64>,
-    /// `claude-code` or `codex` when the EDR's inventory shows that program on the device.
+    /// `claude-code` or `codex` when the EDR's inventory shows that program on the device: a
+    /// process running at the last scan, else an installed package.
     pub agent: Option<String>,
+    /// The latest process scan, epoch milliseconds, that found a coding agent running; none
+    /// when none was running at the last scan.
+    pub running_at: Option<i64>,
+    /// The command line of the coding-agent process that scan found, when Wazuh gave one;
+    /// kept in `edr_sightings` only.
+    pub command: Option<String>,
 }
 
 /// What a registered device is matched by.

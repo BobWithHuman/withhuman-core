@@ -228,12 +228,58 @@ CREATE TABLE IF NOT EXISTS edr_devices (
   serial     text,
   -- When the manager last heard from the agent, epoch milliseconds.
   last_seen  bigint,
-  -- `claude-code` or `codex` when the EDR's process or package inventory shows that program;
-  -- NULL says only that none was seen.
+  -- `claude-code` or `codex` when the EDR's inventory shows that program: a process running at
+  -- the last scan that is exactly that program (named `claude` or `codex`, run from such a
+  -- path, from Claude Code's native install, or from the npm package under `node`; the
+  -- Claude desktop app's `Claude…` processes are not), else an installed package with either
+  -- word in its name other than the desktop app's `Claude`. NULL says only that none was seen.
   agent      text,
   -- The sync that last wrote the row: the same for every row.
-  synced_at  bigint NOT NULL
+  synced_at  bigint NOT NULL,
+  -- The latest process scan that found such a process running, epoch milliseconds; NULL when
+  -- none was running at the last scan, including when only a package shows the program.
+  running_at bigint
 );
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                 AND table_name = 'edr_devices' AND column_name = 'running_at') THEN
+    ALTER TABLE edr_devices ADD COLUMN running_at bigint;
+  END IF;
+END
+$$;
+
+-- Each process scan that found a coding agent running on an EDR device, as the syncs saw it: a
+-- row per device and scan, never updated. A device the manager no longer lists keeps its rows;
+-- every sync deletes the rows whose scan is more than 30 days before it. Set against the
+-- device's Hook sessions, consecutive rows show a coding agent running without them.
+CREATE TABLE IF NOT EXISTS edr_sightings (
+  -- `edr_devices.agent_id` at the time.
+  agent_id    text   NOT NULL,
+  -- The scan's time (`edr_devices.running_at`), epoch milliseconds.
+  running_at  bigint NOT NULL,
+  -- `claude-code` or `codex`.
+  agent       text   NOT NULL,
+  -- The device's name at the time.
+  name        text,
+  -- The sync that first saw the scan.
+  synced_at   bigint NOT NULL,
+  -- The command line of the coding-agent process the scan found: `cmd` and `argvs` joined by
+  -- spaces, cut to 1000 characters, as the sync first saw it (`claude -p …`,
+  -- `claude --resume …`). NULL when Wazuh gave neither: macOS reports a process's name only,
+  -- Windows its executable's path without arguments.
+  command     text,
+  PRIMARY KEY (agent_id, running_at)
+);
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                 AND table_name = 'edr_sightings' AND column_name = 'command') THEN
+    ALTER TABLE edr_sightings ADD COLUMN command text;
+  END IF;
+END
+$$;
+CREATE INDEX IF NOT EXISTS edr_sightings_running_at ON edr_sightings (running_at);
 
 -- INSTALLED_IN: a project folder a setup wrote the Hooks into.
 CREATE TABLE IF NOT EXISTS client_projects (
@@ -417,7 +463,7 @@ BEGIN
     GRANT SELECT ON
       sessions, event_commits, nodes, subgraphs, paragraphs, tokens, token_mentions, files,
       file_refs, cause_edges, pending_paragraph_enrichments, pending_request_continuations,
-      clients, client_projects, users, key_events, edr_devices, session_marks,
+      clients, client_projects, users, key_events, edr_devices, edr_sightings, session_marks,
       distrusted_sources
     TO withhuman_viewer;
     GRANT SELECT (key_id, user_email, created_at, created_by, note, last_used_at, revoked_at,

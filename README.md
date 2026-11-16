@@ -195,8 +195,8 @@ PostgreSQL on `127.0.0.1:15432` (`POSTGRES_PORT`):
 With `WITHHUMAN_WAZUH_URL` set, the Generator reads the company's device list from a Wazuh
 manager every `WITHHUMAN_WAZUH_SYNC_INTERVAL_SECS` and keeps it in `edr_devices`, one row per
 Wazuh agent: `agent_id`, `name`, `os`, `status` (`active`, `disconnected`, `never_connected`,
-`pending`), `serial` (the board serial of the hardware inventory), `last_seen`, `agent` and
-`synced_at`. The table mirrors the manager: a device it no longer lists is removed, and a sync
+`pending`), `serial` (the board serial of the hardware inventory), `last_seen`, `agent`,
+`running_at` and `synced_at`. The table mirrors the manager: a device it no longer lists is removed, and a sync
 that fails changes nothing and is tried again at the next interval. Without the URL nothing runs.
 
 Each sync then matches the registered devices: `clients.edr_agent_id` and `clients.edr_status`
@@ -205,10 +205,42 @@ known must be equal (firmware placeholders such as `To Be Filled By O.E.M.` coun
 when either is unknown, the hostnames decide, compared without case or domain (`Mac-1.local` is
 `mac-1`). Every client row of a machine, one per OS account, gets the same agent.
 
-`edr_devices.agent` is `claude-code` or `codex` when a process running at the agent's last
-inventory scan, or an installed package, has `claude` or `codex` in its name. NULL means only that
-none was seen: a program that was not running at the scan and was installed outside a package
-manager Wazuh reads leaves no trace, and a name is all that is compared.
+`edr_devices.agent` is `claude-code` or `codex` (Claude Code first when both show):
+
+- from a process running at the agent's last inventory scan, when it is exactly that program:
+  its `name` is `claude` or `codex` (`claude.exe` on Windows), or its `cmd` or one of its
+  `argvs` is a path whose last segment is that name, a path into Claude Code's native install
+  (`~/.local/share/claude/versions/2.1.3`, which runs under its version's name), or a path
+  into the npm package `@anthropic-ai/claude-code` or `@openai/codex` (run under `node`). Case
+  counts, so the Claude desktop app's processes (`Claude`, `Claude Helper (Renderer)`) are not
+  Claude Code;
+- otherwise from an installed package with `claude` or `codex` in its name in any case
+  (`@anthropic-ai/claude-code`, `claude-code`, `codex`, `Codex CLI`), except the desktop app's
+  (`Claude`, or `Claude ` followed by anything but `Code`).
+
+`edr_devices.running_at` is when such a process was last seen running: the latest `scan.time`
+of the processes that pass, epoch milliseconds. It is NULL when none was running at the last
+scan, including when only a package shows the program; a viewer can set it against the
+device's Hook sessions to find a coding agent running without them. NULL in either column means
+only that nothing was seen: the agent's process inventory is a snapshot every scan interval
+(an hour by default), a program installed outside a package manager Wazuh reads leaves no trace
+while it is not running, and on macOS Wazuh reports a process's name only, without its command
+line, so Claude Code or Codex installed with npm (`node`) is not seen running there.
+
+`edr_sightings` keeps what `running_at` overwrites: one row per device and process scan that
+found a coding agent running, `agent_id`, `running_at` (the scan's time), `agent`, `name` (the
+device's name then), `synced_at` (the sync that first saw it) and `command`, keyed by `agent_id`
+and `running_at`. `command` is the command line of the process the scan found (`claude -p …`,
+`claude --resume <session>`, `codex exec …`): its `cmd` and `argvs` joined by spaces, cut to
+1000 characters; among several processes of the scan, one of the agent named and with
+arguments. What Wazuh reports differs by system: Linux gives the whole command line, Windows
+the executable's path only and macOS the process's name only, so there `command` is a path or
+NULL. A scan seen again by a later sync adds nothing and keeps the command line first seen, a
+device with `running_at` NULL adds nothing, and a device the manager no longer lists keeps its
+rows. Each sync deletes the
+rows whose scan is more than 30 days before it (`SIGHTING_RETENTION`). The engine only records
+the scans: telling them apart from Hook sessions, and grouping consecutive ones, is the
+viewer's.
 
 | Variable | Default | |
 |---|---|---|
