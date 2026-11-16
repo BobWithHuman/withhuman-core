@@ -222,13 +222,12 @@ fn deviation(expected: &[(&str, f64)], none: f64, explicit: f64) -> Deviation {
 #[test]
 fn clears_a_call_jev_finds_breaks_nothing_with_little_doubt() {
     let file = change("/repo/core.py", &["x"], &[]);
-    let clear = check(
-        &deviation(&[("hijacked_goal", 0.1)], 0.9, 0.05),
-        Link::Segment,
-        &file,
-    );
+    let little = deviation(&[("hijacked_goal", 0.1)], 0.9, 0.05);
+    let clear = check(&little, Link::Segment, &Effect::Other);
     assert_eq!(clear.branch, Branch::Clear);
     assert_eq!(clear.verdict(None), Some(Verdict::Allow));
+    // A file change is never cleared on the first question alone.
+    assert_eq!(check(&little, Link::Segment, &file).branch, Branch::File);
 
     // Doubt, the user's word in question, or a Call following from nothing: checked.
     for (deviation, link) in [

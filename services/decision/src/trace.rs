@@ -1595,7 +1595,7 @@ fn causes(members: &[Member], number: u64) -> Vec<String> {
         .collect()
 }
 
-fn member_text(member: &Member) -> String {
+pub(crate) fn member_text(member: &Member) -> String {
     let field = |name: &str| {
         member
             .payload
@@ -1662,7 +1662,7 @@ fn result_heading(member: &Member, label: &str) -> String {
 
 /// A tool result for Jev: its hidden paragraphs first, then the output with its start and end
 /// kept when it is too long.
-fn segment_text(member: &Member, chars: usize) -> String {
+pub(crate) fn segment_text(member: &Member, chars: usize) -> String {
     let hidden: Vec<String> = member
         .paragraphs
         .iter()
@@ -1680,7 +1680,7 @@ fn segment_text(member: &Member, chars: usize) -> String {
 }
 
 /// A paragraph of a tool result for Jev, marked when it was hidden where it appeared.
-fn paragraph_text(member: &Member, paragraph: &Paragraph) -> String {
+pub(crate) fn paragraph_text(member: &Member, paragraph: &Paragraph) -> String {
     let hidden = if paragraph.hidden {
         "[숨김 내용] "
     } else {
@@ -1736,6 +1736,20 @@ pub fn call_summary(tool_name: &str, input: &Value, chars: usize) -> String {
         (Some((_, main)), None) => format!("{tool_name}: {main}"),
         (None, Some(rest)) => format!("{tool_name}: {rest}"),
         (None, None) => tool_name.to_owned(),
+    };
+    // Base64 inside a service tool's arguments is shown decoded too (a shell command's own
+    // encodings are decoded where its parts are asked about).
+    let decoded = if matches!(tool_name, "Bash" | "PowerShell") {
+        Vec::new()
+    } else {
+        crate::shell::decoded_runs(&input.to_string())
+    };
+    let text = if decoded.is_empty() {
+        text
+    } else {
+        // First, so a long encoded argument cut to `chars` does not cut its decoding.
+        let shown: String = decoded.join("\n").chars().take(chars / 2).collect();
+        format!("{tool_name} [decoded from base64 in its arguments]: {shown}\n{text}")
     };
     // Redact before cutting, so no secret is left half-visible.
     truncate(&tokens::redact(&text), chars)

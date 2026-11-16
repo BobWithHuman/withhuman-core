@@ -50,42 +50,12 @@ pub fn chunk_text(text: &str, profile: Profile) -> Vec<Chunk> {
     chunk_text_from(text, profile, Origin::External)
 }
 
-/// How text is split, beyond the profile.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct ChunkOptions {
-    /// A thematic break line (`---`, `***`, `___`, alone on its line) starts a paragraph instead
-    /// of being absorbed into a short one before it. Without it an issue's last short sentence
-    /// and a note appended after a `---` became one paragraph, so the fix that followed the
-    /// sentence looked as if it followed the note.
-    pub break_at_rules: bool,
-}
-
-impl ChunkOptions {
-    /// Read once from `WITHHUMAN_CHUNK_BREAK_AT_RULES` (`1` on); unset keeps the old split.
-    pub fn from_env() -> Self {
-        static OPTIONS: LazyLock<ChunkOptions> = LazyLock::new(|| ChunkOptions {
-            break_at_rules: matches!(
-                std::env::var("WITHHUMAN_CHUNK_BREAK_AT_RULES").as_deref(),
-                Ok("1") | Ok("true")
-            ),
-        });
-        *OPTIONS
-    }
-}
-
 /// Splits content from `origin`; hidden-content rules for rendered content apply only to
-/// [`Origin::External`] text.
+/// [`Origin::External`] text. A thematic break line (`---`, `***`, `___`, alone on its line)
+/// starts a paragraph instead of being absorbed into a short one before it: an issue's last short
+/// sentence and a note appended after a `---` became one paragraph, so the fix that followed the
+/// sentence looked as if it followed the note.
 pub fn chunk_text_from(text: &str, profile: Profile, origin: Origin) -> Vec<Chunk> {
-    chunk_text_with(text, profile, origin, ChunkOptions::from_env())
-}
-
-/// [`chunk_text_from`] with explicit `options`.
-pub fn chunk_text_with(
-    text: &str,
-    profile: Profile,
-    origin: Origin,
-    options: ChunkOptions,
-) -> Vec<Chunk> {
     let text = text.replace("\r\n", "\n").replace('\r', "\n");
     // Each paragraph keeps the byte range it came from, so hidden content found anywhere in the
     // text (even spanning paragraphs) marks exactly the paragraphs it touches.
@@ -114,7 +84,7 @@ pub fn chunk_text_with(
                     && !long
                     && last_chars < SHORT_CHARS
                     && last_chars + 1 + chars(&piece) <= MAX_CHARS
-                    && !(options.break_at_rules && is_thematic_break(&piece))
+                    && !is_thematic_break(&piece)
                 {
                     last.push('\n');
                     last.push_str(&piece);

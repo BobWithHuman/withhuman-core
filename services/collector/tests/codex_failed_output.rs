@@ -1,7 +1,7 @@
 //! A Codex shell command that ran and exited non-zero keeps its output.
 
 use serde_json::{Value, json};
-use withhuman_collector::codex::{CodexOptions, Translated, translate, translate_with};
+use withhuman_collector::codex::{Translated, translate};
 use withhuman_contracts::codex::{CodexHookEvent, CodexHookInput, CodexShell};
 
 const OUTPUT: &str = "Chunk ID: 1\nWall time: 0.2 seconds\nProcess exited with code 1\nOutput:\n\
@@ -18,45 +18,15 @@ fn failed(command: &str, response: Value) -> CodexHookInput {
     .unwrap()
 }
 
-const KEEP: CodexOptions = CodexOptions {
-    failed_output_kept: true,
-};
 const READ_AND_TEST: &str =
     "Get-Content AGENT_INSTRUCTIONS.md; Get-Content src\\core.py; pytest -q";
 
 #[test]
-fn by_default_a_failed_command_is_a_failure_with_its_exit_code_only() {
-    let translation = translate_with(
+fn a_failed_command_is_a_result_with_what_it_printed() {
+    let translation = translate(
         CodexHookEvent::PostToolUse,
         failed(READ_AND_TEST, json!(OUTPUT)),
         CodexShell::PowerShell,
-        CodexOptions::default(),
-    )
-    .unwrap();
-    let Translated::PostToolUseFailure(request) = translation.request else {
-        panic!("expected PostToolUseFailure");
-    };
-    assert_eq!(request.error, "exit code 1");
-    // `translate` reads the option from the environment, unset here.
-    assert!(matches!(
-        translate(
-            CodexHookEvent::PostToolUse,
-            failed(READ_AND_TEST, json!(OUTPUT)),
-            CodexShell::PowerShell
-        )
-        .unwrap()
-        .request,
-        Translated::PostToolUseFailure(_)
-    ));
-}
-
-#[test]
-fn kept_a_failed_command_is_a_result_with_what_it_printed() {
-    let translation = translate_with(
-        CodexHookEvent::PostToolUse,
-        failed(READ_AND_TEST, json!(OUTPUT)),
-        CodexShell::PowerShell,
-        KEEP,
     )
     .unwrap();
     let Translated::PostToolUse(request) = translation.request else {
@@ -68,13 +38,12 @@ fn kept_a_failed_command_is_a_result_with_what_it_printed() {
 }
 
 #[test]
-fn kept_still_a_failure_when_nothing_was_printed_or_it_is_not_a_command() {
+fn still_a_failure_when_nothing_was_printed_or_it_is_not_a_command() {
     for response in [json!(""), json!("   \n"), Value::Null] {
-        let translation = translate_with(
+        let translation = translate(
             CodexHookEvent::PostToolUse,
             failed(READ_AND_TEST, response),
             CodexShell::PowerShell,
-            KEEP,
         )
         .unwrap();
         assert!(matches!(
@@ -83,14 +52,13 @@ fn kept_still_a_failure_when_nothing_was_printed_or_it_is_not_a_command() {
         ));
     }
     // A shell write translated to Write stays a failed write.
-    let translation = translate_with(
+    let translation = translate(
         CodexHookEvent::PostToolUse,
         failed(
             "Set-Content -LiteralPath 'a.txt' -Value 'hello'",
             json!(OUTPUT),
         ),
         CodexShell::PowerShell,
-        KEEP,
     )
     .unwrap();
     assert!(matches!(

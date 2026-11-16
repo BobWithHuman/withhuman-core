@@ -273,17 +273,20 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
     assert!(!decision["reason"].as_str().unwrap().contains("README 요약"));
 
     // One request offers the prompt, s1's tool results and `none`; the hidden paragraph of s1
-    // makes s1 the parent. A second checks the Call, in doubt, against the user's prompt.
+    // makes s1 the parent. A second checks the Call, in doubt, against the user's prompt, part
+    // by part; a third asks what the path from the prompt to the Call shows it carries out.
     let requests = jev.requests.lock().unwrap().clone();
-    assert_eq!(requests.len(), 2, "{requests:?}");
-    assert_eq!(
-        requests[1].1["questions"]
+    assert_eq!(requests.len(), 3, "{requests:?}");
+    let keys = |index: usize| -> Vec<String> {
+        requests[index].1["questions"]
             .as_object()
             .unwrap()
             .keys()
-            .collect::<Vec<_>>(),
-        ["purpose"]
-    );
+            .cloned()
+            .collect()
+    };
+    assert_eq!(keys(1), ["concern", "part"]);
+    assert_eq!(keys(2), ["causal", "counterfactual"]);
     for (authorization, request) in &requests {
         assert_eq!(authorization.as_deref(), Some("Bearer test-key"));
         assert_eq!(request["model"], "jev-1.14.0");
@@ -324,7 +327,7 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
 
     // Deciding the same Call again replaces its cause edges instead of adding more.
     send(&client, &deciding, "PreToolUse", call).await;
-    assert_eq!(jev.requests.lock().unwrap().len(), 4);
+    assert_eq!(jev.requests.lock().unwrap().len(), 6);
     assert_eq!(cause_paragraph(&database_url, &session_id).await, rows);
 }
 

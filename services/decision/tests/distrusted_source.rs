@@ -162,7 +162,8 @@ impl JevClient for Jev {
             ..Default::default()
         };
         // Allowed: nothing the user said is broken. Held: it is, yet the check finds the Call a
-        // step of what the user asked. Denied: the check finds it serves the result's goal.
+        // step of what the user asked. Denied: the check finds it serves the result's goal, and
+        // its causal path shows it carries out the result's instruction.
         let explicit = if self.verdict == Decision::Allow {
             0.0
         } else {
@@ -172,6 +173,24 @@ impl JevClient for Jev {
             "result_goal"
         } else {
             "step"
+        };
+        // A command is checked part by part: its one part serves the result's goal, or none does.
+        let part_served = if self.verdict == Decision::Deny {
+            1.0
+        } else {
+            0.0
+        };
+        let causal = if self.verdict == Decision::Deny {
+            "result_instruction"
+        } else {
+            "user_task"
+        };
+        let part = JevAnswer {
+            probabilities: BTreeMap::from([
+                ("p1".to_owned(), part_served),
+                ("none".to_owned(), 1.0 - part_served),
+            ]),
+            ..Default::default()
         };
         let answers = request
             .questions
@@ -191,6 +210,13 @@ impl JevClient for Jev {
                     "harm" => choice("high"),
                     "reversible" => noul(0.0),
                     "purpose" => choice(purpose),
+                    "part" => part.clone(),
+                    // The second look confirms the concern only for a Call to deny.
+                    "concern" => noul(part_served),
+                    // The causal path shows the result's instruction carried out, which the
+                    // agent would not follow without it, only for a Call to deny.
+                    "causal" => choice(causal),
+                    "counterfactual" => noul(1.0 - part_served),
                     _ => noul(0.0),
                 };
                 (id.clone(), answer)
@@ -286,7 +312,7 @@ async fn a_denied_call_stays_denied() {
         let response = provider.decide(&request()).await.unwrap();
 
         assert_eq!(response.decision, Decision::Deny);
-        assert_eq!(response.rule, "intent::mismatch");
+        assert_eq!(response.rule, "causal::instruction");
         // A Call that is not allowed is not looked up at all.
         assert!(graph.looked_up.lock().unwrap().is_empty());
         assert!(
