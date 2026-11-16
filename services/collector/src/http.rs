@@ -34,7 +34,7 @@ use crate::{
     codex::{self, Translated},
     inventory::{self, USER_HEADER},
     keys::KeyVerifier,
-    redis_connection,
+    redis_connection, triage,
 };
 
 pub(crate) const CLIENT_HEADER: &str = "x-withhuman-client";
@@ -158,6 +158,11 @@ pub fn app_with_transport(service: CollectorService) -> Router {
             "/v1/admin/users/{email}/revoke",
             post(inventory::revoke_user),
         )
+        .route(
+            "/v1/admin/sessions/{session_id}/mark",
+            post(triage::mark_session),
+        )
+        .route("/v1/admin/sources/distrust", post(triage::distrust_source))
         .route("/api-docs/openapi.json", get(openapi_document))
         .route("/swagger-ui", get(swagger_ui))
         .route("/swagger-ui/", get(swagger_ui))
@@ -188,11 +193,14 @@ pub fn app_with_transport(service: CollectorService) -> Router {
         inventory::revoke_key,
         inventory::revoke_user,
         inventory::clients,
-        inventory::set_client_owner
+        inventory::set_client_owner,
+        triage::mark_session,
+        triage::distrust_source
     ),
     tags(
         (name = "Collector", description = "Claude Code Hook ingestion and enforcement API"),
-        (name = "Inventory", description = "Device registration and per-user WithHuman keys")
+        (name = "Inventory", description = "Device registration and per-user WithHuman keys"),
+        (name = "Triage", description = "The security team's session marks, distrusted sources and Call evidence")
     )
 )]
 struct CollectorApiDoc;

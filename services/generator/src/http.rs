@@ -25,6 +25,7 @@ use withhuman_contracts::inventory::{
     ClientRegistrationRecord, KeyDenial, NewKey, RevokeKeyRequest, SetOwnerRequest,
     VerifyKeyRequest,
 };
+use withhuman_contracts::triage::{DistrustSourceRequest, MarkSessionRequest};
 
 use crate::{DecisionClient, GeneratorEvent, GraphRepository, KeyScope, RepositoryError};
 
@@ -111,6 +112,8 @@ pub fn app(service: GeneratorService) -> Router {
             "/v1/sessions/{session_id}/calls/{tool_use_id}",
             get(tool_call),
         )
+        .route("/v1/sessions/{session_id}/mark", post(mark_session))
+        .route("/v1/sources/distrust", post(distrust_source))
         .route("/v1/clients", post(register_client).get(clients))
         .route("/v1/clients/{client_id}/owner", post(set_client_owner))
         .route("/v1/keys", get(all_keys))
@@ -155,7 +158,9 @@ pub fn app(service: GeneratorService) -> Router {
         user_keys,
         all_keys,
         revoke_key,
-        revoke_user
+        revoke_user,
+        mark_session,
+        distrust_source
     ),
     tags((name = "Generator", description = "Normalized event persistence and graph enrichment API"))
 )]
@@ -602,6 +607,53 @@ async fn revoke_user(
             .revoke_keys(KeyScope::User(&email), request, now())
             .await,
     )
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/sessions/{session_id}/mark",
+    tag = "Generator",
+    params(("session_id" = String, Path)),
+    request_body = MarkSessionRequest,
+    responses(
+        (status = 200, description = "The session with its mark, or `mark: null` once taken off", body = withhuman_contracts::triage::MarkedSession),
+        (status = 400, body = ErrorResponse),
+        (status = 404, description = "No such session", body = ErrorResponse)
+    )
+)]
+async fn mark_session(
+    State(service): State<GeneratorService>,
+    Path(session_id): Path<String>,
+    StrictJson(request): StrictJson<MarkSessionRequest>,
+) -> Response {
+    reply(
+        service
+            .repository
+            .mark_session(&session_id, request, now())
+            .await,
+    )
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/sources/distrust",
+    tag = "Generator",
+    request_body = DistrustSourceRequest,
+    responses(
+        (status = 200, description = "The source, distrusted or trusted again", body = withhuman_contracts::triage::SourceTrust),
+        (status = 400, description = "No source named", body = ErrorResponse)
+    )
+)]
+async fn distrust_source(
+    State(service): State<GeneratorService>,
+    StrictJson(request): StrictJson<DistrustSourceRequest>,
+) -> Response {
+    if request.source.trim().is_empty() {
+        return repository_error_response(RepositoryError::InvalidEvent(
+            "no source named".to_owned(),
+        ));
+    }
+    reply(service.repository.distrust_source(request, now()).await)
 }
 
 fn reply<T: Serialize>(result: Result<T, RepositoryError>) -> Response {

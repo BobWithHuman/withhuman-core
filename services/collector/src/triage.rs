@@ -1,0 +1,91 @@
+//! The security team's triage API (`/v1/admin/...`, with `WITHHUMAN_ADMIN_TOKEN`): marking a
+//! session (reviewing, attack, benign or closed), distrusting a source, and one Call's evidence. All of it is
+//! passed on to the Generator, which stores it. None of it changes how a Call is decided.
+
+use axum::{
+    extract::{Path, State},
+    http::{HeaderMap, StatusCode},
+    response::Response,
+};
+use serde_json::json;
+use withhuman_contracts::triage::{
+    DistrustSourceRequest, MarkSessionRequest, MarkedSession, SourceTrust,
+};
+
+use crate::{
+    http::{CollectorService, StrictJson},
+    inventory::{error, forward, not_admin},
+};
+
+/// Longest source the team may name, in bytes: room for a long URL.
+const SOURCE_LIMIT: usize = 4_096;
+
+#[utoipa::path(
+    post,
+    path = "/v1/admin/sessions/{session_id}/mark",
+    tag = "Triage",
+    params(
+        ("session_id" = String, Path, description = "The session's ID as one path segment, percent-encoded"),
+        ("Authorization" = String, Header, description = "`Bearer <WITHHUMAN_ADMIN_TOKEN>`")
+    ),
+    request_body = MarkSessionRequest,
+    responses(
+        (status = 200, description = "The session with its mark, or with `mark: null` once taken off. A later mark replaces an earlier one", body = MarkedSession),
+        (status = 400, description = "`state` missing, or not `reviewing`, `attack`, `benign`, `closed` or null"),
+        (status = 401, description = "Admin token missing or wrong"),
+        (status = 404, description = "No such session, or admin API disabled"),
+        (status = 502, description = "Generator unavailable")
+    )
+)]
+pub async fn mark_session(
+    State(service): State<CollectorService>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+    StrictJson(request): StrictJson<MarkSessionRequest>,
+) -> Response {
+    if let Some(response) = not_admin(&service, &headers) {
+        return response;
+    }
+    forward(
+        &service,
+        reqwest::Method::POST,
+        &["sessions", &session_id, "mark"],
+        Some(json!(request)),
+    )
+    .await
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/admin/sources/distrust",
+    tag = "Triage",
+    params(("Authorization" = String, Header, description = "`Bearer <WITHHUMAN_ADMIN_TOKEN>`")),
+    request_body = DistrustSourceRequest,
+    responses(
+        (status = 200, description = "The source, distrusted (`on: true`) or trusted again (`on: false`). Either may be repeated; distrusting again keeps the latest actor, time and Call", body = SourceTrust),
+        (status = 400, description = "`source` empty or longer than 4096 bytes, or the body not as documented"),
+        (status = 401, description = "Admin token missing or wrong"),
+        (status = 404, description = "Admin API disabled"),
+        (status = 502, description = "Generator unavailable")
+    )
+)]
+pub async fn distrust_source(
+    State(service): State<CollectorService>,
+    headers: HeaderMap,
+    StrictJson(request): StrictJson<DistrustSourceRequest>,
+) -> Response {
+    if let Some(response) = not_admin(&service, &headers) {
+        return response;
+    }
+    // The source is compared as written, so it is stored as written too.
+    if request.source.trim().is_empty() || request.source.len() > SOURCE_LIMIT {
+        return error(StatusCode::BAD_REQUEST, "invalid_source");
+    }
+    forward(
+        &service,
+        reqwest::Method::POST,
+        &["sources", "distrust"],
+        Some(json!(request)),
+    )
+    .await
+}

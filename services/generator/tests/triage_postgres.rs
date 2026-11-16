@@ -262,6 +262,127 @@ async fn a_source_is_distrusted_and_trusted_again() {
         .unwrap();
 }
 
+/// The routes the Collector passes the administrators' requests on to.
+#[tokio::test]
+async fn marks_and_sources_are_set_over_http() {
+    let Some(stack) = Stack::start().await else {
+        return;
+    };
+    let session = unique("http-mark");
+    stack.session(&session).await;
+    let url = &stack.url;
+    let path = format!("/v1/sessions/{session}/mark");
+
+    let (status, body) = send(
+        url,
+        "POST",
+        &path,
+        Some(json!({"state": "attack", "actor": "sec@example.com"})),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["session_id"], session);
+    assert_eq!(body["mark"]["state"], "attack");
+    assert_eq!(body["mark"]["set_by"], "sec@example.com");
+    // The Generator's clock, in milliseconds.
+    let set_at = body["mark"]["set_at"].as_u64().unwrap();
+    assert!(set_at > 1_700_000_000_000, "{set_at}");
+    assert_eq!(
+        stack
+            .db
+            .row(
+                "SELECT jsonb_build_array(state, set_by, set_at) FROM session_marks \
+                 WHERE session_id = $1",
+                &[&session]
+            )
+            .await,
+        json!(["attack", "sec@example.com", set_at])
+    );
+    let (status, body) = send(url, "POST", &path, Some(json!({"state": null}))).await;
+    assert_eq!((status, &body["mark"]), (200, &Value::Null));
+    for body in [
+        json!({"state": "unsure"}),
+        json!({"actor": "sec@example.com"}),
+    ] {
+        let (status, answer) = send(url, "POST", &path, Some(body)).await;
+        assert_eq!(
+            (status, answer["error"].as_str()),
+            (400, Some("invalid_json"))
+        );
+    }
+    let (status, body) = send(
+        url,
+        "POST",
+        "/v1/sessions/no-such-session/mark",
+        Some(json!({"state": "benign"})),
+    )
+    .await;
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (404, Some("graph_resource_not_found"))
+    );
+
+    let source = format!("https://example.com/{}/a b?x=/y", unique("http-source"));
+    let (status, body) = send(
+        url,
+        "POST",
+        "/v1/sources/distrust",
+        Some(
+            json!({"source": source, "on": true, "actor": "sec@example.com",
+                    "session_id": session, "seq": 3}),
+        ),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        (
+            &body["source"],
+            &body["distrusted"],
+            &body["set_by"],
+            &body["session_id"],
+            &body["seq"]
+        ),
+        (
+            &json!(source),
+            &json!(true),
+            &json!("sec@example.com"),
+            &json!(session),
+            &json!(3)
+        )
+    );
+    assert!(body["set_at"].as_u64().unwrap() >= set_at);
+    let (status, body) = send(
+        url,
+        "POST",
+        "/v1/sources/distrust",
+        Some(json!({"source": source, "on": false})),
+    )
+    .await;
+    assert_eq!((status, &body["distrusted"]), (200, &json!(false)));
+    assert_eq!(
+        stack
+            .db
+            .row(
+                "SELECT to_jsonb(count(*)) FROM distrusted_sources WHERE source = $1",
+                &[&source]
+            )
+            .await,
+        json!(0)
+    );
+    let (status, body) = send(
+        url,
+        "POST",
+        "/v1/sources/distrust",
+        Some(json!({"source": " ", "on": true})),
+    )
+    .await;
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (400, Some("invalid_enrichment"))
+    );
+    stack.db.remove(&session).await;
+}
+
 /// A Call the engine traced to a paragraph of a tool result, and one it traced to the request.
 #[tokio::test]
 async fn evidence_lays_out_a_call_with_what_caused_it() {
