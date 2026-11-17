@@ -3,6 +3,7 @@ mod decision;
 mod edr;
 mod event;
 mod http;
+mod pg_backtrack;
 mod pg_edr;
 mod pg_inventory;
 mod pg_repository;
@@ -19,5 +20,5 @@ pub use edr::{
 pub use event::GeneratorEvent;
 pub use http::{GeneratorService, app};
 pub use pg_repository::PgGraphRepository;
-pub use repository::{GraphRepository, KeyScope, ReindexReport, RepositoryError};
+pub use repository::{BacktrackReport, GraphRepository, KeyScope, ReindexReport, RepositoryError};
 pub use wazuh::{WazuhClient, WazuhError};

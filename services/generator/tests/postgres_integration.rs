@@ -778,6 +778,155 @@ async fn indexes_sensitive_tool_output_without_storing_it() {
     delete_session(&query, &session_id).await;
 }
 
+/// A password typed into a prompt and an API key a tool printed carry no label, so nothing
+/// recognizes them until the agent passes them on labelled. That Call traces them back: their
+/// earlier stored copies are masked and the earliest mention becomes the real source.
+#[tokio::test]
+async fn traces_an_unlabelled_secret_back_to_where_it_came_in() {
+    let Some((query, generator_url)) = start_without_decision().await else {
+        return;
+    };
+    let session_id = unique_session("generator-backtrack-it");
+    let client = reqwest::Client::new();
+    let steps = secret_steps();
+    post_steps(&client, &generator_url, &session_id, &steps).await;
+
+    assert_traced_back(&query, &session_id).await;
+    // The prompt and the result are the same events when the Collector sends them again.
+    post_steps(&client, &generator_url, &session_id, &steps[..3]).await;
+    assert_traced_back(&query, &session_id).await;
+
+    delete_session(&query, &session_id).await;
+}
+
+/// `backtrack-secrets` does for sessions recorded before ingest traced values back what ingest
+/// does now, from the masked token alone, and a second run changes nothing.
+#[tokio::test]
+async fn backtracks_secrets_recorded_before() {
+    let Ok(database_url) = std::env::var("POSTGRES_INTEGRATION_URL") else {
+        return;
+    };
+    let Some((query, generator_url)) = start_without_decision().await else {
+        return;
+    };
+    let session_id = unique_session("generator-backfill-it");
+    let client = reqwest::Client::new();
+    post_steps(&client, &generator_url, &session_id, &secret_steps()).await;
+    // As stored before: the earlier copies in clear and the agent's Call the first mention.
+    for (mask, value) in [
+        ("hunt…2abc", "hunter2abc"),
+        ("k3yA…5678", "k3yAbcd1234efgh5678"),
+    ] {
+        for statement in [
+            r#"UPDATE nodes SET payload_json = replace(payload_json, $2, $3) WHERE session_id = $1 AND "order" < 4"#,
+            r#"UPDATE event_commits SET event_json = replace(event_json, $2, $3) WHERE session_id = $1 AND "order" < 4"#,
+            r#"UPDATE paragraphs SET text = replace(text, $2, $3) WHERE session_id = $1"#,
+        ] {
+            query
+                .execute(statement, &[&session_id, &mask, &value])
+                .await;
+        }
+    }
+    for table in ["token_mentions", "tokens"] {
+        query
+            .execute(
+                &format!("DELETE FROM {table} WHERE session_id = $1 AND slot <> 'agent' AND key_kind IN ('password', 'api_key')"),
+                &[&session_id],
+            )
+            .await;
+    }
+    let before = stored_text(&query, &session_id).await;
+    assert!(before.contains("hunter2abc") && before.contains("k3yAbcd1234efgh5678"));
+
+    let repository = PgGraphRepository::connect(&database_url, 2).await.unwrap();
+    let report = repository.backtrack_secrets().await.unwrap();
+    assert!(report.traced >= 2, "{report:?}");
+    assert_traced_back(&query, &session_id).await;
+    let after = stored_text(&query, &session_id).await;
+    repository.backtrack_secrets().await.unwrap();
+    assert_eq!(stored_text(&query, &session_id).await, after);
+    assert_traced_back(&query, &session_id).await;
+
+    delete_session(&query, &session_id).await;
+}
+
+/// A prompt typing a password, a tool result printing an API key, and a Call passing both on
+/// labelled.
+fn secret_steps() -> Vec<(&'static str, u64, u64, Option<&'static str>, Value)> {
+    vec![
+        (
+            "UserPromptSubmit",
+            1,
+            0,
+            None,
+            json!({"prompt":"change my password to hunter2abc and use the staging key","kind":"user"}),
+        ),
+        (
+            "PreToolUse",
+            2,
+            0,
+            Some("t1"),
+            json!({"tool_name":"Bash","tool_input":{"command":"cat notes.txt"}}),
+        ),
+        (
+            "PostToolUse",
+            3,
+            0,
+            Some("t1"),
+            json!({"tool_name":"Bash","tool_input":{"command":"cat notes.txt"},
+                   "tool_response":"the staging key is k3yAbcd1234efgh5678 for now"}),
+        ),
+        (
+            "PreToolUse",
+            4,
+            0,
+            Some("t2"),
+            json!({"tool_name":"mcp__accounts__update",
+                   "tool_input":{"new_password":"hunter2abc","api_key":"k3yAbcd1234efgh5678"}}),
+        ),
+    ]
+}
+
+/// Every text the session stored: commits, node payloads and paragraphs.
+async fn stored_text(query: &QueryClient, session_id: &str) -> String {
+    Value::Array(
+        query
+            .one(
+                r#"SELECT jsonb_build_array((SELECT jsonb_agg(event_json ORDER BY "order") FROM event_commits WHERE session_id = $1), (SELECT jsonb_agg(payload_json ORDER BY "order") FROM nodes WHERE session_id = $1), (SELECT jsonb_agg(text ORDER BY seq, "index") FROM paragraphs WHERE session_id = $1))"#,
+                &[&session_id],
+            )
+            .await,
+    )
+    .to_string()
+}
+
+async fn assert_traced_back(query: &QueryClient, session_id: &str) {
+    let stored = stored_text(query, session_id).await;
+    for secret in ["hunter2abc", "k3yAbcd1234efgh5678"] {
+        assert!(!stored.contains(secret), "{secret} stored in {stored}");
+    }
+    assert!(
+        stored.contains("hunt…2abc") && stored.contains("k3yA…5678"),
+        "{stored}"
+    );
+    // The earliest mention of each key, and every node mentioning it, by order and slot.
+    let rows = query
+        .one(
+            r#"SELECT jsonb_build_array(jsonb_agg(jsonb_build_array(t.key_kind, n."order", n.kind, t.slot, t.node_seq = n.seq) ORDER BY t.key_kind, n."order")) FROM token_mentions m JOIN tokens t USING (session_id, key_kind, key, slot) JOIN nodes n ON n.session_id = m.session_id AND n.seq = m.node_seq WHERE m.session_id = $1 AND t.key_kind IN ('password', 'api_key')"#,
+            &[&session_id],
+        )
+        .await;
+    assert_eq!(
+        rows[0],
+        json!([
+            ["api_key", 3, "Segment", "external", true],
+            ["api_key", 4, "Call", "agent", true],
+            ["password", 1, "Request", "user", true],
+            ["password", 4, "Call", "agent", true],
+        ])
+    );
+}
+
 /// The program files a Call's hook attached are stored with the Call but are not values the
 /// agent wrote, so the Call does not mention their tokens.
 #[tokio::test]
@@ -1267,6 +1416,10 @@ impl QueryClient {
     async fn one(&self, sql: &str, params: &[&(dyn ToSql + Sync)]) -> Vec<Value> {
         let row = self.0.query_one(sql, params).await.unwrap();
         row.get::<_, Value>(0).as_array().unwrap().clone()
+    }
+
+    async fn execute(&self, sql: &str, params: &[&(dyn ToSql + Sync)]) {
+        self.0.execute(sql, params).await.unwrap();
     }
 
     async fn remove_session(&self, session_id: &str) {

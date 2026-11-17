@@ -32,6 +32,19 @@ pub struct ReindexReport {
     pub reindexed: usize,
 }
 
+/// Outcome of [`crate::PgGraphRepository::backtrack_secrets`]. Counts only, never a value.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BacktrackReport {
+    /// Tokens whose first mention in their session was the agent's.
+    pub scanned: usize,
+    /// Of those, the ones whose value was found again in the session's stored text.
+    pub recovered: usize,
+    /// Of those, the ones an earlier node now mentions.
+    pub traced: usize,
+    /// Stored rows (nodes, paragraphs, commits) whose copy of a value was masked.
+    pub masked: usize,
+}
+
 #[async_trait]
 pub trait GraphRepository: Send + Sync + 'static {
     async fn health(&self) -> Result<(), RepositoryError>;

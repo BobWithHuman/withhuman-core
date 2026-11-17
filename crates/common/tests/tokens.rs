@@ -1,6 +1,9 @@
 use std::borrow::Cow;
 
-use withhuman_common::tokens::{Category, Token, extract_tokens, redact, redact_field};
+use withhuman_common::tokens::{
+    Category, Token, extract_secrets, extract_tokens, mask_value, mentions, recover, redact,
+    redact_field,
+};
 
 fn of_kind(text: &str, kind: &str) -> Vec<Token> {
     extract_tokens(text)
@@ -405,4 +408,68 @@ fn redacts_fields_named_as_secrets() {
     assert_eq!(redact_field("max_tokens", "4096"), None);
     assert_eq!(redact_field("password", "${DB_PASSWORD}"), None);
     assert_eq!(redact_field("token", "abc1…6ghi"), None);
+}
+
+/// A labelled value comes with the value itself, for tracing it back through text stored before
+/// it was recognized; `Debug` never shows it.
+#[test]
+fn hands_out_the_value_behind_a_sensitive_token() {
+    let (tokens, secrets) =
+        extract_secrets(r#"{"new_password":"hunter2abc","url":"https://example.test"}"#);
+    assert!(tokens.iter().any(|token| token.kind == "url"));
+    assert_eq!(secrets.len(), 1);
+    let secret = &secrets[0];
+    assert_eq!(secret.token.kind, "password");
+    assert_eq!(secret.token.decoded, "hunt…2abc");
+    assert_eq!(secret.value(), "hunter2abc");
+    assert!(secret.traceable());
+    assert!(!format!("{secret:?}").contains("hunter2abc"));
+
+    // Plain words and short values would match unrelated text.
+    for plain in ["password: changeme", "password: 123456", "password: ab1"] {
+        let (_, secrets) = extract_secrets(plain);
+        assert!(secrets.iter().all(|secret| !secret.traceable()), "{plain}");
+    }
+    // Card numbers are recognized without a label, so there is nothing to trace back.
+    let (_, secrets) = extract_secrets("card 4111 1111 1111 1111");
+    assert!(secrets.iter().all(|secret| !secret.traceable()));
+}
+
+#[test]
+fn masks_a_value_only_where_it_stands_alone() {
+    let prompt =
+        r#"{"prompt":"change my password to hunter2abc.\nhunter2abc again, not hunter2abcd"}"#;
+    assert!(mentions(prompt, "hunter2abc"));
+    assert!(!mentions("xhunter2abc", "hunter2abc"));
+    assert_eq!(
+        mask_value(prompt, "hunter2abc", "hunt…2abc").as_deref(),
+        Some(r#"{"prompt":"change my password to hunt…2abc.\nhunt…2abc again, not hunter2abcd"}"#)
+    );
+    assert_eq!(mask_value("nothing here", "hunter2abc", "hunt…2abc"), None);
+    // JSON text holds a value with a quote or backslash escaped.
+    assert_eq!(
+        mask_value(r#"{"a":"p\"ss\\w0rd!"}"#, "p\"ss\\w0rd!", "p\"ss…w0rd!").as_deref(),
+        Some(r#"{"a":"p\"ss…w0rd!"}"#)
+    );
+}
+
+/// The backfill has only the key and the mask; it finds the value again by hashing what fits.
+#[test]
+fn recovers_a_value_from_its_key_and_mask() {
+    let (_, secrets) = extract_secrets("password: hunter2abc");
+    let token = &secrets[0].token;
+    let stored = r#"{"prompt":"set it to hunter2abc then hunt-not-it-2abc"}"#;
+    let secret = recover(stored, "password", &token.key, &token.decoded).expect("recovered");
+    assert_eq!(secret.value(), "hunter2abc");
+    assert_eq!(secret.token, *token);
+    assert!(recover("hunt…2abc only", "password", &token.key, &token.decoded).is_none());
+    assert!(recover(stored, "kr_rrn", &token.key, &token.decoded).is_none());
+
+    // A value of eight characters or fewer is masked whole.
+    let (_, secrets) = extract_secrets("password: s3cr3t!x");
+    let token = &secrets[0].token;
+    assert_eq!(token.decoded, "********");
+    let secret =
+        recover("use s3cr3t!x now", "password", &token.key, &token.decoded).expect("recovered");
+    assert_eq!(secret.value(), "s3cr3t!x");
 }
