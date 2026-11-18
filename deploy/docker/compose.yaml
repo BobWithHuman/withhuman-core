@@ -62,6 +62,8 @@ services:
       WITHHUMAN_DEVIATION_REVIEW: ${WITHHUMAN_DEVIATION_REVIEW:-0.15}
       WITHHUMAN_UNTRUSTED_DEVIATION_DENY: ${WITHHUMAN_UNTRUSTED_DEVIATION_DENY:-0.3}
       WITHHUMAN_UNTRUSTED_DEVIATION_REVIEW: ${WITHHUMAN_UNTRUSTED_DEVIATION_REVIEW:-0.15}
+      # Deny, rather than hold for review, what a distrusted source caused; see "Triage".
+      WITHHUMAN_DISTRUSTED_SOURCE_DENY: ${WITHHUMAN_DISTRUSTED_SOURCE_DENY:-0}
     depends_on:
       postgres:
         condition: service_healthy

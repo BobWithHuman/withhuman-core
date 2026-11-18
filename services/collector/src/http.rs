@@ -32,9 +32,10 @@ use crate::{
     InMemoryVerdictStore, NormalizeError, Normalizer, RedisSessionStore, RedisVerdictStore,
     ReviewPolicy, StoreError, StoredVerdict, VerdictStore,
     codex::{self, Translated},
+    devices::DeviceStops,
     inventory::{self, USER_HEADER},
     keys::KeyVerifier,
-    redis_connection,
+    redis_connection, triage,
 };
 
 pub(crate) const CLIENT_HEADER: &str = "x-withhuman-client";
@@ -67,6 +68,7 @@ pub struct CollectorService {
     pub verdicts: Arc<dyn VerdictStore>,
     pub keys: KeyVerifier,
     pub flags: crate::flags::FlagCache,
+    pub devices: DeviceStops,
     deliveries: Arc<crate::codex_delivery::Deliveries>,
 }
 
@@ -76,6 +78,7 @@ impl CollectorService {
         Self {
             keys: KeyVerifier::new(generator.clone(), config.key_cache),
             flags: crate::flags::FlagCache::new(generator.clone(), config.key_cache),
+            devices: DeviceStops::new(generator.clone(), config.key_cache),
             normalizer: Normalizer::default()
                 .with_history(generator.clone())
                 .with_network_commands(config.network_commands.clone())
@@ -99,6 +102,7 @@ impl CollectorService {
         Ok(Self {
             keys: KeyVerifier::new(generator.clone(), config.key_cache),
             flags: crate::flags::FlagCache::new(generator.clone(), config.key_cache),
+            devices: DeviceStops::new(generator.clone(), config.key_cache),
             deliveries: Arc::new(crate::codex_delivery::Deliveries::redis(connection.clone())),
             verdicts: Arc::new(RedisVerdictStore::new(
                 connection.clone(),
@@ -144,6 +148,14 @@ pub fn app_with_transport(service: CollectorService) -> Router {
         .merge(hooks)
         .route("/v1/clients/register", post(inventory::register_client))
         .route("/v1/admin/clients", get(inventory::clients))
+        .route(
+            "/v1/admin/clients/{client_id}/owner",
+            post(inventory::set_client_owner),
+        )
+        .route(
+            "/v1/admin/clients/{client_id}/stop",
+            post(inventory::stop_client),
+        )
         .route("/v1/admin/keys", get(inventory::all_keys))
         .route(
             "/v1/admin/keys/{key_id}/revoke",
@@ -166,6 +178,16 @@ pub fn app_with_transport(service: CollectorService) -> Router {
             post(inventory::release_session),
         )
         .route("/v1/admin/reviews", post(inventory::add_review))
+        .route(
+            "/v1/admin/sessions/{session_id}/mark",
+            post(triage::mark_session),
+        )
+        .route("/v1/admin/sessions/mark", post(triage::mark_sessions))
+        .route("/v1/admin/sources/distrust", post(triage::distrust_source))
+        .route(
+            "/v1/admin/sessions/{session_id}/calls/{seq}/evidence",
+            get(triage::evidence),
+        )
         .route("/api-docs/openapi.json", get(openapi_document))
         .route("/swagger-ui", get(swagger_ui))
         .route("/swagger-ui/", get(swagger_ui))
@@ -198,11 +220,18 @@ pub fn app_with_transport(service: CollectorService) -> Router {
         inventory::stop_session,
         inventory::release_session,
         inventory::add_review,
-        inventory::clients
+        inventory::clients,
+        inventory::set_client_owner,
+        inventory::stop_client,
+        triage::mark_session,
+        triage::mark_sessions,
+        triage::distrust_source,
+        triage::evidence
     ),
     tags(
         (name = "Collector", description = "Claude Code Hook ingestion and enforcement API"),
-        (name = "Inventory", description = "Device registration and per-user WithHuman keys")
+        (name = "Inventory", description = "Device registration and per-user WithHuman keys"),
+        (name = "Triage", description = "The security team's session marks, distrusted sources and Call evidence")
     )
 )]
 struct CollectorApiDoc;
@@ -619,6 +648,8 @@ async fn judge_call(
     let is_mcp = request.tool_name.starts_with("mcp__");
     let tool_name = request.tool_name.clone();
     let arguments = request.tool_input.clone();
+    // The Call's rule grade, for when the engine gives no judgment.
+    let graded = withhuman_common::grade::grade(&tool_name, &arguments);
     let deadline_ms = u64::try_from(service.config.decision_budget.as_millis()).ok();
     let event = match service
         .normalizer
@@ -632,7 +663,7 @@ async fn judge_call(
         .await
     {
         Ok(event) => tagged(event, tag),
-        Err(error) => return hook_failure(service, policy, error),
+        Err(error) => return hook_failure(service, policy, graded, error),
     };
     let result = tokio::time::timeout(
         service.config.decision_budget,
@@ -641,13 +672,14 @@ async fn judge_call(
     .await;
     let response = match result {
         Ok(Ok(response)) => response,
-        Ok(Err(error)) => return hook_failure(service, policy, error),
-        Err(_) => return hook_failure(service, policy, GeneratorError::Timeout),
+        Ok(Err(error)) => return hook_failure(service, policy, graded, error),
+        Err(_) => return hook_failure(service, policy, graded, GeneratorError::Timeout),
     };
     let Some(decision) = response.decision_response else {
         return hook_failure(
             service,
             policy,
+            graded,
             GeneratorError::InvalidResponse("missing decision_response".to_owned()),
         );
     };
@@ -655,6 +687,7 @@ async fn judge_call(
         return hook_failure(
             service,
             policy,
+            graded,
             GeneratorError::InvalidResponse("invalid decision semantics".to_owned()),
         );
     }
@@ -672,14 +705,14 @@ async fn judge_call(
         return StatusCode::OK.into_response();
     }
     if tag.is_some() && policy.failure == FailurePolicy::Closed && stored.is_err() {
-        return hook_failure(service, policy, "verdict store unavailable");
+        return hook_failure(service, policy, graded, "verdict store unavailable");
     }
     if !enforced_at_hook {
         // AgentGateway enforces this call and needs the stored verdict; without it the
         // extAuthz check denies, so the Hook answer follows the failure policy.
         return match stored {
             Ok(()) => StatusCode::OK.into_response(),
-            Err(error) => hook_failure(service, policy, error),
+            Err(error) => hook_failure(service, policy, graded, error),
         };
     }
     // The verdict is in hand, so a store failure must not override it (a DENY must never turn
@@ -1030,6 +1063,7 @@ pub(crate) fn blocking_response(
 fn hook_failure(
     service: &CollectorService,
     policy: HookPolicy,
+    graded: Option<withhuman_common::grade::Graded>,
     error: impl fmt::Display,
 ) -> Response {
     // Record and shadow modes observe only: a failure must not block either. (Record mode never
@@ -1039,6 +1073,28 @@ fn hook_failure(
     }
     match policy.failure {
         FailurePolicy::Open => StatusCode::OK.into_response(),
+        // A person can still decide a hard or impossible to undo Call when the
+        // client asks; anything else is blocked, reads included, since no judgment stands
+        // behind it.
+        FailurePolicy::Closed
+            if !policy.codex
+                && policy.review == ReviewPolicy::Ask
+                && graded.is_some_and(|graded| graded.grade.level() >= 2) =>
+        {
+            let graded = graded.unwrap_or(withhuman_common::grade::Graded {
+                grade: withhuman_common::grade::Grade::TWO_ONE,
+                reason: "unknown",
+            });
+            blocking_response(
+                PermissionDecision::Ask,
+                format!(
+                    "WithHuman이 이 호출을 판정하지 못했습니다({error}). {}({}: {})이라 실행 여부를 직접 확인해 주세요.",
+                    graded.grade.label(),
+                    graded.grade.as_str(),
+                    graded.describe()
+                ),
+            )
+        }
         FailurePolicy::Closed => {
             let mut response = blocking_response(
                 PermissionDecision::Deny,

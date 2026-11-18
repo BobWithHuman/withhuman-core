@@ -7,9 +7,13 @@ use withhuman_contracts::{
         RequestContinuationRequest, RequestContinuationResponse, SessionCursor, ToolCall,
     },
     inventory::{
-        ClientRecord, ClientRegistrationRecord, KeyDenial, KeyRecord, NewKey, Review,
+        ClientRecord, ClientRegistrationRecord, ClientState, KeyDenial, KeyRecord, NewKey, Review,
         ReviewRequest, RevokeKeyRequest, SessionFlags, SessionStop, SessionStopRequest,
-        VerifyKeyRequest, VerifyKeyResponse,
+        SetOwnerRequest, StopClientRequest, StopDenial, VerifyKeyRequest, VerifyKeyResponse,
+    },
+    triage::{
+        DistrustSourceRequest, Evidence, MarkSessionRequest, MarkSessionsRequest, MarkedSession,
+        MarkedSessions, SourceTrust,
     },
 };
 
@@ -26,6 +30,19 @@ pub enum KeyScope<'a> {
 pub struct ReindexReport {
     pub scanned: usize,
     pub reindexed: usize,
+}
+
+/// Outcome of [`crate::PgGraphRepository::backtrack_secrets`]. Counts only, never a value.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BacktrackReport {
+    /// Tokens whose first mention in their session was the agent's.
+    pub scanned: usize,
+    /// Of those, the ones whose value was found again in the session's stored text.
+    pub recovered: usize,
+    /// Of those, the ones an earlier node now mentions.
+    pub traced: usize,
+    /// Stored rows (nodes, paragraphs, commits) whose copy of a value was masked.
+    pub masked: usize,
 }
 
 #[async_trait]
@@ -73,6 +90,40 @@ pub trait GraphRepository: Send + Sync + 'static {
 
     /// Registered and seen devices, last active first.
     async fn clients(&self) -> Result<Vec<ClientRecord>, RepositoryError> {
+        Err(RepositoryError::NotFound)
+    }
+
+    /// Names the device's owner, or clears it; `NotFound` for an unknown device.
+    async fn set_client_owner(
+        &self,
+        _client_id: &str,
+        _request: SetOwnerRequest,
+        _set_at: u64,
+    ) -> Result<ClientRecord, RepositoryError> {
+        Err(RepositoryError::NotFound)
+    }
+
+    /// Stops the device, or releases it; `NotFound` for an unknown device.
+    async fn stop_client(
+        &self,
+        _client_id: &str,
+        _request: StopClientRequest,
+        _at: u64,
+    ) -> Result<ClientRecord, RepositoryError> {
+        Err(RepositoryError::NotFound)
+    }
+
+    /// Whether the device is stopped; an unknown device is not.
+    async fn client_state(&self, _client_id: &str) -> Result<ClientState, RepositoryError> {
+        Err(RepositoryError::NotFound)
+    }
+
+    /// Counts a PreToolUse refused for a stopped device; `NotFound` when it is not stopped.
+    async fn record_stop_denial(
+        &self,
+        _client_id: &str,
+        _denial: StopDenial,
+    ) -> Result<(), RepositoryError> {
         Err(RepositoryError::NotFound)
     }
 
@@ -152,6 +203,40 @@ pub trait GraphRepository: Send + Sync + 'static {
         _request: ReviewRequest,
         _at: u64,
     ) -> Result<Review, RepositoryError> {
+        Err(RepositoryError::NotFound)
+    }
+
+    /// Sets the session's mark, or takes it off; `NotFound` for an unknown session.
+    async fn mark_session(
+        &self,
+        _session_id: &str,
+        _request: MarkSessionRequest,
+        _set_at: u64,
+    ) -> Result<MarkedSession, RepositoryError> {
+        Err(RepositoryError::NotFound)
+    }
+
+    /// Sets one mark on several sessions, or takes theirs off; the sessions the store does not
+    /// hold are returned as unknown.
+    async fn mark_sessions(
+        &self,
+        _request: MarkSessionsRequest,
+        _set_at: u64,
+    ) -> Result<MarkedSessions, RepositoryError> {
+        Err(RepositoryError::NotFound)
+    }
+
+    /// Distrusts a source, or trusts it again.
+    async fn distrust_source(
+        &self,
+        _request: DistrustSourceRequest,
+        _set_at: u64,
+    ) -> Result<SourceTrust, RepositoryError> {
+        Err(RepositoryError::NotFound)
+    }
+
+    /// One Call's evidence; `NotFound` for an unknown session or Call.
+    async fn evidence(&self, _session_id: &str, _seq: u64) -> Result<Evidence, RepositoryError> {
         Err(RepositoryError::NotFound)
     }
 }

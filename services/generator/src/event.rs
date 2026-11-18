@@ -119,6 +119,12 @@ impl GeneratorEvent {
     }
 
     pub(crate) fn into_mutation(self) -> Result<GraphMutation, RepositoryError> {
+        let mut mutation = self.build_mutation()?;
+        mutation.mask_own_secrets();
+        Ok(mutation)
+    }
+
+    fn build_mutation(self) -> Result<GraphMutation, RepositoryError> {
         match self {
             Self::SessionStart(event) => {
                 let source = event.payload.source.clone();
@@ -269,6 +275,10 @@ pub(crate) struct GraphMutation {
     pub(crate) file_path: Option<String>,
     pub(crate) paragraphs: Vec<ParagraphMutation>,
     pub(crate) tokens: Vec<TokenMutation>,
+    /// The sensitive values behind `tokens` that are worth looking for in what the session
+    /// stored before (`tokens::Secret::traceable`). They hold the secrets: only for the commit's
+    /// search, never stored or logged.
+    pub(crate) secrets: Vec<tokens::Secret>,
     /// The user intent an Intent node records, or (from before intents had nodes of their own) a
     /// message stated on its first line.
     pub(crate) intent: Option<String>,
@@ -295,6 +305,29 @@ pub(crate) enum SessionChange {
 }
 
 impl GraphMutation {
+    /// Masks every other occurrence of the event's sensitive values in what it stores. The
+    /// detector masks the occurrence it recognized (`password: X`); the same value written
+    /// elsewhere in the event without a label (`echo X`) is the same secret.
+    fn mask_own_secrets(&mut self) {
+        for secret in &self.secrets {
+            let mask = |text: &mut String| {
+                if let Some(masked) =
+                    tokens::mask_value(text, secret.value(), &secret.token.decoded)
+                {
+                    *text = masked;
+                }
+            };
+            mask(&mut self.event_json);
+            mask(&mut self.payload_json);
+            for paragraph in &mut self.paragraphs {
+                mask(&mut paragraph.text);
+            }
+            if let Some(intent) = &mut self.intent {
+                mask(intent);
+            }
+        }
+    }
+
     /// The mutation as PostgreSQL can store it: U+0000 in any stored string becomes U+FFFD
     /// (`withhuman_common::postgres_text`). Paragraphs, hidden flags and tokens were already
     /// derived from the original text.
@@ -432,11 +465,8 @@ where
     };
 
     let mut tokens = BTreeSet::new();
-    let payload_slot = match event_name {
-        "PreToolUse" | "MessageDisplay" | "Intent" => "agent",
-        "UserPromptSubmit" => "user",
-        _ => "external",
-    };
+    let mut secrets = Vec::new();
+    let payload_slot = payload_slot(event_name);
     // A result repeats its Call's input; those values belong to the Call, so the result only
     // indexes what the tool returned. The program files a Call's hook attached were not written
     // by the agent, so they are not the Call's values either.
@@ -453,19 +483,32 @@ where
         "PreToolUse" if original_payload_json.contains("\"programs\"") => without("programs")?,
         _ => original_payload_json,
     };
-    extract_tokens(&token_source, payload_slot, &mut tokens);
+    extract_tokens(&token_source, payload_slot, &mut tokens, &mut secrets);
     match &envelope.chunks {
         Some(chunks) => {
             for chunk in chunks {
-                extract_tokens(&chunk.text, paragraph_slot(&chunk.source), &mut tokens);
+                extract_tokens(
+                    &chunk.text,
+                    paragraph_slot(&chunk.source),
+                    &mut tokens,
+                    &mut secrets,
+                );
             }
         }
         None => {
             if let Some(text) = &text {
-                extract_tokens(&text.body, paragraph_slot(event_name), &mut tokens);
+                extract_tokens(
+                    &text.body,
+                    paragraph_slot(event_name),
+                    &mut tokens,
+                    &mut secrets,
+                );
             }
         }
     }
+    secrets.retain(tokens::Secret::traceable);
+    secrets.sort_by(|a, b| a.token.cmp(&b.token));
+    secrets.dedup_by(|a, b| a.token.kind == b.token.kind && a.token.key == b.token.key);
 
     Ok(GraphMutation {
         event_name,
@@ -490,6 +533,7 @@ where
         file_path,
         paragraphs,
         tokens: tokens.into_iter().collect(),
+        secrets,
         intent: None,
         user: envelope.user.clone(),
         permission_mode: envelope.meta.permission_mode.clone(),
@@ -502,7 +546,35 @@ where
     })
 }
 
-fn paragraph_slot(source: &str) -> &'static str {
+/// The slot of the tokens an event's payload mentions: who wrote the value.
+pub(crate) fn payload_slot(event_name: &str) -> &'static str {
+    match event_name {
+        "PreToolUse" | "MessageDisplay" | "Intent" => "agent",
+        "UserPromptSubmit" => "user",
+        _ => "external",
+    }
+}
+
+/// The part of a stored payload whose values the event itself mentions, as JSON text: a result
+/// leaves out its Call's input and a Call the program files its hook attached (see `mutation`).
+pub(crate) fn indexed_payload(event_name: &str, payload_json: &str) -> String {
+    let field = match event_name {
+        "PostToolUse" | "PostToolUseFailure" => "tool_input",
+        "PreToolUse" => "programs",
+        _ => return payload_json.to_owned(),
+    };
+    match serde_json::from_str::<serde_json::Value>(payload_json) {
+        Ok(mut payload) => {
+            if let Some(fields) = payload.as_object_mut() {
+                fields.remove(field);
+            }
+            payload.to_string()
+        }
+        Err(_) => payload_json.to_owned(),
+    }
+}
+
+pub(crate) fn paragraph_slot(source: &str) -> &'static str {
     match source {
         "user" | "UserPromptSubmit" => "user",
         "MessageDisplay" => "agent",
@@ -522,8 +594,15 @@ fn redacted_json<T: Serialize>(value: &T) -> Result<String, RepositoryError> {
     }
 }
 
-fn extract_tokens(value: &str, slot: &str, tokens: &mut BTreeSet<TokenMutation>) {
-    for token in tokens::extract_tokens(value) {
+fn extract_tokens(
+    value: &str,
+    slot: &str,
+    tokens: &mut BTreeSet<TokenMutation>,
+    secrets: &mut Vec<tokens::Secret>,
+) {
+    let (found, values) = tokens::extract_secrets(value);
+    secrets.extend(values);
+    for token in found {
         tokens.insert(TokenMutation {
             key_kind: token.kind.to_owned(),
             key: token.key,
@@ -558,4 +637,55 @@ fn signed(value: u64, field: &str) -> Result<i64, RepositoryError> {
     i64::try_from(value).map_err(|_| {
         RepositoryError::InvalidEvent(format!("{field} exceeds PostgreSQL bigint range"))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GeneratorEvent;
+
+    /// The detector masks the labelled occurrence; the same value elsewhere in the event, without
+    /// a label, is masked too, and the value travels to the commit for tracing back only.
+    #[test]
+    fn masks_every_copy_of_a_recognized_value_in_its_event() {
+        let event = GeneratorEvent::from_json(
+            "PreToolUse",
+            r#"{"session_id":"s","order":2,"observed_at":2,"mode":"record","meta":{},
+                "payload":{"tool_name":"mcp__accounts__set_password",
+                           "tool_input":{"note":"from hunter2abc","new_password":"hunter2abc"}}}"#,
+        )
+        .unwrap();
+        let mutation = event.into_mutation().unwrap();
+        for stored in [&mutation.event_json, &mutation.payload_json] {
+            assert!(!stored.contains("hunter2abc"), "{stored}");
+            assert_eq!(stored.matches("hunt…2abc").count(), 2, "{stored}");
+        }
+        assert_eq!(mutation.secrets.len(), 1);
+        assert_eq!(mutation.secrets[0].value(), "hunter2abc");
+        assert!(
+            mutation
+                .tokens
+                .iter()
+                .any(|token| token.key_kind == "password" && token.slot == "agent")
+        );
+    }
+
+    /// A prompt that types a password without a label is stored as it is: nothing recognizes it
+    /// until a later event labels it.
+    #[test]
+    fn keeps_an_unlabelled_value_for_the_later_commit_to_trace() {
+        let event = GeneratorEvent::from_json(
+            "UserPromptSubmit",
+            r#"{"session_id":"s","order":1,"observed_at":1,"meta":{},
+                "payload":{"prompt":"change my password to hunter2abc","kind":"user"}}"#,
+        )
+        .unwrap();
+        let mutation = event.into_mutation().unwrap();
+        assert!(mutation.secrets.is_empty());
+        assert!(
+            mutation
+                .tokens
+                .iter()
+                .all(|token| token.key_kind != "password")
+        );
+    }
 }

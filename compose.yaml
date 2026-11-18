@@ -55,6 +55,8 @@ services:
       JEV_TIMEOUT_MS: ${JEV_TIMEOUT_MS:-3000}
       JEV_API_KEY: ${JEV_API_KEY:-}
       WITHHUMAN_INTENT_BLOCK_THRESHOLD: ${WITHHUMAN_INTENT_BLOCK_THRESHOLD:-0.5}
+      # Deny, rather than hold for review, what a distrusted source caused; see "Triage".
+      WITHHUMAN_DISTRUSTED_SOURCE_DENY: ${WITHHUMAN_DISTRUSTED_SOURCE_DENY:-0}
     depends_on:
       postgres:
         condition: service_healthy
@@ -75,6 +77,15 @@ services:
       DECISION_URL: http://decision:8082
       # Creates the viewer's read-only login; none while unset.
       WITHHUMAN_VIEWER_PASSWORD: ${WITHHUMAN_VIEWER_PASSWORD:-}
+      # The company's device list from its EDR (a Wazuh manager); no sync while the URL is unset.
+      WITHHUMAN_WAZUH_URL: ${WITHHUMAN_WAZUH_URL:-}
+      WITHHUMAN_WAZUH_USER: ${WITHHUMAN_WAZUH_USER:-}
+      WITHHUMAN_WAZUH_PASSWORD: ${WITHHUMAN_WAZUH_PASSWORD:-}
+      WITHHUMAN_WAZUH_SYNC_INTERVAL_SECS: ${WITHHUMAN_WAZUH_SYNC_INTERVAL_SECS:-}
+      WITHHUMAN_WAZUH_MAX_REQUESTS_PER_MINUTE: ${WITHHUMAN_WAZUH_MAX_REQUESTS_PER_MINUTE:-}
+      # A path inside the container: mount the file with a Compose override.
+      WITHHUMAN_WAZUH_CA_FILE: ${WITHHUMAN_WAZUH_CA_FILE:-}
+      WITHHUMAN_WAZUH_TLS_SKIP_VERIFY: ${WITHHUMAN_WAZUH_TLS_SKIP_VERIFY:-}
     depends_on:
       postgres:
         condition: service_healthy

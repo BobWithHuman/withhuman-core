@@ -23,8 +23,9 @@ use withhuman_contracts::{
 
 use withhuman_contracts::inventory::{
     ClientRegistrationRecord, KeyDenial, NewKey, ReviewRequest, RevokeKeyRequest, SessionDenial,
-    SessionStopRequest, VerifyKeyRequest,
+    SessionStopRequest, SetOwnerRequest, StopClientRequest, StopDenial, VerifyKeyRequest,
 };
+use withhuman_contracts::triage::{DistrustSourceRequest, MarkSessionRequest, MarkSessionsRequest};
 
 use crate::{DecisionClient, GeneratorEvent, GraphRepository, KeyScope, RepositoryError};
 
@@ -111,7 +112,21 @@ pub fn app(service: GeneratorService) -> Router {
             "/v1/sessions/{session_id}/calls/{tool_use_id}",
             get(tool_call),
         )
+        .route(
+            "/v1/sessions/{session_id}/calls/{seq}/evidence",
+            get(evidence),
+        )
+        .route("/v1/sessions/{session_id}/mark", post(mark_session))
+        .route("/v1/sessions/mark", post(mark_sessions))
+        .route("/v1/sources/distrust", post(distrust_source))
         .route("/v1/clients", post(register_client).get(clients))
+        .route("/v1/clients/{client_id}/owner", post(set_client_owner))
+        .route("/v1/clients/{client_id}/stop", post(stop_client))
+        .route("/v1/clients/{client_id}/state", get(client_state))
+        .route(
+            "/v1/clients/{client_id}/stop-denials",
+            post(record_stop_denial),
+        )
         .route("/v1/keys", get(all_keys))
         .route("/v1/keys/verify", post(verify_key))
         .route("/v1/keys/{key_id}/denials", post(record_key_denial))
@@ -155,6 +170,10 @@ pub fn app(service: GeneratorService) -> Router {
         tool_call,
         register_client,
         clients,
+        set_client_owner,
+        stop_client,
+        client_state,
+        record_stop_denial,
         verify_key,
         record_key_denial,
         issue_key,
@@ -166,7 +185,11 @@ pub fn app(service: GeneratorService) -> Router {
         stop_session,
         release_session,
         record_session_denial,
-        add_review
+        add_review,
+        mark_session,
+        mark_sessions,
+        distrust_source,
+        evidence
     ),
     tags((name = "Generator", description = "Normalized event persistence and graph enrichment API"))
 )]
@@ -475,6 +498,85 @@ async fn clients(State(service): State<GeneratorService>) -> Response {
 
 #[utoipa::path(
     post,
+    path = "/v1/clients/{client_id}/owner",
+    tag = "Generator",
+    params(("client_id" = String, Path, description = "As one path segment: `team%2Fuuid`")),
+    request_body = SetOwnerRequest,
+    responses((status = 200, body = withhuman_contracts::inventory::ClientRecord), (status = 404, body = ErrorResponse))
+)]
+async fn set_client_owner(
+    State(service): State<GeneratorService>,
+    Path(client_id): Path<String>,
+    StrictJson(request): StrictJson<SetOwnerRequest>,
+) -> Response {
+    reply(
+        service
+            .repository
+            .set_client_owner(&client_id, request, now())
+            .await,
+    )
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/clients/{client_id}/stop",
+    tag = "Generator",
+    params(("client_id" = String, Path, description = "As one path segment: `team%2Fuuid`")),
+    request_body = StopClientRequest,
+    responses((status = 200, description = "The device, stopped or released", body = withhuman_contracts::inventory::ClientRecord), (status = 404, body = ErrorResponse))
+)]
+async fn stop_client(
+    State(service): State<GeneratorService>,
+    Path(client_id): Path<String>,
+    StrictJson(request): StrictJson<StopClientRequest>,
+) -> Response {
+    reply(
+        service
+            .repository
+            .stop_client(&client_id, request, now())
+            .await,
+    )
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/clients/{client_id}/state",
+    tag = "Generator",
+    params(("client_id" = String, Path, description = "As one path segment: `team%2Fuuid`")),
+    responses((status = 200, description = "Whether the device is stopped; an unknown one is not", body = withhuman_contracts::inventory::ClientState), (status = 500, body = ErrorResponse))
+)]
+async fn client_state(
+    State(service): State<GeneratorService>,
+    Path(client_id): Path<String>,
+) -> Response {
+    reply(service.repository.client_state(&client_id).await)
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/clients/{client_id}/stop-denials",
+    tag = "Generator",
+    params(("client_id" = String, Path, description = "As one path segment: `team%2Fuuid`")),
+    request_body = StopDenial,
+    responses((status = 204, description = "Refusal counted"), (status = 404, description = "The device is not stopped", body = ErrorResponse))
+)]
+async fn record_stop_denial(
+    State(service): State<GeneratorService>,
+    Path(client_id): Path<String>,
+    StrictJson(denial): StrictJson<StopDenial>,
+) -> Response {
+    match service
+        .repository
+        .record_stop_denial(&client_id, denial)
+        .await
+    {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => repository_error_response(error),
+    }
+}
+
+#[utoipa::path(
+    post,
     path = "/v1/keys/verify",
     tag = "Generator",
     request_body = VerifyKeyRequest,
@@ -688,6 +790,92 @@ async fn add_review(
         Ok(review) => (StatusCode::CREATED, Json(review)).into_response(),
         Err(error) => repository_error_response(error),
     }
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/sessions/{session_id}/mark",
+    tag = "Generator",
+    params(("session_id" = String, Path)),
+    request_body = MarkSessionRequest,
+    responses(
+        (status = 200, description = "The session with its mark, or `mark: null` once taken off", body = withhuman_contracts::triage::MarkedSession),
+        (status = 400, body = ErrorResponse),
+        (status = 404, description = "No such session", body = ErrorResponse)
+    )
+)]
+async fn mark_session(
+    State(service): State<GeneratorService>,
+    Path(session_id): Path<String>,
+    StrictJson(request): StrictJson<MarkSessionRequest>,
+) -> Response {
+    reply(
+        service
+            .repository
+            .mark_session(&session_id, request, now())
+            .await,
+    )
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/sessions/mark",
+    tag = "Generator",
+    request_body = MarkSessionsRequest,
+    responses(
+        (status = 200, description = "The sessions marked, and the unknown ones left alone", body = withhuman_contracts::triage::MarkedSessions),
+        (status = 400, description = "No session named", body = ErrorResponse)
+    )
+)]
+async fn mark_sessions(
+    State(service): State<GeneratorService>,
+    StrictJson(request): StrictJson<MarkSessionsRequest>,
+) -> Response {
+    if request.session_ids.is_empty() {
+        return repository_error_response(RepositoryError::InvalidEvent(
+            "no session named".to_owned(),
+        ));
+    }
+    reply(service.repository.mark_sessions(request, now()).await)
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/sources/distrust",
+    tag = "Generator",
+    request_body = DistrustSourceRequest,
+    responses(
+        (status = 200, description = "The source, distrusted or trusted again", body = withhuman_contracts::triage::SourceTrust),
+        (status = 400, description = "No source named", body = ErrorResponse)
+    )
+)]
+async fn distrust_source(
+    State(service): State<GeneratorService>,
+    StrictJson(request): StrictJson<DistrustSourceRequest>,
+) -> Response {
+    if request.source.trim().is_empty() {
+        return repository_error_response(RepositoryError::InvalidEvent(
+            "no source named".to_owned(),
+        ));
+    }
+    reply(service.repository.distrust_source(request, now()).await)
+}
+
+#[utoipa::path(
+    get,
+    path = "/v1/sessions/{session_id}/calls/{seq}/evidence",
+    tag = "Generator",
+    params(("session_id" = String, Path), ("seq" = u64, Path, description = "The Call's number in its session")),
+    responses(
+        (status = 200, description = "The Call's evidence", body = withhuman_contracts::triage::Evidence),
+        (status = 404, description = "No such session, or no Call with this number in it", body = ErrorResponse)
+    )
+)]
+async fn evidence(
+    State(service): State<GeneratorService>,
+    Path((session_id, seq)): Path<(String, u64)>,
+) -> Response {
+    reply(service.repository.evidence(&session_id, seq).await)
 }
 
 fn reply<T: Serialize>(result: Result<T, RepositoryError>) -> Response {

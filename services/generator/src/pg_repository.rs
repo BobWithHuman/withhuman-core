@@ -13,15 +13,20 @@ use withhuman_contracts::{
         RequestContinuationResponse, SessionCursor, SubGraphCursor, ToolCall,
     },
     inventory::{
-        ClientRecord, ClientRegistrationRecord, KeyDenial, KeyRecord, NewKey, Review,
+        ClientRecord, ClientRegistrationRecord, ClientState, KeyDenial, KeyRecord, NewKey, Review,
         ReviewRequest, RevokeKeyRequest, SessionFlags, SessionStop, SessionStopRequest,
-        VerifyKeyRequest, VerifyKeyResponse,
+        SetOwnerRequest, StopClientRequest, StopDenial, VerifyKeyRequest, VerifyKeyResponse,
+    },
+    triage::{
+        DistrustSourceRequest, Evidence, MarkSessionRequest, MarkSessionsRequest, MarkedSession,
+        MarkedSessions, SourceTrust,
     },
 };
 
 use crate::{
     GeneratorEvent,
     event::{GraphMutation, SessionChange},
+    pg_backtrack::{backtrack, same_after_backtrack},
     repository::{GraphRepository, KeyScope, ReindexReport, RepositoryError},
 };
 
@@ -216,7 +221,7 @@ WITH input AS ( \
 SELECT hash, new FROM enriched ORDER BY ord";
 
 // A token keeps the node of its first mention in order, which a late earlier event takes over.
-const STORE_TOKENS: &str = "\
+pub(crate) const STORE_TOKENS: &str = "\
 WITH input AS ( \
   SELECT * FROM jsonb_to_recordset($4::jsonb) \
     AS t(key_kind text, key text, slot text, decoded text, category text) \
@@ -463,7 +468,11 @@ impl PgGraphRepository {
         let version = match optional(&tx, FIND_COMMIT, &[session, &m.order]).await? {
             Some(existing) => {
                 let event_json: String = existing.get(1);
-                if event_json != m.event_json {
+                // A later commit may have masked a value in it that this event's own detector
+                // does not recognize (`pg_backtrack`).
+                if event_json != m.event_json
+                    && !same_after_backtrack(&tx, session, &m.event_json, &event_json).await?
+                {
                     return Err(PgError::Repository(RepositoryError::InvalidEvent(format!(
                         "order {} was already committed with different content",
                         m.order
@@ -595,6 +604,11 @@ impl PgGraphRepository {
                     &[session, seq, &m.order, &input, &version],
                 )
                 .await?;
+            }
+            // A value recognized here for the first time may have been stored before without
+            // its label; mask those copies and make the earliest the token's source.
+            for secret in &m.secrets {
+                backtrack(&tx, session, m.order, secret).await?;
             }
             if kind == "Request" {
                 run(&tx, APPLY_PENDING_CONTINUATION, &[session, &m.order, seq]).await?;
@@ -842,6 +856,65 @@ impl GraphRepository for PgGraphRepository {
         self.all_clients().await
     }
 
+    async fn set_client_owner(
+        &self,
+        client_id: &str,
+        request: SetOwnerRequest,
+        set_at: u64,
+    ) -> Result<ClientRecord, RepositoryError> {
+        self.set_owner(client_id, request, set_at).await
+    }
+
+    async fn stop_client(
+        &self,
+        client_id: &str,
+        request: StopClientRequest,
+        at: u64,
+    ) -> Result<ClientRecord, RepositoryError> {
+        self.set_stopped(client_id, request, at).await
+    }
+
+    async fn client_state(&self, client_id: &str) -> Result<ClientState, RepositoryError> {
+        self.client_stopped(client_id).await
+    }
+
+    async fn record_stop_denial(
+        &self,
+        client_id: &str,
+        denial: StopDenial,
+    ) -> Result<(), RepositoryError> {
+        self.deny_stopped(client_id, denial).await
+    }
+
+    async fn mark_session(
+        &self,
+        session_id: &str,
+        request: MarkSessionRequest,
+        set_at: u64,
+    ) -> Result<MarkedSession, RepositoryError> {
+        self.mark(session_id, request, set_at).await
+    }
+
+    async fn mark_sessions(
+        &self,
+        request: MarkSessionsRequest,
+        set_at: u64,
+    ) -> Result<MarkedSessions, RepositoryError> {
+        self.mark_many(request, set_at).await
+    }
+
+    async fn distrust_source(
+        &self,
+        request: DistrustSourceRequest,
+        set_at: u64,
+    ) -> Result<SourceTrust, RepositoryError> {
+        self.distrust(request, set_at).await
+    }
+
+    async fn evidence(&self, session_id: &str, seq: u64) -> Result<Evidence, RepositoryError> {
+        self.call_evidence(session_id, seq).await
+    }
+
     async fn verify_key(
         &self,
         request: VerifyKeyRequest,
@@ -986,7 +1059,7 @@ pub(crate) async fn apply_schema(pool: &Pool) -> Result<(), RepositoryError> {
         .map_err(|error| RepositoryError::from(PgError::from(error)))
 }
 
-async fn prepared<C: GenericClient>(
+pub(crate) async fn prepared<C: GenericClient>(
     client: &C,
     statement: &str,
 ) -> Result<tokio_postgres::Statement, PgError> {

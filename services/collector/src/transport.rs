@@ -6,7 +6,10 @@ use std::time::Duration;
 use serde_json::Value;
 use withhuman_contracts::{
     events::{EventResponse, SessionCursor, ToolCall},
-    inventory::{KeyDenial, SessionDenial, SessionFlags, VerifyKeyRequest, VerifyKeyResponse},
+    inventory::{
+        ClientState, KeyDenial, SessionDenial, SessionFlags, StopDenial, VerifyKeyRequest,
+        VerifyKeyResponse,
+    },
 };
 
 use crate::NormalizedEvent;
@@ -45,6 +48,20 @@ pub trait GeneratorTransport: Send + Sync {
         &self,
         _key_id: &str,
         _denial: KeyDenial,
+    ) -> Result<(), GeneratorError> {
+        Ok(())
+    }
+
+    /// Whether the security team stopped the device; one the Generator does not hold is not.
+    async fn client_state(&self, _client_id: &str) -> Result<ClientState, GeneratorError> {
+        Ok(ClientState { stopped: false })
+    }
+
+    /// Counts a PreToolUse turned back because its device is stopped.
+    async fn record_stop_denial(
+        &self,
+        _client_id: &str,
+        _denial: StopDenial,
     ) -> Result<(), GeneratorError> {
         Ok(())
     }
@@ -156,6 +173,35 @@ impl GeneratorTransport for GeneratorHttpClient {
             .inventory(
                 reqwest::Method::POST,
                 &["keys", key_id, "denials"],
+                Some(serde_json::to_value(denial).map_err(invalid_request)?),
+            )
+            .await?;
+        match status {
+            200..=299 => Ok(()),
+            status => Err(GeneratorError::Rejected(status)),
+        }
+    }
+
+    async fn client_state(&self, client_id: &str) -> Result<ClientState, GeneratorError> {
+        let (status, body) = self
+            .inventory(reqwest::Method::GET, &["clients", client_id, "state"], None)
+            .await?;
+        if status != 200 {
+            return Err(GeneratorError::Rejected(status));
+        }
+        serde_json::from_value(body)
+            .map_err(|error| GeneratorError::InvalidResponse(error.to_string()))
+    }
+
+    async fn record_stop_denial(
+        &self,
+        client_id: &str,
+        denial: StopDenial,
+    ) -> Result<(), GeneratorError> {
+        let (status, _) = self
+            .inventory(
+                reqwest::Method::POST,
+                &["clients", client_id, "stop-denials"],
                 Some(serde_json::to_value(denial).map_err(invalid_request)?),
             )
             .await?;

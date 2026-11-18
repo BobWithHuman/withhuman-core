@@ -51,7 +51,10 @@ pub fn chunk_text(text: &str, profile: Profile) -> Vec<Chunk> {
 }
 
 /// Splits content from `origin`; hidden-content rules for rendered content apply only to
-/// [`Origin::External`] text.
+/// [`Origin::External`] text. A thematic break line (`---`, `***`, `___`, alone on its line)
+/// starts a paragraph instead of being absorbed into a short one before it: an issue's last short
+/// sentence and a note appended after a `---` became one paragraph, so the fix that followed the
+/// sentence looked as if it followed the note.
 pub fn chunk_text_from(text: &str, profile: Profile, origin: Origin) -> Vec<Chunk> {
     let text = text.replace("\r\n", "\n").replace('\r', "\n");
     // Each paragraph keeps the byte range it came from, so hidden content found anywhere in the
@@ -81,6 +84,7 @@ pub fn chunk_text_from(text: &str, profile: Profile, origin: Origin) -> Vec<Chun
                     && !long
                     && last_chars < SHORT_CHARS
                     && last_chars + 1 + chars(&piece) <= MAX_CHARS
+                    && !is_thematic_break(&piece)
                 {
                     last.push('\n');
                     last.push_str(&piece);
@@ -117,6 +121,13 @@ pub fn chunk_text_from(text: &str, profile: Profile, origin: Origin) -> Vec<Chun
             }
         })
         .collect()
+}
+
+/// A Markdown thematic break: three or more of one of `-`, `*`, `_`, alone on the line (spaces
+/// between allowed), as a document separates an appended note from what came before.
+fn is_thematic_break(line: &str) -> bool {
+    let marks: Vec<char> = line.chars().filter(|c| !c.is_whitespace()).collect();
+    marks.len() >= 3 && matches!(marks[0], '-' | '*' | '_') && marks.iter().all(|&c| c == marks[0])
 }
 
 pub fn sha256(value: &str) -> String {

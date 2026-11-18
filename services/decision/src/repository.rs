@@ -1,3 +1,4 @@
+use crate::causal::{RequestParent, ResultOrigin};
 use crate::trace::{Member, TraceGraph};
 use async_trait::async_trait;
 use serde_json::Value;
@@ -40,6 +41,17 @@ pub struct TracedSegment {
     pub parent: String,
 }
 
+/// A tool result whose source the security team distrusts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DistrustedCause {
+    /// The tool result's node seq.
+    pub seq: u64,
+    /// The Call whose result it was; none when the session does not hold it.
+    pub call_seq: Option<u64>,
+    /// The entry of `distrusted_sources` that names it.
+    pub source: String,
+}
+
 #[async_trait]
 pub trait DecisionRepository: Send + Sync + 'static {
     async fn health(&self) -> Result<(), RepositoryError>;
@@ -70,6 +82,67 @@ pub trait DecisionRepository: Send + Sync + 'static {
         _record: &TraceRecord,
     ) -> Result<(), RepositoryError> {
         Ok(())
+    }
+
+    /// The file changes the session's earlier Calls made to `path` and that ran (their result is
+    /// in the graph), oldest first: what a file change that undoes them is checked against.
+    async fn earlier_file_changes(
+        &self,
+        _session_id: &str,
+        _call_order: u64,
+        _path: &str,
+    ) -> Result<Vec<crate::check::FileDiff>, RepositoryError> {
+        Ok(Vec::new())
+    }
+
+    /// What made the user write the prompt of SubGraph `subgraph`, when it was found before.
+    async fn request_parent(
+        &self,
+        _session_id: &str,
+        _subgraph: u64,
+    ) -> Result<Option<RequestParent>, RepositoryError> {
+        Ok(None)
+    }
+
+    /// Keeps `parent` with the prompt of SubGraph `subgraph`, unless one was kept first.
+    async fn set_request_parent(
+        &self,
+        _session_id: &str,
+        _subgraph: u64,
+        _parent: &RequestParent,
+    ) -> Result<(), RepositoryError> {
+        Ok(())
+    }
+
+    /// The Call whose result is node `seq`, and the paragraphs that Call was traced to.
+    async fn result_origin(
+        &self,
+        _session_id: &str,
+        _seq: u64,
+    ) -> Result<Option<ResultOrigin>, RepositoryError> {
+        Ok(None)
+    }
+
+    /// The paragraphs the Calls of SubGraph `number` were traced to (`g<seq>p<index>`, text,
+    /// probability), the most likely first, at most `limit`.
+    async fn subgraph_causes(
+        &self,
+        _session_id: &str,
+        _number: u64,
+        _limit: usize,
+    ) -> Result<Vec<(String, String, f64)>, RepositoryError> {
+        Ok(Vec::new())
+    }
+
+    /// Those of the session's tool results `seqs` that came from a source the security team
+    /// distrusts: the Call whose result each was is named, by any of
+    /// `withhuman_common::source::names`, in `distrusted_sources`.
+    async fn distrusted_causes(
+        &self,
+        _session_id: &str,
+        _seqs: &[u64],
+    ) -> Result<Vec<DistrustedCause>, RepositoryError> {
+        Ok(Vec::new())
     }
 
     /// Records that tracing the Call failed.

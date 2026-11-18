@@ -208,8 +208,78 @@ CREATE TABLE IF NOT EXISTS clients (
   -- First and latest Hook event.
   first_seen     bigint,
   last_seen      bigint
+  -- `serial`, `owner_email`, `owner_set_by` and `owner_set_at` are added below, and so are
+  -- `edr_agent_id` and `edr_status`, and the stop: `stopped_at`, `stopped_by`, `stop_reason`,
+  -- `stop_denied_count` and `stop_last_denied_at`.
 );
 CREATE INDEX IF NOT EXISTS clients_last_seen ON clients (last_seen);
+
+-- The company's devices as its EDR (a Wazuh manager) lists them, replaced whole by each sync
+-- (WITHHUMAN_WAZUH_URL): a device the manager no longer lists is gone. Empty without an EDR.
+CREATE TABLE IF NOT EXISTS edr_devices (
+  -- The manager's ID of the agent on the device (`001`).
+  agent_id   text PRIMARY KEY,
+  -- The name the agent enrolled under: the hostname unless someone chose another.
+  name       text,
+  os         text,
+  -- `active`, `disconnected`, `never_connected` or `pending`.
+  status     text,
+  -- The motherboard's serial number from the EDR's hardware inventory, as reported.
+  serial     text,
+  -- When the manager last heard from the agent, epoch milliseconds.
+  last_seen  bigint,
+  -- `claude-code` or `codex` when the EDR's inventory shows that program: a process running at
+  -- the last scan that is exactly that program (named `claude` or `codex`, run from such a
+  -- path, from Claude Code's native install, or from the npm package under `node`; the
+  -- Claude desktop app's `Claude…` processes are not), else an installed package with either
+  -- word in its name other than the desktop app's `Claude`. NULL says only that none was seen.
+  agent      text,
+  -- The sync that last wrote the row: the same for every row.
+  synced_at  bigint NOT NULL,
+  -- The latest process scan that found such a process running, epoch milliseconds; NULL when
+  -- none was running at the last scan, including when only a package shows the program.
+  running_at bigint
+);
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                 AND table_name = 'edr_devices' AND column_name = 'running_at') THEN
+    ALTER TABLE edr_devices ADD COLUMN running_at bigint;
+  END IF;
+END
+$$;
+
+-- Each process scan that found a coding agent running on an EDR device, as the syncs saw it: a
+-- row per device and scan, never updated. A device the manager no longer lists keeps its rows;
+-- every sync deletes the rows whose scan is more than 30 days before it. Set against the
+-- device's Hook sessions, consecutive rows show a coding agent running without them.
+CREATE TABLE IF NOT EXISTS edr_sightings (
+  -- `edr_devices.agent_id` at the time.
+  agent_id    text   NOT NULL,
+  -- The scan's time (`edr_devices.running_at`), epoch milliseconds.
+  running_at  bigint NOT NULL,
+  -- `claude-code` or `codex`.
+  agent       text   NOT NULL,
+  -- The device's name at the time.
+  name        text,
+  -- The sync that first saw the scan.
+  synced_at   bigint NOT NULL,
+  -- The command line of the coding-agent process the scan found: `cmd` and `argvs` joined by
+  -- spaces, cut to 1000 characters, as the sync first saw it (`claude -p …`,
+  -- `claude --resume …`). NULL when Wazuh gave neither: macOS reports a process's name only,
+  -- Windows its executable's path without arguments.
+  command     text,
+  PRIMARY KEY (agent_id, running_at)
+);
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                 AND table_name = 'edr_sightings' AND column_name = 'command') THEN
+    ALTER TABLE edr_sightings ADD COLUMN command text;
+  END IF;
+END
+$$;
+CREATE INDEX IF NOT EXISTS edr_sightings_running_at ON edr_sightings (running_at);
 
 -- INSTALLED_IN: a project folder a setup wrote the Hooks into.
 CREATE TABLE IF NOT EXISTS client_projects (
@@ -263,6 +333,31 @@ CREATE TABLE IF NOT EXISTS key_events (
 CREATE INDEX IF NOT EXISTS key_events_key ON key_events (key_id, kind);
 CREATE INDEX IF NOT EXISTS key_events_at ON key_events (at);
 
+-- Where the security team stands on a session it looked at: still looking, an attack, nothing
+-- wrong, or done with. Set and cleared through the admin API only; a session without a row
+-- was not handled yet.
+CREATE TABLE IF NOT EXISTS session_marks (
+  session_id  text   PRIMARY KEY,
+  -- `reviewing`, `attack`, `benign` or `closed`.
+  state       text   NOT NULL
+              CHECK (state IN ('reviewing', 'attack', 'benign', 'closed')),
+  -- Who set it last and when, epoch milliseconds.
+  set_by      text,
+  set_at      bigint NOT NULL
+);
+
+-- The sources the security team distrusts: a document's path, a URL or a tool's name whose
+-- result told an agent to act. Decision reads it: a Call it would allow, and that the result of
+-- a Call on one of these caused, is held for review (rule `source::distrusted`).
+CREATE TABLE IF NOT EXISTS distrusted_sources (
+  source      text   PRIMARY KEY,
+  set_by      text,
+  set_at      bigint NOT NULL,
+  -- The Call that showed the source to the team, when it named one.
+  session_id  text,
+  seq         bigint
+);
+
 -- Columns added to tables that held data before the inventory. Each table's columns are
 -- added together, once: ALTER TABLE locks the table even when there is nothing to add. The
 -- sessions recorded before get their client, last activity and start source from their
@@ -306,6 +401,41 @@ BEGIN
                  AND table_name = 'nodes' AND column_name = 'permission_mode') THEN
     -- The values at the node's event: a Call's permission mode, and the session's model.
     ALTER TABLE nodes ADD COLUMN permission_mode text, ADD COLUMN model text;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                 AND table_name = 'clients' AND column_name = 'serial') THEN
+    ALTER TABLE clients
+      -- The machine's hardware serial number, from the latest setup that could read one.
+      ADD COLUMN serial        text,
+      -- The person the security team named as the machine's owner (`user_email` is whoever's
+      -- key the device presented last). Set through the admin API only, with who set or
+      -- cleared it last and when; a registration leaves all three alone.
+      ADD COLUMN owner_email   text,
+      ADD COLUMN owner_set_by  text,
+      ADD COLUMN owner_set_at  bigint;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                 AND table_name = 'clients' AND column_name = 'edr_agent_id') THEN
+    ALTER TABLE clients
+      -- The EDR device this one is (`edr_devices.agent_id`) and its status there, as of the
+      -- latest sync: by serial number, else by hostname. NULL for a device the EDR does not
+      -- list, and for every device while no EDR is configured.
+      ADD COLUMN edr_agent_id  text,
+      ADD COLUMN edr_status    text;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                 AND table_name = 'clients' AND column_name = 'stopped_at') THEN
+    ALTER TABLE clients
+      -- The security team stopped the device: the Collector refuses every PreToolUse carrying
+      -- this client ID until it is released (all three NULL again). Set through the admin API
+      -- only, epoch milliseconds; a registration leaves them alone. The client ID is what the
+      -- device's Hooks send, so this stops a device that keeps sending its own.
+      ADD COLUMN stopped_at           bigint,
+      ADD COLUMN stopped_by           text,
+      ADD COLUMN stop_reason          text,
+      -- PreToolUse Hooks refused for it over every stop, and the latest; a release keeps both.
+      ADD COLUMN stop_denied_count    bigint NOT NULL DEFAULT 0,
+      ADD COLUMN stop_last_denied_at  bigint;
   END IF;
 END
 $$;
@@ -398,8 +528,8 @@ BEGIN
     GRANT SELECT ON
       sessions, event_commits, nodes, subgraphs, paragraphs, tokens, token_mentions, files,
       file_refs, cause_edges, pending_paragraph_enrichments, pending_request_continuations,
-      clients, client_projects, users, key_events, session_stops, call_reviews,
-      call_review_latest, stop_audit
+      clients, client_projects, users, key_events, edr_devices, edr_sightings, session_marks,
+      distrusted_sources, session_stops, call_reviews, call_review_latest, stop_audit
     TO withhuman_viewer;
     GRANT SELECT (key_id, user_email, created_at, created_by, note, last_used_at, revoked_at,
       revoked_by, revoke_reason, first_denied_at, last_denied_at, denied_count)
