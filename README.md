@@ -89,6 +89,27 @@ python3 deploy/client/configure.py \
   --hook "$PWD/deploy/client/hooks/pre-tool-use.py"
 ```
 
+Or for every folder at once, instead of one project:
+
+```sh
+# Every folder this user works in (~/.claude/settings.json); no administrator rights.
+python3 deploy/client/configure.py --scope user --team personal --server http://127.0.0.1:3000
+
+# Every user and folder of the device, in the policy an administrator sets for Claude Code
+# (managed-settings.d/50-withhuman.json); a user cannot turn it off.
+sudo python3 deploy/client/configure.py --scope managed --team personal \
+  --server http://127.0.0.1:3000 --managed-hooks-only
+```
+
+A managed setup keeps the hook and the device's client ID where only an administrator can change
+them (`/Library/Application Support/WithHuman`, `/opt/withhuman`, `C:\Program Files\WithHuman`)
+and writes the ID into the hooks itself, so Claude Code started from an IDE or by another user
+reports the same device. `--managed-hooks-only` also sets `allowManagedHooksOnly`, so no user,
+project or plugin hook runs beside it: a project set up earlier does not report each event twice,
+and no hook of the user's own stands beside WithHuman's. Each user's WithHuman key stays their own.
+Decision denies a Call that changes these files as it does the project's hooks. `--uninstall` with
+the same `--scope` takes the setup out again. Codex is set up per project.
+
 ### Keys and the agent inventory
 
 The engine records which device and which user run each agent session. Every setup registers

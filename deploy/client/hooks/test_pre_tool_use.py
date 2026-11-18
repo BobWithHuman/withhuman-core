@@ -3,6 +3,7 @@
 import http.server
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -62,7 +63,8 @@ class PreToolUseHookTest(unittest.TestCase):
         if executable:
             os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
 
-    def run_hook(self, event, url=None, client_id="team/device", key=None, home=None, env=None):
+    def run_hook(self, event, url=None, client_id="team/device", key=None, home=None, env=None,
+                 hook=HOOK):
         # A home of its own, so the setup files of whoever runs the tests are not read.
         home = home or tempfile.mkdtemp()
         extra = env or {}
@@ -75,7 +77,7 @@ class PreToolUseHookTest(unittest.TestCase):
         if key:
             env["WITHHUMAN_KEY"] = key
         return subprocess.run(
-            [sys.executable, HOOK, url or self.url],
+            [sys.executable, hook, url or self.url],
             input=json.dumps(event).encode(),
             capture_output=True,
             env=env,
@@ -159,6 +161,22 @@ class PreToolUseHookTest(unittest.TestCase):
         headers = Collector.received[-1][0]
         self.assertEqual(headers["x-withhuman-client"], "team/device")
         self.assertEqual(headers["authorization"], "Bearer whk_env")
+
+    def test_reads_the_devices_client_id_beside_its_folder(self):
+        # A setup for the whole device keeps the hook in <device>/hooks and the ID in <device>.
+        device = tempfile.mkdtemp()
+        os.makedirs(os.path.join(device, "hooks"))
+        hook = os.path.join(device, "hooks", "pre-tool-use.py")
+        shutil.copyfile(HOOK, hook)
+        with open(os.path.join(device, "client-id"), "w") as file:
+            file.write("team/the-device\n")
+        event = {"session_id": "s", "tool_name": "Read", "tool_input": {"file_path": "/x"},
+                 "tool_use_id": "t", "cwd": self.workspace}
+        self.run_hook(event, client_id=None, hook=hook)
+        self.assertEqual(Collector.received[-1][0]["x-withhuman-client"], "team/the-device")
+        # The user's own file and the environment come first.
+        self.run_hook(event, hook=hook)
+        self.assertEqual(Collector.received[-1][0]["x-withhuman-client"], "team/device")
 
     def test_denies_when_the_collector_is_unreachable(self):
         result = self.run_hook(self.bash("ls"), url="http://127.0.0.1:9/v1/hooks/PreToolUse")
