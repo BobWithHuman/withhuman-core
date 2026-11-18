@@ -251,9 +251,12 @@ known must be equal (firmware placeholders such as `To Be Filled By O.E.M.` coun
 when either is unknown, the hostnames decide, compared without case or domain (`Mac-1.local` is
 `mac-1`). Every client row of a machine, one per OS account, gets the same agent. The setup
 reports the serial Wazuh does: the motherboard's on Linux (`/sys/class/dmi/id/board_serial`) and
-Windows (`Win32_BaseBoard`), the platform's on macOS. A Linux or Windows device set up before it
-did reported the system's or the BIOS's, which a PC often numbers otherwise, and stays apart
-from its Wazuh agent until it is set up again.
+Windows (`Win32_BaseBoard`), the platform's on macOS. Beside it, it reports the others it can
+read (`other_serials`: the BIOS's on Windows, the system's on Linux when readable), which a PC
+often numbers otherwise, and the Wazuh agent whose serial equals any of them is the device's: a
+Wazuh build or a machine that reports another of its numbers still finds it. A Linux or Windows
+device set up before either reported the system's or the BIOS's alone, and stays apart from its
+Wazuh agent until it is set up again.
 
 `edr_devices.agent` is `claude-code` or `codex` (Claude Code first when both show):
 

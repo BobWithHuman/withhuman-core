@@ -17,9 +17,9 @@ use crate::{
 // (`first_seen`, `last_seen`) is left to the Hooks, and the owner to the security team.
 const REGISTER_CLIENT: &str = "\
 INSERT INTO clients (client_id, team, hostname, os, os_user, hook_version, agent, user_email, \
-  registered_at, updated_at, serial) \
+  registered_at, updated_at, serial, other_serials) \
 VALUES ($1::text, $2::text, $3::text, $4::text, $5::text, $6::text, $7::text, $8::text, \
-  $9::bigint, $9::bigint, $10::text) \
+  $9::bigint, $9::bigint, $10::text, $11::text[]) \
 ON CONFLICT (client_id) DO UPDATE SET \
   team = coalesce(EXCLUDED.team, clients.team), \
   hostname = coalesce(EXCLUDED.hostname, clients.hostname), \
@@ -29,6 +29,8 @@ ON CONFLICT (client_id) DO UPDATE SET \
   agent = coalesce(EXCLUDED.agent, clients.agent), \
   user_email = coalesce(EXCLUDED.user_email, clients.user_email), \
   serial = coalesce(EXCLUDED.serial, clients.serial), \
+  other_serials = CASE WHEN cardinality(EXCLUDED.other_serials) > 0 \
+    THEN EXCLUDED.other_serials ELSE clients.other_serials END, \
   registered_at = coalesce(clients.registered_at, EXCLUDED.registered_at), \
   updated_at = EXCLUDED.updated_at";
 
@@ -125,6 +127,11 @@ impl PgGraphRepository {
                     .map(|value| withhuman_common::postgres_text(value).into_owned())
             };
             let client_id = withhuman_common::postgres_text(&r.client_id).into_owned();
+            let other_serials: Vec<String> = r
+                .other_serials
+                .iter()
+                .map(|serial| withhuman_common::postgres_text(serial).into_owned())
+                .collect();
             let mut client = self.client().await?;
             let tx = client.transaction().await?;
             run(
@@ -141,6 +148,7 @@ impl PgGraphRepository {
                     &record.user,
                     &at,
                     &text(&r.serial),
+                    &other_serials,
                 ],
             )
             .await?;

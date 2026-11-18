@@ -47,7 +47,7 @@ const DELETE_OLD_SIGHTINGS: &str = "DELETE FROM edr_sightings WHERE running_at <
 // A device the manager no longer lists is gone from the mirror.
 const DELETE_UNLISTED: &str = "DELETE FROM edr_devices WHERE agent_id <> ALL($1::text[])";
 
-const CLIENT_IDENTITIES: &str = "SELECT client_id, hostname, serial FROM clients";
+const CLIENT_IDENTITIES: &str = "SELECT client_id, hostname, serial, other_serials FROM clients";
 
 const SET_MATCHES: &str = "\
 UPDATE clients c SET edr_agent_id = m.agent_id, edr_status = m.status \
@@ -166,6 +166,7 @@ impl PgGraphRepository {
                     client_id: row.get(0),
                     hostname: row.get(1),
                     serial: row.get(2),
+                    other_serials: row.get::<_, Option<Vec<String>>>(3).unwrap_or_default(),
                 })
                 .collect();
             let matches = match_clients(&clients, &devices);

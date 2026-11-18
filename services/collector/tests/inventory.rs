@@ -672,6 +672,25 @@ async fn devices_register_with_their_keys_user() {
     long["serial"] = json!("9".repeat(1_025));
     let (status, _) = post(&app, "/v1/clients/register", long, &[]).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+    // The other serials go on trimmed, without blanks, repeats or the motherboard's own.
+    let mut others = registration.clone();
+    others["other_serials"] = json!([" 5CD5479KD6 ", "", "C02TEST1234", "5CD5479KD6"]);
+    let (status, _) = post(&app, "/v1/clients/register", others, &[]).await;
+    assert_eq!(status, StatusCode::OK);
+    {
+        let calls = generator.inventory.lock().unwrap();
+        assert_eq!(
+            calls.last().unwrap().2.as_ref().unwrap()["other_serials"],
+            json!(["5CD5479KD6"])
+        );
+    }
+    // Too many, or one too long, is refused.
+    for refused in [json!(["a", "b", "c", "d", "e"]), json!(["9".repeat(1_025)])] {
+        let mut others = registration.clone();
+        others["other_serials"] = refused;
+        let (status, _) = post(&app, "/v1/clients/register", others, &[]).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
     // Without a key a device still registers, with no user.
     let (status, body) = post(&app, "/v1/clients/register", registration.clone(), &[]).await;
     assert_eq!((status, &body["user"]), (StatusCode::OK, &Value::Null));
