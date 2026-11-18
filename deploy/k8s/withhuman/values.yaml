@@ -58,7 +58,7 @@ generator:
   wazuh:
     url: "" # the server API, such as https://wazuh.example.com:55000
     user: "" # an API user with the role `readonly`
-    syncIntervalSecs: 900
+    syncIntervalSecs: 120
     # Kept under the manager's own limit (300 by default); 0 sends without pacing.
     maxRequestsPerMinute: 150
     # Verify the manager against the Secret's `wazuh-ca` alone: a PEM of its authority, or of
