@@ -27,7 +27,8 @@ use withhuman_contracts::{
     decisions::{CausalStart, Decision, DecisionResponse},
     events::EventResponse,
     inventory::{
-        ClientState, KeyDenial, KeyStatus, StopDenial, VerifyKeyRequest, VerifyKeyResponse,
+        ClientState, KeyDenial, KeyStatus, SessionDenial, SessionFlags, SessionStop, StopDenial,
+        VerifyKeyRequest, VerifyKeyResponse,
     },
 };
 
@@ -57,6 +58,10 @@ struct Generator {
     stop_denials: Mutex<Vec<(String, StopDenial)>>,
     /// The Generator cannot say whether a device is stopped.
     state_down: AtomicBool,
+    /// The sessions the security team stopped.
+    stopped_sessions: Mutex<Vec<String>>,
+    flag_lookups: Mutex<usize>,
+    session_denials: Mutex<Vec<(String, SessionDenial)>>,
 }
 
 impl Generator {
@@ -162,6 +167,43 @@ impl GeneratorTransport for Generator {
         Ok(())
     }
 
+    async fn session_flags(&self, session_id: &str) -> Result<SessionFlags, GeneratorError> {
+        *self.flag_lookups.lock().unwrap() += 1;
+        let stopped = self
+            .stopped_sessions
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|s| s == session_id);
+        Ok(SessionFlags {
+            stop: stopped.then(|| SessionStop {
+                id: 1,
+                session_id: session_id.to_owned(),
+                stopped_at: 1,
+                stopped_by: Some("sec@example.com".into()),
+                reason: None,
+                released_at: None,
+                released_by: None,
+                release_reason: None,
+                first_denied_at: None,
+                last_denied_at: None,
+                denied_count: 0,
+            }),
+        })
+    }
+
+    async fn record_session_denial(
+        &self,
+        session_id: &str,
+        denial: SessionDenial,
+    ) -> Result<(), GeneratorError> {
+        self.session_denials
+            .lock()
+            .unwrap()
+            .push((session_id.to_owned(), denial));
+        Ok(())
+    }
+
     async fn inventory(
         &self,
         method: reqwest::Method,
@@ -184,6 +226,18 @@ impl GeneratorTransport for Generator {
             ["keys", key_id, "revoke"] => {
                 json!({"key_id": key_id, "user": "bo@example.com", "created_at": 1,
                        "revoked_at": 2, "revoked_by": body.unwrap()["actor"], "denied_count": 0})
+            }
+            ["sessions", session, change] if *change == "stop" || *change == "release" => {
+                json!({"id": 1, "session_id": session, "stopped_at": 1, "denied_count": 0,
+                       "released_at": if *change == "release" { json!(2) } else { Value::Null }})
+            }
+            ["reviews"] => {
+                let body = body.unwrap();
+                return Ok((
+                    201,
+                    json!({"id": 1, "session_id": body["session_id"],
+                    "seq": body["seq"], "status": body["status"], "at": 1}),
+                ));
             }
             ["clients"] if method == reqwest::Method::POST => {
                 let body = body.unwrap();
@@ -1153,4 +1207,167 @@ async fn asks_the_generator_for_a_devices_state_by_its_whole_client_id() {
         *seen.lock().unwrap(),
         ["state team/1234", "denied team/1234", "stop team/1234"]
     );
+}
+
+#[tokio::test]
+async fn a_stopped_session_has_its_calls_denied_until_released() {
+    let generator = Arc::new(Generator::with_keys());
+    let app = app(generator.clone(), |config| {
+        config.admin_token = Some(ADMIN.into());
+        config.key_cache = Duration::from_secs(3_600);
+    });
+    let admin = bearer(ADMIN);
+    let admin = [("authorization", admin.as_str())];
+    // Cached as running, then stopped here: the stop applies at once.
+    assert_eq!(
+        post(&app, "/v1/hooks/PreToolUse", call("s-1"), &[]).await,
+        (StatusCode::OK, Value::Null)
+    );
+    generator
+        .stopped_sessions
+        .lock()
+        .unwrap()
+        .push("s-1".into());
+    let (status, stop) = post(
+        &app,
+        "/v1/admin/sessions/s-1/stop",
+        json!({"actor": "sec@example.com", "reason": "exfiltration"}),
+        &admin,
+    )
+    .await;
+    assert_eq!(
+        (status, &stop["session_id"]),
+        (StatusCode::OK, &json!("s-1"))
+    );
+    let (status, body) = post(&app, "/v1/hooks/PreToolUse", call("s-1"), &[]).await;
+    assert_eq!(
+        (status, denial(&body)),
+        (StatusCode::OK, ("deny", keys::SESSION_STOPPED))
+    );
+    let (_, body) = post(
+        &app,
+        "/v1/hooks/codex/PreToolUse",
+        json!({"session_id": "s-1", "tool_name": "shell", "tool_use_id": "t",
+               "tool_input": {"command": "ls"}, "cwd": "/p"}),
+        &[],
+    )
+    .await;
+    assert_eq!(denial(&body), ("deny", keys::SESSION_STOPPED));
+    // Other sessions and the session's other Hooks go on.
+    assert_eq!(
+        post(&app, "/v1/hooks/PreToolUse", call("s-2"), &[]).await,
+        (StatusCode::OK, Value::Null)
+    );
+    let (status, _) = post(
+        &app,
+        "/v1/hooks/UserPromptSubmit",
+        json!({"session_id": "s-1", "prompt": "go on"}),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    {
+        let denials = generator.session_denials.lock().unwrap();
+        assert_eq!(denials.len(), 2);
+        assert_eq!(denials[0].0, "s-1");
+        assert!(denials[0].1.denied_at > 0);
+    }
+    // A user's revoked key comes first.
+    let revoked = bearer(REVOKED);
+    let (_, body) = post(
+        &app,
+        "/v1/hooks/PreToolUse",
+        call("s-1"),
+        &[("authorization", revoked.as_str())],
+    )
+    .await;
+    assert_eq!(denial(&body).1, keys::KEY_REVOKED);
+
+    generator.stopped_sessions.lock().unwrap().clear();
+    let (status, released) = post(
+        &app,
+        "/v1/admin/sessions/s-1/release",
+        json!({"actor": "sec@example.com", "reason": "cleared"}),
+        &admin,
+    )
+    .await;
+    assert_eq!(
+        (status, &released["released_at"]),
+        (StatusCode::OK, &json!(2))
+    );
+    assert_eq!(
+        post(&app, "/v1/hooks/PreToolUse", call("s-1"), &[]).await,
+        (StatusCode::OK, Value::Null)
+    );
+    let (status, _) = post(&app, "/v1/admin/sessions/s-1/stop", json!({}), &[]).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn reviews_and_service_keys_go_through_the_admin_api() {
+    let generator = Arc::new(Generator::default());
+    let app = app(generator.clone(), |config| {
+        config.admin_token = Some(ADMIN.into())
+    });
+    let admin = bearer(ADMIN);
+    let admin = [("authorization", admin.as_str())];
+    let (status, review) = post(
+        &app,
+        "/v1/admin/reviews",
+        json!({"session_id": "s", "seq": 7, "status": "issue", "note": "copied .env",
+               "actor": "sec@example.com"}),
+        &admin,
+    )
+    .await;
+    assert_eq!(
+        (status, &review["status"]),
+        (StatusCode::CREATED, &json!("issue"))
+    );
+    let (status, _) = post(
+        &app,
+        "/v1/admin/reviews",
+        json!({"session_id": "s", "seq": 7, "status": "maybe"}),
+        &admin,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = post(
+        &app,
+        "/v1/admin/reviews",
+        json!({"session_id": "s", "seq": 7, "status": "no_issue", "note": "x".repeat(10_001)}),
+        &admin,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let (status, issued) = post(
+        &app,
+        "/v1/admin/users/CI-Deploy/keys",
+        json!({"kind": "service", "actor": "sec@example.com"}),
+        &admin,
+    )
+    .await;
+    assert_eq!(
+        (status, &issued["user"]),
+        (StatusCode::CREATED, &json!("ci-deploy"))
+    );
+    let sent = generator.inventory.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(sent.2.unwrap()["kind"], "service");
+    // A person's key needs an email.
+    let (status, _) = post(&app, "/v1/admin/users/ci-deploy/keys", json!({}), &admin).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn stop_checks_are_cached_per_session() {
+    let generator = Arc::new(Generator::default());
+    let app = app(generator.clone(), |config| {
+        config.key_cache = Duration::from_secs(3_600);
+    });
+    for tool in ["t1", "t2", "t3"] {
+        let mut event = call("s-cache");
+        event["tool_use_id"] = json!(tool);
+        post(&app, "/v1/hooks/PreToolUse", event, &[]).await;
+    }
+    assert_eq!(*generator.flag_lookups.lock().unwrap(), 1);
 }

@@ -149,6 +149,13 @@ not a machine. It stops a device that keeps running its installed Hooks. To stop
 whatever they run, revoke their keys with `WITHHUMAN_REQUIRE_KEY=on`. Tool calls that reach the
 engine through AgentGateway alone (MCP, without a Hook) are not covered, as with a revoked key.
 
+The security team can also stop one session (`POST /v1/admin/sessions/<id>/stop`, released
+with `.../release`), review calls after the fact (`POST /v1/admin/reviews`) and issue keys to
+automations (`{"kind": "service"}`). A call is checked against a revoked key first, then its
+device's stop, then its session's. Revoked keys and session stops (released ones kept) are in the
+`stop_audit` view; a device's stop is on its `clients` row. Benchmark runs name their client
+`bench/...` so the inventory can leave them out (`clients.test`).
+
 ### Triage
 
 The security team records what it decided about a session it looked at, for the whole team:
