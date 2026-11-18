@@ -121,6 +121,8 @@ SERIAL_TIMEOUT = 10
 # Where Linux shows the motherboard's serial number, the one Wazuh's hardware inventory reports
 # (`board_serial`); on most distributions only root can read it.
 LINUX_SERIAL = Path("/sys/class/dmi/id/board_serial")
+# The system's serial on Linux: often readable by root alone.
+LINUX_OTHER_SERIALS = (Path("/sys/class/dmi/id/product_serial"),)
 # What firmware reports when the manufacturer set no serial number: not a serial.
 NO_SERIAL = {"", "0", "none", "default string", "not specified", "not applicable",
              "system serial number", "to be filled by o.e.m."}
@@ -427,6 +429,28 @@ def hardware_serial():
     return None if serial.lower() in NO_SERIAL else serial
 
 
+def other_serials():
+    """The machine's other hardware serial numbers, beside the motherboard's: the BIOS's on
+    Windows, the system's on Linux (when this user can read it). A PC often numbers these
+    otherwise than its motherboard, and an EDR may report one of them; the engine matches the
+    device by any. None on macOS, where there is one."""
+    found = []
+    if sys.platform.startswith("linux"):
+        for path in LINUX_OTHER_SERIALS:
+            try:
+                found.append(path.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                pass
+    elif os.name == "nt":
+        found.append(command_output(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                                     "(Get-CimInstance -ClassName Win32_BIOS).SerialNumber"]))
+    serials = []
+    for serial in (s.strip() for s in found):
+        if serial.lower() not in NO_SERIAL and serial not in serials:
+            serials.append(serial)
+    return serials
+
+
 def register(server, client, team, key, agent, project, version):
     """Registers the device with the engine; the problem as text when that fails, else None."""
     body = {
@@ -442,15 +466,29 @@ def register(server, client, team, key, agent, project, version):
     serial = hardware_serial()
     if serial:
         body["serial"] = serial
+    others = [other for other in other_serials() if other != serial]
+    if others:
+        body["other_serials"] = others
     headers = {"Content-Type": "application/json"}
     if key:
         headers["Authorization"] = f"Bearer {key}"
-    request = urllib.request.Request(f"{server}/v1/clients/register",
-                                     data=json.dumps(body).encode("utf-8"),
-                                     headers=headers, method="POST")
-    try:
+
+    def post(body):
+        request = urllib.request.Request(f"{server}/v1/clients/register",
+                                         data=json.dumps(body).encode("utf-8"),
+                                         headers=headers, method="POST")
         with urllib.request.urlopen(request, timeout=REGISTER_TIMEOUT) as response:
             response.read()
+
+    try:
+        try:
+            post(body)
+        except urllib.error.HTTPError as error:
+            # An engine from before `other_serials` refuses a field it does not know: it is
+            # registered without them.
+            if not others or error.code not in (400, 422):
+                raise
+            post({name: value for name, value in body.items() if name != "other_serials"})
         return None
     except urllib.error.HTTPError as error:
         try:

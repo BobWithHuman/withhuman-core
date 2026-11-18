@@ -49,6 +49,8 @@ pub struct ClientIdentity {
     pub client_id: String,
     pub hostname: Option<String>,
     pub serial: Option<String>,
+    /// Its other hardware serial numbers (the BIOS's, the system's).
+    pub other_serials: Vec<String>,
 }
 
 /// A registered device and the EDR device it is.
@@ -111,7 +113,9 @@ fn preferred<'a>(current: &'a EdrDevice, other: &'a EdrDevice) -> &'a EdrDevice 
 /// The EDR device of each registered device that has one.
 ///
 /// Two devices that both report a serial number are the same machine only when the numbers are
-/// equal: hostnames repeat too easily (`MacBook-Pro`) to overrule that. When either side has no
+/// equal: hostnames repeat too easily (`MacBook-Pro`) to overrule that. A registered device may
+/// report several (its motherboard's, its BIOS's, its system's, which a PC often numbers
+/// apart): the EDR device's equal to any of them, the motherboard's first, is the one. When either side has no
 /// serial, or only a firmware placeholder, the hostnames decide, compared without case or
 /// domain. One EDR device stands for every client row of its machine, one per OS account.
 pub fn match_clients(clients: &[ClientIdentity], devices: &[EdrDevice]) -> Vec<EdrMatch> {
@@ -140,11 +144,17 @@ pub fn match_clients(clients: &[ClientIdentity], devices: &[EdrDevice]) -> Vec<E
         .iter()
         .filter_map(|client| {
             let host = host_key(client.hostname.as_deref());
-            let device = match serial_key(client.serial.as_deref()) {
-                Some(serial) => by_serial
-                    .get(&serial)
-                    .or_else(|| by_host_without_serial.get(host.as_ref()?)),
-                None => by_host.get(host.as_ref()?),
+            let serials: Vec<String> = std::iter::once(client.serial.as_deref())
+                .chain(client.other_serials.iter().map(|s| Some(s.as_str())))
+                .filter_map(serial_key)
+                .collect();
+            let device = if serials.is_empty() {
+                by_host.get(host.as_ref()?)
+            } else {
+                serials
+                    .iter()
+                    .find_map(|serial| by_serial.get(serial))
+                    .or_else(|| by_host_without_serial.get(host.as_ref()?))
             }?;
             Some(EdrMatch {
                 client_id: client.client_id.clone(),
@@ -252,7 +262,43 @@ mod tests {
             client_id: id.into(),
             hostname: hostname.map(str::to_owned),
             serial: serial.map(str::to_owned),
+            other_serials: Vec::new(),
         }
+    }
+
+    #[test]
+    fn any_serial_number_of_a_device_matches_its_edr_device() {
+        let devices = [
+            device("003", "Iamsh-win", Some("PUXJV048JLQ11V")),
+            device("005", "Hye-Jeong", Some("123490EN400015")),
+            device("006", "lab-pc", Some("BOARD6")),
+        ];
+        let clients = [
+            // The motherboard's matches; the BIOS's beside it does not get in the way.
+            ClientIdentity {
+                other_serials: vec!["5CD5479KD6".into()],
+                ..client("t/a", Some("BoBbook"), Some("PUXJV048JLQ11V"))
+            },
+            // The EDR reports what the setup read as the BIOS's.
+            ClientIdentity {
+                other_serials: vec![" 123490en400015 ".into()],
+                ..client("t/b", Some("Hye-Jeong"), Some("1CPR91CMC00739"))
+            },
+            // None of them: still two machines, whatever the hostname.
+            ClientIdentity {
+                other_serials: vec!["BIOS7".into()],
+                ..client("t/c", Some("lab-pc"), Some("BOARD7"))
+            },
+            // Only placeholders: the hostname decides.
+            ClientIdentity {
+                other_serials: vec!["Default string".into()],
+                ..client("t/d", Some("LAB-PC"), Some("To Be Filled By O.E.M."))
+            },
+        ];
+        assert_eq!(
+            matched(&clients, &devices),
+            pairs(&[("t/a", "003"), ("t/b", "005"), ("t/d", "006")])
+        );
     }
 
     fn device(id: &str, name: &str, serial: Option<&str>) -> EdrDevice {

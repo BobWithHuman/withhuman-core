@@ -30,12 +30,14 @@ class Engine(http.server.BaseHTTPRequestHandler):
     received = []
     status = 200
     body = b'{"client_id": "x"}'
+    # A field this engine does not know yet, refused with 422 as a strict JSON body is.
+    unknown = None
 
     def do_POST(self):
-        body = self.rfile.read(int(self.headers["Content-Length"]))
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         Engine.received.append((self.path, {k.lower(): v for k, v in self.headers.items()},
-                                json.loads(body)))
-        self.send_response(Engine.status)
+                                body))
+        self.send_response(422 if Engine.unknown in body else Engine.status)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(Engine.body)
@@ -273,12 +275,14 @@ class KeyAndRegistrationTest(Setup):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("could not be reached", result.stdout)
 
-    def register(self, serial):
-        """The registration sent from a machine whose serial number reads as `serial`."""
+    def register(self, serial, others=()):
+        """The registration sent from a machine whose serial numbers read as `serial` (the
+        motherboard's) and `others`."""
         spec = importlib.util.spec_from_file_location("withhuman_configure", CONFIGURE)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        with mock.patch.object(module, "hardware_serial", lambda: serial):
+        with mock.patch.object(module, "hardware_serial", lambda: serial), \
+                mock.patch.object(module, "other_serials", lambda: list(others)):
             problem = module.register(self.url, "lab/1", "lab", None, "claude", self.project, "v")
         self.assertIsNone(problem)
         return Engine.received[-1][2]
@@ -288,6 +292,23 @@ class KeyAndRegistrationTest(Setup):
 
     def test_leaves_the_serial_number_out_when_there_is_none(self):
         self.assertNotIn("serial", self.register(None))
+
+    def test_sends_the_other_serial_numbers_beside_the_motherboards(self):
+        body = self.register("PUXJV048", ["5CD5479", "PUXJV048"])
+        self.assertEqual(body["serial"], "PUXJV048")
+        self.assertEqual(body["other_serials"], ["5CD5479"])
+        self.assertNotIn("other_serials", self.register("PUXJV048", ["PUXJV048"]))
+        self.assertEqual(self.register(None, ["5CD5479"])["other_serials"], ["5CD5479"])
+
+    def test_registers_with_an_engine_from_before_the_other_serials(self):
+        Engine.unknown = "other_serials"
+        try:
+            body = self.register("PUXJV048", ["5CD5479"])
+        finally:
+            Engine.unknown = None
+        self.assertEqual(body["serial"], "PUXJV048")
+        self.assertNotIn("other_serials", body)
+        self.assertIn("other_serials", Engine.received[-2][2])
 
 
 class HardwareSerialTest(unittest.TestCase):
@@ -306,8 +327,8 @@ class HardwareSerialTest(unittest.TestCase):
         self.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.module)
 
-    def serial(self, platform, run=None, os_name="posix"):
-        """`hardware_serial()` on `platform`, its commands answered by `run`."""
+    def serial(self, platform, run=None, os_name="posix", read=None):
+        """`hardware_serial()` (or `read`) on `platform`, its commands answered by `run`."""
         ran = []
 
         def fake(command, **_):
@@ -320,7 +341,7 @@ class HardwareSerialTest(unittest.TestCase):
         with mock.patch.object(self.module.sys, "platform", platform), \
                 mock.patch.object(self.module.os, "name", os_name), \
                 mock.patch.object(self.module.subprocess, "run", fake):
-            return self.module.hardware_serial(), ran
+            return (read or self.module.hardware_serial)(), ran
 
     def test_reads_the_serial_number_on_macos(self):
         serial, ran = self.serial("darwin", lambda _: (0, self.IOREG))
@@ -371,6 +392,23 @@ class HardwareSerialTest(unittest.TestCase):
         self.assertEqual([command[0] for command in ran], ["powershell", "wmic"])
         self.assertEqual(ran[1][1], "baseboard")
         self.assertIsNone(self.serial("win32", os_name="nt")[0])
+
+
+    def test_reads_the_other_serial_numbers(self):
+        others = self.module.other_serials
+        # Windows: the BIOS's.
+        serials, ran = self.serial("win32", lambda _: (0, "5CD5479KD6\r\n"), os_name="nt", read=others)
+        self.assertEqual(serials, ["5CD5479KD6"])
+        self.assertIn("Win32_BIOS", ran[0][-1])
+        self.assertEqual(self.serial("win32", lambda _: (0, "Default string"), os_name="nt", read=others)[0], [])
+        self.assertEqual(self.serial("win32", os_name="nt", read=others)[0], [])
+        # Linux: the system's, when readable.
+        folder = Path(tempfile.mkdtemp())
+        (folder / "product_serial").write_text("PF9SYS1\n")
+        with mock.patch.object(self.module, "LINUX_OTHER_SERIALS", (folder / "product_serial", folder / "absent")):
+            self.assertEqual(self.serial("linux", read=others), (["PF9SYS1"], []))
+        # macOS has one.
+        self.assertEqual(self.serial("darwin", read=others), ([], []))
 
 
 class CodexConfigureTest(unittest.TestCase):

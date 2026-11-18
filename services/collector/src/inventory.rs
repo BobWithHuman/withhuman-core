@@ -49,6 +49,8 @@ pub const USER_HEADER: &str = "x-withhuman-user";
 const BODY_LIMIT: usize = 8 * 1024 * 1024;
 /// Longest value a device may register in a field.
 const FIELD_LIMIT: usize = 1_024;
+/// The most other serial numbers a registration may carry (`other_serials`).
+const OTHER_SERIALS_LIMIT: usize = 4;
 
 pub async fn authenticate(
     State(service): State<CollectorService>,
@@ -179,6 +181,11 @@ pub async fn register_client(
     let client_id = registration.client_id.trim();
     if client_id.is_empty()
         || client_id.len() > FIELD_LIMIT
+        || registration.other_serials.len() > OTHER_SERIALS_LIMIT
+        || registration
+            .other_serials
+            .iter()
+            .any(|serial| serial.len() > FIELD_LIMIT)
         || fields.iter().any(|field| {
             field
                 .as_ref()
@@ -209,10 +216,21 @@ pub async fn register_client(
         .map(str::trim)
         .filter(|serial| !serial.is_empty())
         .map(str::to_owned);
+    // The others trimmed, without blanks, repeats or the motherboard's own.
+    let mut other_serials: Vec<String> = Vec::new();
+    for other in registration.other_serials.iter().map(|s| s.trim()) {
+        if !other.is_empty()
+            && serial.as_deref() != Some(other)
+            && !other_serials.iter().any(|kept| kept == other)
+        {
+            other_serials.push(other.to_owned());
+        }
+    }
     let record = ClientRegistrationRecord {
         registration: ClientRegistration {
             client_id: client_id.to_owned(),
             serial,
+            other_serials,
             ..registration
         },
         user,

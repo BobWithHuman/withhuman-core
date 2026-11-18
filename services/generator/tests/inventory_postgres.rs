@@ -270,6 +270,23 @@ async fn registers_a_device_and_its_projects() {
     assert_eq!(moved["owner"], "bo@example.com");
     assert_eq!(moved["owner_set_by"], "sec@example.com");
     assert_eq!(moved["owner_set_at"], owned["owner_set_at"]);
+    // The other serials a setup read are kept beside it, and one that read none keeps them.
+    let others = "SELECT to_jsonb(other_serials) FROM clients WHERE client_id = $1";
+    assert_eq!(db.row(others, &[&client_id]).await, json!([]));
+    let mut with_others = registration("/p/two", 400, json!(null), json!("C02TEST5678"));
+    with_others["other_serials"] = json!(["5CD5479KD6"]);
+    let (status, _) = send(&url, "POST", "/v1/clients", Some(with_others)).await;
+    assert_eq!(status, 200);
+    assert_eq!(db.row(others, &[&client_id]).await, json!(["5CD5479KD6"]));
+    let (status, _) = send(
+        &url,
+        "POST",
+        "/v1/clients",
+        Some(registration("/p/two", 500, json!(null), json!(null))),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(db.row(others, &[&client_id]).await, json!(["5CD5479KD6"]));
 
     let (status, cleared) = send(
         &url,

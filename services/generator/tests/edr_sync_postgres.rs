@@ -95,7 +95,9 @@ async fn a_sync_mirrors_the_manager_and_matches_registered_clients() {
              ('t/cho', 'desktop-abc.corp.example.com', NULL, NULL, NULL), \
              ('t/dan', 'anas-macbook-pro.local', 'C02ZZZ', NULL, NULL), \
              ('t/eve', 'gone', NULL, '099', 'active'), \
-             ('t/fay', 'BUILD-7.local', 'PF3ABC', '001', 'active')",
+             ('t/fay', 'BUILD-7.local', 'PF3ABC', '001', 'active'); \
+             INSERT INTO clients (client_id, hostname, serial, other_serials) VALUES \
+             ('t/gus', 'lab-pc', 'BOARD9', '{\" c02xk1 \"}')",
         )
         .await
         .unwrap();
@@ -107,7 +109,7 @@ async fn a_sync_mirrors_the_manager_and_matches_registered_clients() {
         synced,
         EdrSync::Synced {
             devices: 6,
-            matched: 4
+            matched: 5
         }
     );
     assert_eq!(
@@ -196,6 +198,8 @@ async fn a_sync_mirrors_the_manager_and_matches_registered_clients() {
             ["t/eve", null, null],
             // Matched to another device before.
             ["t/fay", "004", "pending"],
+            // The EDR reports what the setup read as one of its other serials.
+            ["t/gus", "001", "active"],
         ])
     );
     {
@@ -268,7 +272,7 @@ async fn a_sync_mirrors_the_manager_and_matches_registered_clients() {
         synced,
         EdrSync::Synced {
             devices: 5,
-            matched: 4
+            matched: 5
         }
     );
     let devices = stack.devices().await;
@@ -295,6 +299,7 @@ async fn a_sync_mirrors_the_manager_and_matches_registered_clients() {
             ["t/eve", null, null],
             ["t/fay", "004", "pending"],
             ["t/gil", "005", "active"],
+            ["t/gus", "001", "disconnected"],
         ])
     );
     stack.stop().await;
@@ -725,7 +730,11 @@ async fn the_schema_names_what_the_viewer_reads() {
         json!([["001", null, null, null, null, null, "codex", 5, null]])
     );
     let clients = columns("clients").await;
-    for column in ["edr_agent_id text", "edr_status text"] {
+    for column in [
+        "edr_agent_id text",
+        "edr_status text",
+        "other_serials ARRAY",
+    ] {
         assert!(
             clients.as_array().unwrap().contains(&json!(column)),
             "{clients}"

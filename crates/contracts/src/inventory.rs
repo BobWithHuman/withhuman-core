@@ -33,6 +33,11 @@ pub struct ClientRegistration {
     /// The machine's hardware serial number; none when the setup could not read it.
     #[serde(default)]
     pub serial: Option<String>,
+    /// The machine's other hardware serial numbers the setup read: the BIOS's or the system's,
+    /// which a PC often numbers otherwise than its motherboard (`serial`). The device is matched
+    /// with its EDR device by any of them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub other_serials: Vec<String>,
 }
 
 /// A registration as the Collector passes it on: with the key's user when one was verified.

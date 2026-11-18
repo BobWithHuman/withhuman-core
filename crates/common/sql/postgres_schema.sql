@@ -415,6 +415,13 @@ BEGIN
       ADD COLUMN owner_set_at  bigint;
   END IF;
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                 AND table_name = 'clients' AND column_name = 'other_serials') THEN
+    ALTER TABLE clients
+      -- The machine's other hardware serial numbers (the BIOS's, the system's), from the latest
+      -- setup that read any; the EDR device is matched by `serial` or any of these.
+      ADD COLUMN other_serials text[] NOT NULL DEFAULT '{}';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
                  AND table_name = 'clients' AND column_name = 'edr_agent_id') THEN
     ALTER TABLE clients
       -- The EDR device this one is (`edr_devices.agent_id`) and its status there, as of the
