@@ -20,7 +20,9 @@ must not lift every control.
 It sends the device's client ID (WITHHUMAN_CLIENT_ID) and the user's WithHuman key
 (WITHHUMAN_KEY, as `Authorization: Bearer`). When Claude Code was started without them in its
 environment, from an IDE or app for instance, it reads them from ~/.config/withhuman/client-id
-and ~/.config/withhuman/key, which the setup wrote: the engine stops a revoked key's calls here.
+and ~/.config/withhuman/key, which the setup wrote, and then from the folder above its own, where
+a setup for the whole device (--scope managed) keeps the device's client ID: the engine stops a
+revoked key's calls, and a stopped device's, here.
 
 Python 3.8 or later, standard library only.
 """
@@ -152,16 +154,22 @@ def programs(event):
 
 
 def setting(name, file):
-    """The environment variable `name`, else the setup's file of that name."""
+    """The environment variable `name`, else the setup's file of that name: the user's, else the
+    one beside the folder this hook is installed in, where a setup for the whole device keeps the
+    device's client ID."""
     value = os.environ.get(name, "").strip()
     if value:
         return value
-    try:
-        path = os.path.join(os.path.expanduser("~"), ".config", "withhuman", file)
-        with open(path, encoding="utf-8") as handle:
-            return handle.read().strip() or None
-    except OSError:
-        return None
+    for folder in (os.path.join(os.path.expanduser("~"), ".config", "withhuman"),
+                   os.path.dirname(os.path.dirname(os.path.abspath(__file__)))):
+        try:
+            with open(os.path.join(folder, file), encoding="utf-8") as handle:
+                value = handle.read().strip()
+        except OSError:
+            continue
+        if value:
+            return value
+    return None
 
 
 def main():

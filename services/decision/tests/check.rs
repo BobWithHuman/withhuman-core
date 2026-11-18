@@ -179,6 +179,31 @@ fn knows_a_change_to_the_agents_safeguards() {
             json!({"command": "sed -i '' 's/hooks/x/' .claude/settings.json"}),
         ),
         ("Bash", json!({"command": "rm -rf .claude/hooks"})),
+        // The policy an administrator set, and WithHuman's hooks for a user or the device.
+        (
+            "Write",
+            json!({"file_path": "/Library/Application Support/ClaudeCode/managed-settings.d/50-withhuman.json", "content": "{}"}),
+        ),
+        (
+            "Edit",
+            json!({"file_path": "/etc/claude-code/managed-settings.json", "old_string": "a", "new_string": "b"}),
+        ),
+        (
+            "Write",
+            json!({"file_path": "C:\\Program Files\\ClaudeCode\\managed-settings.json", "content": "{}"}),
+        ),
+        (
+            "Bash",
+            json!({"command": "rm '/Library/Application Support/WithHuman/hooks/pre-tool-use.py'"}),
+        ),
+        (
+            "Bash",
+            json!({"command": "echo team/other > ~/.config/withhuman/client-id"}),
+        ),
+        (
+            "Write",
+            json!({"file_path": "C:\\Program Files\\WithHuman\\client-id", "content": "x"}),
+        ),
     ] {
         assert_eq!(
             effect(&call(tool_name, input.clone())),

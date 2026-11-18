@@ -486,5 +486,126 @@ class CodexConfigureTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
 
+
+class GlobalSetupTest(Setup):
+    """--scope user and --scope managed: every folder of the user, or of every user."""
+
+    def setUp(self):
+        super().setUp()
+        self.managed = Path(tempfile.mkdtemp()).resolve()
+        self.device = Path(tempfile.mkdtemp()).resolve() / "WithHuman"
+
+    def run_scope(self, scope, *extra, env=None):
+        environment = {**os.environ, "HOME": str(self.home), "USERPROFILE": str(self.home),
+                       "SHELL": "/bin/zsh", "WITHHUMAN_MANAGED_DIR": str(self.managed),
+                       "WITHHUMAN_DEVICE_DIR": str(self.device), **(env or {})}
+        for name in ("WITHHUMAN_SERVER", "WITHHUMAN_KEY", "SUDO_USER"):
+            environment.pop(name, None)
+        arguments = ["--scope", scope, "--team", "lab", "--no-register", "--server", SERVER]
+        if os.name == "nt":
+            arguments.append("--no-persist")
+        return subprocess.run([sys.executable, str(CONFIGURE), *arguments, *extra],
+                              capture_output=True, text=True, env=environment, timeout=30)
+
+    def http_hooks(self, settings):
+        return [group["hooks"][0] for event, groups in settings["hooks"].items()
+                for group in groups if event != "PreToolUse" and configure_module().is_withhuman(group["hooks"][0])]
+
+    def test_user_scope_writes_the_users_settings_with_the_client_id(self):
+        self.write(self.home / ".claude" / "settings.json",
+                   {"model": "opus", "hooks": {"PreToolUse": [{"hooks": [OLD_HTTP, OTHER]}]}})
+        result = self.run_scope("user")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        settings = self.read(self.home / ".claude" / "settings.json")
+        self.assertEqual(settings["model"], "opus")
+        client = (self.home / ".config" / "withhuman" / "client-id").read_text().strip()
+        self.assertTrue(client.startswith("lab/"))
+        # The earlier hook is replaced, the user's own kept, the ID written into each header.
+        pre = [hook for group in settings["hooks"]["PreToolUse"] for hook in group["hooks"]]
+        self.assertIn(OTHER, pre)
+        self.assertNotIn(OLD_HTTP, pre)
+        hook = self.home / ".config" / "withhuman" / "hooks" / "pre-tool-use.py"
+        self.assertTrue(any(str(hook.as_posix()) in h.get("command", "") for h in pre))
+        for http in self.http_hooks(settings):
+            self.assertEqual(http["headers"]["x-withhuman-client"], client)
+            self.assertEqual(http["allowedEnvVars"], ["WITHHUMAN_KEY"])
+        self.assertTrue(hook.is_file())
+        # No project was touched.
+        self.assertFalse((self.project / ".claude" / "settings.json").exists())
+
+        result = self.run_scope("user", "--uninstall")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        settings = self.read(self.home / ".claude" / "settings.json")
+        self.assertEqual(settings["hooks"], {"PreToolUse": [{"hooks": [OTHER]}]})
+        self.assertFalse(hook.exists())
+
+    def test_managed_scope_writes_a_policy_file_of_its_own(self):
+        # The organisation's own policy is left alone.
+        (self.managed / "managed-settings.json").write_text('{"model": "opus"}')
+        # The device keeps the identity the user's own setup gave it.
+        config = self.home / ".config" / "withhuman"
+        config.mkdir(parents=True)
+        (config / "client-id").write_text("lab/earlier\n")
+        result = self.run_scope("managed")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.managed / "managed-settings.json").read_text(), '{"model": "opus"}')
+        policy = self.managed / "managed-settings.d" / "50-withhuman.json"
+        settings = self.read(policy)
+        self.assertNotIn("allowManagedHooksOnly", settings)
+        self.assertEqual(sorted(settings["hooks"]), sorted(configure_module().EVENTS))
+        self.assertEqual((self.device / "client-id").read_text().strip(), "lab/earlier")
+        for http in self.http_hooks(settings):
+            self.assertEqual(http["headers"]["x-withhuman-client"], "lab/earlier")
+        hook = self.device / "hooks" / "pre-tool-use.py"
+        command = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        self.assertIn(hook.as_posix(), command)
+        self.assertTrue(command.endswith(f"{SERVER}/v1/hooks/PreToolUse"))
+        if os.name != "nt":
+            # Readable by every user, changeable by the administrator alone.
+            self.assertEqual(stat.S_IMODE(policy.stat().st_mode), 0o644)
+            self.assertEqual(stat.S_IMODE((self.device / "client-id").stat().st_mode), 0o644)
+            self.assertEqual(stat.S_IMODE(hook.stat().st_mode), 0o755)
+        # No user's profile or key was touched.
+        self.assertFalse((self.home / ".zshrc").exists())
+
+        result = self.run_scope("managed", "--managed-hooks-only")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.read(policy)["allowManagedHooksOnly"])
+
+        result = self.run_scope("managed", "--uninstall")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(policy.exists())
+        self.assertFalse(hook.exists())
+        self.assertTrue((self.device / "client-id").exists())
+
+    def test_refuses_what_a_global_setup_cannot_do(self):
+        for extra, said in ((("--key", KEY), "takes no key"),
+                            (("--agent", "codex"), "per project")):
+            result = self.run_scope("managed" if extra[0] == "--key" else "user", *extra)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(said, result.stderr)
+        result = subprocess.run([sys.executable, str(CONFIGURE), "--managed-hooks-only",
+                                 "--server", SERVER, "--no-register"],
+                                capture_output=True, text=True, timeout=30)
+        self.assertIn("goes with --scope managed", result.stderr)
+        self.assertFalse((self.managed / "managed-settings.d").exists())
+
+    @unittest.skipIf(os.name == "nt" or os.geteuid() == 0, "needs a folder this user cannot write")
+    def test_says_a_managed_setup_needs_an_administrator(self):
+        self.managed.chmod(0o555)
+        try:
+            result = self.run_scope("managed")
+        finally:
+            self.managed.chmod(0o755)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("administrator", result.stderr)
+
+
+def configure_module():
+    spec = importlib.util.spec_from_file_location("configure", CONFIGURE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
 if __name__ == "__main__":
     unittest.main()

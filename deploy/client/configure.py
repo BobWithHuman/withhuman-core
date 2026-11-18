@@ -2,7 +2,8 @@
 """Sets up WithHuman for Claude Code in a project folder, replacing any earlier WithHuman setup.
 
 usage: configure.py --server URL [--project DIR] [--team NAME] [--key KEY] [--hook FILE]
-                    [--no-persist] [--no-register]
+                    [--no-persist] [--no-register] [--scope project|user|managed]
+                    [--managed-hooks-only]
 
 WithHuman is self-hosted, so --server (or WITHHUMAN_SERVER) has no default: it is the address of
 the engine this device reports to, and every hook below is written against it.
@@ -26,6 +27,32 @@ the engine this device reports to, and every hook below is written against it.
    that fails, and says so; --no-register skips it.
 
 The setup-project.sh and setup-project.ps1 wrappers fetch this file and the hook, then run it.
+
+With --scope user or --scope managed it sets Claude Code up for every folder instead of one
+project (Codex is set up per project only):
+
+- user: the hooks go in the user's own settings (~/.claude/settings.json) and the hook in
+  ~/.config/withhuman/hooks, for every folder this user works in; no administrator rights, and the
+  user can take them out again.
+- managed (run as root, or as administrator on Windows): the hooks go in the policy an
+  administrator sets for Claude Code, in a file of its own in managed-settings.d beside
+  managed-settings.json (/Library/Application Support/ClaudeCode on macOS, /etc/claude-code on
+  Linux, C:\\Program Files\\ClaudeCode on Windows), so the organisation's own policy file is left
+  alone. The hook and the device's client ID go in a folder only an administrator can change
+  (/Library/Application Support/WithHuman, /opt/withhuman, C:\\Program Files\\WithHuman). They
+  apply to every user and folder on the device and a user cannot turn them off.
+  --managed-hooks-only also sets allowManagedHooksOnly, so Claude Code runs no user, project or
+  plugin hooks beside the administrator's: no WithHuman hook a project setup left runs twice, and
+  none of the user's own can stand beside it.
+
+Hooks of all levels run together, so a device set up both ways reports each event twice: take a
+project setup out (--uninstall in that project) where a global one is in place. A project setup
+in turn takes WithHuman's hooks out of the user's settings, as above.
+
+A global setup writes the device's client ID into the HTTP hooks' header itself, rather than
+leaving it to WITHHUMAN_CLIENT_ID, which Claude Code started from an IDE or by another user does
+not have; the PreToolUse hook reads it from the file beside its folder. The WithHuman key stays
+the user's own (WITHHUMAN_KEY or ~/.config/withhuman/key): a managed setup takes none.
 Safe to run again: the result is the same, the client ID is kept and the registration updated.
 
 With --agent codex it sets up Codex CLI instead (step 3 as above):
@@ -40,7 +67,8 @@ With --agent codex it sets up Codex CLI instead (step 3 as above):
    in Codex (/hooks): Codex skips project hooks until they are trusted.
 4. Keeps the key and registers the device, as above.
 
-With --uninstall (and --agent claude or codex) it takes WithHuman out of the project only: its
+With --uninstall (and --agent claude or codex) it takes WithHuman out of the project only (with
+--scope user or managed, out of that scope instead): its
 hook entries in the project's settings or hooks.json (other hooks and settings are kept, each
 file changed is first copied to <file>.bak-<time>) and the hook files it installed. --server is
 not needed then.
@@ -88,6 +116,16 @@ LINUX_SERIAL = Path("/sys/class/dmi/id/product_serial")
 # What firmware reports when the manufacturer set no serial number: not a serial.
 NO_SERIAL = {"", "0", "none", "default string", "not specified", "not applicable",
              "system serial number", "to be filled by o.e.m."}
+# Where Claude Code reads the policy an administrator sets, and where a managed setup keeps the
+# hook and the device's client ID, by system. WITHHUMAN_MANAGED_DIR and WITHHUMAN_DEVICE_DIR put
+# them elsewhere (a test, an unusual layout).
+MANAGED_DIRS = {"darwin": "/Library/Application Support/ClaudeCode", "linux": "/etc/claude-code",
+                "windows": "C:\\Program Files\\ClaudeCode"}
+DEVICE_DIRS = {"darwin": "/Library/Application Support/WithHuman", "linux": "/opt/withhuman",
+               "windows": "C:\\Program Files\\WithHuman"}
+MANAGED_FILE = "50-withhuman.json"
+NEEDS_ADMIN = ("--scope managed writes where only an administrator can: run it with sudo "
+               "(macOS, Linux) or from an administrator PowerShell (Windows)")
 CODEX_HOOK = "withhuman-hook.py"
 CODEX_FILES = (CODEX_HOOK, "codex_transcript.py", HOOK_NAME)
 # Codex events the hook handles. PreToolUse waits for a judgment (intent wait and decision
@@ -135,11 +173,19 @@ def remove_withhuman(settings):
     return removed
 
 
-def withhuman_hooks(server, command):
-    """Our hooks by event: HTTP with the client ID header, PreToolUse through `command`."""
+def withhuman_hooks(server, command, client=None):
+    """Our hooks by event: HTTP with the client ID header, PreToolUse through `command`. With
+    `client`, the header carries that ID as written instead of WITHHUMAN_CLIENT_ID."""
     def http(event):
         # Claude Code puts only listed variables into headers; an unset WITHHUMAN_KEY leaves
         # `Bearer `, which the engine takes as no key.
+        if client:
+            return {
+                "type": "http",
+                "url": f"{server}/v1/hooks/{event}",
+                "headers": {"x-withhuman-client": client, "Authorization": "Bearer $WITHHUMAN_KEY"},
+                "allowedEnvVars": ["WITHHUMAN_KEY"],
+            }
         return {
             "type": "http",
             "url": f"{server}/v1/hooks/{event}",
@@ -199,6 +245,57 @@ def client_id(team):
 
 def config_dir():
     return Path.home() / ".config" / "withhuman"
+
+
+def system():
+    if sys.platform == "darwin":
+        return "darwin"
+    return "windows" if os.name == "nt" else "linux"
+
+
+def managed_settings():
+    """The file of WithHuman's own in the drop-in folder of Claude Code's managed settings."""
+    folder = os.environ.get("WITHHUMAN_MANAGED_DIR") or MANAGED_DIRS[system()]
+    return Path(folder) / "managed-settings.d" / MANAGED_FILE
+
+
+def device_dir():
+    return Path(os.environ.get("WITHHUMAN_DEVICE_DIR") or DEVICE_DIRS[system()])
+
+
+def device_client_id(team):
+    """The device's client ID for a managed setup, kept in the device folder. A first setup takes
+    the one the user's own setup gave this device, so the device keeps one identity: the user who
+    ran sudo's, else this account's; else it makes one."""
+    path = device_dir() / "client-id"
+    if path.exists() and path.read_text(encoding="utf-8").strip():
+        return path, path.read_text(encoding="utf-8").strip()
+    homes = []
+    if os.environ.get("SUDO_USER"):
+        homes.append(Path(os.path.expanduser("~" + os.environ["SUDO_USER"])))
+    homes.append(Path.home())
+    value = None
+    for home in homes:
+        earlier = home / ".config" / "withhuman" / "client-id"
+        try:
+            value = earlier.read_text(encoding="utf-8").strip() or None
+        except OSError:
+            value = None
+        if value:
+            break
+    value = value or f"{team}/{uuid.uuid4()}"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(value + "\n", encoding="utf-8")
+    path.chmod(0o644)
+    return path, value
+
+
+def install_hook(source, hook):
+    """Copies the PreToolUse hook to `hook`, runnable, and readable by every user."""
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    if source.resolve() != hook.resolve():
+        shutil.copyfile(source, hook)
+    hook.chmod(0o755)
 
 
 def keep_key(given):
@@ -355,10 +452,13 @@ def register(server, client, team, key, agent, project, version):
 
 def finish(args, client, key_path, key, agent, project, version, stamp, report):
     """Keeps the key for new shells and registers the device; returns the lines to print."""
-    if key and not args.no_persist:
+    if key and not args.no_persist and args.scope != "managed":
         persist(key_path, key, stamp, report, name="WITHHUMAN_KEY", mark=KEY_MARK)
     lines = []
-    if key:
+    if args.scope == "managed":
+        lines.append("Each user's own WithHuman key (WITHHUMAN_KEY, or ~/.config/withhuman/key) "
+                     "goes with their calls.")
+    elif key:
         lines.append(f"WithHuman key kept in {key_path}")
     else:
         lines.append("No WithHuman key: hooks report no user. If the security team gave you one, "
@@ -453,6 +553,62 @@ def strip_codex(config):
     return removed
 
 
+def uninstall_global(scope, stamp, report):
+    """Takes a global setup out: the user's settings' WithHuman hooks and the hook in
+    ~/.config/withhuman/hooks, or the managed settings file of WithHuman's own and the device's
+    hook. The device's client ID is kept, as a project uninstall keeps it."""
+    if scope == "user":
+        clean(Path.home() / ".claude" / "settings.json", stamp, report)
+        hook = config_dir() / "hooks" / HOOK_NAME
+        files = [hook]
+    else:
+        files = [managed_settings(), device_dir() / "hooks" / HOOK_NAME]
+    for path in files:
+        if path.is_file():
+            path.unlink()
+            report.append(f"{path}: removed")
+
+
+def setup_global(args, hook_source, key_path, key, stamp, report):
+    """Sets Claude Code up for every folder: the user's (`--scope user`) or the device's
+    (`--scope managed`). Returns the settings file, the hook and the client ID."""
+    managed = args.scope == "managed"
+    if managed:
+        id_path, value = device_client_id(args.team)
+        hook = device_dir() / "hooks" / HOOK_NAME
+    else:
+        id_path, value = client_id(args.team)
+        hook = config_dir() / "hooks" / HOOK_NAME
+    install_hook(hook_source, hook)
+    # Quoted absolute paths run alike from bash, zsh, cmd and PowerShell.
+    command = f'"{Path(sys.executable).as_posix()}" "{hook.as_posix()}" {args.server}/v1/hooks/PreToolUse'
+    ours = withhuman_hooks(args.server, command, client=value)
+    if managed:
+        # A file of WithHuman's own: written whole, so nothing of the organisation's is in it.
+        path = managed_settings()
+        settings = {"hooks": {event: [group] for event, group in ours.items()}}
+        if args.managed_hooks_only:
+            settings["allowManagedHooksOnly"] = True
+        if path.exists():
+            report.append(f"{path}: replaced, copy at {backup(path, stamp)}")
+        save(path, settings)
+        path.chmod(0o644)
+    else:
+        path = Path.home() / ".claude" / "settings.json"
+        settings = load(path)
+        removed = remove_withhuman(settings)
+        if path.exists():
+            report.append(f"{path}: copy at {backup(path, stamp)}"
+                          + (f", {removed} earlier WithHuman hook(s) replaced" if removed else ""))
+        hooks = settings.setdefault("hooks", {})
+        for event, group in ours.items():
+            hooks.setdefault(event, []).append(group)
+        save(path, settings)
+        if not args.no_persist:
+            persist(id_path, value, stamp, report)
+    return path, hook, value
+
+
 def uninstall(agent, project, stamp, report):
     """Takes WithHuman out of the project: its hook entries (other hooks and settings stay, the
     file changed is first copied to <file>.bak-<time>) and the hook files it installed. The
@@ -534,9 +690,31 @@ def main():
                         help="do not register the device with the engine")
     parser.add_argument("--uninstall", action="store_true",
                         help="take WithHuman out of the project (other hooks and files stay)")
+    parser.add_argument("--scope", choices=["project", "user", "managed"], default="project",
+                        help="claude: one project (default), every folder of this user, or every "
+                             "user and folder of the device (managed; needs administrator rights)")
+    parser.add_argument("--managed-hooks-only", action="store_true",
+                        help="with --scope managed: run no user, project or plugin hooks beside "
+                             "the administrator's")
     args = parser.parse_args()
     if sys.version_info < (3, 8):
         sys.exit("WithHuman's hook needs Python 3.8 or later")
+    if args.scope != "project" and args.agent == "codex":
+        sys.exit("--scope user and managed are for Claude Code; Codex is set up per project")
+    if args.managed_hooks_only and args.scope != "managed":
+        sys.exit("--managed-hooks-only goes with --scope managed")
+    if args.scope == "managed" and args.key:
+        sys.exit("a managed setup is for every user of the device and takes no key: each user "
+                 "keeps their own (WITHHUMAN_KEY, or a setup with --key in their own account)")
+    if args.uninstall and args.scope != "project":
+        report = []
+        try:
+            uninstall_global(args.scope, datetime.datetime.now().strftime("%Y%m%d-%H%M%S"), report)
+        except PermissionError:
+            sys.exit(NEEDS_ADMIN)
+        for line in report or [f"Nothing of WithHuman was found for --scope {args.scope}."]:
+            print(line)
+        return
     if args.uninstall:
         report = []
         uninstall(args.agent, Path(args.project).resolve(),
@@ -591,7 +769,32 @@ def main():
     hook_source = Path(args.hook)
     if not hook_source.is_file():
         sys.exit(f"hook not found: {hook_source}")
-    key_path, key = keep_key(args.key)
+    # A managed setup runs as an administrator, for every user: it keeps no one's key.
+    key_path, key = keep_key(args.key) if args.scope != "managed" else (None, None)
+    if args.scope != "project":
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        report = []
+        try:
+            path, hook, value = setup_global(args, hook_source, key_path, key, stamp, report)
+        except PermissionError:
+            sys.exit(NEEDS_ADMIN)
+        notes = finish(args, value, key_path, key, "claude", f"({args.scope})",
+                       hook_version([hook]), stamp, report)
+        for line in report:
+            print(line)
+        print(f"WithHuman hooks written to {path}, for every folder"
+              + (" of every user on this device" if args.scope == "managed" else " of this user"))
+        print(f"PreToolUse hook: {hook} (run with {sys.executable})")
+        print(f"WITHHUMAN_CLIENT_ID={value}")
+        for line in notes:
+            print(line)
+        if not args.managed_hooks_only:
+            print("Take WithHuman out of projects set up one by one (--uninstall there), or each "
+                  "event is reported twice."
+                  + (" --managed-hooks-only stops them running instead." if args.scope == "managed"
+                     else ""))
+        print("Start Claude Code again for the hooks to apply.")
+        return
 
     project = Path(args.project).resolve()
     claude = project / ".claude"

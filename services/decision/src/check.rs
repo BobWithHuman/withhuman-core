@@ -108,14 +108,23 @@ pub struct FileDiff {
     pub removed: Vec<String>,
 }
 
-/// Where an agent's safeguards live, in lower case: Claude Code's settings and hooks, and
-/// Codex's hooks (`hooks.json` and the bridge beside it), configuration and the requirements an
-/// administrator sets.
+/// Where an agent's safeguards live, in lower case: Claude Code's settings and hooks, and the
+/// policy an administrator sets for it (`managed-settings.json`, `managed-settings.d`); Codex's
+/// hooks (`hooks.json` and the bridge beside it), configuration and the requirements an
+/// administrator sets; and WithHuman's hooks installed for a user or the whole device, with the
+/// device's client ID, which a device stop is keyed on.
 const SAFEGUARDS: &[&str] = &[
     ".claude/settings",
     ".claude/hooks",
     ".claude\\settings",
     ".claude\\hooks",
+    "claudecode/managed",
+    "claudecode\\managed",
+    "claude-code/managed",
+    "withhuman/hooks",
+    "withhuman\\hooks",
+    "withhuman/client-id",
+    "withhuman\\client-id",
     ".codex/hooks",
     ".codex/config.toml",
     "codex/requirements.toml",
