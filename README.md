@@ -107,8 +107,19 @@ and writes the ID into the hooks itself, so Claude Code started from an IDE or b
 reports the same device. `--managed-hooks-only` also sets `allowManagedHooksOnly`, so no user,
 project or plugin hook runs beside it: a project set up earlier does not report each event twice,
 and no hook of the user's own stands beside WithHuman's. Each user's WithHuman key stays their own.
-Decision denies a Call that changes these files as it does the project's hooks. `--uninstall` with
-the same `--scope` takes the setup out again. Codex is set up per project.
+Decision denies a Call that changes these files as it does the project's hooks. A managed setup
+also takes out the user setup of the user who ran it, which would report each event twice beside
+it. `--uninstall` with the same `--scope` takes the setup out again. Codex is set up per project.
+
+To start over on a device set up more than one way (an earlier hook version, a user setup and a
+managed one, projects set up one by one), `--reset` takes every WithHuman setup out at once: the
+managed one, the user one, and the project ones of the folders named after it (Claude Code's and
+Codex's). Other hooks and settings stay, each file changed is copied first, and the device's
+client ID is kept, so the setup made after is the same device:
+
+```bash
+sudo python3 deploy/client/configure.py --reset ~/src/app ~/src/api
+```
 
 ### Keys and the agent inventory
 

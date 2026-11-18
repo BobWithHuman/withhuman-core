@@ -581,6 +581,51 @@ class GlobalSetupTest(Setup):
         self.assertFalse(hook.exists())
         self.assertTrue((self.device / "client-id").exists())
 
+    def test_managed_scope_takes_out_the_user_setup_it_would_run_beside(self):
+        result = self.run_scope("user")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.write(self.home / ".claude" / "settings.json",
+                   {**self.read(self.home / ".claude" / "settings.json"), "model": "opus"})
+        user_hook = self.home / ".config" / "withhuman" / "hooks" / "pre-tool-use.py"
+        self.assertTrue(user_hook.is_file())
+        result = self.run_scope("managed")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        settings = self.read(self.home / ".claude" / "settings.json")
+        self.assertEqual(settings, {"model": "opus"})
+        self.assertFalse(user_hook.exists())
+        # Still the one device.
+        self.assertEqual((self.device / "client-id").read_text().strip(),
+                         (self.home / ".config" / "withhuman" / "client-id").read_text().strip())
+
+    def test_reset_takes_every_setup_out_and_keeps_the_device(self):
+        self.write(self.home / ".claude" / "settings.json", {"hooks": {"PreToolUse": [{"hooks": [OTHER]}]}})
+        self.assertEqual(self.run_scope("user").returncode, 0)
+        client = (self.home / ".config" / "withhuman" / "client-id").read_text().strip()
+        self.assertEqual(self.run_scope("managed").returncode, 0)
+        # A project set up by itself, Claude Code's and Codex's.
+        self.assertEqual(self.configure().returncode, 0)
+        project_settings = self.project / ".claude" / "settings.json"
+        self.assertTrue(configure_module().remove_withhuman(self.read(project_settings)))
+        self.assertEqual(self.run_scope("user").returncode, 0)
+
+        result = self.run_scope("user", "--reset", str(self.project))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.managed / "managed-settings.d" / "50-withhuman.json").exists())
+        self.assertFalse((self.device / "hooks" / "pre-tool-use.py").exists())
+        self.assertFalse((self.home / ".config" / "withhuman" / "hooks" / "pre-tool-use.py").exists())
+        self.assertFalse((self.project / ".claude" / "hooks" / "pre-tool-use.py").exists())
+        self.assertEqual(self.read(self.home / ".claude" / "settings.json"),
+                         {"hooks": {"PreToolUse": [{"hooks": [OTHER]}]}})
+        self.assertNotIn("hooks", self.read(project_settings))
+        # The device keeps its identity.
+        self.assertEqual((self.device / "client-id").read_text().strip(), client)
+        self.assertEqual((self.home / ".config" / "withhuman" / "client-id").read_text().strip(), client)
+        self.assertIn("Start Claude Code again", result.stdout)
+
+        result = self.run_scope("user", "--reset")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Nothing of WithHuman was found.", result.stdout)
+
     def test_refuses_what_a_global_setup_cannot_do(self):
         for extra, said in ((("--key", KEY), "takes no key"),
                             (("--agent", "codex"), "per project")):
