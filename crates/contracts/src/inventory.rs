@@ -135,6 +135,14 @@ pub struct StopClientRequest {
     pub reason: Option<String>,
 }
 
+/// What `DELETE /v1/admin/clients/{client_id}` took out: the device and the sessions it ran.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+pub struct DeletedClient {
+    pub client_id: String,
+    /// How many of its sessions were deleted, with every record of them.
+    pub sessions: u64,
+}
+
 /// `GET /v1/clients/{client_id}/state` (Generator): whether the device is stopped. A client
 /// ID the engine does not hold is not stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, ToSchema)]

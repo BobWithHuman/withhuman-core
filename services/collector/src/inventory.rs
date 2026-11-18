@@ -534,6 +534,43 @@ pub async fn stop_client(
     response
 }
 
+#[utoipa::path(
+    delete,
+    path = "/v1/admin/clients/{client_id}",
+    tag = "Inventory",
+    params(
+        ("client_id" = String, Path, description = "The device's client ID as one path segment, its slash percent-encoded: `team%2Fuuid`"),
+        ("Authorization" = String, Header, description = "`Bearer <WITHHUMAN_ADMIN_TOKEN>`")
+    ),
+    responses(
+        (status = 200, description = "The device deleted from the inventory, with every session it ran and all that was recorded of them (the audit of keys stays). It cannot be undone. A device that sends Hooks again, or registers again, is recorded again: delete a device that is gone, or stop it first", body = withhuman_contracts::inventory::DeletedClient),
+        (status = 401, description = "Admin token missing or wrong"),
+        (status = 404, description = "No such device, or admin API disabled"),
+        (status = 502, description = "Generator unavailable")
+    )
+)]
+pub async fn delete_client(
+    State(service): State<CollectorService>,
+    Path(client_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Some(response) = not_admin(&service, &headers) {
+        return response;
+    }
+    let response = forward(
+        &service,
+        reqwest::Method::DELETE,
+        &["clients", &client_id],
+        None,
+    )
+    .await;
+    if response.status().is_success() {
+        // A stopped device deleted is stopped no more.
+        service.devices.forget();
+    }
+    response
+}
+
 pub(crate) async fn forward(
     service: &CollectorService,
     method: reqwest::Method,
