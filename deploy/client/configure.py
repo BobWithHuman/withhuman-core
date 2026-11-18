@@ -111,8 +111,9 @@ KEY_MARK = "# WithHuman key"
 KEY_PATTERN = re.compile(r"whk_[0-9a-f]{16}_[0-9a-f]{64}")
 REGISTER_TIMEOUT = 10
 SERIAL_TIMEOUT = 10
-# Where Linux shows the machine's serial number; on most distributions only root can read it.
-LINUX_SERIAL = Path("/sys/class/dmi/id/product_serial")
+# Where Linux shows the motherboard's serial number, the one Wazuh's hardware inventory reports
+# (`board_serial`); on most distributions only root can read it.
+LINUX_SERIAL = Path("/sys/class/dmi/id/board_serial")
 # What firmware reports when the manufacturer set no serial number: not a serial.
 NO_SERIAL = {"", "0", "none", "default string", "not specified", "not applicable",
              "system serial number", "to be filled by o.e.m."}
@@ -383,9 +384,12 @@ def command_output(command):
 
 
 def hardware_serial():
-    """The machine's hardware serial number, read as the current user; None when it cannot be
-    read or the firmware has none. Nothing else stands in for it: the engine matches devices
-    with other inventories by this value."""
+    """The machine's hardware serial number as Wazuh's hardware inventory reports it
+    (`board_serial`), read as the current user; None when it cannot be read or the firmware has
+    none. The engine matches the device with the EDR's by this value, and two serials that
+    differ keep two machines apart, so it is the motherboard's on Linux and Windows (not the
+    system's or the BIOS's, which a PC often numbers otherwise) and the platform's on macOS, as
+    Wazuh reads them. Nothing else stands in for it."""
     serial = ""
     if sys.platform == "darwin":
         output = command_output(["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"])
@@ -398,11 +402,11 @@ def hardware_serial():
             serial = ""
     elif os.name == "nt":
         serial = command_output(["powershell", "-NoProfile", "-NonInteractive", "-Command",
-                                 "(Get-CimInstance -ClassName Win32_BIOS).SerialNumber"])
+                                 "(Get-CimInstance -ClassName Win32_BaseBoard).SerialNumber"])
         if not serial.strip():
             # Older Windows: `wmic` prints a `SerialNumber` heading, then the value.
             lines = [line.strip() for line in
-                     command_output(["wmic", "bios", "get", "serialnumber"]).splitlines()]
+                     command_output(["wmic", "baseboard", "get", "serialnumber"]).splitlines()]
             serial = next((line for line in lines
                            if line and line.lower() != "serialnumber"), "")
     serial = serial.strip()
