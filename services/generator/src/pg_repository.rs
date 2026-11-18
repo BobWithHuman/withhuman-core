@@ -13,8 +13,8 @@ use withhuman_contracts::{
         RequestContinuationResponse, SessionCursor, SubGraphCursor, ToolCall,
     },
     inventory::{
-        ClientRecord, ClientRegistrationRecord, ClientState, KeyDenial, KeyRecord, NewKey,
-        RevokeKeyRequest, SetOwnerRequest, StopClientRequest, StopDenial, VerifyKeyRequest,
+        ClientRecord, ClientRegistrationRecord, ClientState, DeletedClient, KeyDenial, KeyRecord,
+        NewKey, RevokeKeyRequest, SetOwnerRequest, StopClientRequest, StopDenial, VerifyKeyRequest,
         VerifyKeyResponse,
     },
     triage::{
@@ -872,6 +872,10 @@ impl GraphRepository for PgGraphRepository {
         at: u64,
     ) -> Result<ClientRecord, RepositoryError> {
         self.set_stopped(client_id, request, at).await
+    }
+
+    async fn delete_client(&self, client_id: &str) -> Result<DeletedClient, RepositoryError> {
+        self.remove_client(client_id).await
     }
 
     async fn client_state(&self, client_id: &str) -> Result<ClientState, RepositoryError> {

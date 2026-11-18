@@ -859,6 +859,68 @@ async fn send(url: &str, method: &str, path: &str, body: Option<Value>) -> (u16,
     (status, serde_json::from_str(&text).unwrap_or(Value::Null))
 }
 
+/// A device deleted takes the sessions it ran with it, every record of them, and leaves
+/// another device's alone.
+#[tokio::test]
+async fn deletes_a_device_with_the_sessions_it_ran() {
+    let Some((db, url)) = start().await else {
+        return;
+    };
+    let gone = format!("lab/{}", unique("gone"));
+    let kept = format!("lab/{}", unique("kept"));
+    for client in [&gone, &kept] {
+        let registration = json!({"client_id": client, "hostname": "pc", "project": "/p",
+                                  "registered_at": 100});
+        let (status, _) = send(&url, "POST", "/v1/clients", Some(registration)).await;
+        assert_eq!(status, 200);
+    }
+    let sessions = [unique("s1"), unique("s2"), unique("s3")];
+    for (session, client) in sessions.iter().zip([&gone, &gone, &kept]) {
+        db.exec(
+            "INSERT INTO sessions (session_id, client_id) VALUES ($1, $2)",
+            &[session, client],
+        )
+        .await;
+        db.exec(
+            "INSERT INTO subgraphs (session_id, number) VALUES ($1, 1)",
+            &[session],
+        )
+        .await;
+        db.exec(
+            "INSERT INTO session_marks (session_id, state, set_at) VALUES ($1, 'reviewing', 1)",
+            &[session],
+        )
+        .await;
+    }
+    let path = |client: &str| format!("/v1/clients/{}", client.replace('/', "%2F"));
+    let (status, deleted) = send(&url, "DELETE", &path(&gone), None).await;
+    assert_eq!(status, 200, "{deleted}");
+    assert_eq!(deleted, json!({"client_id": gone, "sessions": 2}));
+    let count = |table: &str| {
+        format!("SELECT to_jsonb(count(*)) FROM {table} WHERE session_id = ANY($1::text[])")
+    };
+    let all = sessions.to_vec();
+    for table in ["sessions", "subgraphs", "session_marks"] {
+        assert_eq!(db.row(&count(table), &[&all]).await, json!(1), "{table}");
+    }
+    let left = "SELECT to_jsonb(count(*)) FROM clients WHERE client_id = ANY($1::text[])";
+    assert_eq!(
+        db.row(left, &[&vec![gone.clone(), kept.clone()]]).await,
+        json!(1)
+    );
+    let projects = "SELECT to_jsonb(count(*)) FROM client_projects WHERE client_id = $1";
+    assert_eq!(db.row(projects, &[&gone]).await, json!(0));
+    // Nothing left of it: not found.
+    let (status, _) = send(&url, "DELETE", &path(&gone), None).await;
+    assert_eq!(status, 404);
+    db.remove(&sessions[2]).await;
+    db.exec(
+        "DELETE FROM session_marks WHERE session_id = $1",
+        &[&sessions[2]],
+    )
+    .await;
+}
+
 #[derive(Clone)]
 struct Db(Arc<tokio_postgres::Client>);
 

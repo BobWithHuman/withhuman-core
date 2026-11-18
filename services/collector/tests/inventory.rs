@@ -197,6 +197,12 @@ impl GeneratorTransport for Generator {
                 json!({"client_id": client_id, "owner": body["owner"],
                        "owner_set_by": body["actor"], "projects": []})
             }
+            ["clients", client_id] if method == reqwest::Method::DELETE => {
+                if *client_id != "team/1234" {
+                    return Ok((404, json!({"error": "graph_resource_not_found"})));
+                }
+                json!({"client_id": client_id, "sessions": 3})
+            }
             ["clients", client_id, "stop"] if *client_id != "team/1234" => {
                 return Ok((404, json!({"error": "graph_resource_not_found"})));
             }
@@ -1153,4 +1159,50 @@ async fn asks_the_generator_for_a_devices_state_by_its_whole_client_id() {
         *seen.lock().unwrap(),
         ["state team/1234", "denied team/1234", "stop team/1234"]
     );
+}
+
+#[tokio::test]
+async fn administrators_delete_a_device_with_its_sessions() {
+    let generator = Arc::new(Generator::with_keys());
+    let app = app(generator.clone(), |config| {
+        config.admin_token = Some(ADMIN.into())
+    });
+    let delete = |path: &str, token: Option<&str>| {
+        let mut request = Request::delete(path);
+        if let Some(token) = token {
+            request = request.header("authorization", bearer(token));
+        }
+        let app = app.clone();
+        async move {
+            read(
+                app.oneshot(request.body(Body::empty()).unwrap())
+                    .await
+                    .unwrap(),
+            )
+            .await
+        }
+    };
+    // Only with the admin token.
+    let (status, _) = delete("/v1/admin/clients/team%2F1234", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(generator.inventory.lock().unwrap().is_empty());
+    let (status, body) = delete("/v1/admin/clients/team%2F1234", Some(ADMIN)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, json!({"client_id": "team/1234", "sessions": 3}));
+    {
+        let calls = generator.inventory.lock().unwrap();
+        // The client ID reaches the Generator whole, as one segment.
+        assert_eq!(
+            calls.last().unwrap(),
+            &(
+                "DELETE".to_owned(),
+                vec!["clients".to_owned(), "team/1234".to_owned()],
+                None
+            )
+        );
+    }
+    let (status, _) = delete("/v1/admin/clients/team%2Fnone", Some(ADMIN)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (_, document) = get(&app, "/api-docs/openapi.json", &[]).await;
+    assert!(document["paths"]["/v1/admin/clients/{client_id}"]["delete"].is_object());
 }

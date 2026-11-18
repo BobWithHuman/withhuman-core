@@ -9,7 +9,7 @@ use axum::{
     extract::{FromRequest, Path, Request, State},
     http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use serde::{Serialize, de::DeserializeOwned};
 use utoipa::{OpenApi, ToSchema};
@@ -146,6 +146,10 @@ pub fn app_with_transport(service: CollectorService) -> Router {
         .route("/v1/clients/register", post(inventory::register_client))
         .route("/v1/admin/clients", get(inventory::clients))
         .route(
+            "/v1/admin/clients/{client_id}",
+            delete(inventory::delete_client),
+        )
+        .route(
             "/v1/admin/clients/{client_id}/owner",
             post(inventory::set_client_owner),
         )
@@ -208,6 +212,7 @@ pub fn app_with_transport(service: CollectorService) -> Router {
         inventory::clients,
         inventory::set_client_owner,
         inventory::stop_client,
+        inventory::delete_client,
         triage::mark_session,
         triage::mark_sessions,
         triage::distrust_source,

@@ -2,9 +2,9 @@
 
 use tokio_postgres::Row;
 use withhuman_contracts::inventory::{
-    ClientRecord, ClientRegistrationRecord, ClientState, KeyDenial, KeyRecord, KeyStatus, NewKey,
-    RevokeKeyRequest, SetOwnerRequest, StopClientRequest, StopDenial, VerifyKeyRequest,
-    VerifyKeyResponse,
+    ClientRecord, ClientRegistrationRecord, ClientState, DeletedClient, KeyDenial, KeyRecord,
+    KeyStatus, NewKey, RevokeKeyRequest, SetOwnerRequest, StopClientRequest, StopDenial,
+    VerifyKeyRequest, VerifyKeyResponse,
 };
 
 use crate::{
@@ -63,6 +63,27 @@ WHERE client_id = $1::text AND stopped_at IS NULL";
 const RELEASE_CLIENT: &str = "\
 UPDATE clients SET stopped_at = NULL, stopped_by = NULL, stop_reason = NULL \
 WHERE client_id = $1::text";
+
+// The sessions a device ran: those whose Hooks first carried its client ID.
+const SESSIONS_OF_CLIENT: &str = "SELECT session_id FROM sessions WHERE client_id = $1::text";
+
+/// Every table that holds a session's records by `session_id`, deleted with the session.
+const SESSION_TABLES: [&str; 11] = [
+    "event_commits",
+    "nodes",
+    "subgraphs",
+    "paragraphs",
+    "tokens",
+    "token_mentions",
+    "file_refs",
+    "cause_edges",
+    "pending_paragraph_enrichments",
+    "pending_request_continuations",
+    "session_marks",
+];
+
+const DELETE_CLIENT_PROJECTS: &str = "DELETE FROM client_projects WHERE client_id = $1::text";
+const DELETE_CLIENT: &str = "DELETE FROM clients WHERE client_id = $1::text";
 
 const CLIENT_STOPPED: &str =
     "SELECT stopped_at IS NOT NULL FROM clients WHERE client_id = $1::text";
@@ -237,6 +258,52 @@ impl PgGraphRepository {
         }
         .await;
         result?.ok_or(RepositoryError::NotFound)
+    }
+
+    /// Deletes the device (its row and its projects) and every session it ran, with all that
+    /// was recorded of them; `NotFound` when the store holds nothing of it. The audit of keys
+    /// (`key_events`) and the sources distrusted from its sessions stay. A device that sends
+    /// Hooks again is recorded again.
+    pub(crate) async fn remove_client(
+        &self,
+        client_id: &str,
+    ) -> Result<DeletedClient, RepositoryError> {
+        let result: Result<Option<u64>, PgError> = async {
+            let mut client = self.client().await?;
+            let tx = client.transaction().await?;
+            let sessions: Vec<String> = tx
+                .query(SESSIONS_OF_CLIENT, &[&client_id])
+                .await?
+                .iter()
+                .map(|row| row.get(0))
+                .collect();
+            for table in SESSION_TABLES {
+                tx.execute(
+                    &format!("DELETE FROM {table} WHERE session_id = ANY($1::text[])"),
+                    &[&sessions],
+                )
+                .await?;
+            }
+            tx.execute(
+                "DELETE FROM sessions WHERE session_id = ANY($1::text[])",
+                &[&sessions],
+            )
+            .await?;
+            tx.execute(DELETE_CLIENT_PROJECTS, &[&client_id]).await?;
+            let removed = tx.execute(DELETE_CLIENT, &[&client_id]).await?;
+            if removed == 0 && sessions.is_empty() {
+                return Ok(None);
+            }
+            tx.commit().await?;
+            Ok(Some(sessions.len() as u64))
+        }
+        .await;
+        result?
+            .map(|sessions| DeletedClient {
+                client_id: client_id.to_owned(),
+                sessions,
+            })
+            .ok_or(RepositoryError::NotFound)
     }
 
     /// Whether the device is stopped; a device the store does not hold is not.
