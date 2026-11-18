@@ -338,7 +338,7 @@ class HardwareSerialTest(unittest.TestCase):
 
     def test_reads_the_serial_number_on_linux_only_when_readable(self):
         folder = Path(tempfile.mkdtemp())
-        readable = folder / "product_serial"
+        readable = folder / "board_serial"
         readable.write_text("PF2TEST9\n")
         with mock.patch.object(self.module, "LINUX_SERIAL", readable):
             self.assertEqual(self.serial("linux")[0], "PF2TEST9")
@@ -351,14 +351,16 @@ class HardwareSerialTest(unittest.TestCase):
     def test_takes_no_placeholder_for_a_serial_number(self):
         folder = Path(tempfile.mkdtemp())
         for value in ("", "0", "To Be Filled By O.E.M.", "Default string", "System Serial Number"):
-            (folder / "product_serial").write_text(value + "\n")
-            with mock.patch.object(self.module, "LINUX_SERIAL", folder / "product_serial"):
+            (folder / "board_serial").write_text(value + "\n")
+            with mock.patch.object(self.module, "LINUX_SERIAL", folder / "board_serial"):
                 self.assertIsNone(self.serial("linux")[0], value)
 
     def test_reads_the_serial_number_on_windows(self):
         serial, ran = self.serial("win32", lambda _: (0, "PW0TEST7\r\n"), os_name="nt")
         self.assertEqual(serial, "PW0TEST7")
         self.assertEqual(ran[0][0], "powershell")
+        # The motherboard's, as Wazuh's hardware inventory reports it, not the BIOS's.
+        self.assertIn("Win32_BaseBoard", ran[0][-1])
         self.assertEqual(len(ran), 1)
 
         # Without PowerShell's answer, `wmic` is asked.
@@ -367,6 +369,7 @@ class HardwareSerialTest(unittest.TestCase):
         serial, ran = self.serial("win32", wmic_only, os_name="nt")
         self.assertEqual(serial, "PW0TEST8")
         self.assertEqual([command[0] for command in ran], ["powershell", "wmic"])
+        self.assertEqual(ran[1][1], "baseboard")
         self.assertIsNone(self.serial("win32", os_name="nt")[0])
 
 
