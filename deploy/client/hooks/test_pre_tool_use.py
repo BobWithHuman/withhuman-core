@@ -88,12 +88,14 @@ class PreToolUseHookTest(unittest.TestCase):
                               input=json.dumps(event).encode(), capture_output=True, env=env,
                               timeout=30)
 
-    def run_hook(self, event, url=None, client_id="team/device", key=None, home=None):
+    def run_hook(self, event, url=None, client_id="team/device", key=None, home=None, env=None):
         # A home of its own, so the setup files of whoever runs the tests are not read.
         home = home or tempfile.mkdtemp()
+        extra = env or {}
         env = {**os.environ, "HOME": home, "USERPROFILE": home}
         env.pop("WITHHUMAN_CLIENT_ID", None)
         env.pop("WITHHUMAN_KEY", None)
+        env.update(extra)
         if client_id:
             env["WITHHUMAN_CLIENT_ID"] = client_id
         if key:
@@ -184,10 +186,44 @@ class PreToolUseHookTest(unittest.TestCase):
         self.assertEqual(headers["x-withhuman-client"], "team/device")
         self.assertEqual(headers["authorization"], "Bearer whk_env")
 
-    def test_fails_without_blocking_when_the_collector_is_unreachable(self):
+    def test_denies_when_the_collector_is_unreachable(self):
         result = self.run_hook(self.bash("ls"), url="http://127.0.0.1:9/v1/hooks/PreToolUse")
-        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(b"unreachable", result.stderr)
+        output = json.loads(result.stdout)["hookSpecificOutput"]
+        self.assertEqual(output["permissionDecision"], "deny")
+        self.assertEqual(output["hookEventName"], "PreToolUse")
+
+    def test_no_setting_lifts_the_deny_when_unreachable(self):
+        # The old fail-open escape hatch is gone: an unreachable engine always denies.
+        result = self.run_hook(self.bash("ls"), url="http://127.0.0.1:9/v1/hooks/PreToolUse",
+                               env={"WITHHUMAN_HOOK_ON_UNREACHABLE": "allow"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = json.loads(result.stdout)["hookSpecificOutput"]
+        self.assertEqual(output["permissionDecision"], "deny")
+
+    def test_only_a_tool_call_is_denied_when_the_engine_is_unreachable(self):
+        # The device-wide hook sends every event; only PreToolUse can be denied, and the others
+        # report the failure without holding the prompt or session up.
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project:
+            env = {**os.environ, "HOME": home, "USERPROFILE": home, "CLAUDE_PROJECT_DIR": project,
+                   "WITHHUMAN_CLIENT_ID": "team/device"}
+            env.pop("WITHHUMAN_KEY", None)
+
+            def run(event):
+                return subprocess.run([sys.executable, HOOK, "--withhuman-hook", "http://127.0.0.1:9"],
+                                      input=json.dumps(event).encode(), capture_output=True,
+                                      env=env, timeout=30)
+
+            prompt = run({"session_id": "s", "hook_event_name": "UserPromptSubmit", "cwd": project,
+                          "prompt": "go on"})
+            self.assertEqual(prompt.returncode, 1, prompt.stderr)
+            self.assertEqual(prompt.stdout, b"")
+            self.assertIn(b"unreachable", prompt.stderr)
+            call = run({**self.bash("ls"), "hook_event_name": "PreToolUse", "cwd": project})
+            self.assertEqual(call.returncode, 0, call.stderr)
+            output = json.loads(call.stdout)["hookSpecificOutput"]
+            self.assertEqual(output["permissionDecision"], "deny")
 
     def session(self, home, project, folder_events=("SessionStart", "UserPromptSubmit", "PostToolUse")):
         sent = []

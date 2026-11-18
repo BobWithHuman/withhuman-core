@@ -6,6 +6,11 @@
 //! the denial; other Hooks of that user are still recorded. Without a valid key, Hooks are taken
 //! as before unless `WITHHUMAN_REQUIRE_KEY` is on.
 //!
+//! A PreToolUse the key check lets through is then turned back when the security team stopped
+//! its device (`x-withhuman-client`; see [`crate::devices`]), and the refusal counted; the
+//! device's other Hooks are still recorded. That header is the device's own word, so a stop
+//! holds for a device that keeps sending its ID, not for one that changes or drops it.
+//!
 //! A stopped session's PreToolUse is turned back the same way, and recorded with the stop.
 //!
 //! A PreToolUse is always turned back with a 200 deny: Claude Code lets a call run when its Hook
@@ -30,12 +35,13 @@ use withhuman_contracts::{
     inventory::{
         ClientRegistration, ClientRegistrationRecord, IssueKeyRequest, IssuedKey, KeyDenial,
         KeyRecord, NewKey, ReviewRequest, RevokeKeyRequest, SessionDenial, SessionStopRequest,
-        UserKind,
+        SetOwnerRequest, StopClientRequest, StopDenial, UserKind,
     },
 };
 
 use crate::{
     FailurePolicy,
+    devices::DEVICE_STOPPED,
     http::{CLIENT_HEADER, CollectorService, StrictJson, blocking_response, header_value, now},
     keys::{self, KeyCheck},
 };
@@ -59,7 +65,7 @@ pub async fn authenticate(
     let require = service.config.require_key;
     let (reason, error) = match service.keys.check(request.headers(), now()).await {
         KeyCheck::Active { user, .. } => {
-            return admit(&service, request, next, Some(&user), call).await;
+            return pass_running(&service, request, next, Some(&user), call).await;
         }
         KeyCheck::Revoked { key_id, user } => {
             if !call {
@@ -74,7 +80,7 @@ pub async fn authenticate(
         {
             (keys::KEY_UNCHECKED, "key_unchecked")
         }
-        _ => return admit(&service, request, next, None, call).await,
+        _ => return pass_running(&service, request, next, None, call).await,
     };
     if call {
         return blocking_response(PermissionDecision::Deny, reason.to_owned());
@@ -143,6 +149,31 @@ fn session_of(body: &[u8]) -> Option<String> {
         .map(|session| session.session_id)
 }
 
+/// Passes a Hook the key check let through, unless it is a call from a stopped device: that is
+/// denied like a revoked key's, with its own reason, and counted on the device. A call from a
+/// running device then still meets its session's stop ([`admit`]).
+async fn pass_running(
+    service: &CollectorService,
+    request: Request,
+    next: Next,
+    user: Option<&str>,
+    call: bool,
+) -> Response {
+    let device = header_value(request.headers(), CLIENT_HEADER).filter(|_| call);
+    let Some(client_id) = device else {
+        return admit(service, request, next, user, call).await;
+    };
+    if !service.devices.stopped(&client_id).await {
+        return admit(service, request, next, user, call).await;
+    }
+    // The denial stands whether or not it could be counted.
+    let _ = service
+        .generator
+        .record_stop_denial(&client_id, StopDenial { denied_at: now() })
+        .await;
+    blocking_response(PermissionDecision::Deny, DEVICE_STOPPED.to_owned())
+}
+
 /// The kill switch: the call is denied and the denial recorded with the key, so the audit shows
 /// when the stop first took effect.
 async fn refuse_revoked(service: &CollectorService, request: Request, key_id: &str) -> Response {
@@ -193,6 +224,7 @@ pub async fn register_client(
         &registration.hook_version,
         &registration.agent,
         &registration.project,
+        &registration.serial,
     ];
     let client_id = registration.client_id.trim();
     if client_id.is_empty()
@@ -209,9 +241,17 @@ pub async fn register_client(
         Ok(user) => user,
         Err(response) => return *response,
     };
+    // A blank serial is none, so it cannot replace one an earlier setup read.
+    let serial = registration
+        .serial
+        .as_deref()
+        .map(str::trim)
+        .filter(|serial| !serial.is_empty())
+        .map(str::to_owned);
     let record = ClientRegistrationRecord {
         registration: ClientRegistration {
             client_id: client_id.to_owned(),
+            serial,
             ..registration
         },
         user,
@@ -419,7 +459,7 @@ pub async fn remove_exception(
 
 /// The answer to a request that is not an administrator's, who presents
 /// `Authorization: Bearer <WITHHUMAN_ADMIN_TOKEN>`; none for an administrator's.
-fn not_admin(service: &CollectorService, headers: &HeaderMap) -> Option<Response> {
+pub(crate) fn not_admin(service: &CollectorService, headers: &HeaderMap) -> Option<Response> {
     let Some(token) = &service.config.admin_token else {
         return Some(error(StatusCode::NOT_FOUND, "admin_api_disabled"));
     };
@@ -742,7 +782,87 @@ pub async fn add_review(
     .await
 }
 
-async fn forward(
+#[utoipa::path(
+    post,
+    path = "/v1/admin/clients/{client_id}/owner",
+    tag = "Inventory",
+    params(
+        ("client_id" = String, Path, description = "The device's client ID as one path segment, its slash percent-encoded: `team%2Fuuid`"),
+        ("Authorization" = String, Header, description = "`Bearer <WITHHUMAN_ADMIN_TOKEN>`")
+    ),
+    request_body = SetOwnerRequest,
+    responses(
+        (status = 200, description = "The device, with the owner named or (`owner: null`) cleared", body = withhuman_contracts::inventory::ClientRecord),
+        (status = 400, description = "Not an email address"),
+        (status = 401, description = "Admin token missing or wrong"),
+        (status = 404, description = "No such device, or admin API disabled")
+    )
+)]
+pub async fn set_client_owner(
+    State(service): State<CollectorService>,
+    Path(client_id): Path<String>,
+    headers: HeaderMap,
+    StrictJson(request): StrictJson<SetOwnerRequest>,
+) -> Response {
+    if let Some(response) = not_admin(&service, &headers) {
+        return response;
+    }
+    let owner = match request.owner.as_deref().map(user_email) {
+        Some(None) => return error(StatusCode::BAD_REQUEST, "invalid_email"),
+        Some(owner) => owner,
+        None => None,
+    };
+    let request = SetOwnerRequest { owner, ..request };
+    forward(
+        &service,
+        reqwest::Method::POST,
+        &["clients", &client_id, "owner"],
+        Some(json!(request)),
+    )
+    .await
+}
+
+#[utoipa::path(
+    post,
+    path = "/v1/admin/clients/{client_id}/stop",
+    tag = "Inventory",
+    params(
+        ("client_id" = String, Path, description = "The device's client ID as one path segment, its slash percent-encoded: `team%2Fuuid`"),
+        ("Authorization" = String, Header, description = "`Bearer <WITHHUMAN_ADMIN_TOKEN>`")
+    ),
+    request_body = StopClientRequest,
+    responses(
+        (status = 200, description = "The device, stopped (`stopped: true`; every PreToolUse carrying its client ID is denied from then on, and a device already stopped keeps its first stop) or released (`stopped: false`; `stopped_at`, `stopped_by` and `stop_reason` null again). It applies on this replica at once and on others within WITHHUMAN_KEY_CACHE_MS. The client ID is what the device's Hooks send: a device that sends another, or none, is not stopped", body = withhuman_contracts::inventory::ClientRecord),
+        (status = 400, description = "`stopped` missing or not a boolean, or the body not as documented"),
+        (status = 401, description = "Admin token missing or wrong"),
+        (status = 404, description = "No such device, or admin API disabled"),
+        (status = 502, description = "Generator unavailable")
+    )
+)]
+pub async fn stop_client(
+    State(service): State<CollectorService>,
+    Path(client_id): Path<String>,
+    headers: HeaderMap,
+    StrictJson(request): StrictJson<StopClientRequest>,
+) -> Response {
+    if let Some(response) = not_admin(&service, &headers) {
+        return response;
+    }
+    let response = forward(
+        &service,
+        reqwest::Method::POST,
+        &["clients", &client_id, "stop"],
+        Some(json!(request)),
+    )
+    .await;
+    if response.status().is_success() {
+        // This replica applies it at once; others within WITHHUMAN_KEY_CACHE_MS.
+        service.devices.forget();
+    }
+    response
+}
+
+pub(crate) async fn forward(
     service: &CollectorService,
     method: reqwest::Method,
     segments: &[&str],
@@ -762,6 +882,6 @@ fn passed(status: u16, body: Value) -> Response {
     (status, Json(body)).into_response()
 }
 
-fn error(status: StatusCode, error: &'static str) -> Response {
+pub(crate) fn error(status: StatusCode, error: &'static str) -> Response {
     (status, Json(json!({ "error": error }))).into_response()
 }

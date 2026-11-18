@@ -9,11 +9,13 @@ use async_trait::async_trait;
 use deadpool_postgres::{GenericClient, Manager, ManagerConfig, Pool, RecyclingMethod};
 use serde_json::Value;
 use tokio_postgres::{NoTls, Row, error::SqlState, types::ToSql};
+use withhuman_common::source;
 use withhuman_contracts::decisions::{DecisionRequest, DecisionResponse};
 
 use crate::{
+    causal::{RequestParent, ResultOrigin},
     check,
-    repository::{DecisionRepository, RepositoryError, TraceRecord},
+    repository::{DecisionRepository, DistrustedCause, RepositoryError, TraceRecord},
     trace::{
         self, CallInfo, Member, MemberKind, Paragraph, ParentKey, TOKEN_KINDS, TraceGraph, Turn,
     },
@@ -91,6 +93,15 @@ SELECT call.\"order\", call.subgraph, call.payload_json, \
    AND r.\"order\" < call.\"order\" ORDER BY r.\"order\" DESC LIMIT 1) \
 FROM call";
 
+// EARLIER_CHANGES: the session's earlier Calls naming a file, that ran: a PostToolUse result
+// with their tool_use_id is in the graph (a denied or failed Call changed nothing).
+const EARLIER_CHANGES: &str = "\
+SELECT c.payload_json, c.cwd FROM nodes c WHERE c.session_id = $1::text AND c.kind = 'Call' \
+AND c.\"order\" < $2::bigint AND strpos(c.payload_json, $3::text) > 0 \
+AND EXISTS (SELECT 1 FROM nodes s WHERE s.session_id = c.session_id AND s.kind = 'Segment' \
+            AND s.tool_use_id = c.tool_use_id) \
+ORDER BY c.\"order\"";
+
 // The session's tool results before the Call that name the file, oldest first.
 const FILE_RESULTS: &str = "\
 SELECT payload_json FROM nodes WHERE session_id = $1::text AND kind = 'Segment' \
@@ -161,6 +172,44 @@ FROM nodes result WHERE result.session_id = $1::text AND result.kind IN ('Segmen
   AND result.seq = $3::bigint \
 ON CONFLICT (session_id, call_seq, target_seq, target_index) DO UPDATE SET \
   probability = EXCLUDED.probability, rank = EXCLUDED.rank, parent = EXCLUDED.parent";
+
+// A prompt's parent is kept in its Request's trace, which nothing else writes.
+const REQUEST_PARENT: &str = "\
+SELECT trace_json FROM nodes WHERE session_id = $1::text AND kind = 'Request' \
+  AND subgraph = $2::bigint ORDER BY \"order\" LIMIT 1";
+
+const SET_REQUEST_PARENT: &str = "\
+UPDATE nodes SET trace_json = $3::text WHERE session_id = $1::text AND kind = 'Request' \
+  AND subgraph = $2::bigint AND trace_json IS NULL";
+
+// The Call a tool result answers, and the paragraphs that Call was traced to, the most likely
+// first. A whole result or the prompt has no paragraph index and is left out.
+const RESULT_ORIGIN: &str = "\
+SELECT c.payload_json, \
+  (SELECT coalesce(jsonb_agg(jsonb_build_array(e.target_seq, e.target_index, e.probability, \
+                                                 p.text) ORDER BY e.probability DESC), '[]'::jsonb) \
+   FROM cause_edges e JOIN paragraphs p ON p.session_id = e.session_id \
+     AND p.seq = e.target_seq AND p.\"index\" = e.target_index \
+   WHERE e.session_id = $1::text AND e.call_seq = c.seq AND e.target_index >= 0) \
+FROM nodes r JOIN nodes c ON c.session_id = r.session_id AND c.kind = 'Call' \
+  AND c.tool_use_id = r.tool_use_id \
+WHERE r.session_id = $1::text AND r.seq = $2::bigint AND r.kind IN ('Segment', 'Error') \
+ORDER BY c.\"order\" LIMIT 1";
+
+// The paragraphs a SubGraph's Calls were traced to, the most likely first.
+const SUBGRAPH_CAUSES: &str = "SELECT e.target_seq, e.target_index, max(e.probability) AS probability, min(p.text) FROM nodes c JOIN cause_edges e ON e.session_id = c.session_id AND e.call_seq = c.seq   AND e.target_index >= 0 JOIN paragraphs p ON p.session_id = e.session_id AND p.seq = e.target_seq   AND p.\"index\" = e.target_index WHERE c.session_id = $1::text AND c.kind = 'Call' AND c.subgraph = $2::bigint GROUP BY e.target_seq, e.target_index ORDER BY probability DESC LIMIT $3::bigint";
+
+// The tool results with the Call whose result each was (its payload, seq and folder), as the
+// Generator's evidence reads them.
+const RESULT_SOURCES: &str = "\
+SELECT t.seq, t.payload_json, told.payload_json, told.seq, coalesce(told.cwd, t.cwd) \
+FROM nodes t \
+LEFT JOIN LATERAL ( \
+  SELECT c.seq, c.payload_json, c.cwd FROM nodes c \
+  WHERE c.session_id = t.session_id AND c.kind = 'Call' AND c.tool_use_id = t.tool_use_id \
+  ORDER BY c.\"order\" LIMIT 1 \
+) told ON true \
+WHERE t.session_id = $1::text AND t.kind IN ('Segment', 'Error') AND t.seq = ANY($2::bigint[])";
 
 const MARK_UNRESOLVED: &str = "\
 UPDATE nodes SET parent = 'unresolved', trace_error = $3::text \
@@ -557,6 +606,203 @@ impl DecisionRepository for PgDecisionRepository {
                 result => return result.map_err(failure),
             }
         }
+    }
+
+    async fn earlier_file_changes(
+        &self,
+        session_id: &str,
+        call_order: u64,
+        path: &str,
+    ) -> Result<Vec<check::FileDiff>, RepositoryError> {
+        let client = self.client().await?;
+        // The file's name narrows the search; the paths are compared whole by the check.
+        let name = path.rsplit(['/', '\\']).next().unwrap_or(path).to_owned();
+        let rows = query(
+            &client,
+            EARLIER_CHANGES,
+            &[&session_id, &signed(call_order), &name],
+        )
+        .await?;
+        let mut diffs = Vec::new();
+        for row in &rows {
+            let call_payload = payload(row.get(0));
+            let call = CallInfo {
+                seq: 0,
+                order: 0,
+                subgraph: 0,
+                agent_id: None,
+                tool_name: call_payload
+                    .get("tool_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                tool_input: call_payload
+                    .get("tool_input")
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                prior: None,
+                programs: BTreeMap::new(),
+                cwd: row.get(1),
+            };
+            match check::effect(&call) {
+                check::Effect::FileChange {
+                    path,
+                    added,
+                    removed,
+                } => diffs.push(check::FileDiff {
+                    path,
+                    added,
+                    removed,
+                }),
+                check::Effect::FileChanges { files } => diffs.extend(files),
+                _ => {}
+            }
+        }
+        Ok(diffs)
+    }
+
+    async fn request_parent(
+        &self,
+        session_id: &str,
+        subgraph: u64,
+    ) -> Result<Option<RequestParent>, RepositoryError> {
+        let client = self.client().await?;
+        let rows = query(&client, REQUEST_PARENT, &[&session_id, &signed(subgraph)]).await?;
+        Ok(rows
+            .first()
+            .and_then(|row| row.get::<_, Option<String>>(0))
+            .and_then(|json| serde_json::from_str::<Value>(&json).ok())
+            .and_then(|trace| serde_json::from_value(trace.get("request_parent")?.clone()).ok()))
+    }
+
+    async fn set_request_parent(
+        &self,
+        session_id: &str,
+        subgraph: u64,
+        parent: &RequestParent,
+    ) -> Result<(), RepositoryError> {
+        let client = self.client().await?;
+        let trace = serde_json::json!({ "request_parent": parent }).to_string();
+        query(
+            &client,
+            SET_REQUEST_PARENT,
+            &[
+                &session_id,
+                &signed(subgraph),
+                &withhuman_common::postgres_text(&trace),
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn result_origin(
+        &self,
+        session_id: &str,
+        seq: u64,
+    ) -> Result<Option<ResultOrigin>, RepositoryError> {
+        let client = self.client().await?;
+        let rows = query(&client, RESULT_ORIGIN, &[&session_id, &signed(seq)]).await?;
+        let Some(row) = rows.first() else {
+            return Ok(None);
+        };
+        let call = payload(row.get(0));
+        let causes = pairs(&row.get::<_, Value>(1))
+            .filter_map(|edge| {
+                let seq = edge.first()?.as_u64()?;
+                let index = edge.get(1)?.as_u64()?;
+                let probability = edge.get(2)?.as_f64()?;
+                let text = edge.get(3)?.as_str()?.to_owned();
+                Some((format!("g{seq}p{index}"), text, probability))
+            })
+            .collect();
+        Ok(Some(ResultOrigin {
+            call: trace::call_summary(
+                call.get("tool_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+                call.get("tool_input").unwrap_or(&Value::Null),
+                300,
+            ),
+            causes,
+        }))
+    }
+
+    async fn subgraph_causes(
+        &self,
+        session_id: &str,
+        number: u64,
+        limit: usize,
+    ) -> Result<Vec<(String, String, f64)>, RepositoryError> {
+        let client = self.client().await?;
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let rows = query(
+            &client,
+            SUBGRAPH_CAUSES,
+            &[&session_id, &signed(number), &limit],
+        )
+        .await?;
+        Ok(rows
+            .iter()
+            .filter_map(|row| {
+                let seq: i64 = row.get(0);
+                let index: i64 = row.get(1);
+                let probability: Option<f64> = row.get(2);
+                let text: Option<String> = row.get(3);
+                Some((format!("g{seq}p{index}"), text?, probability?))
+            })
+            .collect())
+    }
+
+    async fn distrusted_causes(
+        &self,
+        session_id: &str,
+        seqs: &[u64],
+    ) -> Result<Vec<DistrustedCause>, RepositoryError> {
+        if seqs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let seqs: Vec<i64> = seqs.iter().copied().map(signed).collect();
+        let client = self.client().await?;
+        let rows = query(&client, RESULT_SOURCES, &[&session_id, &seqs]).await?;
+        // Each result with every name its source may be distrusted under.
+        let named: Vec<(u64, Option<u64>, Vec<String>)> = rows
+            .iter()
+            .filter_map(|row| {
+                let (result, call) = (payload(row.get(1)), payload(row.get(2)));
+                let cwd: Option<String> = row.get(4);
+                Some((
+                    u64::try_from(row.get::<_, i64>(0)).ok()?,
+                    row.get::<_, Option<i64>>(3)
+                        .and_then(|seq| u64::try_from(seq).ok()),
+                    source::names(source::telling(&call, &result), cwd.as_deref()),
+                ))
+            })
+            .collect();
+        let all: Vec<&str> = named
+            .iter()
+            .flat_map(|(_, _, names)| names)
+            .map(String::as_str)
+            .collect();
+        if all.is_empty() {
+            return Ok(Vec::new());
+        }
+        let distrusted: Vec<String> = query(&client, source::DISTRUSTED_SQL, &[&all])
+            .await?
+            .iter()
+            .map(|row| row.get(0))
+            .collect();
+        Ok(named
+            .into_iter()
+            .filter_map(|(seq, call_seq, names)| {
+                let source = names.into_iter().find(|name| distrusted.contains(name))?;
+                Some(DistrustedCause {
+                    seq,
+                    call_seq,
+                    source,
+                })
+            })
+            .collect())
     }
 
     async fn mark_unresolved(

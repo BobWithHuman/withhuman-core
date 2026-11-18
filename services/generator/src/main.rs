@@ -2,7 +2,7 @@ use std::{env, io};
 
 use withhuman_common::graph_store::PostgresSettings;
 use withhuman_generator::{
-    GeneratorConfig, GeneratorService, HttpDecisionClient, PgGraphRepository, app,
+    GeneratorConfig, GeneratorService, HttpDecisionClient, PgGraphRepository, app, run_edr_sync,
 };
 
 #[tokio::main]
@@ -30,6 +30,21 @@ async fn main() -> io::Result<()> {
             report.reindexed, report.scanned
         );
         return Ok(());
+    }
+    if env::args().nth(1).as_deref() == Some("backtrack-secrets") {
+        let report = repository
+            .backtrack_secrets()
+            .await
+            .map_err(io::Error::other)?;
+        println!(
+            "found {} of {} agent-first values again; {} traced to an earlier node, {} stored rows masked",
+            report.recovered, report.scanned, report.traced, report.masked
+        );
+        return Ok(());
+    }
+    // The company's device list from its EDR; nothing runs without WITHHUMAN_WAZUH_URL.
+    if let Some(wazuh) = config.wazuh.clone() {
+        tokio::spawn(run_edr_sync(repository.clone(), wazuh));
     }
     let decision = HttpDecisionClient::new(&config).map_err(io::Error::other)?;
     let service = GeneratorService::with_decision(repository, decision);

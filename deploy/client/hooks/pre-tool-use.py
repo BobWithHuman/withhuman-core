@@ -20,8 +20,11 @@ the script.
 Only files a command could run are attached: an existing regular file named in the command
 with a script extension, or an executable one that starts with `#!`. Other files the command
 names, such as data or secrets, are never read. The Collector's answer is printed as is, so
-Claude Code gets the same allow, deny or ask as from the HTTP hook. When the Collector cannot
-be reached the hook exits 1, a non-blocking error, as an unreachable HTTP hook is.
+Claude Code gets the same allow, deny or ask as from the HTTP hook.
+
+When the Collector cannot be reached, times out or answers with an error, the hook denies a
+PreToolUse call: with no judgment there is nothing to allow it on, and an engine that is merely
+switched off must not lift every control. Any other event only reports the failure on stderr.
 
 It sends the device's client ID (WITHHUMAN_CLIENT_ID) and the user's WithHuman key
 (WITHHUMAN_KEY, as `Authorization: Bearer`). When Claude Code was started without them in its
@@ -53,6 +56,29 @@ CONFIG = os.path.join(os.path.expanduser("~"), ".config", "withhuman")
 EXCEPTIONS_CACHE = os.path.join(CONFIG, "exceptions.json")
 EXCEPTIONS_MAX_AGE = 24 * 3600
 EXCEPTIONS_TIMEOUT = 3
+
+UNREACHABLE_REASON = ("WithHuman에 연결하지 못해 이 도구 호출을 차단했습니다. "
+                      "엔진이 실행 중인지 확인한 뒤 다시 시도하세요.")
+
+
+def unreachable(message):
+    """What the hook answers when the Collector gave no judgment: a deny."""
+    print(f"WithHuman: {message}", file=sys.stderr)
+    sys.stdout.write(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "deny",
+        "permissionDecisionReason": UNREACHABLE_REASON,
+    }}, ensure_ascii=False))
+    return 0
+
+
+def failed(name, message):
+    """A tool call the Collector gave no judgment for is denied; any other event only reports the
+    failure (a non-blocking error), so a prompt or a session is never held up by it."""
+    if name in (None, "PreToolUse"):
+        return unreachable(message)
+    print(f"WithHuman: {message}", file=sys.stderr)
+    return 1
 
 
 def words(command, powershell=False):
@@ -283,11 +309,17 @@ def main():
         with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
             body = response.read()
     except urllib.error.HTTPError as error:
-        print(f"WithHuman Collector answered {error.code}", file=sys.stderr)
-        return 1
+        # A blocking answer the Collector sends with an error status (fail-closed) still counts.
+        try:
+            body = error.read()
+            if json.loads(body).get("hookSpecificOutput", {}).get("permissionDecision"):
+                sys.stdout.buffer.write(body)
+                return 0
+        except (OSError, ValueError, AttributeError):
+            pass
+        return failed(name, f"Collector answered {error.code}")
     except (urllib.error.URLError, OSError) as error:
-        print(f"WithHuman Collector unreachable: {error}", file=sys.stderr)
-        return 1
+        return failed(name, f"Collector unreachable: {error}")
     sys.stdout.buffer.write(body)
     return 0
 

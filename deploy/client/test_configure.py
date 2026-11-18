@@ -11,6 +11,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 CONFIGURE = HERE / "configure.py"
@@ -267,6 +268,8 @@ class KeyAndRegistrationTest(Setup):
         for field in ("hostname", "os", "os_user"):
             self.assertTrue(body[field], field)
         self.assertRegex(body["hook_version"], r"^[0-9a-f]{12}$")
+        # Present only where this machine lets the user read it; never empty.
+        self.assertTrue(body.get("serial", "a serial"))
 
     def test_completes_the_setup_when_registration_fails(self):
         Engine.status = 401
@@ -280,6 +283,102 @@ class KeyAndRegistrationTest(Setup):
         result = self.configure(server="http://127.0.0.1:9", register=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("could not be reached", result.stdout)
+
+    def register(self, serial):
+        """The registration sent from a machine whose serial number reads as `serial`."""
+        spec = importlib.util.spec_from_file_location("withhuman_configure", CONFIGURE)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with mock.patch.object(module, "hardware_serial", lambda: serial):
+            problem = module.register(self.url, "lab/1", "lab", None, "claude", self.project, "v")
+        self.assertIsNone(problem)
+        return Engine.received[-1][2]
+
+    def test_sends_the_serial_number_it_read(self):
+        self.assertEqual(self.register("C02TEST1234")["serial"], "C02TEST1234")
+
+    def test_leaves_the_serial_number_out_when_there_is_none(self):
+        self.assertNotIn("serial", self.register(None))
+
+
+class HardwareSerialTest(unittest.TestCase):
+    """The hardware serial number the registration carries."""
+
+    IOREG = (
+        '+-o Root  <class IORegistryEntry, id 0x100000100, retain 30>\n'
+        '  {\n'
+        '    "IOPlatformUUID" = "00000000-0000-0000-0000-000000000000"\n'
+        '    "IOPlatformSerialNumber" = "C02TEST1234"\n'
+        '    "manufacturer" = <"Apple Inc.">\n'
+        '  }\n')
+
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location("withhuman_configure", CONFIGURE)
+        self.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.module)
+
+    def serial(self, platform, run=None, os_name="posix"):
+        """`hardware_serial()` on `platform`, its commands answered by `run`."""
+        ran = []
+
+        def fake(command, **_):
+            ran.append(command)
+            if run is None:
+                raise FileNotFoundError(command[0])
+            code, output = run(command)
+            return subprocess.CompletedProcess(command, code, stdout=output, stderr="")
+
+        with mock.patch.object(self.module.sys, "platform", platform), \
+                mock.patch.object(self.module.os, "name", os_name), \
+                mock.patch.object(self.module.subprocess, "run", fake):
+            return self.module.hardware_serial(), ran
+
+    def test_reads_the_serial_number_on_macos(self):
+        serial, ran = self.serial("darwin", lambda _: (0, self.IOREG))
+        self.assertEqual(serial, "C02TEST1234")
+        self.assertEqual(ran, [["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"]])
+
+    def test_has_none_when_the_command_fails_is_missing_or_hangs(self):
+        self.assertIsNone(self.serial("darwin", lambda _: (1, self.IOREG))[0])
+        self.assertIsNone(self.serial("darwin", lambda _: (0, "no such entry"))[0])
+        self.assertIsNone(self.serial("darwin")[0])
+
+        def hangs(command):
+            raise subprocess.TimeoutExpired(command, 1)
+        self.assertIsNone(self.serial("darwin", hangs)[0])
+
+    def test_reads_the_serial_number_on_linux_only_when_readable(self):
+        folder = Path(tempfile.mkdtemp())
+        readable = folder / "product_serial"
+        readable.write_text("PF2TEST9\n")
+        with mock.patch.object(self.module, "LINUX_SERIAL", readable):
+            self.assertEqual(self.serial("linux")[0], "PF2TEST9")
+        # Root-only or absent (a container): left out, and no command is tried instead.
+        with mock.patch.object(self.module, "LINUX_SERIAL", folder / "absent"):
+            serial, ran = self.serial("linux", lambda _: (0, "machine-id"))
+        self.assertIsNone(serial)
+        self.assertEqual(ran, [])
+
+    def test_takes_no_placeholder_for_a_serial_number(self):
+        folder = Path(tempfile.mkdtemp())
+        for value in ("", "0", "To Be Filled By O.E.M.", "Default string", "System Serial Number"):
+            (folder / "product_serial").write_text(value + "\n")
+            with mock.patch.object(self.module, "LINUX_SERIAL", folder / "product_serial"):
+                self.assertIsNone(self.serial("linux")[0], value)
+
+    def test_reads_the_serial_number_on_windows(self):
+        serial, ran = self.serial("win32", lambda _: (0, "PW0TEST7\r\n"), os_name="nt")
+        self.assertEqual(serial, "PW0TEST7")
+        self.assertEqual(ran[0][0], "powershell")
+        self.assertEqual(len(ran), 1)
+
+        # Without PowerShell's answer, `wmic` is asked.
+        def wmic_only(command):
+            return (0, "SerialNumber  \r\n\r\nPW0TEST8  \r\n") if command[0] == "wmic" else (1, "")
+        serial, ran = self.serial("win32", wmic_only, os_name="nt")
+        self.assertEqual(serial, "PW0TEST8")
+        self.assertEqual([command[0] for command in ran], ["powershell", "wmic"])
+        self.assertIsNone(self.serial("win32", os_name="nt")[0])
 
 
 def load_configure():

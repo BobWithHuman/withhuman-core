@@ -115,7 +115,19 @@ impl fmt::Display for TranslateError {
 
 impl std::error::Error for TranslateError {}
 
-/// The Claude Code request for one Codex Hook.
+/// The text a shell command printed, as Codex reports it; none when it printed nothing.
+fn printed(response: Option<&Value>) -> Option<String> {
+    let text = match response? {
+        Value::String(output) => output.clone(),
+        other => withhuman_common::origin::tool_output(other)?,
+    };
+    (!text.trim().is_empty()).then_some(text)
+}
+
+/// The Claude Code request for one Codex Hook. A shell command that ran and exited non-zero is
+/// sent as a PostToolUse carrying its output, as Claude Code reports a Bash command: a third of
+/// Codex's shell commands end non-zero (a missing test runner at the end of a reading command),
+/// and what they printed (an injected instruction included) never reached the graph.
 pub fn translate(
     event: CodexHookEvent,
     input: CodexHookInput,
@@ -167,7 +179,33 @@ pub fn translate(
             let tool_use_id = input
                 .tool_use_id
                 .ok_or(TranslateError::Missing("tool_use_id"))?;
+            let kept_output = match &input.withhuman_failure {
+                Some(_)
+                    if call.shell && matches!(call.tool_name.as_str(), "Bash" | "PowerShell") =>
+                {
+                    printed(input.tool_response.as_ref())
+                }
+                _ => None,
+            };
             match input.withhuman_failure {
+                Some(error) if kept_output.is_some() => {
+                    Translated::PostToolUse(PostToolUseRequest {
+                        session_id: input.session_id,
+                        hook_event_name: Some(HookEventName::PostToolUse),
+                        tool_response: json!({
+                            "stdout": kept_output.unwrap_or_default(),
+                            "stderr": format!("({error})"),
+                        }),
+                        tool_name: call.tool_name,
+                        tool_input: Some(call.tool_input),
+                        tool_use_id,
+                        cwd: call.cwd,
+                        prompt_id: input.turn_id,
+                        agent_id: input.agent_id,
+                        agent_type: input.agent_type,
+                        permission_mode: input.permission_mode,
+                    })
+                }
                 Some(error) => Translated::PostToolUseFailure(PostToolUseFailureRequest {
                     session_id: input.session_id,
                     hook_event_name: Some(HookEventName::PostToolUseFailure),

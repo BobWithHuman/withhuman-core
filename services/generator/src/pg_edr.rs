@@ -1,0 +1,187 @@
+//! The EDR's devices in PostgreSQL: `edr_devices` mirrors the manager, `edr_sightings` keeps
+//! each scan that found a coding agent running, and `clients` carries each registered device's
+//! match (`edr_agent_id`, `edr_status`).
+
+use std::{fmt::Display, future::Future, time::Duration};
+
+use deadpool_postgres::Object;
+
+use crate::{
+    edr::{ClientIdentity, EdrDevice, EdrSync, EdrSyncError, match_clients},
+    pg_repository::{PgError, PgGraphRepository, run, signed},
+};
+
+/// Held by the Generator that is syncing, with the schema's hash as the second key.
+const SYNC_LOCK: i32 = 0x5748_4544;
+
+const TRY_LOCK: &str = "SELECT pg_try_advisory_lock($1::int4, hashtext(current_schema()))";
+
+const LATEST_SYNC: &str = "SELECT max(synced_at) FROM edr_devices";
+
+const UPSERT_DEVICES: &str = "\
+INSERT INTO edr_devices (agent_id, name, os, status, serial, last_seen, agent, running_at, \
+  synced_at) \
+SELECT d.agent_id, d.name, d.os, d.status, d.serial, d.last_seen, d.agent, d.running_at, \
+  $9::bigint \
+FROM unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::bigint[], \
+  $7::text[], $8::bigint[]) AS d(agent_id, name, os, status, serial, last_seen, agent, running_at) \
+ON CONFLICT (agent_id) DO UPDATE SET \
+  name = EXCLUDED.name, os = EXCLUDED.os, status = EXCLUDED.status, serial = EXCLUDED.serial, \
+  last_seen = EXCLUDED.last_seen, agent = EXCLUDED.agent, running_at = EXCLUDED.running_at, \
+  synced_at = EXCLUDED.synced_at";
+
+/// How long a sighting is kept: rows whose scan is older than this before a sync are deleted.
+pub(crate) const SIGHTING_RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
+// One row per device and scan; a scan seen again by a later sync is already there.
+const INSERT_SIGHTINGS: &str = "\
+INSERT INTO edr_sightings (agent_id, running_at, agent, name, command, synced_at) \
+SELECT s.agent_id, s.running_at, s.agent, s.name, s.command, $6::bigint \
+FROM unnest($1::text[], $2::bigint[], $3::text[], $4::text[], $5::text[]) \
+  AS s(agent_id, running_at, agent, name, command) \
+ON CONFLICT (agent_id, running_at) DO NOTHING";
+
+// By age only: a device gone from the manager keeps its record until then.
+const DELETE_OLD_SIGHTINGS: &str = "DELETE FROM edr_sightings WHERE running_at < $1::bigint";
+
+// A device the manager no longer lists is gone from the mirror.
+const DELETE_UNLISTED: &str = "DELETE FROM edr_devices WHERE agent_id <> ALL($1::text[])";
+
+const CLIENT_IDENTITIES: &str = "SELECT client_id, hostname, serial FROM clients";
+
+const SET_MATCHES: &str = "\
+UPDATE clients c SET edr_agent_id = m.agent_id, edr_status = m.status \
+FROM unnest($1::text[], $2::text[], $3::text[]) AS m(client_id, agent_id, status) \
+WHERE c.client_id = m.client_id \
+  AND (c.edr_agent_id, c.edr_status) IS DISTINCT FROM (m.agent_id, m.status)";
+
+const CLEAR_UNMATCHED: &str = "\
+UPDATE clients SET edr_agent_id = NULL, edr_status = NULL \
+WHERE (edr_agent_id IS NOT NULL OR edr_status IS NOT NULL) AND client_id <> ALL($1::text[])";
+
+impl PgGraphRepository {
+    /// Replaces `edr_devices` with what `fetch` returns, adds its sightings to `edr_sightings`
+    /// (dropping those past [`SIGHTING_RETENTION`]) and matches the registered clients to it,
+    /// in one transaction: a reader sees the previous list or the new one, and a failed
+    /// `fetch` leaves the previous one.
+    ///
+    /// One Generator syncs at a time. The lock is a session's advisory lock on a connection
+    /// taken out of the pool, so it is released when this returns, fails or is dropped, and an
+    /// idle transaction is never held open while `fetch` waits on the network. Having the lock,
+    /// a sync that another Generator finished less than `fresh_within` ago is not repeated.
+    pub(crate) async fn mirror_edr_devices<F, Fut, E>(
+        &self,
+        now: u64,
+        fresh_within: Duration,
+        fetch: F,
+    ) -> Result<EdrSync, EdrSyncError>
+    where
+        F: FnOnce() -> Fut + Send,
+        Fut: Future<Output = Result<Vec<EdrDevice>, E>> + Send,
+        E: Display,
+    {
+        let store = |error: PgError| EdrSyncError::Store(error.into());
+        let now = signed(now).map_err(EdrSyncError::Store)?;
+        let mut connection = Object::take(self.client().await.map_err(EdrSyncError::Store)?);
+        let locked: bool = connection
+            .query_one(TRY_LOCK, &[&SYNC_LOCK])
+            .await
+            .map_err(|error| store(error.into()))?
+            .get(0);
+        if !locked {
+            return Ok(EdrSync::Busy);
+        }
+        let latest: Option<i64> = connection
+            .query_one(LATEST_SYNC, &[])
+            .await
+            .map_err(|error| store(error.into()))?
+            .get(0);
+        let fresh_within = i64::try_from(fresh_within.as_millis()).unwrap_or(i64::MAX);
+        if latest.is_some_and(|latest| now.saturating_sub(latest) < fresh_within) {
+            return Ok(EdrSync::Fresh);
+        }
+
+        let devices = fetch()
+            .await
+            .map_err(|error| EdrSyncError::Source(error.to_string()))?;
+
+        let written: Result<usize, PgError> = async {
+            let tx = connection.transaction().await?;
+            let column = |value: fn(&EdrDevice) -> &Option<String>| -> Vec<Option<&str>> {
+                devices.iter().map(|d| value(d).as_deref()).collect()
+            };
+            let ids: Vec<&str> = devices.iter().map(|d| d.agent_id.as_str()).collect();
+            let last_seen: Vec<Option<i64>> = devices.iter().map(|d| d.last_seen).collect();
+            let running_at: Vec<Option<i64>> = devices.iter().map(|d| d.running_at).collect();
+            run(
+                &tx,
+                UPSERT_DEVICES,
+                &[
+                    &ids,
+                    &column(|d| &d.name),
+                    &column(|d| &d.os),
+                    &column(|d| &d.status),
+                    &column(|d| &d.serial),
+                    &last_seen,
+                    &column(|d| &d.agent),
+                    &running_at,
+                    &now,
+                ],
+            )
+            .await?;
+            run(&tx, DELETE_UNLISTED, &[&ids]).await?;
+
+            let seen: Vec<(&EdrDevice, i64, &str)> = devices
+                .iter()
+                .filter_map(|d| Some((d, d.running_at?, d.agent.as_deref()?)))
+                .collect();
+            let seen_ids: Vec<&str> = seen.iter().map(|(d, ..)| d.agent_id.as_str()).collect();
+            let seen_at: Vec<i64> = seen.iter().map(|(_, at, _)| *at).collect();
+            let seen_agents: Vec<&str> = seen.iter().map(|(.., agent)| *agent).collect();
+            let seen_names: Vec<Option<&str>> =
+                seen.iter().map(|(d, ..)| d.name.as_deref()).collect();
+            let seen_commands: Vec<Option<&str>> =
+                seen.iter().map(|(d, ..)| d.command.as_deref()).collect();
+            run(
+                &tx,
+                INSERT_SIGHTINGS,
+                &[
+                    &seen_ids,
+                    &seen_at,
+                    &seen_agents,
+                    &seen_names,
+                    &seen_commands,
+                    &now,
+                ],
+            )
+            .await?;
+            let retention = i64::try_from(SIGHTING_RETENTION.as_millis()).unwrap_or(i64::MAX);
+            run(&tx, DELETE_OLD_SIGHTINGS, &[&now.saturating_sub(retention)]).await?;
+
+            let clients: Vec<ClientIdentity> = tx
+                .query(CLIENT_IDENTITIES, &[])
+                .await?
+                .iter()
+                .map(|row| ClientIdentity {
+                    client_id: row.get(0),
+                    hostname: row.get(1),
+                    serial: row.get(2),
+                })
+                .collect();
+            let matches = match_clients(&clients, &devices);
+            let matched: Vec<&str> = matches.iter().map(|m| m.client_id.as_str()).collect();
+            let agents: Vec<&str> = matches.iter().map(|m| m.agent_id.as_str()).collect();
+            let statuses: Vec<Option<&str>> = matches.iter().map(|m| m.status.as_deref()).collect();
+            run(&tx, SET_MATCHES, &[&matched, &agents, &statuses]).await?;
+            run(&tx, CLEAR_UNMATCHED, &[&matched]).await?;
+            tx.commit().await?;
+            Ok(matches.len())
+        }
+        .await;
+        let matched = written.map_err(store)?;
+        Ok(EdrSync::Synced {
+            devices: devices.len(),
+            matched,
+        })
+    }
+}

@@ -892,3 +892,60 @@ impl GeneratorTransport for NoCursorGenerator {
         Err(GeneratorError::Unavailable("offline".to_owned()))
     }
 }
+
+#[tokio::test]
+async fn asks_about_a_hard_to_undo_call_when_the_engine_fails() {
+    let config = |review_policy| CollectorConfig {
+        failure_policy: FailurePolicy::Closed,
+        review_policy,
+        ..Default::default()
+    };
+    let shell = |command: &str, id: &str| {
+        json_request(
+            "/v1/hooks/PreToolUse",
+            json!({"session_id":"s1", "tool_name":"Bash", "tool_input":{"command":command},
+                   "tool_use_id":id}),
+        )
+    };
+    // Grade 3-1: the person decides.
+    let (_, body) = response_json(
+        test_app(config(ReviewPolicy::Ask), Arc::new(FailingGenerator))
+            .oneshot(shell("rm -rf build", "grade-3"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(body["hookSpecificOutput"]["permissionDecision"], "ask");
+    assert!(
+        body["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .unwrap()
+            .contains("3-1")
+    );
+    // Grade 0: blocked, a read included.
+    let (_, body) = response_json(
+        test_app(config(ReviewPolicy::Ask), Arc::new(FailingGenerator))
+            .oneshot(shell("ls", "grade-0"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(body["hookSpecificOutput"]["permissionDecision"], "deny");
+    // A client that cannot ask the person (`WITHHUMAN_ASK=deny`) blocks every failure.
+    let (_, body) = response_json(
+        test_app(config(ReviewPolicy::Deny), Arc::new(FailingGenerator))
+            .oneshot(shell("rm -rf build", "no-ask"))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(body["hookSpecificOutput"]["permissionDecision"], "deny");
+}
+
+#[test]
+fn blocks_on_failure_by_default() {
+    assert_eq!(
+        CollectorConfig::default().failure_policy,
+        FailurePolicy::Closed
+    );
+}

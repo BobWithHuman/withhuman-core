@@ -85,6 +85,21 @@ spec:
                 command: [sleep, {{ $.Values.preStopSleepSeconds | quote }}]
           resources:
             {{- toYaml $values.resources | nindent 12 }}
+          {{- if and (eq $component "generator") $.Values.generator.wazuh.caFromSecret }}
+          volumeMounts:
+            - name: wazuh-ca
+              mountPath: /etc/withhuman/wazuh
+              readOnly: true
+          {{- end }}
+      {{- if and (eq $component "generator") $.Values.generator.wazuh.caFromSecret }}
+      volumes:
+        - name: wazuh-ca
+          secret:
+            secretName: {{ $.Values.existingSecret }}
+            items:
+              - key: wazuh-ca
+                path: ca.pem
+      {{- end }}
 ---
 apiVersion: v1
 kind: Service

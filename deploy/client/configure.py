@@ -35,8 +35,10 @@ project the user opens, including ones made later, runs them:
    alike. The key is never written into a settings file. Without one, a key kept earlier is used.
 5. Schedules the daily check-in (checkin.py: launchd, a systemd user timer or cron, the Task
    Scheduler; --no-checkin skips it) and registers the device with the engine
-   (POST /v1/clients/register). The setup still completes when registering fails, and says so;
-   --no-register skips it and the first check-in.
+   (POST /v1/clients/register): client ID, team, host name, OS, OS user, hook version, agent,
+   project folder, install scope and, when it can be read without administrator rights, the
+   machine's hardware serial number. The setup still completes when registering fails, and says
+   so; --no-register skips it and the first check-in.
 
 --managed puts the hooks into Claude Code's managed settings instead, for every user of the
 device: the drop-in managed-settings.d/50-withhuman.json in /Library/Application Support/
@@ -125,6 +127,12 @@ KEY_MARK = "# WithHuman key"
 # A WithHuman key as the engine issues it.
 KEY_PATTERN = re.compile(r"whk_[0-9a-f]{16}_[0-9a-f]{64}")
 REGISTER_TIMEOUT = 10
+SERIAL_TIMEOUT = 10
+# Where Linux shows the machine's serial number; on most distributions only root can read it.
+LINUX_SERIAL = Path("/sys/class/dmi/id/product_serial")
+# What firmware reports when the manufacturer set no serial number: not a serial.
+NO_SERIAL = {"", "0", "none", "default string", "not specified", "not applicable",
+             "system serial number", "to be filled by o.e.m."}
 CODEX_HOOK = "withhuman-hook.py"
 CODEX_FILES = (CODEX_HOOK, "codex_transcript.py", HOOK_NAME)
 # Codex events the hook handles. PreToolUse waits for a judgment (intent wait and decision
@@ -335,6 +343,43 @@ def hook_version(paths):
     return digest.hexdigest()[:12]
 
 
+def command_output(command):
+    """What `command` printed, or "" when it is missing, fails or takes too long."""
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8",
+                                errors="replace", timeout=SERIAL_TIMEOUT)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return ""
+    return result.stdout if result.returncode == 0 else ""
+
+
+def hardware_serial():
+    """The machine's hardware serial number, read as the current user; None when it cannot be
+    read or the firmware has none. Nothing else stands in for it: the engine matches devices
+    with other inventories by this value."""
+    serial = ""
+    if sys.platform == "darwin":
+        output = command_output(["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"])
+        found = re.search(r'"IOPlatformSerialNumber"\s*=\s*"([^"]*)"', output)
+        serial = found.group(1) if found else ""
+    elif sys.platform.startswith("linux"):
+        try:
+            serial = LINUX_SERIAL.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            serial = ""
+    elif os.name == "nt":
+        serial = command_output(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                                 "(Get-CimInstance -ClassName Win32_BIOS).SerialNumber"])
+        if not serial.strip():
+            # Older Windows: `wmic` prints a `SerialNumber` heading, then the value.
+            lines = [line.strip() for line in
+                     command_output(["wmic", "bios", "get", "serialnumber"]).splitlines()]
+            serial = next((line for line in lines
+                           if line and line.lower() != "serialnumber"), "")
+    serial = serial.strip()
+    return None if serial.lower() in NO_SERIAL else serial
+
+
 def register(server, client, team, key, agent, project, version, scope=None):
     """Registers the device with the engine; the problem as text when that fails, else None."""
     body = {
@@ -348,6 +393,9 @@ def register(server, client, team, key, agent, project, version, scope=None):
         "project": str(project) if project else None,
         "scope": scope,
     }
+    serial = hardware_serial()
+    if serial:
+        body["serial"] = serial
     headers = {"Content-Type": "application/json"}
     if key:
         headers["Authorization"] = f"Bearer {key}"
