@@ -143,6 +143,7 @@ pub fn translate(
             source: input.source,
             permission_mode: input.permission_mode,
             model: input.model,
+            withhuman_exception: None,
         }),
         CodexHookEvent::UserPromptSubmit => Translated::UserPromptSubmit(UserPromptSubmitRequest {
             session_id: input.session_id,

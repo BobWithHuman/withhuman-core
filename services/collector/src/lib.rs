@@ -4,6 +4,7 @@ pub mod codex_write;
 mod config;
 pub mod devices;
 mod ext_authz;
+pub mod flags;
 mod http;
 mod intent;
 mod inventory;

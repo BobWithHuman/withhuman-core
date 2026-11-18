@@ -128,9 +128,14 @@ impl GeneratorEvent {
         match self {
             Self::SessionStart(event) => {
                 let source = event.payload.source.clone();
+                let exception = event
+                    .payload
+                    .exception
+                    .map(|id| signed(id, "exception"))
+                    .transpose()?;
                 let mut mutation =
                     mutation("SessionStart", None, None, None, event, |event| event)?;
-                mutation.session = SessionChange::Started { source };
+                mutation.session = SessionChange::Started { source, exception };
                 Ok(mutation)
             }
             Self::SessionEnd(event) => {
@@ -298,8 +303,11 @@ pub(crate) struct GraphMutation {
 pub(crate) enum SessionChange {
     #[default]
     None,
-    /// SessionStart, with its `source`.
-    Started { source: Option<String> },
+    /// SessionStart, with its `source` and the exception its hook claimed.
+    Started {
+        source: Option<String>,
+        exception: Option<i64>,
+    },
     /// SessionEnd, with its `reason`.
     Ended { reason: Option<String> },
 }
@@ -374,7 +382,9 @@ impl GraphMutation {
                 clean(text);
             }
         }
-        if let SessionChange::Started { source: Some(text) }
+        if let SessionChange::Started {
+            source: Some(text), ..
+        }
         | SessionChange::Ended { reason: Some(text) } = &mut self.session
         {
             clean(text);

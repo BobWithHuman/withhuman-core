@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Sets up WithHuman for Claude Code or Codex CLI in the current folder (macOS, Linux), replacing
-# any earlier WithHuman setup. Run it in the folder you start the agent in:
+# Sets up WithHuman on macOS and Linux, replacing any earlier WithHuman setup: Claude Code for
+# every project of this user, or Codex CLI in the current folder. Run it in a project folder:
 #
 #   WITHHUMAN_SERVER=https://withhuman.example.com \
 #     curl -fsSL https://raw.githubusercontent.com/BobWithHuman/withhuman-core/main/deploy/client/setup-project.sh | bash -s -- [team]
@@ -22,7 +22,7 @@ case "$agent" in
 esac
 # The files configure.py needs: the Claude Code hook, which the Codex hook also uses to attach
 # program files, and the Codex hook with its transcript reader.
-files="configure.py hooks/pre-tool-use.py"
+files="configure.py checkin.py hooks/pre-tool-use.py"
 if [ "$agent" = codex ]; then
   files="$files codex/withhuman-hook.py codex/codex_transcript.py"
 fi

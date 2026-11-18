@@ -34,6 +34,7 @@ async fn assigns_gap_free_orders_only_when_an_event_is_emitted() {
         .session_start(
             &context(),
             SessionStartRequest {
+                withhuman_exception: None,
                 model: None,
                 permission_mode: None,
                 session_id: "session-1".to_owned(),
@@ -289,6 +290,7 @@ async fn snapshots_pending_side_analysis_references() {
         .session_start(
             &context(),
             SessionStartRequest {
+                withhuman_exception: None,
                 model: None,
                 permission_mode: None,
                 session_id: "session-1".to_owned(),

@@ -136,6 +136,9 @@ pub struct PreToolUseEventRequest {
 pub struct SessionStartPayload {
     #[serde(default)]
     pub source: Option<String>,
+    /// The exception the client claims covers the session; the Generator checks it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exception: Option<u64>,
     #[serde(flatten)]
     #[schema(ignore)]
     pub additional_fields: AdditionalFields,

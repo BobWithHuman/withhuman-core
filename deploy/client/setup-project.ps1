@@ -1,5 +1,6 @@
-# Sets up WithHuman for Claude Code or Codex CLI in the current folder (Windows), replacing any
-# earlier WithHuman setup. Run it in PowerShell, in the folder you start the agent in:
+# Sets up WithHuman on Windows, replacing any earlier WithHuman setup: Claude Code for every
+# project of this user, or Codex CLI in the current folder. Run it in PowerShell, in a project
+# folder:
 #
 #   $env:WITHHUMAN_SERVER = "https://withhuman.example.com"
 #   irm https://raw.githubusercontent.com/BobWithHuman/withhuman-core/main/deploy/client/setup-project.ps1 | iex
@@ -23,7 +24,7 @@
     $uninstall = [bool]$env:WITHHUMAN_UNINSTALL
     # The files configure.py needs: the Claude Code hook, which the Codex hook also uses to attach
     # program files, and the Codex hook with its transcript reader.
-    $files = @("configure.py", "hooks/pre-tool-use.py")
+    $files = @("configure.py", "checkin.py", "hooks/pre-tool-use.py")
     if ($agent -eq "codex") { $files += @("codex/withhuman-hook.py", "codex/codex_transcript.py") }
 
     if (-not $env:WITHHUMAN_SERVER -and -not $uninstall) {

@@ -48,6 +48,11 @@ pub struct SessionStartRequest {
     /// The model the session runs; only SessionStart carries it, and not always.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Set by the WithHuman hook when an exception of the security team covers the session's
+    /// folder: the exception's id. The hook then sends nothing more of the session than this
+    /// sign that it started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub withhuman_exception: Option<u64>,
 }
 
 /// The session ended. Claude Code gives SessionEnd Hooks a short budget (1.5 s by default) and

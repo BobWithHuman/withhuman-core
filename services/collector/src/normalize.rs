@@ -234,6 +234,7 @@ impl Normalizer {
             meta,
             SessionStartPayload {
                 source: request.source,
+                exception: request.withhuman_exception,
                 ..Default::default()
             },
         );

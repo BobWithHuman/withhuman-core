@@ -81,13 +81,19 @@ again from the token's masked ends and key hash, then masks and records as above
 the Generator and Decision up, one token per transaction under its session's lock, and a second
 run changes nothing. It prints counts only.
 
-Configure a Claude Code project against the local gateway:
+Set Claude Code up against the local gateway, for every project of this user (the hooks go into
+`~/.claude/settings.json`; earlier per-project setups are taken out):
 
 ```sh
-python3 deploy/client/configure.py \
-  --project /path/to/project --team personal --server http://127.0.0.1:3000 \
-  --hook "$PWD/deploy/client/hooks/pre-tool-use.py"
+python3 deploy/client/configure.py --team personal --server http://127.0.0.1:3000
 ```
+
+`--managed` (as root or Administrator) puts the hooks into Claude Code's managed settings
+instead, for every user of the device, as the drop-in `managed-settings.d/50-withhuman.json`.
+`--scope project` keeps the earlier per-project setup. The setup also schedules a daily check-in
+that reports the projects Claude Code ran in (paths and last use only), so projects the hooks
+never reached show as unprotected. In a container, pass the host's `WITHHUMAN_CLIENT_ID` (and
+`WITHHUMAN_KEY`) in, or mount `~/.config/withhuman` read-only, so the device keeps one ID.
 
 ### Keys and the agent inventory
 
@@ -148,6 +154,14 @@ removed, is not stopped, and `WITHHUMAN_REQUIRE_KEY` does not change that: a key
 not a machine. It stops a device that keeps running its installed Hooks. To stop a person
 whatever they run, revoke their keys with `WITHHUMAN_REQUIRE_KEY=on`. Tool calls that reach the
 engine through AgentGateway alone (MCP, without a Hook) are not covered, as with a revoked key.
+
+The security team can also stop one session (`POST /v1/admin/sessions/<id>/stop`, released
+with `.../release`), review calls after the fact (`POST /v1/admin/reviews`), issue keys to
+automations (`{"kind": "service"}`), and except folders, teams or devices from protection
+(`POST /v1/admin/exceptions`): an excepted session sends only that it started. A call is checked against a revoked key first, then its
+device's stop, then its session's. Revoked keys and session stops (released ones kept) are in the
+`stop_audit` view; a device's stop is on its `clients` row. Benchmark runs name their client
+`bench/...` so the inventory can leave them out (`clients.test`).
 
 ### Triage
 

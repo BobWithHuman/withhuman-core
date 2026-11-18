@@ -67,6 +67,7 @@ pub struct CollectorService {
     pub generator: Arc<dyn GeneratorTransport>,
     pub verdicts: Arc<dyn VerdictStore>,
     pub keys: KeyVerifier,
+    pub flags: crate::flags::FlagCache,
     pub devices: DeviceStops,
     deliveries: Arc<crate::codex_delivery::Deliveries>,
 }
@@ -76,6 +77,7 @@ impl CollectorService {
         let verdicts = Arc::new(InMemoryVerdictStore::new(config.verdict_capacity));
         Self {
             keys: KeyVerifier::new(generator.clone(), config.key_cache),
+            flags: crate::flags::FlagCache::new(generator.clone(), config.key_cache),
             devices: DeviceStops::new(generator.clone(), config.key_cache),
             normalizer: Normalizer::default()
                 .with_history(generator.clone())
@@ -99,6 +101,7 @@ impl CollectorService {
         let connection = redis_connection(&url)?;
         Ok(Self {
             keys: KeyVerifier::new(generator.clone(), config.key_cache),
+            flags: crate::flags::FlagCache::new(generator.clone(), config.key_cache),
             devices: DeviceStops::new(generator.clone(), config.key_cache),
             deliveries: Arc::new(crate::codex_delivery::Deliveries::redis(connection.clone())),
             verdicts: Arc::new(RedisVerdictStore::new(
@@ -144,6 +147,16 @@ pub fn app_with_transport(service: CollectorService) -> Router {
         .route("/healthz", get(health))
         .merge(hooks)
         .route("/v1/clients/register", post(inventory::register_client))
+        .route("/v1/clients/checkin", post(inventory::checkin))
+        .route("/v1/clients/exceptions", get(inventory::client_exceptions))
+        .route(
+            "/v1/admin/exceptions",
+            post(inventory::add_exception).get(inventory::exceptions),
+        )
+        .route(
+            "/v1/admin/exceptions/{id}/remove",
+            post(inventory::remove_exception),
+        )
         .route("/v1/admin/clients", get(inventory::clients))
         .route(
             "/v1/admin/clients/{client_id}/owner",
@@ -166,6 +179,15 @@ pub fn app_with_transport(service: CollectorService) -> Router {
             "/v1/admin/users/{email}/revoke",
             post(inventory::revoke_user),
         )
+        .route(
+            "/v1/admin/sessions/{session_id}/stop",
+            post(inventory::stop_session),
+        )
+        .route(
+            "/v1/admin/sessions/{session_id}/release",
+            post(inventory::release_session),
+        )
+        .route("/v1/admin/reviews", post(inventory::add_review))
         .route(
             "/v1/admin/sessions/{session_id}/mark",
             post(triage::mark_session),
@@ -200,11 +222,19 @@ pub fn app_with_transport(service: CollectorService) -> Router {
         tool_descriptions,
         codex_hook,
         inventory::register_client,
+        inventory::checkin,
+        inventory::client_exceptions,
+        inventory::add_exception,
+        inventory::exceptions,
+        inventory::remove_exception,
         inventory::issue_key,
         inventory::user_keys,
         inventory::all_keys,
         inventory::revoke_key,
         inventory::revoke_user,
+        inventory::stop_session,
+        inventory::release_session,
+        inventory::add_review,
         inventory::clients,
         inventory::set_client_owner,
         inventory::stop_client,
