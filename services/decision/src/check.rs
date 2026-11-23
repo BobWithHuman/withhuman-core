@@ -111,8 +111,12 @@ pub struct FileDiff {
 /// Where an agent's safeguards live, in lower case: Claude Code's settings and hooks, and the
 /// policy an administrator sets for it (`managed-settings.json`, `managed-settings.d`); Codex's
 /// hooks (`hooks.json` and the bridge beside it), configuration and the requirements an
-/// administrator sets; and WithHuman's hooks installed for a user or the whole device, with the
-/// device's client ID, which a device stop is keyed on.
+/// administrator sets; Cursor's hooks (`hooks.json`, the bridge and the engine's address beside
+/// it) and the MCP servers it may call; and WithHuman's hooks installed for a user or the whole
+/// device, with the device's client ID, which a device stop is keyed on.
+///
+/// A path here is matched as a prefix, so `.cursor/hooks` covers both `.cursor/hooks.json` and
+/// the folder of that name.
 const SAFEGUARDS: &[&str] = &[
     ".claude/settings",
     ".claude/hooks",
@@ -133,6 +137,10 @@ const SAFEGUARDS: &[&str] = &[
     ".codex\\config.toml",
     "codex\\requirements.toml",
     "codex\\managed_config.toml",
+    ".cursor/hooks",
+    ".cursor/mcp.json",
+    ".cursor\\hooks",
+    ".cursor\\mcp.json",
 ];
 
 /// Commands, or parts of one, that write; output thrown away does not count.
