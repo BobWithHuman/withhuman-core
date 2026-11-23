@@ -234,16 +234,24 @@ pub fn translate(
                 permission_mode: None,
             })
         }
-        // The answer the model gave. Cursor shows it before this Hook runs, so the `[의도]`
-        // line stays on the user's screen; the engine keeps it as the turn's intent either way.
+        // The answer the model gave, whole. Cursor shows it before this Hook runs, so the
+        // `[의도]` line stays on the user's screen; the engine keeps it as the turn's intent
+        // either way.
+        //
+        // A turn has as many answers as the model had passes — a Call turned back for its
+        // intent is followed by another answer — and Cursor names none of them. The turn's own
+        // id would make the engine take them for flushes of one message and join them, which
+        // swallowed the intent line of the first into a run-on first line. So each answer is a
+        // message of its own, named after the turn and what it says.
         Event::AfterAgentResponse => {
             let turn = turn(input).ok_or_else(|| missing("generation_id"))?;
+            let text = passes(input.text.as_deref().ok_or_else(|| missing("text"))?);
             Translated::MessageDisplay(MessageDisplayRequest {
                 session_id: session(input)?.0,
                 hook_event_name: Some(HookEventName::MessageDisplay),
-                message_id: turn.clone(),
+                message_id: message_id(&turn, &text),
                 index: Some(0),
-                delta: input.text.clone().ok_or_else(|| missing("text"))?,
+                delta: text,
                 final_: true,
                 turn_id: Some(turn),
             })
@@ -288,6 +296,38 @@ fn session(input: &CursorHookInput) -> Result<(String, Option<String>), Rejectio
         Some(parent) if parent != own => (parent, Some(own)),
         _ => (own, None),
     })
+}
+
+/// Puts back the line breaks Cursor dropped between a turn's passes.
+///
+/// A turn has as many passes as the model took, and `afterAgentResponse` reports the text of
+/// all of them joined with nothing in between. Newlines inside one pass survive, so the only
+/// line that gets lost is the last of a pass — and when that is the `[의도]` line of a pass a
+/// Call interrupted, the intent runs into the next pass's text and stops being a line, which
+/// left the engine judging the turn against its whole answer instead of its intent.
+///
+/// Every pass the model opens with the marker is a line of its own, so a newline before each
+/// marker but the first restores what the engine reads.
+fn passes(text: &str) -> String {
+    let mut restored = String::with_capacity(text.len() + 8);
+    for (index, part) in text.split(withhuman_common::intent::MARKER).enumerate() {
+        if index > 0 {
+            if !restored.is_empty() && !restored.ends_with('\n') {
+                restored.push('\n');
+            }
+            restored.push_str(withhuman_common::intent::MARKER);
+        }
+        restored.push_str(part);
+    }
+    restored
+}
+
+/// Names one answer of a turn. Cursor gives an answer no id of its own, so it is named after
+/// the turn it belongs to and what it says: two answers of one turn stay two messages, and the
+/// same answer reported twice stays one.
+fn message_id(turn: &str, text: &str) -> String {
+    let digest = withhuman_common::chunking::sha256(text);
+    format!("{turn}-{}", &digest[..12])
 }
 
 /// The turn, as Claude Code's `prompt_id`.
