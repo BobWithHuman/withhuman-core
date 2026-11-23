@@ -1,4 +1,5 @@
-# Sets up WithHuman for Claude Code or Codex CLI in the current folder (Windows), replacing any
+# Sets up WithHuman for Claude Code, Codex CLI or Cursor CLI in the current folder (Windows),
+# replacing any
 # earlier WithHuman setup. Run it in PowerShell, in the folder you start the agent in:
 #
 #   $env:WITHHUMAN_SERVER = "https://withhuman.example.com"
@@ -7,8 +8,8 @@
 # $env:WITHHUMAN_SERVER is the address of your own engine; WithHuman is self-hosted, so there is no
 # default. A team name goes in $env:WITHHUMAN_TEAM first; $env:WITHHUMAN_REF picks the branch the
 # files are fetched from (default: main), $env:WITHHUMAN_BASE_URL another place serving the
-# deploy/client folder (a mirror or a test). $env:WITHHUMAN_AGENT picks the agent: claude (default)
-# or codex. Running it again updates the setup; $env:WITHHUMAN_UNINSTALL = "1" takes WithHuman out
+# deploy/client folder (a mirror or a test). $env:WITHHUMAN_AGENT picks the agent: claude
+# (default), codex or cursor. Running it again updates the setup; $env:WITHHUMAN_UNINSTALL = "1" takes WithHuman out
 # of the folder instead, keeping other hooks. See configure.py for what it changes.
 # $env:WITHHUMAN_KEY is the user's key from the security team, when the engine issues keys.
 # WITHHUMAN_CLIENT_ID (and WITHHUMAN_KEY) are set for new windows and for this one.
@@ -24,7 +25,10 @@
     # takes the shared bridge, that same hook (its bridge uses it to attach the program files a
     # command would run) and its own, named here. Adding an agent is one entry here and one in
     # configure.py's AGENTS.
-    $bridges = @{ codex = @("codex/withhuman-hook.py", "codex/codex_transcript.py") }
+    $bridges = @{
+        codex = @("codex/withhuman-hook.py", "codex/codex_transcript.py")
+        cursor = @("cursor/withhuman-hook.py")
+    }
     $files = @("configure.py", "hooks/pre-tool-use.py")
     if ($agent -ne "claude") {
         if (-not $bridges.ContainsKey($agent)) {

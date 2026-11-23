@@ -69,32 +69,38 @@ async fn no_longer_takes_instructions_or_file_change_hooks() {
     }
 }
 
-/// Every agent of the registry has its route, and one nobody wrote an adapter for has none:
-/// the Claude Code routes above are the form those adapters translate into.
+/// Every agent of the registry is routed, and one nobody wrote an adapter for is not. Their
+/// Hooks are named differently — Codex's `SessionStart` is Cursor's `sessionStart` — so what is
+/// checked is which of the two the route could not find: the event, or the agent itself.
 #[tokio::test]
-async fn exposes_a_route_for_each_agent_of_the_registry() {
+async fn routes_each_agent_of_the_registry_and_no_other() {
     for agent in withhuman_collector::agent::REGISTRY {
-        let response = test_app()
-            .oneshot(json_request(
-                &format!("/v1/hooks/{}/SessionStart", agent.kind()),
-                r#"{"session_id":"s","cwd":"/repo"}"#,
-            ))
-            .await
-            .expect("router should respond");
-
-        assert_eq!(response.status(), StatusCode::OK, "agent {}", agent.kind());
+        let error = error_of(&format!("/v1/hooks/{}/beforeModelCall", agent.kind())).await;
+        assert_eq!(
+            error,
+            (StatusCode::NOT_FOUND, "unknown_event".to_owned()),
+            "agent {} is not routed",
+            agent.kind()
+        );
     }
+    assert_eq!(
+        error_of("/v1/hooks/gemini/sessionStart").await,
+        (StatusCode::NOT_FOUND, "unknown_agent".to_owned())
+    );
+}
+
+async fn error_of(uri: &str) -> (StatusCode, String) {
     let response = test_app()
-        .oneshot(json_request(
-            "/v1/hooks/cursor/SessionStart",
-            r#"{"session_id":"s","cwd":"/repo"}"#,
-        ))
+        .oneshot(json_request(uri, r#"{"session_id":"s","cwd":"/repo"}"#))
         .await
         .expect("router should respond");
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let status = response.status();
     let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
     let error: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(error["error"], "unknown_agent");
+    (
+        status,
+        error["error"].as_str().unwrap_or_default().to_owned(),
+    )
 }
 
 #[tokio::test]

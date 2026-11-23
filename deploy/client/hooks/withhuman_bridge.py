@@ -252,6 +252,13 @@ class Bridge:
     default_deadline = 4.0
     #: Events whose answer can block a call. Every failure on one of these ends in a deny.
     blocking_events = ("PreToolUse",)
+    #: The event `--check` probes the engine with. Agents name their hooks differently, and a
+    #: name the engine does not know answers 404, which the check would read as no route at all.
+    probe_event = "PreToolUse"
+    #: Where the engine's address is kept when the agent cannot carry it on the command line.
+    #: Cursor 2026.11.22 runs no hook of a file whose command holds an `http://` address, so its
+    #: installer writes the address here instead and the command names the event alone.
+    server_file = "server"
     #: Where the session state, the outbox and the audit log are kept.
     state_directory = None
 
@@ -271,6 +278,20 @@ class Bridge:
     def extra_headers(self):
         """Headers only this agent sends; the engine binds a delivery receipt to them too."""
         return {}
+
+    def server(self):
+        """The engine's address: WITHHUMAN_SERVER, else the file the setup wrote beside this
+        hook. Used when the agent's command carries the event alone."""
+        value = os.environ.get("WITHHUMAN_SERVER", "").strip()
+        if value:
+            return value
+        beside = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), self.server_file)
+        try:
+            with open(beside, encoding="utf-8") as handle:
+                return handle.read().strip()
+        except OSError:
+            raise BridgeError(
+                f"no WithHuman server: set WITHHUMAN_SERVER or run the setup again ({beside})")
 
     def collector(self, server, event_name):
         deadline = time.monotonic() + float(
@@ -339,7 +360,7 @@ class Bridge:
         try:
             event = json.loads(payload)
             result = json.loads(output) if output else {}
-            decision = result.get("hookSpecificOutput", {}).get("permissionDecision")
+            decision = self.decision_of(result)
             row = {"time": time.time(), "session_id": event.get("session_id"),
                    "event": event_name, "tool_use_id": event.get("tool_use_id"),
                    "decision": decision or (
@@ -352,6 +373,12 @@ class Bridge:
         except Exception:
             pass  # Logging cannot change the decision already made.
 
+    def decision_of(self, answer):
+        """The decision this bridge's own output carries, for the local audit log. An agent that
+        answers in a shape of its own reads it differently — recording a deny as an allow would
+        make the only local evidence say the opposite of what happened."""
+        return (answer or {}).get("hookSpecificOutput", {}).get("permissionDecision")
+
     def check(self, server):
         """Checks the hook can run here and that the engine knows this agent.
 
@@ -363,7 +390,7 @@ class Bridge:
         self.self_test()
         os.makedirs(self.state_directory, exist_ok=True)
         request = urllib.request.Request(
-            f"{server.rstrip('/')}/v1/hooks/{self.kind}/PreToolUse", data=b"{}",
+            f"{server.rstrip('/')}/v1/hooks/{self.kind}/{self.probe_event}", data=b"{}",
             headers=self.headers(), method="POST")
         try:
             with urllib.request.urlopen(request, timeout=10) as response:
@@ -400,13 +427,16 @@ class Bridge:
         report the failure on stderr. WITHHUMAN_MODE=observe lets everything through.
         """
         argv = sys.argv if argv is None else argv
-        if len(argv) == 3 and argv[1] == "--check":
+        if len(argv) >= 2 and argv[1] == "--check":
             try:
-                return self.check(argv[2])
+                return self.check(argv[2] if len(argv) > 2 else self.server())
             except Exception as error:  # noqa: BLE001
                 print(f"WithHuman {self.name} hook check failed: {error}", file=sys.stderr)
                 return 1
-        event_name = argv[2] if len(argv) == 3 else None
+        # `<server> <event>`, or `<event>` alone when the address is kept beside the hook.
+        server, event_name = (argv[1], argv[2]) if len(argv) == 3 else (None, None)
+        if len(argv) == 2:
+            event_name = argv[1]
         blocking = (event_name in self.blocking_events
                     and os.environ.get("WITHHUMAN_MODE", "enforce") != "observe")
         payload = sys.stdin.buffer.read() if payload is None else payload
@@ -414,8 +444,9 @@ class Bridge:
         try:
             if event_name is None:
                 raise BridgeError(
-                    f"usage: {os.path.basename(argv[0])} <WithHuman server> <hook event>")
-            answer = self.run(self.collector(argv[1], event_name), event_name, payload)
+                    f"usage: {os.path.basename(argv[0])} [<WithHuman server>] <hook event>")
+            answer = self.run(
+                self.collector(server or self.server(), event_name), event_name, payload)
             output = self.output(event_name, answer)
         except BaseException as error:  # noqa: BLE001  (every failure must end in a decision)
             print(f"WithHuman: {error}", file=sys.stderr)

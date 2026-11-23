@@ -109,27 +109,6 @@ pub struct CodexHookInput {
     pub additional_fields: BTreeMap<String, Value>,
 }
 
-/// The shell a Codex client runs commands in, as the bridge reports it.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum CodexShell {
-    #[default]
-    Posix,
-    PowerShell,
-}
-
-impl CodexShell {
-    pub fn from_header(value: Option<&str>) -> Self {
-        match value.map(str::trim) {
-            Some(value) if value.eq_ignore_ascii_case("powershell") => Self::PowerShell,
-            _ => Self::Posix,
-        }
-    }
-
-    /// The Claude Code tool a shell call becomes.
-    pub fn tool_name(self) -> &'static str {
-        match self {
-            Self::Posix => "Bash",
-            Self::PowerShell => "PowerShell",
-        }
-    }
-}
+/// The shell a Codex client runs commands in, as the bridge reports it; every agent's bridge
+/// reports the same thing, so the type is [`crate::hooks::ClientShell`].
+pub use crate::hooks::ClientShell as CodexShell;

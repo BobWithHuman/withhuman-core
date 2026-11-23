@@ -179,6 +179,12 @@ class AgentSetup:
     notes = ()
     #: Printed once it is taken out again.
     uninstall_notes = ()
+    #: A file the setup writes beside the hook, for an agent whose command cannot carry the
+    #: engine's address. None when the command carries it.
+    server_file = None
+
+    def installed(self, args, installed):
+        """Anything else this agent needs in its hooks folder, once the files are copied."""
 
     def source(self, name):
         """Where a file of `files` is copied from."""
@@ -255,8 +261,85 @@ class CodexSetup(AgentSetup):
         "/hooks; nothing of WithHuman runs any more.")
 
 
+class CursorSetup(AgentSetup):
+    kind = "cursor"
+    name = "Cursor"
+    directory = ".cursor"
+    hook = "withhuman-hook.py"
+    files = ("withhuman-hook.py",) + SHARED_FILES
+    # The events the engine judges or records, and `beforeReadFile`, whose text the bridge
+    # keeps for the result Cursor leaves it out of. `beforeShellExecution` and the Tab hooks
+    # are deliberately not here: the first repeats `preToolUse` for the same call, and the
+    # others are Cursor Tab's own file access rather than an agent's Call.
+    events = ("sessionStart", "sessionEnd", "beforeSubmitPrompt", "preToolUse",
+              "beforeMCPExecution", "postToolUse", "postToolUseFailure", "beforeReadFile",
+              "afterAgentResponse", "stop")
+    # A judged call waits for the engine; the bridge ends itself before this.
+    timeouts = {"preToolUse": 15, "beforeMCPExecution": 15}
+    notes = ("Next: run cursor-agent in this project and trust the workspace when it asks.",
+             "Cursor runs no project hook until you do, and until then this project is not",
+             "protected.")
+    uninstall_notes = ("WithHuman is removed from this project. Nothing of it runs any more.",)
+    #: Written beside the hook, since the command cannot carry the address; see `entry`.
+    server_file = "server"
+
+    def entry(self, python, hook, server, event):
+        """One hook of ours, as Cursor's hooks.json holds it: a flat entry per event, with no
+        separate Windows command (Cursor takes one `command`).
+
+        The engine's address is **not** in the command. Cursor 2026.11.22 runs no hook at all
+        from a file whose command holds an `http://` address — not that one hook, the whole
+        file, and silently, so every call goes unjudged. `server_file` below keeps the address
+        beside the hook instead, and the bridge reads it there.
+
+        `failClosed` goes on the events whose answer decides a Call. Cursor lets a call through
+        when a hook crashes or times out, which would lift the control exactly when it is
+        needed; on the events that only report, a failure costs the engine that record and must
+        not stop the agent.
+        """
+        return {
+            "command": f'"{python}" "{hook}" {event}',
+            "timeout": self.timeouts.get(event, self.timeout),
+            "failClosed": event in ("preToolUse", "beforeMCPExecution"),
+        }
+
+    def installed(self, args, installed):
+        """The engine's address, where the bridge looks for it."""
+        (installed / self.server_file).write_text(args.server + "\n", encoding="utf-8")
+
+    def groups(self, python, hook, server):
+        return {event: self.entry(python, hook, server, event) for event in self.events}
+
+    def is_ours(self, hook):
+        return isinstance(hook, dict) and self.hook in str(hook.get("command", ""))
+
+    def insert(self, config, groups):
+        # Cursor reads the file by its version; without it the hooks are ignored.
+        config["version"] = 1
+        hooks = config.get("hooks") if isinstance(config.get("hooks"), dict) else {}
+        for event, entry in groups.items():
+            hooks.setdefault(event, []).append(entry)
+        config["hooks"] = hooks
+
+    def strip(self, config):
+        """Takes our entries out of a Cursor hooks.json in place; the number taken out. Cursor
+        holds the entries directly under the event, without Claude Code's group."""
+        hooks = config.get("hooks") if isinstance(config.get("hooks"), dict) else {}
+        removed = 0
+        for event in list(hooks):
+            entries = hooks[event] if isinstance(hooks[event], list) else []
+            kept = [entry for entry in entries if not self.is_ours(entry)]
+            removed += len(entries) - len(kept)
+            if kept:
+                hooks[event] = kept
+            else:
+                del hooks[event]
+        config["hooks"] = hooks
+        return removed
+
+
 #: Every agent but Claude Code, by `--agent` value.
-AGENTS = {agent.kind: agent for agent in (CodexSetup(),)}
+AGENTS = {agent.kind: agent for agent in (CodexSetup(), CursorSetup())}
 
 
 def is_withhuman(hook):
@@ -655,6 +738,7 @@ def setup_agent(agent, args, project, stamp, report):
         if source.resolve() != (installed / name).resolve():
             shutil.copyfile(source, installed / name)
     (installed / agent.hook).chmod(0o755)
+    agent.installed(args, installed)
     # Session state the bridge keeps; inside the agent's hooks folder, where the engine blocks
     # an agent's changes as it does to the hooks themselves.
     state = installed / "withhuman-state"
@@ -765,6 +849,8 @@ def uninstall(kind, project, stamp, report):
                 save(path, config)
         installed = project / agent.directory / "hooks"
         files = [installed / name for name in agent.files]
+        if agent.server_file:
+            files.append(installed / agent.server_file)
     else:
         for path in (project / ".claude" / "settings.json", project / ".claude" / "settings.local.json"):
             clean(path, stamp, report)

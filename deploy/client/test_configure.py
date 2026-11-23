@@ -529,6 +529,119 @@ class CodexConfigureTest(unittest.TestCase):
 
 
 
+class CursorConfigureTest(unittest.TestCase):
+    """--agent cursor: the project's own .cursor/hooks.json, whose shape is Cursor's."""
+
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp()).resolve()
+        self.project = Path(tempfile.mkdtemp()).resolve()
+        self.hooks_json = self.project / ".cursor" / "hooks.json"
+
+    def configure(self, *extra):
+        env = {**os.environ, "HOME": str(self.home), "USERPROFILE": str(self.home),
+               "SHELL": "/bin/zsh"}
+        env.pop("WITHHUMAN_SERVER", None)
+        env.pop("WITHHUMAN_KEY", None)
+        return subprocess.run(
+            [sys.executable, str(CONFIGURE), "--agent", "cursor", "--project", str(self.project),
+             "--team", "lab", "--server", SERVER, "--no-persist", "--skip-check", "--no-register",
+             *extra],
+            capture_output=True, text=True, env=env, timeout=30,
+        )
+
+    def test_writes_the_project_hooks_in_cursors_own_shape(self):
+        self.hooks_json.parent.mkdir()
+        old = {"command": "python3 /old/.cursor/hooks/withhuman-hook.py https://old preToolUse"}
+        self.hooks_json.write_text(json.dumps({
+            "version": 1,
+            "hooks": {"preToolUse": [old, OTHER], "afterFileEdit": [OTHER]}}))
+        result = self.configure()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        config = json.loads(self.hooks_json.read_text())
+        # Cursor reads the file by its version, and holds entries directly under the event.
+        self.assertEqual(config["version"], 1)
+        hooks = config["hooks"]
+        self.assertEqual(sorted(hooks), sorted([
+            "sessionStart", "sessionEnd", "beforeSubmitPrompt", "preToolUse",
+            "beforeMCPExecution", "postToolUse", "postToolUseFailure", "beforeReadFile",
+            "afterAgentResponse", "stop", "afterFileEdit"]))
+        # The user's own hooks stay; the earlier WithHuman one is replaced.
+        self.assertEqual(hooks["afterFileEdit"], [OTHER])
+        self.assertEqual(hooks["preToolUse"][0], OTHER)
+        ours = hooks["preToolUse"][1]
+        installed = (self.project / ".cursor" / "hooks" / "withhuman-hook.py").as_posix()
+        python = Path(sys.executable).as_posix()
+        self.assertEqual(ours["command"], f'"{python}" "{installed}" preToolUse')
+        # Cursor takes one command; there is no separate Windows form to write.
+        self.assertNotIn("commandWindows", ours)
+        # The engine's address is kept beside the hook, never in the command: see below.
+        self.assertEqual(
+            (self.project / ".cursor" / "hooks" / "server").read_text().strip(), SERVER)
+        self.assertGreaterEqual(ours["timeout"], 10)
+        self.assertEqual(hooks["stop"][0]["timeout"], 5)
+        for name in ("withhuman-hook.py", "pre-tool-use.py", "withhuman_bridge.py"):
+            self.assertTrue((self.project / ".cursor" / "hooks" / name).is_file(), name)
+        self.assertFalse((self.home / ".cursor").exists())
+
+    def test_no_command_holds_the_engines_address(self):
+        """Cursor 2026.11.22 runs no hook of a file whose command holds an `http://` address —
+        the whole file, silently, so every call goes unjudged. Verified against the real client:
+        the same hooks fire without the address and none fire with it, quoted or not."""
+        self.assertEqual(self.configure().returncode, 0)
+        hooks = json.loads(self.hooks_json.read_text())["hooks"]
+        for event, entries in hooks.items():
+            for entry in entries:
+                self.assertNotIn("http", entry["command"], event)
+        # The bridge finds it beside itself instead.
+        self.assertTrue((self.project / ".cursor" / "hooks" / "server").is_file())
+
+    def test_uninstall_takes_the_address_file_too(self):
+        self.assertEqual(self.configure().returncode, 0)
+        self.assertEqual(self.configure("--uninstall").returncode, 0)
+        self.assertFalse((self.project / ".cursor" / "hooks").exists())
+
+    def test_fails_closed_exactly_where_a_judgment_is_pending(self):
+        self.assertEqual(self.configure().returncode, 0)
+        hooks = json.loads(self.hooks_json.read_text())["hooks"]
+        # Cursor lets a call through when a hook fails, which would lift the control just when
+        # it is needed. The events that only report must not stop the agent.
+        closed = {event for event, entries in hooks.items() if entries[0]["failClosed"]}
+        self.assertEqual(closed, {"preToolUse", "beforeMCPExecution"})
+
+    def test_running_again_changes_nothing(self):
+        self.assertEqual(self.configure().returncode, 0)
+        first = self.hooks_json.read_text()
+        self.assertEqual(self.configure().returncode, 0)
+        self.assertEqual(self.hooks_json.read_text(), first)
+
+    def test_uninstall_leaves_only_what_was_not_ours(self):
+        self.hooks_json.parent.mkdir()
+        self.hooks_json.write_text(json.dumps({
+            "other": True, "version": 1, "hooks": {"preToolUse": [OTHER]}}))
+        self.assertEqual(self.configure().returncode, 0)
+        mine = self.project / ".cursor" / "hooks" / "mine.sh"
+        mine.write_text("echo mine\n")
+        result = self.configure("--uninstall")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(self.hooks_json.read_text()),
+                         {"other": True, "version": 1, "hooks": {"preToolUse": [OTHER]}})
+        hooks_dir = self.project / ".cursor" / "hooks"
+        self.assertEqual([p.name for p in hooks_dir.iterdir()], ["mine.sh"])
+        self.assertTrue(list((self.project / ".cursor").glob("hooks.json.bak-*")))
+        again = self.configure("--uninstall")
+        self.assertIn("Nothing of WithHuman", again.stdout)
+
+    def test_reset_takes_both_agents_out_of_a_folder(self):
+        self.assertEqual(self.configure().returncode, 0)
+        env = {**os.environ, "HOME": str(self.home), "USERPROFILE": str(self.home)}
+        env.pop("WITHHUMAN_SERVER", None)
+        result = subprocess.run(
+            [sys.executable, str(CONFIGURE), "--reset", str(self.project)],
+            capture_output=True, text=True, env=env, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(self.hooks_json.read_text())["hooks"], {})
+
+
 class GlobalSetupTest(Setup):
     """--scope user and --scope managed: every folder of the user, or of every user."""
 
