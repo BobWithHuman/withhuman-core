@@ -52,7 +52,7 @@ out the user setup of the user who ran it (the hook entries and the hook file).
 
 With --reset [FOLDER ...] it takes every WithHuman setup out at once, whatever made it: the
 managed one (as an administrator), the user one of the user who ran it, and the project ones of
-the folders named (Claude Code's and Codex's). Other hooks and settings stay, each file changed
+the folders named (Claude Code's and every other agent's). Other hooks and settings stay, each file changed
 is first copied to <file>.bak-<time>, and the device's client ID is kept, so a setup made after
 is the same device. --server is not needed then.
 
@@ -62,19 +62,21 @@ not have; the PreToolUse hook reads it from the file beside its folder. The With
 the user's own (WITHHUMAN_KEY or ~/.config/withhuman/key): a managed setup takes none.
 Safe to run again: the result is the same, the client ID is kept and the registration updated.
 
-With --agent codex it sets up Codex CLI instead (step 3 as above):
+With --agent <other agent> (`--agent codex`) it sets that agent up instead of Claude Code,
+per project only (step 3 as above). Each is described by an `AgentSetup`, and adding one takes
+no change to the steps below:
 
-1. Copies the Codex hook (codex/withhuman-hook.py, codex/codex_transcript.py and
-   hooks/pre-tool-use.py) to the project's .codex/hooks/.
-2. Writes its hooks into the project's .codex/hooks.json, replacing earlier WithHuman entries and
-   keeping other hooks: each runs the hook with this Python, as `command` on macOS and Linux and
-   `commandWindows` on Windows, with a 15-second timeout for PreToolUse and 5 for the rest. The
-   user's ~/.codex is left alone.
-3. Runs the installed hook's self-check against the engine, then tells you to trust the hooks
-   in Codex (/hooks): Codex skips project hooks until they are trusted.
+1. Copies its bridge and the files every bridge shares (hooks/withhuman_bridge.py and
+   hooks/pre-tool-use.py) to the project's <agent folder>/hooks/, such as .codex/hooks/.
+2. Writes its hooks into the agent's own hooks file there, replacing earlier WithHuman entries
+   and keeping other hooks: each runs the bridge with this Python, as `command` on macOS and
+   Linux and `commandWindows` on Windows, with the agent's own timeout per event (Codex: 15
+   seconds for PreToolUse, 5 for the rest). The user's own folder is left alone.
+3. Runs the installed bridge's self-check against the engine, then prints whatever that agent
+   still needs from you (Codex: trust the hooks in /hooks, which it skips until you do).
 4. Keeps the key and registers the device, as above.
 
-With --uninstall (and --agent claude or codex) it takes WithHuman out of the project only (with
+With --uninstall (and --agent claude or another agent) it takes WithHuman out of the project only (with
 --scope user or managed, out of that scope instead): its
 hook entries in the project's settings or hooks.json (other hooks and settings are kept, each
 file changed is first copied to <file>.bak-<time>) and the hook files it installed. --server is
@@ -137,14 +139,124 @@ MANAGED_FILE = "50-withhuman.json"
 NEEDS_ADMIN = ("a managed setup (--scope managed, or --reset where one is) is written where "
                "only an administrator can: run it with sudo (macOS, Linux) or from an "
                "administrator PowerShell (Windows)")
-CODEX_HOOK = "withhuman-hook.py"
-CODEX_FILES = (CODEX_HOOK, "codex_transcript.py", HOOK_NAME)
-# Codex events the hook handles. PreToolUse waits for a judgment (intent wait and decision
-# budget), so it gets more time; the hook ends itself before these limits.
-CODEX_EVENTS = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop",
-                "SubagentStart", "SubagentStop"]
-CODEX_TIMEOUTS = {"PreToolUse": 15}
-CODEX_TIMEOUT = 5
+# Files every bridge shares, kept in deploy/client/hooks and copied beside the agent's own.
+SHARED_FILES = (HOOK_NAME, "withhuman_bridge.py")
+
+
+class AgentSetup:
+    """What setting up one coding agent other than Claude Code takes.
+
+    Claude Code has no entry here: it posts to the engine itself, with hooks in its own
+    settings (`withhuman_hooks`), and the rest of this file is about that. Every other agent
+    runs a bridge beside WithHuman's shared one, so what differs between them is only this
+    description and, where its hooks file has a shape of its own, `entry`, `insert` and `strip`.
+
+    Adding an agent: write its bridge in `deploy/client/<kind>/` on `withhuman_bridge.py`,
+    subclass this, and name it in `AGENTS`. `setup_agent`, `check_agent` and `uninstall` need
+    nothing more.
+    """
+
+    #: `--agent <kind>`, and the route the engine reads its hooks on.
+    kind = ""
+    #: What messages call it.
+    name = ""
+    #: Where it keeps a project's settings, under the project folder.
+    directory = ""
+    #: Its hooks file in there.
+    config = "hooks.json"
+    #: The bridge's entry script, in `<directory>/hooks`.
+    hook = ""
+    #: Everything copied to `<directory>/hooks`; the shared files come from deploy/client/hooks.
+    files = ()
+    #: The events its bridge handles.
+    events = ()
+    #: Seconds the agent gives one hook, by event, and for the rest. PreToolUse waits for a
+    #: judgment (intent wait and decision budget), so it gets more; the bridge ends itself
+    #: before these limits, since a hook that times out lets the call run.
+    timeouts = {}
+    timeout = 5
+    #: Printed once the setup is written.
+    notes = ()
+    #: Printed once it is taken out again.
+    uninstall_notes = ()
+
+    def source(self, name):
+        """Where a file of `files` is copied from."""
+        here = Path(__file__).resolve().parent
+        return here / ("hooks" if name in SHARED_FILES else self.kind) / name
+
+    def entry(self, python, hook, server, event):
+        """One hook of ours, as the agent's hooks file holds it. PowerShell runs
+        `commandWindows`; `exit $LASTEXITCODE` passes the hook's exit code on, so its exit 2
+        still blocks."""
+        return {
+            "type": "command",
+            "command": f'"{python}" "{hook}" {server} {event}',
+            "commandWindows": f'& "{python}" "{hook}" {server} {event}; exit $LASTEXITCODE',
+            "timeout": self.timeouts.get(event, self.timeout),
+        }
+
+    def groups(self, python, hook, server):
+        """Our hooks by event."""
+        return {event: {"hooks": [self.entry(python, hook, server, event)]}
+                for event in self.events}
+
+    def is_ours(self, hook):
+        return isinstance(hook, dict) and self.hook in str(hook.get("command", "")) + str(
+            hook.get("commandWindows", ""))
+
+    def insert(self, config, groups):
+        """Puts our hooks into the agent's config, keeping everyone else's."""
+        hooks = config.get("hooks") if isinstance(config.get("hooks"), dict) else {}
+        for event, group in groups.items():
+            hooks.setdefault(event, []).append(group)
+        config["hooks"] = hooks
+
+    def strip(self, config):
+        """Takes our entries out of the agent's config in place; the number taken out."""
+        hooks = config.get("hooks") if isinstance(config.get("hooks"), dict) else {}
+        removed = 0
+        for event in list(hooks):
+            groups = hooks[event] if isinstance(hooks[event], list) else []
+            kept_groups = []
+            for group in groups:
+                inner = group.get("hooks") if isinstance(group, dict) else None
+                if not isinstance(inner, list):
+                    kept_groups.append(group)
+                    continue
+                kept = [hook for hook in inner if not self.is_ours(hook)]
+                removed += len(inner) - len(kept)
+                if kept:
+                    group["hooks"] = kept
+                    kept_groups.append(group)
+            if kept_groups:
+                hooks[event] = kept_groups
+            else:
+                del hooks[event]
+        config["hooks"] = hooks
+        return removed
+
+
+class CodexSetup(AgentSetup):
+    kind = "codex"
+    name = "Codex"
+    directory = ".codex"
+    hook = "withhuman-hook.py"
+    files = ("withhuman-hook.py", "codex_transcript.py") + SHARED_FILES
+    events = ("SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop",
+              "SubagentStart", "SubagentStop")
+    timeouts = {"PreToolUse": 15}
+    notes = ("Next: run codex in this project, open /hooks and trust the WithHuman hooks.",
+             "Codex skips project hooks until they are trusted, and again after hooks.json",
+             "changes (as after an update that changed it): until you trust them, this",
+             "project is not protected.")
+    uninstall_notes = (
+        "WithHuman is removed from this project. Codex may list the hooks as changed in",
+        "/hooks; nothing of WithHuman runs any more.")
+
+
+#: Every agent but Claude Code, by `--agent` value.
+AGENTS = {agent.kind: agent for agent in (CodexSetup(),)}
 
 
 def is_withhuman(hook):
@@ -530,83 +642,35 @@ def finish(args, client, key_path, key, agent, project, version, stamp, report):
     return lines
 
 
-def is_codex_withhuman(hook):
-    return isinstance(hook, dict) and CODEX_HOOK in str(hook.get("command", "")) + str(
-        hook.get("commandWindows", ""))
-
-
-def codex_hooks(python, hook, server):
-    """Our Codex hooks by event. PowerShell runs `commandWindows`; `exit $LASTEXITCODE` passes
-    the hook's exit code on, so its exit 2 still blocks."""
-    def entry(event):
-        posix = f'"{python}" "{hook}" {server} {event}'
-        return {
-            "type": "command",
-            "command": posix,
-            "commandWindows": f'& "{python}" "{hook}" {server} {event}; exit $LASTEXITCODE',
-            "timeout": CODEX_TIMEOUTS.get(event, CODEX_TIMEOUT),
-        }
-
-    return {event: {"hooks": [entry(event)]} for event in CODEX_EVENTS}
-
-
-def setup_codex(args, project, stamp, report):
-    codex = project / ".codex"
-    installed = codex / "hooks"
+def setup_agent(agent, args, project, stamp, report):
+    """Sets one agent up in a project: its bridge files beside each other, and our hooks in its
+    own hooks file. Returns that file and the installed bridge."""
+    directory = project / agent.directory
+    installed = directory / "hooks"
     installed.mkdir(parents=True, exist_ok=True)
-    here = Path(__file__).resolve().parent
-    for name in CODEX_FILES:
-        source = here / ("hooks" if name == HOOK_NAME else "codex") / name
+    for name in agent.files:
+        source = agent.source(name)
         if not source.is_file():
             sys.exit(f"hook file not found: {source}")
         if source.resolve() != (installed / name).resolve():
             shutil.copyfile(source, installed / name)
-    (installed / CODEX_HOOK).chmod(0o755)
-    # Session state the hook keeps; inside .codex/hooks, where the engine blocks an agent's
-    # changes as it does to the hooks themselves.
+    (installed / agent.hook).chmod(0o755)
+    # Session state the bridge keeps; inside the agent's hooks folder, where the engine blocks
+    # an agent's changes as it does to the hooks themselves.
     state = installed / "withhuman-state"
     state.mkdir(exist_ok=True)
     (state / ".gitignore").write_text("*\n", encoding="utf-8")
 
-    path = codex / "hooks.json"
+    path = directory / agent.config
     config = load(path)
-    removed = strip_codex(config)
-    hooks = config["hooks"]
+    removed = agent.strip(config)
     if path.exists():
         report.append(f"{path}: copy at {backup(path, stamp)}"
                       + (f", {removed} earlier WithHuman hook(s) replaced" if removed else ""))
-    python = Path(sys.executable).as_posix()
-    hook = (installed / CODEX_HOOK).as_posix()
-    for event, group in codex_hooks(python, hook, args.server).items():
-        hooks.setdefault(event, []).append(group)
-    config["hooks"] = hooks
+    hook = (installed / agent.hook).as_posix()
+    agent.insert(config, agent.groups(Path(sys.executable).as_posix(), hook, args.server))
     save(path, config)
-    return path, installed / CODEX_HOOK
-
-
-def strip_codex(config):
-    """Takes WithHuman's entries out of a Codex hooks.json in place; the number taken out."""
-    hooks = config.get("hooks") if isinstance(config.get("hooks"), dict) else {}
-    removed = 0
-    for event in list(hooks):
-        groups = hooks[event] if isinstance(hooks[event], list) else []
-        kept_groups = []
-        for group in groups:
-            inner = group.get("hooks") if isinstance(group, dict) else None
-            if not isinstance(inner, list):
-                kept_groups.append(group)
-                continue
-            kept = [hook for hook in inner if not is_codex_withhuman(hook)]
-            removed += len(inner) - len(kept)
-            if kept:
-                group["hooks"] = kept
-                kept_groups.append(group)
-        if kept_groups:
-            hooks[event] = kept_groups
-        else:
-            del hooks[event]
-    config["hooks"] = hooks
-    return removed
+    return path, installed / agent.hook
 
 
 def uninstall_user(home, stamp, report):
@@ -639,8 +703,8 @@ def reset(projects, stamp, report):
     for home in user_homes():
         uninstall_user(home, stamp, report)
     for project in projects:
-        for agent in ("claude", "codex"):
-            uninstall(agent, project, stamp, report)
+        for kind in ("claude", *AGENTS):
+            uninstall(kind, project, stamp, report)
 
 
 def setup_global(args, hook_source, key_path, key, stamp, report):
@@ -686,20 +750,21 @@ def setup_global(args, hook_source, key_path, key, stamp, report):
     return path, hook, value
 
 
-def uninstall(agent, project, stamp, report):
+def uninstall(kind, project, stamp, report):
     """Takes WithHuman out of the project: its hook entries (other hooks and settings stay, the
     file changed is first copied to <file>.bak-<time>) and the hook files it installed. The
     device's client ID and the user's own settings are left alone."""
-    if agent == "codex":
-        path = project / ".codex" / "hooks.json"
+    agent = AGENTS.get(kind)
+    if agent:
+        path = project / agent.directory / agent.config
         if path.exists():
             config = load(path)
-            removed = strip_codex(config)
+            removed = agent.strip(config)
             if removed:
                 report.append(f"{path}: {removed} WithHuman hook(s) removed, copy at {backup(path, stamp)}")
                 save(path, config)
-        installed = project / ".codex" / "hooks"
-        files = [installed / name for name in CODEX_FILES]
+        installed = project / agent.directory / "hooks"
+        files = [installed / name for name in agent.files]
     else:
         for path in (project / ".claude" / "settings.json", project / ".claude" / "settings.local.json"):
             clean(path, stamp, report)
@@ -710,7 +775,7 @@ def uninstall(agent, project, stamp, report):
             path.unlink()
             report.append(f"{path}: removed")
     state = installed / "withhuman-state"
-    if agent == "codex" and state.is_dir():
+    if agent and state.is_dir():
         shutil.rmtree(state)
         report.append(f"{state}: removed")
     # Python's compiled copies of the hook files; anyone else's stay.
@@ -726,9 +791,9 @@ def uninstall(agent, project, stamp, report):
         installed.rmdir()
 
 
-def check_codex(hook, server):
-    """Runs the installed hook the way Codex will, so a broken interpreter path or quoting
-    shows now rather than as hooks Codex silently fails to run."""
+def check_agent(hook, server):
+    """Runs the installed bridge the way the agent will, so a broken interpreter path or
+    quoting shows now rather than as hooks the agent silently fails to run."""
     commands = [[sys.executable, str(hook), "--check", server]]
     if os.name == "nt":
         commands.append(["powershell", "-NoProfile", "-Command",
@@ -748,10 +813,10 @@ def check_codex(hook, server):
 
 def main():
     parser = argparse.ArgumentParser(description="Set up WithHuman for Claude Code in a project.")
-    parser.add_argument("--agent", choices=["claude", "codex"], default="claude",
+    parser.add_argument("--agent", choices=["claude", *AGENTS], default="claude",
                         help="the coding agent to set up (default: claude)")
     parser.add_argument("--skip-check", action="store_true",
-                        help="codex: do not run the installed hook against the engine")
+                        help="other agents: do not run the installed bridge against the engine")
     parser.add_argument("--project", default=os.getcwd(), help="project folder (default: here)")
     parser.add_argument("--team", default="default", help="team part of a new client ID")
     parser.add_argument(
@@ -779,8 +844,9 @@ def main():
     args = parser.parse_args()
     if sys.version_info < (3, 8):
         sys.exit("WithHuman's hook needs Python 3.8 or later")
-    if args.scope != "project" and args.agent == "codex":
-        sys.exit("--scope user and managed are for Claude Code; Codex is set up per project")
+    if args.scope != "project" and args.agent != "claude":
+        sys.exit("--scope user and managed are for Claude Code; "
+                 f"{AGENTS[args.agent].name} is set up per project")
     if args.managed_hooks_only and args.scope != "managed":
         sys.exit("--managed-hooks-only goes with --scope managed")
     if args.scope == "managed" and args.key:
@@ -813,9 +879,9 @@ def main():
                   datetime.datetime.now().strftime("%Y%m%d-%H%M%S"), report)
         for line in report or ["Nothing of WithHuman was found in this project."]:
             print(line)
-        if args.agent == "codex" and report:
-            print("WithHuman is removed from this project. Codex may list the hooks as changed in")
-            print("/hooks; nothing of WithHuman runs any more.")
+        if report:
+            for line in AGENTS[args.agent].uninstall_notes if args.agent in AGENTS else ():
+                print(line)
         return
     if not re.fullmatch(r"[A-Za-z0-9._-]+", args.team):
         sys.exit(f"team must match [A-Za-z0-9._-]+: {args.team}")
@@ -830,33 +896,32 @@ def main():
     args.server = args.server.rstrip("/")
     if not re.fullmatch(r"https?://[^\s/]+(/[^\s]*)?", args.server):
         sys.exit(f"--server must be an http(s) URL: {args.server}")
-    if args.agent == "codex":
+    if args.agent != "claude":
+        agent = AGENTS[args.agent]
         project = Path(args.project).resolve()
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         report = []
         key_path, key = keep_key(args.key)
-        path, hook = setup_codex(args, project, stamp, report)
+        path, hook = setup_agent(agent, args, project, stamp, report)
         id_path, value = client_id(args.team)
         if not args.no_persist:
             persist(id_path, value, stamp, report)
-        version = hook_version(hook.parent / name for name in CODEX_FILES)
-        notes = finish(args, value, key_path, key, "codex", project, version, stamp, report)
+        version = hook_version(hook.parent / name for name in agent.files)
+        notes = finish(args, value, key_path, key, agent.kind, project, version, stamp, report)
         for line in report:
             print(line)
-        print(f"WithHuman Codex hooks written to {path}")
+        print(f"WithHuman {agent.name} hooks written to {path}")
         print(f"Hook: {hook} (run with {sys.executable})")
         print(f"WITHHUMAN_CLIENT_ID={value}")
         for line in notes:
             print(line)
         if not args.skip_check:
-            ok, output = check_codex(hook, args.server)
+            ok, output = check_agent(hook, args.server)
             print(output)
             if not ok:
                 sys.exit("The installed hook did not run; fix the problem above, then run again.")
-        print("Next: run codex in this project, open /hooks and trust the WithHuman hooks.")
-        print("Codex skips project hooks until they are trusted, and again after hooks.json")
-        print("changes (as after an update that changed it): until you trust them, this")
-        print("project is not protected.")
+        for line in agent.notes:
+            print(line)
         return
     hook_source = Path(args.hook)
     if not hook_source.is_file():

@@ -69,6 +69,34 @@ async fn no_longer_takes_instructions_or_file_change_hooks() {
     }
 }
 
+/// Every agent of the registry has its route, and one nobody wrote an adapter for has none:
+/// the Claude Code routes above are the form those adapters translate into.
+#[tokio::test]
+async fn exposes_a_route_for_each_agent_of_the_registry() {
+    for agent in withhuman_collector::agent::REGISTRY {
+        let response = test_app()
+            .oneshot(json_request(
+                &format!("/v1/hooks/{}/SessionStart", agent.kind()),
+                r#"{"session_id":"s","cwd":"/repo"}"#,
+            ))
+            .await
+            .expect("router should respond");
+
+        assert_eq!(response.status(), StatusCode::OK, "agent {}", agent.kind());
+    }
+    let response = test_app()
+        .oneshot(json_request(
+            "/v1/hooks/cursor/SessionStart",
+            r#"{"session_id":"s","cwd":"/repo"}"#,
+        ))
+        .await
+        .expect("router should respond");
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+    let error: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(error["error"], "unknown_agent");
+}
+
 #[tokio::test]
 async fn rejects_missing_json_content_type() {
     let response = test_app()

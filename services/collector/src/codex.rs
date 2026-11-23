@@ -1,5 +1,7 @@
-//! Translates Codex CLI Hooks into the Claude Code Hook requests the Collector already handles,
-//! so the same normalization, graph and judgment apply to Codex sessions unchanged.
+//! Codex CLI's adapter: translates its Hooks into the Claude Code Hook requests the Collector
+//! already handles, so the same normalization, graph and judgment apply to Codex sessions
+//! unchanged. [`crate::agent`] is the seam it is plugged into and has what adding another
+//! agent takes; everything here is Codex's own.
 //!
 //! Tools are translated to the Claude Code tool doing the same thing, so the engine's rules for
 //! that tool (external origin, program runs, file changes, safeguards) apply as they are:
@@ -18,6 +20,7 @@
 
 use std::fmt;
 
+use axum::http::{HeaderMap, StatusCode};
 use serde_json::{Map, Value, json};
 use withhuman_contracts::{
     codex::{CodexHookEvent, CodexHookInput, CodexShell},
@@ -28,10 +31,18 @@ use withhuman_contracts::{
     },
 };
 
-use crate::NormalizedEvent;
+pub use crate::agent::Translated;
+use crate::{
+    FailurePolicy, HookPolicy, ReviewPolicy,
+    agent::{Agent, Incoming, Rejection},
+    http::header_value,
+};
 
-/// Marks every event of a Codex session.
+/// Marks every event of a Codex session, and the `<kind>` of its route.
 pub const AGENT_KIND: &str = "codex";
+/// The shell a Codex client runs commands in (`powershell`, else POSIX). It decides which
+/// Claude Code tool a shell call becomes, so a delivery receipt is bound to it too.
+pub const SHELL_HEADER: &str = "x-withhuman-shell";
 /// Set on a shell call whose directory the bridge could not tell: it was judged as running in
 /// the project directory.
 pub const WORKDIR_UNKNOWN: &str = "unknown";
@@ -71,23 +82,6 @@ const SHELL_TOOLS: &[&str] = &[
     "shell_command",
     "unified_exec",
 ];
-
-/// What a Codex Hook becomes.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Translated {
-    SessionStart(SessionStartRequest),
-    UserPromptSubmit(UserPromptSubmitRequest),
-    PreToolUse(PreToolUseRequest),
-    PostToolUse(PostToolUseRequest),
-    PostToolUseFailure(PostToolUseFailureRequest),
-    /// A turn's end closes the open tool batch, as Claude Code's PostToolBatch does.
-    PostToolBatch(PostToolBatchRequest),
-    SubagentStart(SubagentLifecycleRequest),
-    SubagentStop(SubagentLifecycleRequest),
-    SessionEnd(SessionEndRequest),
-    /// Nothing for the engine.
-    Nothing,
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Translation {
@@ -904,42 +898,78 @@ fn web(input: &Value) -> (String, Value) {
     ("WebFetch".to_owned(), Value::Object(fetch))
 }
 
-/// Marks `event` as coming from Codex, keeping the Hook as Codex sent it (`payload`), and
-/// whether a shell call's directory was unknown.
-pub fn tag(event: &mut NormalizedEvent, payload: Option<&Value>, workdir_unknown: bool) {
-    macro_rules! mark {
-        ($envelope:expr) => {{
-            let envelope = $envelope;
-            envelope
-                .meta
-                .additional_fields
-                .insert("agent_kind".to_owned(), json!(AGENT_KIND));
-            if workdir_unknown {
-                envelope
-                    .meta
-                    .additional_fields
-                    .insert("codex_workdir".to_owned(), json!(WORKDIR_UNKNOWN));
-            }
-            if let Some(payload) = payload {
-                envelope
-                    .additional_fields
-                    .insert("codex_payload".to_owned(), payload.clone());
-            }
-        }};
+/// Codex's adapter: the Hooks of the Codex CLI, as the Claude Code requests the engine judges.
+pub struct Codex;
+
+impl Agent for Codex {
+    fn kind(&self) -> &'static str {
+        AGENT_KIND
     }
-    match event {
-        NormalizedEvent::SessionStart(event) => mark!(event),
-        NormalizedEvent::SessionEnd(event) => mark!(event),
-        NormalizedEvent::UserPromptSubmit(event) => mark!(event),
-        NormalizedEvent::PreToolUse(event) => mark!(&mut event.event),
-        NormalizedEvent::PostToolUse(event) => mark!(event),
-        NormalizedEvent::PostToolUseFailure(event) => mark!(event),
-        NormalizedEvent::SubagentStart(event) => mark!(event),
-        NormalizedEvent::SubagentStop(event) => mark!(event),
-        NormalizedEvent::ConfigChange(event) => mark!(event),
-        NormalizedEvent::MessageDisplay(event) => mark!(event),
-        NormalizedEvent::Intent(event) => mark!(event),
-        NormalizedEvent::PostToolBatch(event) => mark!(event),
-        NormalizedEvent::ToolDescriptions(event) => mark!(event),
+
+    /// Codex has no way to ask the user, and an `ask` it receives fails the Hook and lets the
+    /// call run; MCP calls do not pass AgentGateway. So a REVIEW denies, the Hook enforces MCP
+    /// calls, and a Call that cannot be judged is blocked.
+    fn policy(&self) -> HookPolicy {
+        HookPolicy {
+            review: ReviewPolicy::Deny,
+            mcp_at_hook: true,
+            failure: FailurePolicy::Closed,
+            resends: true,
+        }
+    }
+
+    fn request_headers(&self) -> &'static [&'static str] {
+        &[SHELL_HEADER]
+    }
+
+    fn translate(
+        &self,
+        event: &str,
+        raw: Value,
+        headers: &HeaderMap,
+    ) -> Result<Incoming, Rejection> {
+        let Some(event) = CodexHookEvent::from_path(event) else {
+            return Err(Rejection::unknown_event());
+        };
+        // The bridge makes these from the session transcript, in their Claude Code form:
+        // Codex has no Hook for either. Codex cannot hide text it shows, so only the events
+        // matter, and there is no Codex Hook to keep with them.
+        match event {
+            CodexHookEvent::MessageDisplay => {
+                let request = serde_json::from_value(raw).map_err(|_| Rejection::invalid_json())?;
+                return Ok(Incoming::new(Translated::MessageDisplay(request)));
+            }
+            CodexHookEvent::PostToolBatch => {
+                let request = serde_json::from_value(raw).map_err(|_| Rejection::invalid_json())?;
+                return Ok(Incoming::new(Translated::PostToolBatch(request)));
+            }
+            _ => {}
+        }
+        let input = serde_json::from_value::<CodexHookInput>(raw.clone())
+            .map_err(|_| Rejection::invalid_json())?;
+        let shell = CodexShell::from_header(header_value(headers, SHELL_HEADER).as_deref());
+        let record = input.withhuman_record;
+        if record && !valid_record(event, &input) {
+            return Err(Rejection::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_record_tool",
+            ));
+        }
+        let translation = translate(event, input, shell)
+            .map_err(|_| Rejection::new(StatusCode::BAD_REQUEST, "invalid_codex_hook"))?;
+        // Program files are kept with the Call already; the copy keeps the rest as sent.
+        let mut payload = raw;
+        if let Some(fields) = payload.as_object_mut() {
+            fields.remove("withhuman_programs");
+        }
+        let mut incoming = Incoming::new(translation.request).with_payload(payload);
+        if record {
+            incoming = incoming.recorded();
+        }
+        if translation.workdir_unknown {
+            // The call was judged as running in the project directory.
+            incoming = incoming.with_flag("codex_workdir", json!(WORKDIR_UNKNOWN));
+        }
+        Ok(incoming)
     }
 }

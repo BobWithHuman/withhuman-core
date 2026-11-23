@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod codex;
 mod codex_delivery;
 pub mod codex_write;
@@ -17,7 +18,7 @@ mod verdicts;
 
 pub use config::{CollectorConfig, FailurePolicy, ReviewPolicy};
 pub use ext_authz::ExtAuthzService;
-pub use http::{CollectorService, TrustedHookContext, app, app_with_transport};
+pub use http::{CollectorService, HookPolicy, TrustedHookContext, app, app_with_transport};
 pub use intent::{INTENT_INSTRUCTION, INTENT_REMINDER, INTENT_REQUIRED};
 pub use inventory::USER_HEADER;
 pub use normalize::{

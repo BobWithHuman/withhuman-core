@@ -436,7 +436,7 @@ class CodexConfigureTest(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("withhuman_configure", CONFIGURE)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        ok, output = module.check_codex(hook, SERVER)
+        ok, output = module.check_agent(hook, SERVER)
         self.assertFalse(ok)
         self.assertIn("\uc5f0\uacb0 \uc624\ub958", output)
 
@@ -466,7 +466,8 @@ class CodexConfigureTest(unittest.TestCase):
         for event in ("SessionStart", "UserPromptSubmit", "PostToolUse", "SubagentStart"):
             self.assertEqual(hooks[event][-1]["hooks"][0]["timeout"], 5)
         self.assertEqual(hooks["Stop"][1]["hooks"][0]["timeout"], 5)
-        for name in ("withhuman-hook.py", "codex_transcript.py", "pre-tool-use.py"):
+        for name in ("withhuman-hook.py", "codex_transcript.py", "pre-tool-use.py",
+                     "withhuman_bridge.py"):
             self.assertTrue((self.project / ".codex" / "hooks" / name).is_file(), name)
         self.assertIn("/hooks", result.stdout)
         # The user's own Codex folder is never touched.
