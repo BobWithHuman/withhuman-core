@@ -16,16 +16,16 @@ set -euo pipefail
 team=${1:-default}
 ref=${WITHHUMAN_REF:-main}
 agent=${WITHHUMAN_AGENT:-claude}
+# The files configure.py needs. Claude Code takes only its own hook; every other agent also
+# takes the shared bridge, that same hook (its bridge uses it to attach the program files a
+# command would run) and its own. Adding an agent is one line here and one entry in
+# configure.py's AGENTS.
+files="configure.py hooks/pre-tool-use.py"
 case "$agent" in
-  claude|codex) ;;
+  claude) ;;
+  codex) files="$files hooks/withhuman_bridge.py codex/withhuman-hook.py codex/codex_transcript.py" ;;
   *) echo "WITHHUMAN_AGENT must be claude or codex: $agent" >&2; exit 1 ;;
 esac
-# The files configure.py needs: the Claude Code hook, which the Codex hook also uses to attach
-# program files, and the Codex hook with its transcript reader.
-files="configure.py hooks/pre-tool-use.py"
-if [ "$agent" = codex ]; then
-  files="$files codex/withhuman-hook.py codex/codex_transcript.py"
-fi
 
 if [ -z "${WITHHUMAN_SERVER:-}" ] && [ -z "${WITHHUMAN_UNINSTALL:-}" ]; then
   cat >&2 <<'USAGE'
@@ -73,8 +73,8 @@ if [ -z "$source_dir" ]; then
 fi
 if [ -n "${WITHHUMAN_UNINSTALL:-}" ]; then
   "$python" "$source_dir/configure.py" --uninstall --agent "$agent" --project "$PWD"
-elif [ "$agent" = codex ]; then
-  "$python" "$source_dir/configure.py" --agent codex --project "$PWD" --team "$team" --server "$WITHHUMAN_SERVER"
+elif [ "$agent" != claude ]; then
+  "$python" "$source_dir/configure.py" --agent "$agent" --project "$PWD" --team "$team" --server "$WITHHUMAN_SERVER"
 else
   "$python" "$source_dir/configure.py" --project "$PWD" --team "$team" --server "$WITHHUMAN_SERVER"
 fi

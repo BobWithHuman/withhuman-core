@@ -19,12 +19,19 @@
     $team = if ($env:WITHHUMAN_TEAM) { $env:WITHHUMAN_TEAM } else { "default" }
     $base = if ($env:WITHHUMAN_BASE_URL) { $env:WITHHUMAN_BASE_URL.TrimEnd("/") } else { "https://raw.githubusercontent.com/BobWithHuman/withhuman-core/$ref/deploy/client" }
     $agent = if ($env:WITHHUMAN_AGENT) { $env:WITHHUMAN_AGENT } else { "claude" }
-    if ($agent -notin @("claude", "codex")) { throw "WITHHUMAN_AGENT must be claude or codex: $agent" }
     $uninstall = [bool]$env:WITHHUMAN_UNINSTALL
-    # The files configure.py needs: the Claude Code hook, which the Codex hook also uses to attach
-    # program files, and the Codex hook with its transcript reader.
+    # The files configure.py needs. Claude Code takes only its own hook; every other agent also
+    # takes the shared bridge, that same hook (its bridge uses it to attach the program files a
+    # command would run) and its own, named here. Adding an agent is one entry here and one in
+    # configure.py's AGENTS.
+    $bridges = @{ codex = @("codex/withhuman-hook.py", "codex/codex_transcript.py") }
     $files = @("configure.py", "hooks/pre-tool-use.py")
-    if ($agent -eq "codex") { $files += @("codex/withhuman-hook.py", "codex/codex_transcript.py") }
+    if ($agent -ne "claude") {
+        if (-not $bridges.ContainsKey($agent)) {
+            throw "WITHHUMAN_AGENT must be claude or one of: $($bridges.Keys -join ', '): $agent"
+        }
+        $files += @("hooks/withhuman_bridge.py") + $bridges[$agent]
+    }
 
     if (-not $env:WITHHUMAN_SERVER -and -not $uninstall) {
         throw @"
@@ -64,8 +71,8 @@ WITHHUMAN_SERVER is required: the address of your own WithHuman engine.
         $project = (Get-Location).Path
         if ($uninstall) {
             & $python $configure --uninstall --agent $agent --project $project
-        } elseif ($agent -eq "codex") {
-            & $python $configure --agent codex --project $project --team $team --server $env:WITHHUMAN_SERVER
+        } elseif ($agent -ne "claude") {
+            & $python $configure --agent $agent --project $project --team $team --server $env:WITHHUMAN_SERVER
         } else {
             & $python $configure --project $project --team $team --server $env:WITHHUMAN_SERVER
         }

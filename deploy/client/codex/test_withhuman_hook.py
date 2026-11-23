@@ -20,7 +20,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 SOURCES = [HERE / "withhuman-hook.py", HERE / "codex_transcript.py",
-           HERE.parent / "hooks" / "pre-tool-use.py"]
+           HERE.parent / "hooks" / "pre-tool-use.py",
+           HERE.parent / "hooks" / "withhuman_bridge.py"]
 
 DENY = "deny"
 INTENT = "[의도] 테스트 파일을 고친다"
