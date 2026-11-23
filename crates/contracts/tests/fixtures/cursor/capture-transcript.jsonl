@@ -1,0 +1,13 @@
+{"role":"user","message":{"content":[{"type":"text","text":"<timestamp>Monday, Nov 23, 2026, 3:41 PM (UTC+9)</timestamp>\n<user_query>\nDo exactly three things, briefly: 1) run the shell command 'echo withhuman-capture' 2) read notes.md 3) append the line 'captured' to notes.md\n</user_query>"}]}}
+{"role":"assistant","message":{"content":[{"type":"tool_use","name":"Shell","input":{"command":"echo withhuman-capture","description":"Echo withhuman-capture string"}},{"type":"tool_use","name":"Read","input":{"path":"/tmp/project/cursor-capture/notes.md"}}]}}
+{"role":"assistant","message":{"content":[{"type":"tool_use","name":"Glob","input":{"glob_pattern":"**/notes.md","target_directory":"/tmp/project/cursor-capture"}},{"type":"tool_use","name":"Shell","input":{"command":"ls -la","description":"List workspace root contents"}}]}}
+{"role":"assistant","message":{"content":[{"type":"tool_use","name":"Shell","input":{"command":"pwd; ls -la; find . -name 'notes.md' 2>/dev/null; ls -la /tmp/project/cursor-capture 2>&1","description":"Locate notes.md and workspace"}}]}}
+{"role":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"path":"/tmp/project/cursor-capture/notes.md"}}]}}
+{"role":"assistant","message":{"content":[{"type":"tool_use","name":"Shell","input":{"command":"echo 'captured' >> notes.md","description":"Append captured line to notes.md"}}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"1. Ran `echo withhuman-capture` → `withhuman-capture`\n2. Read `notes.md` → `# capture target`\n3. Appended `captured` to `notes.md`"}]}}
+{"role":"user","message":{"content":[{"type":"text","text":"<timestamp>Monday, Nov 23, 2026, 3:42 PM (UTC+9)</timestamp>\n<user_query>\nNow use your file editing tool (not the shell) to create hello.txt containing the single word hi\n</user_query>"}]}}
+{"role":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"path":"/tmp/project/cursor-capture/hello.txt","contents":"hi\n"}}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"Created `hello.txt` with `hi`."}]}}
+{"role":"user","message":{"content":[{"type":"text","text":"Your previous response was interrupted. Continue from where you left off."}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"`hello.txt` is already created with the single word `hi` — nothing left to finish from that request."}]}}
+{"type":"turn_ended","status":"success"}

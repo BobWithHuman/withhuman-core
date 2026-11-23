@@ -109,12 +109,12 @@ project or plugin hook runs beside it: a project set up earlier does not report 
 and no hook of the user's own stands beside WithHuman's. Each user's WithHuman key stays their own.
 Decision denies a Call that changes these files as it does the project's hooks. A managed setup
 also takes out the user setup of the user who ran it, which would report each event twice beside
-it. `--uninstall` with the same `--scope` takes the setup out again. Codex is set up per project.
+it. `--uninstall` with the same `--scope` takes the setup out again. Every other agent is set up
+per project.
 
 To start over on a device set up more than one way (an earlier hook version, a user setup and a
 managed one, projects set up one by one), `--reset` takes every WithHuman setup out at once: the
-managed one, the user one, and the project ones of the folders named after it (Claude Code's and
-Codex's). Other hooks and settings stay, each file changed is copied first, and the device's
+managed one, the user one, and the project ones of the folders named after it (every agent's). Other hooks and settings stay, each file changed is copied first, and the device's
 client ID is kept, so the setup made after is the same device:
 
 ```bash
@@ -384,6 +384,61 @@ Subsequent input into an already-open shell and a hook that cannot start or is n
 outside this protection. `observe` records activity without enforcing protection.
 Verified on Windows with Codex CLI 0.154 and 0.167; macOS is not verified yet.
 
+### Cursor CLI
+
+Set up a Cursor CLI project with the same one-line installers, choosing Cursor. In the folder you
+start `cursor-agent` in, on macOS and Linux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/BobWithHuman/withhuman-core/main/deploy/client/setup-project.sh \
+  | WITHHUMAN_SERVER=http://127.0.0.1:3000 WITHHUMAN_AGENT=cursor bash
+```
+
+or on Windows PowerShell:
+
+```powershell
+$env:WITHHUMAN_SERVER = "http://127.0.0.1:3000"; $env:WITHHUMAN_AGENT = "cursor"
+irm https://raw.githubusercontent.com/BobWithHuman/withhuman-core/main/deploy/client/setup-project.ps1 | iex
+```
+
+This installs the bridge into `<project>/.cursor/hooks/`, adds its entries to
+`<project>/.cursor/hooks.json` (other hooks are kept) and checks that the installed bridge reaches
+the engine; the user's `~/.cursor` is left alone, and no engine secret goes on the device. Then run
+`cursor-agent` in the project and trust the workspace when it asks: Cursor runs no project hook
+until you do, so until then the project is not protected. From a checkout,
+`python3 deploy/client/configure.py --agent cursor --server <engine>` does the same.
+
+Ten hooks are registered: `preToolUse` and `beforeMCPExecution` judge calls; `postToolUse`,
+`postToolUseFailure`, `sessionStart`, `sessionEnd`, `beforeSubmitPrompt`, `afterAgentResponse` and
+`stop` record what happened; `beforeReadFile` carries a file's text to the result Cursor leaves it
+out of. `beforeShellExecution` and `beforeReadFile`'s own decision are deliberately unused:
+`preToolUse` already covers every tool, and judging the same call twice would record it twice.
+
+Cursor cannot show a confirmation prompt from a hook, so a call that needs the user's confirmation
+(REVIEW) is blocked, as with Codex.
+
+Two things about Cursor's hooks are worth knowing before you change this setup, both found by
+running the real client:
+
+- **The engine's address is never in a hook command.** Cursor 2026.11.22 runs *no hook of the
+  file* whose command holds an `http://` address — not that one hook, the whole file, and without
+  a word in any log, so every call would go unjudged. The setup writes the address to
+  `.cursor/hooks/server` beside the bridge instead, and a test holds the command to that.
+- **An allowed call says so.** A hook registered with `failClosed` that answers with nothing is a
+  failed hook to Cursor, which blocks the call; so the bridge answers `{"permission":"allow"}`
+  rather than staying silent, as it does for Claude Code and Codex. `failClosed` itself is set on
+  the two judging hooks only — Cursor otherwise lets a call through when a hook crashes or times
+  out, which would lift the control exactly when it is needed.
+
+Known differences from Claude Code: the `[의도]` line stays visible on screen (Cursor shows the
+answer before the hook runs). A `cursor-agent -p` run fires no `beforeSubmitPrompt`,
+`afterAgentResponse` or `stop`, so such a session reaches the engine without a prompt or an intent
+line — run it in `record` or `shadow` mode. A file read's text comes from `beforeReadFile`; a
+`Grep` answers with neither its matches nor their text, so a grep's content is not judged.
+Configuration changes made outside the agent are not recorded (Cursor has no ConfigChange hook).
+Cursor Tab's own file access is outside this protection, and Cloud Agents support a different set
+of hooks. Verified on macOS with Cursor CLI 2026.11.22; Windows is not verified yet.
+
 ### Another agent
 
 Claude Code's hook contract is the engine's own form: its hooks reach `/v1/hooks/<Event>`
@@ -393,14 +448,21 @@ its own seam and nothing else to change:
 
 | Piece | Where | What it is |
 |---|---|---|
-| Hook input | `crates/contracts/src/<kind>.rs` | the agent's own hook JSON, with a fixture per event under `crates/contracts/tests/fixtures/<kind>/` |
+| Hook input | `crates/contracts/src/<kind>.rs` | the agent's own hook JSON, with a fixture per event under `crates/contracts/tests/fixtures/<kind>/` — recorded from the real client, not read off its documentation |
 | Translation | `services/collector/src/<kind>.rs` | `impl Agent` (see `agent.rs`): each hook as the Claude Code request doing the same thing, and the few answers its client reads differently. Name it in `agent::REGISTRY` and it has its route, `/v1/hooks/<kind>/{event}` |
 | Client bridge | `deploy/client/<kind>/` | a `withhuman_bridge.Bridge` subclass: what only the client can see (its transcript, the directory a command runs in, the program files a command would run). Its installer is one `AgentSetup` in `deploy/client/configure.py` |
 
 The engine's rules are written against Claude Code's tools, so a tool is translated to the
 Claude Code tool doing the same thing rather than to a name of its own: Codex's shell calls
 become `Bash` (or `PowerShell`), its one-file patches `Write`, `Edit` or `MultiEdit`, its web
-operations `WebSearch` or `WebFetch`. What decides how much protection an agent can get is how
+operations `WebSearch` or `WebFetch`; Cursor's `Shell` becomes `Bash`, and its `Grep` keeps its
+pattern under the name the rules read it by.
+
+How much of an agent the hooks reach decides how much work its bridge is, and the two supported
+agents sit at opposite ends: Cursor's hooks carry the prompt, the model's answer, the directory a
+command runs in and a call's exit code, so its bridge is one 230-line file; Codex's carry none of
+those, so its bridge reads the session transcript in 560 lines more. Record what the client
+actually sends before writing either. What decides how much protection an agent can get is how
 much its hooks tell: the engine needs the turn's intent before the first call of that turn, a
 call's input before it runs, its result afterwards, and a way to answer with a block. An agent
 whose hooks cannot carry the intent line can still be run in `record` or `shadow` mode.

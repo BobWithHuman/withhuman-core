@@ -50,7 +50,7 @@ use crate::{
 
 /// The agents the Collector accepts Hooks from, by the `<kind>` of their route. Claude Code is
 /// not among them: its Hooks are the form every entry here translates into.
-pub static REGISTRY: &[&(dyn Agent + Sync)] = &[&crate::codex::Codex];
+pub static REGISTRY: &[&(dyn Agent + Sync)] = &[&crate::codex::Codex, &crate::cursor::Cursor];
 
 /// The agent of `kind`, or none when no adapter answers for it.
 pub fn find(kind: &str) -> Option<&'static (dyn Agent + Sync)> {
@@ -415,6 +415,9 @@ pub(crate) async fn hook(
 
 /// The durable ID a client gives an event it resends until acknowledged.
 const DELIVERY_HEADER: &str = "x-withhuman-event";
+/// The shell a client runs commands in (`powershell`, else POSIX). Every agent whose shell
+/// tool becomes Claude Code's `Bash` or `PowerShell` reports it the same way.
+pub const SHELL_HEADER: &str = "x-withhuman-shell";
 /// The client's own session state no longer matches the engine's: it starts a new session
 /// rather than send an event twice.
 pub(crate) const RESYNC_REQUIRED: &str = "resync_required";

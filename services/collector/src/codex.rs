@@ -40,9 +40,8 @@ use crate::{
 
 /// Marks every event of a Codex session, and the `<kind>` of its route.
 pub const AGENT_KIND: &str = "codex";
-/// The shell a Codex client runs commands in (`powershell`, else POSIX). It decides which
-/// Claude Code tool a shell call becomes, so a delivery receipt is bound to it too.
-pub const SHELL_HEADER: &str = "x-withhuman-shell";
+/// Every agent reports its shell the same way; see [`crate::agent::SHELL_HEADER`].
+pub use crate::agent::SHELL_HEADER;
 /// Set on a shell call whose directory the bridge could not tell: it was judged as running in
 /// the project directory.
 pub const WORKDIR_UNKNOWN: &str = "unknown";

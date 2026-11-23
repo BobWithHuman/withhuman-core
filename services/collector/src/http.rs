@@ -215,7 +215,10 @@ pub fn app_with_transport(service: CollectorService) -> Router {
         triage::distrust_source,
         triage::evidence
     ),
-    components(schemas(withhuman_contracts::codex::CodexHookInput)),
+    components(schemas(
+        withhuman_contracts::codex::CodexHookInput,
+        withhuman_contracts::cursor::CursorHookInput
+    )),
     tags(
         (name = "Collector", description = "Claude Code Hook ingestion and enforcement API"),
         (name = "Inventory", description = "Device registration and per-user WithHuman keys"),
