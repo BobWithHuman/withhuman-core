@@ -112,8 +112,10 @@ pub struct FileDiff {
 /// policy an administrator sets for it (`managed-settings.json`, `managed-settings.d`); Codex's
 /// hooks (`hooks.json` and the bridge beside it), configuration and the requirements an
 /// administrator sets; Cursor's hooks (`hooks.json`, the bridge and the engine's address beside
-/// it) and the MCP servers it may call; and WithHuman's hooks installed for a user or the whole
-/// device, with the device's client ID, which a device stop is keyed on.
+/// it) and the MCP servers it may call; OpenClaw's state directory, which holds its
+/// configuration, the plugins it loads and the MCP servers it may call; and WithHuman's hooks
+/// installed for a user or the whole device, with the device's client ID, which a device stop is
+/// keyed on.
 ///
 /// A path here is matched as a prefix, so `.cursor/hooks` covers both `.cursor/hooks.json` and
 /// the folder of that name.
@@ -141,6 +143,14 @@ const SAFEGUARDS: &[&str] = &[
     ".cursor/mcp.json",
     ".cursor\\hooks",
     ".cursor\\mcp.json",
+    // OpenClaw keeps all of it under one directory — the configuration that registers the
+    // WithHuman plugin and allows it the conversation, the plugins themselves, and the MCP
+    // servers — so the directory is named rather than the files inside it. A named profile
+    // shifts that directory (`~/.openclaw-dev`), which the name without a separator covers, on
+    // Windows too. `openclaw.json` is named as well, for a configuration kept elsewhere
+    // (`OPENCLAW_CONFIG_PATH`).
+    ".openclaw",
+    "openclaw.json",
 ];
 
 /// Commands, or parts of one, that write; output thrown away does not count.
@@ -192,6 +202,36 @@ const DOTNET_WRITES: &[&str] = &[
     "appendalltext",
     "appendalllines",
 ];
+/// What switches a safeguard off by command rather than by file, in lower case: an agent's own
+/// CLI changing the configuration it is supervised through, the plugins it loads or the servers
+/// it may call. OpenClaw keeps all three behind `openclaw`, and such a call names no path for
+/// [`names_safeguard`] to find — `openclaw config set plugins.entries.withhuman.enabled false`
+/// leaves every later Call unjudged without writing a file the rule would see.
+///
+/// The program and the action are looked for separately, so a global option between them
+/// (`openclaw --profile dev config set …`) is still caught. A command that only mentions one of
+/// these words is caught too, which errs towards denying a Call that reads rather than letting
+/// one through that disarms the engine.
+const SAFEGUARD_COMMANDS: &[(&str, &[&str])] = &[(
+    "openclaw",
+    &[
+        "config set",
+        "config unset",
+        "config patch",
+        "plugins disable",
+        "plugins uninstall",
+        "plugins install",
+        "mcp add",
+        "mcp set",
+        "mcp unset",
+        "mcp configure",
+        "hooks enable",
+        "hooks disable",
+        "reset",
+        "uninstall",
+    ],
+)];
+
 /// Commands that change the directory the rest of a command line runs in, in lower case.
 const CHANGE_DIRECTORY: &[&str] = &[
     "cd",
@@ -206,6 +246,15 @@ const CHANGE_DIRECTORY: &[&str] = &[
 fn is_safeguard(path: &str) -> bool {
     let path = path.to_ascii_lowercase();
     SAFEGUARDS.iter().any(|place| path.contains(place))
+}
+
+/// Whether a command switches a safeguard off through an agent's own CLI, which writes no file
+/// of its own.
+fn commands_safeguard(command: &str) -> bool {
+    let command = command.to_ascii_lowercase();
+    SAFEGUARD_COMMANDS.iter().any(|(program, actions)| {
+        command.contains(program) && actions.iter().any(|action| command.contains(action))
+    })
 }
 
 /// Whether a shell command names a safeguard: as written, or once its paths are resolved against
@@ -323,7 +372,11 @@ pub fn effect(call: &CallInfo) -> Effect {
         // PowerShell commands change files as Bash commands do (Windows, Codex's shell there).
         "Bash" | "PowerShell" => {
             let command = text("command");
-            if writes(command) && names_safeguard(command, call.cwd.as_deref()) {
+            // A command that goes through the agent's own CLI changes a safeguard without
+            // writing to it, so it is not asked whether it writes.
+            if commands_safeguard(command)
+                || (writes(command) && names_safeguard(command, call.cwd.as_deref()))
+            {
                 return Effect::Safeguard;
             }
             let programs = programs(call);
