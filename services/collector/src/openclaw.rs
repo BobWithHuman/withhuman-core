@@ -385,10 +385,12 @@ fn tool(name: &str, params: Value, shell: ClientShell, mcp: bool) -> Call {
             untranslated: false,
         },
         // Listing a directory is the agent running a program over it, not a search for a
-        // pattern, so it is judged as the command it stands for.
+        // pattern, so it is judged as the command it stands for. The path is quoted: a
+        // directory whose name holds a space would otherwise read as two arguments, and the
+        // command the engine judges would not be the one the agent ran.
         "ls" => plain(
             shell.tool_name(),
-            json!({ "command": format!("ls -- {}", text("path")) }),
+            json!({ "command": format!("ls -- {}", quote(&text("path"))) }),
         ),
         "read" | "view_image" | "pdf" => {
             let mut fields = Map::new();
@@ -421,6 +423,21 @@ fn tool(name: &str, params: Value, shell: ClientShell, mcp: bool) -> Call {
             cwd: None,
             untranslated: true,
         },
+    }
+}
+
+/// `word` quoted for a POSIX shell when it needs it.
+///
+/// The same rule as the one Codex's adapter applies to the commands its patches become; both
+/// are moved to one place when that translation is shared.
+fn quote(word: &str) -> String {
+    let plain = !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./:=@%+,\\".contains(c));
+    match plain {
+        true => word.to_owned(),
+        false => format!("'{}'", word.replace('\'', "'\\''")),
     }
 }
 

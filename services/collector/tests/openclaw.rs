@@ -103,6 +103,18 @@ async fn tools_become_their_claude_code_counterparts() {
         ("Bash", json!({"command": "ls -- /work"}))
     );
 
+    // A directory whose name holds a space is one argument, not two: unquoted, the command the
+    // engine judges would not be the one the agent ran.
+    let (_, input, _) = translated_call(
+        call("ls", json!({"path": "/work/my notes; rm -rf ."})),
+        None,
+    )
+    .await;
+    assert_eq!(
+        input,
+        json!({"command": "ls -- '/work/my notes; rm -rf .'"})
+    );
+
     // The rules read a file by `file_path`; OpenClaw names it `path`.
     let (name, input, _) = translated_call(
         call(
