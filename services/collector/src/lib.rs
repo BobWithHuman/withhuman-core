@@ -11,6 +11,7 @@ mod intent;
 mod inventory;
 pub mod keys;
 mod normalize;
+pub mod openclaw;
 mod state;
 mod store;
 mod transport;
