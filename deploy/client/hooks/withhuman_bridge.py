@@ -121,6 +121,54 @@ class Collector:
         return answer
 
 
+# ---- a transcript the agent appends to ----
+
+
+class TranscriptError(Exception):
+    """The transcript could not be read."""
+
+
+def read_records(path, offset):
+    """The JSON records of the complete lines after byte `offset`, and the offset after them.
+
+    Several agents keep the session as a JSONL file they append to, and a bridge reads it for
+    what the agent's hooks leave out. A line the agent is still writing (no newline yet) is
+    left for the next read. Invalid complete records and a truncated transcript cannot advance
+    the confirmed cursor.
+    """
+    if not path:
+        raise TranscriptError("no transcript path")
+    try:
+        with open(path, "rb") as file:
+            size = os.fstat(file.fileno()).st_size
+            if offset > size:
+                raise TranscriptError("transcript was truncated; start a new session")
+            file.seek(offset)
+            data = file.read()
+    except OSError as error:
+        raise TranscriptError(str(error)) from error
+    end = data.rfind(b"\n") + 1
+    records = []
+    for line in data[:end].split(b"\n"):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError as error:
+            raise TranscriptError("invalid transcript record") from error
+        if not isinstance(record, dict):
+            raise TranscriptError("transcript record is not an object")
+        records.append(record)
+    return records, offset + end
+
+
+def file_size(path):
+    try:
+        return os.path.getsize(path)
+    except (OSError, TypeError):
+        return 0
+
+
 # ---- what the hook remembers between its runs ----
 
 
@@ -327,13 +375,16 @@ class Bridge:
             reason = output.get("permissionDecisionReason")
             return self.deny(reason if isinstance(reason, str) and reason else BLOCKED)
         if isinstance(output, dict) and isinstance(output.get("additionalContext"), str):
-            return json.dumps({
-                "hookSpecificOutput": {
-                    "hookEventName": event,
-                    "additionalContext": output["additionalContext"],
-                }
-            }).encode("utf-8")
+            return self.context(event, output["additionalContext"])
         return None
+
+    def context(self, event, text):
+        """Text the engine puts in front of the model, in the shape this agent reads. This is
+        how the turn's intent is asked for, so an agent that ignores the shape never states an
+        intent and every first Call of a turn is turned back."""
+        return json.dumps({
+            "hookSpecificOutput": {"hookEventName": event, "additionalContext": text},
+        }).encode("utf-8")
 
     # ---- the agent's own part ----
 

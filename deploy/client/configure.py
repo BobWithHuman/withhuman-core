@@ -256,6 +256,45 @@ class AgentSetup:
         return removed
 
 
+class FlatHooksFile(AgentSetup):
+    """An agent whose hooks file holds its entries directly under the event name, with a
+    `version` it reads the file by — Cursor's shape, and Copilot's. Claude Code's and Codex's
+    wrap them in a group instead, which is what `AgentSetup` writes.
+    """
+
+    def groups(self, python, hook, server):
+        return {event: self.entry(python, hook, server, event) for event in self.events}
+
+    def is_ours(self, hook):
+        if not isinstance(hook, dict):
+            return False
+        return self.hook in "".join(
+            str(hook.get(key, "")) for key in ("command", "commandWindows", "bash", "powershell"))
+
+    def insert(self, config, groups):
+        # The file is read by its version; without one the hooks are ignored.
+        config["version"] = 1
+        hooks = config.get("hooks") if isinstance(config.get("hooks"), dict) else {}
+        for event, entry in groups.items():
+            hooks.setdefault(event, []).append(entry)
+        config["hooks"] = hooks
+
+    def strip(self, config):
+        """Takes our entries out in place; the number taken out."""
+        hooks = config.get("hooks") if isinstance(config.get("hooks"), dict) else {}
+        removed = 0
+        for event in list(hooks):
+            entries = hooks[event] if isinstance(hooks[event], list) else []
+            kept = [entry for entry in entries if not self.is_ours(entry)]
+            removed += len(entries) - len(kept)
+            if kept:
+                hooks[event] = kept
+            else:
+                del hooks[event]
+        config["hooks"] = hooks
+        return removed
+
+
 class CodexSetup(AgentSetup):
     kind = "codex"
     name = "Codex"
@@ -274,7 +313,7 @@ class CodexSetup(AgentSetup):
         "/hooks; nothing of WithHuman runs any more.")
 
 
-class CursorSetup(AgentSetup):
+class CursorSetup(FlatHooksFile):
     kind = "cursor"
     name = "Cursor"
     directory = ".cursor"
@@ -320,35 +359,60 @@ class CursorSetup(AgentSetup):
         """The engine's address, where the bridge looks for it."""
         (installed / self.server_file).write_text(args.server + "\n", encoding="utf-8")
 
-    def groups(self, python, hook, server):
-        return {event: self.entry(python, hook, server, event) for event in self.events}
 
-    def is_ours(self, hook):
-        return isinstance(hook, dict) and self.hook in str(hook.get("command", ""))
+class CopilotSetup(FlatHooksFile):
+    kind = "copilot"
+    name = "Copilot"
+    #: Copilot reads a repository's hooks from `.github/hooks/*.json`, once the folder is
+    #: trusted. The bridge's own files sit in the same folder, where Copilot ignores them:
+    #: it reads the JSON files alone.
+    directory = ".github"
+    config = "hooks/withhuman-copilot.json"
+    hook = "withhuman-hook.py"
+    files = ("withhuman-hook.py", "copilot_transcript.py") + SHARED_FILES
+    # Claude Code's names, which Copilot answers with Claude Code's own fields and tool names,
+    # and `preMcpToolCall`, which has no Claude Code name. The events that only tell the user
+    # something (`Notification`, `PermissionRequest`, `ErrorOccurred`, `PreCompact`,
+    # `userPromptTransformed`) are deliberately not here: the engine judges nothing on them,
+    # and every event registered is one more process per turn.
+    events = ("SessionStart", "SessionEnd", "UserPromptSubmit", "PreToolUse", "PostToolUse",
+              "PostToolUseFailure", "SubagentStart", "SubagentStop", "Stop", "preMcpToolCall")
+    # A judged call waits for the engine; the bridge ends itself before this. It has to:
+    # Copilot runs a call whose hook timed out.
+    timeouts = {"PreToolUse": 15}
+    # Copilot's own `config.json` is the file that trusts a folder, and it says it is managed
+    # automatically — and holds comments, which writing JSON back to it would drop. So the
+    # setup does not touch it; it says what to do instead.
+    notes = ("Next: trust this folder, or Copilot runs none of these hooks and the project is",
+             "not protected. Copilot says so at the start of a session, and there are two ways:",
+             '  - add the project to "trustedFolders" in ~/.copilot/config.json, or',
+             "  - answer the trust question Copilot asks in an interactive session.",
+             "`--allow-all-tools` does not trust a folder; COPILOT_ALLOW_ALL=true does, but it",
+             "approves every tool as well. `/env` in a session lists the hooks it loaded.",
+             "The hooks live in .github/hooks, which is part of the repository: add it to",
+             ".gitignore if these are only for your device.")
+    uninstall_notes = ("WithHuman is removed from this project. Nothing of it runs any more.",)
+    #: Written beside the hook, so the command carries the event alone.
+    server_file = "server"
 
-    def insert(self, config, groups):
-        # Cursor reads the file by its version; without it the hooks are ignored.
-        config["version"] = 1
-        hooks = config.get("hooks") if isinstance(config.get("hooks"), dict) else {}
-        for event, entry in groups.items():
-            hooks.setdefault(event, []).append(entry)
-        config["hooks"] = hooks
+    def entry(self, python, hook, server, event):
+        """One hook of ours, as Copilot's hooks file holds it: `bash` on macOS and Linux,
+        `powershell` on Windows, and `timeoutSec` rather than Claude Code's `timeout`.
 
-    def strip(self, config):
-        """Takes our entries out of a Cursor hooks.json in place; the number taken out. Cursor
-        holds the entries directly under the event, without Claude Code's group."""
-        hooks = config.get("hooks") if isinstance(config.get("hooks"), dict) else {}
-        removed = 0
-        for event in list(hooks):
-            entries = hooks[event] if isinstance(hooks[event], list) else []
-            kept = [entry for entry in entries if not self.is_ours(entry)]
-            removed += len(entries) - len(kept)
-            if kept:
-                hooks[event] = kept
-            else:
-                del hooks[event]
-        config["hooks"] = hooks
-        return removed
+        There is no `failClosed` to set, and none is needed on a failure: Copilot denies a call
+        whose hook fails. A hook that **times out** is another matter — Copilot runs the call —
+        so the bridge answers on a deadline of its own, inside the one written here.
+        """
+        return {
+            "type": "command",
+            "bash": f'"{python}" "{hook}" {event}',
+            "powershell": f'& "{python}" "{hook}" {event}; exit $LASTEXITCODE',
+            "timeoutSec": self.timeouts.get(event, self.timeout),
+        }
+
+    def installed(self, args, installed):
+        """The engine's address, where the bridge looks for it."""
+        (installed / self.server_file).write_text(args.server + "\n", encoding="utf-8")
 
 
 def hermes_home():
@@ -431,7 +495,8 @@ class HermesSetup(AgentSetup):
 
 
 #: Every agent but Claude Code, by `--agent` value.
-AGENTS = {agent.kind: agent for agent in (CodexSetup(), CursorSetup(), HermesSetup())}
+AGENTS = {agent.kind: agent for agent in (
+    CodexSetup(), CopilotSetup(), CursorSetup(), HermesSetup())}
 
 
 def is_withhuman(hook):

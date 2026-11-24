@@ -721,6 +721,90 @@ class HermesConfigureTest(unittest.TestCase):
         self.assertIn("per profile", result.stderr)
 
 
+
+class CopilotConfigureTest(unittest.TestCase):
+    """--agent copilot: the repository's own .github/hooks file, whose shape is Copilot's."""
+
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp()).resolve()
+        self.project = Path(tempfile.mkdtemp()).resolve()
+        self.hooks_json = self.project / ".github" / "hooks" / "withhuman-copilot.json"
+
+    def configure(self, *extra):
+        env = {**os.environ, "HOME": str(self.home), "USERPROFILE": str(self.home),
+               "SHELL": "/bin/zsh"}
+        env.pop("WITHHUMAN_SERVER", None)
+        env.pop("WITHHUMAN_KEY", None)
+        return subprocess.run(
+            [sys.executable, str(CONFIGURE), "--agent", "copilot", "--project", str(self.project),
+             "--team", "lab", "--server", SERVER, "--no-persist", "--skip-check", "--no-register",
+             *extra],
+            capture_output=True, text=True, env=env, timeout=30,
+        )
+
+    def test_writes_the_repository_hooks_in_copilots_own_shape(self):
+        result = self.configure()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        config = json.loads(self.hooks_json.read_text())
+        # Copilot reads the file by its version, and holds entries directly under the event.
+        self.assertEqual(config["version"], 1)
+        hooks = config["hooks"]
+        self.assertEqual(sorted(hooks), sorted([
+            "SessionStart", "SessionEnd", "UserPromptSubmit", "PreToolUse", "PostToolUse",
+            "PostToolUseFailure", "SubagentStart", "SubagentStop", "Stop", "preMcpToolCall"]))
+        ours = hooks["PreToolUse"][0]
+        installed = (self.project / ".github" / "hooks" / "withhuman-hook.py").as_posix()
+        python = Path(sys.executable).as_posix()
+        self.assertEqual(ours["type"], "command")
+        # Copilot runs `bash` on macOS and Linux and `powershell` on Windows, and reads
+        # `timeoutSec` rather than Claude Code's `timeout`.
+        self.assertEqual(ours["bash"], f'"{python}" "{installed}" PreToolUse')
+        self.assertIn("exit $LASTEXITCODE", ours["powershell"])
+        self.assertGreaterEqual(ours["timeoutSec"], 10)
+        self.assertEqual(hooks["Stop"][0]["timeoutSec"], 5)
+        self.assertNotIn("timeout", ours)
+        for name in ("withhuman-hook.py", "copilot_transcript.py", "pre-tool-use.py",
+                     "withhuman_bridge.py", "server"):
+            self.assertTrue((self.project / ".github" / "hooks" / name).is_file(), name)
+        self.assertFalse((self.home / ".copilot").exists())
+
+    def test_the_claude_code_names_are_the_ones_registered(self):
+        """Under Claude Code's event names Copilot sends Claude Code's field names and tool
+        names, which is what the engine judges. Under its own it sends `toolArgs` and `bash`,
+        and the translation would have to undo them."""
+        self.assertEqual(self.configure().returncode, 0)
+        events = set(json.loads(self.hooks_json.read_text())["hooks"])
+        self.assertIn("PreToolUse", events)
+        self.assertNotIn("preToolUse", events)
+        # `preMcpToolCall` has no Claude Code name; it is where a server names itself.
+        self.assertIn("preMcpToolCall", events)
+
+    def test_the_engines_address_is_kept_beside_the_hook(self):
+        self.assertEqual(self.configure().returncode, 0)
+        self.assertEqual(
+            (self.project / ".github" / "hooks" / "server").read_text().strip(), SERVER)
+        hooks = json.loads(self.hooks_json.read_text())["hooks"]
+        for event, entries in hooks.items():
+            self.assertNotIn("http", entries[0]["bash"], event)
+
+    def test_running_again_changes_nothing(self):
+        self.assertEqual(self.configure().returncode, 0)
+        first = self.hooks_json.read_text()
+        self.assertEqual(self.configure().returncode, 0)
+        self.assertEqual(self.hooks_json.read_text(), first)
+
+    def test_uninstall_leaves_only_what_was_not_ours(self):
+        self.hooks_json.parent.mkdir(parents=True)
+        self.hooks_json.write_text(json.dumps({
+            "other": True, "version": 1, "hooks": {"PreToolUse": [OTHER]}}))
+        self.assertEqual(self.configure().returncode, 0)
+        result = self.configure("--uninstall")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(self.hooks_json.read_text()),
+                         {"other": True, "version": 1, "hooks": {"PreToolUse": [OTHER]}})
+        self.assertFalse((self.project / ".github" / "hooks" / "withhuman-hook.py").exists())
+
+
 class GlobalSetupTest(Setup):
     """--scope user and --scope managed: every folder of the user, or of every user."""
 
