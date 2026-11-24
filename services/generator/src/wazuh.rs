@@ -40,14 +40,21 @@ const PAGE_SIZE: usize = 500;
 /// An agent that never connected has sent no inventory.
 const NEVER_CONNECTED: &str = "never_connected";
 const AGENT_FIELDS: &str = "id,name,status,lastKeepAlive,os.name,os.version,os.platform";
-/// Packages whose name holds either word (`~` is "like", case-insensitive; `,` is "or").
-const PROGRAM_QUERY: &str = "name~claude,name~codex";
-/// Processes with either word in their name, executable or arguments. The manager's match is
-/// loose (`Claude Helper` passes), so each is judged again by [`process_agent`].
-const PROCESS_QUERY: &str = "name~claude,name~codex,cmd~claude,cmd~codex,argvs~claude,argvs~codex";
+/// Packages whose name holds any of the words (`~` is "like", case-insensitive; `,` is "or").
+const PROGRAM_QUERY: &str = "name~claude,name~codex,name~cursor";
+/// Processes with any of the words in their name, executable or arguments. The manager's match
+/// is loose (`Claude Helper` and `CursorUIViewService` pass), so each is judged again by
+/// [`process_agent`].
+///
+/// Cursor's CLI needs the `argvs` terms: it runs under `node` with its wrapper's name, so a
+/// session started as `agent` says `cursor` nowhere but in the script path among its arguments.
+const PROCESS_QUERY: &str = "name~claude,name~codex,name~cursor,\
+                             cmd~claude,cmd~codex,cmd~cursor,\
+                             argvs~claude,argvs~codex,argvs~cursor";
 const PROCESS_FIELDS: &str = "name,cmd,argvs,scan.time";
 const CLAUDE_CODE: &str = "claude-code";
 const CODEX: &str = "codex";
+const CURSOR: &str = "cursor";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WazuhError {
@@ -636,14 +643,19 @@ fn command_line(process: &Process) -> Option<String> {
     clean(Some(line.chars().take(COMMAND_CHARS).collect()))
 }
 
-/// Whether a process is Claude Code (`claude-code`) or Codex (`codex`), Claude Code first.
+/// Which coding agent a process is, Claude Code first and otherwise the first one seen.
 ///
-/// It is when its `name` is exactly `claude` or `codex` (`claude.exe` on Windows), or when its
-/// `cmd` or one of its `argvs` is such a program: a path whose last segment is exactly that
-/// name, a path into Claude Code's native install (`…/claude/versions/2.1.3`, which runs
-/// under its version's name), or a path into the npm packages `@anthropic-ai/claude-code` or
-/// `@openai/codex` (installed with npm, both run under `node`). The case counts: the Claude
-/// desktop app's processes (`Claude`, `Claude Helper (Renderer)`) are not Claude Code.
+/// It is one when its `name` is exactly `claude`, `codex`, `cursor-agent` or `cursor`
+/// (`claude.exe` on Windows), or when its `cmd` or one of its `argvs` is such a program: a path
+/// whose last segment is exactly that name, a path into Claude Code's native install
+/// (`…/claude/versions/2.1.3`, which runs under its version's name) or Cursor's
+/// (`…/cursor-agent/versions/2026.11.22/index.js`), or a path into the npm packages
+/// `@anthropic-ai/claude-code` or `@openai/codex` (installed with npm, both run under `node`).
+///
+/// The case counts: the Claude desktop app's processes (`Claude`, `Claude Helper (Renderer)`)
+/// are not Claude Code. Cursor's CLI is found by its install path rather than its name: it
+/// runs under `node` with the name it was started as, which is `agent` as often as
+/// `cursor-agent`, and `agent` says nothing on its own.
 fn process_agent(process: &Process) -> Option<&'static str> {
     let mut found = process
         .name
@@ -666,7 +678,8 @@ fn process_agent(process: &Process) -> Option<&'static str> {
     }
 }
 
-/// A program's file name, exactly `claude` or `codex` once a Windows `.exe` is taken off.
+/// A program's file name, exactly a coding agent's once a Windows `.exe` is taken off.
+/// `cursor-agent` is Cursor's CLI and `cursor` the editor it ships beside.
 fn program_agent(file_name: &str) -> Option<&'static str> {
     let file_name = file_name
         .strip_suffix(".exe")
@@ -675,6 +688,12 @@ fn program_agent(file_name: &str) -> Option<&'static str> {
     match file_name {
         "claude" => Some(CLAUDE_CODE),
         "codex" => Some(CODEX),
+        "cursor-agent" => Some(CURSOR),
+        // Cursor's editor is the same agent as its CLI and reads the same hooks, and unlike
+        // Claude Code it shares its name with no desktop app that is not one — so the name
+        // counts whatever the case (`Cursor` on macOS, `Cursor.exe` on Windows, `cursor` on
+        // Linux). Its helpers (`Cursor Helper (Renderer)`) are not this name and do not count.
+        name if name.eq_ignore_ascii_case("cursor") => Some(CURSOR),
         _ => None,
     }
 }
@@ -692,6 +711,14 @@ fn path_agent(path: &str) -> Option<&'static str> {
         .split('/')
         .filter(|segment| !segment.is_empty())
         .collect();
+    // Cursor's CLI runs `index.js` out of its install, so the folder pair is the signal; its
+    // own name is nowhere in the path a session started as `agent` reports.
+    if segments
+        .windows(2)
+        .any(|pair| pair == ["cursor-agent", "versions"])
+    {
+        return Some(CURSOR);
+    }
     match segments[..] {
         [.., "claude", "versions", _] => Some(CLAUDE_CODE),
         [.., last] => program_agent(last),
@@ -700,9 +727,9 @@ fn path_agent(path: &str) -> Option<&'static str> {
 }
 
 /// The coding agent among installed packages, Claude Code first: a name holding `claude` or
-/// `codex` in any case (`@anthropic-ai/claude-code`, `claude-code`, `codex`, `Codex CLI`).
-/// The Claude desktop app's package (`Claude`, or `Claude ` and more that is not
-/// `Claude Code`) is not Claude Code.
+/// `codex` in any case (`@anthropic-ai/claude-code`, `claude-code`, `codex`, `Codex CLI`), or
+/// one of Cursor's own names. The Claude desktop app's package (`Claude`, or `Claude ` and more
+/// that is not `Claude Code`) is not Claude Code.
 fn package_agent(packages: &[Named]) -> Option<&'static str> {
     let names: Vec<String> = packages
         .iter()
@@ -715,9 +742,21 @@ fn package_agent(packages: &[Named]) -> Option<&'static str> {
         Some(CLAUDE_CODE)
     } else if names.iter().any(|name| name.contains("codex")) {
         Some(CODEX)
+    } else if names.iter().any(|name| is_cursor_package(name)) {
+        Some(CURSOR)
     } else {
         None
     }
+}
+
+/// Cursor's own packages, in lower case: `cursor`, `cursor-agent`, or a name opening with
+/// `cursor ` such as `Cursor CLI`.
+///
+/// Not a name that merely holds the word, as the rule for the others is: `libxcursor`,
+/// `xcursor-themes` and `adwaita-cursor-theme` sit on every Linux desktop, and matching them
+/// would report a coding agent on devices that have none.
+fn is_cursor_package(name: &str) -> bool {
+    name == "cursor" || name == "cursor-agent" || name.starts_with("cursor ")
 }
 
 fn is_claude_desktop(package: &str) -> bool {
@@ -945,6 +984,94 @@ IqrADJzA8KwFbVE/cGxF1OOGU8eh5qnMQg7U\n\
             argvs: text(argvs).map(Argvs::Line),
             scan: None,
         }
+    }
+
+    /// Cursor's CLI, recorded from a real session: `node` runs its `index.js` under the name
+    /// the user started it as, which the installer leaves as both `cursor-agent` and `agent`.
+    /// So the install path is the signal, and the editor's own binary counts too.
+    #[test]
+    fn a_cursor_session_is_found_by_the_path_it_runs_from() {
+        let agent = |name, cmd, argvs| process_agent(&process(name, cmd, argvs));
+        // What `ps` showed for `agent status` on Linux: the thread's name, a wrapper called
+        // `agent`, and the install path among the arguments.
+        assert_eq!(
+            agent(
+                "MainThread",
+                "/home/u/.local/bin/agent",
+                "--disable-sigusr1 --use-system-ca \
+                 /home/u/.local/share/cursor-agent/versions/2026.11.22-e9042b2/index.js status"
+            ),
+            Some("cursor")
+        );
+        // Started by its own name, and on Windows.
+        assert_eq!(agent("cursor-agent", "", ""), Some("cursor"));
+        assert_eq!(
+            agent("", r"C:\Users\ana\.local\bin\cursor-agent.exe", ""),
+            Some("cursor")
+        );
+        // The editor it ships beside.
+        assert_eq!(
+            agent(
+                "Cursor",
+                "/Applications/Cursor.app/Contents/MacOS/Cursor",
+                ""
+            ),
+            Some("cursor")
+        );
+        // Anything else holding the word is not a coding agent. The first is macOS's own text
+        // input service, which the manager's loose match returns.
+        for other in [
+            "CursorUIViewService",
+            "Cursor Helper (Renderer)",
+            "cursor-agent-worker-sea",
+            "xcursorgen",
+            "libxcursor",
+        ] {
+            assert_eq!(agent(other, "", ""), None, "{other}");
+        }
+        assert_eq!(
+            agent(
+                "CursorUIViewService",
+                "/System/Library/PrivateFrameworks/TextInputUIMacHelper.framework/Versions/A/\
+                 XPCServices/CursorUIViewService.xpc/Contents/MacOS/CursorUIViewService",
+                ""
+            ),
+            None
+        );
+    }
+
+    /// Cursor's packages are matched by name and not by the word, unlike the others: a Linux
+    /// desktop is full of cursor themes.
+    #[test]
+    fn cursor_packages_are_told_from_cursor_themes() {
+        let named = |names: &[&str]| {
+            package_agent(
+                &names
+                    .iter()
+                    .map(|name| Named {
+                        name: Some((*name).to_owned()),
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        };
+        for packages in [
+            vec!["Cursor"],
+            vec!["cursor-agent"],
+            vec!["Cursor CLI"],
+            vec!["git", "Cursor", "ripgrep"],
+        ] {
+            assert_eq!(named(&packages), Some("cursor"), "{packages:?}");
+        }
+        for packages in [
+            vec!["libxcursor1"],
+            vec!["xcursor-themes"],
+            vec!["adwaita-cursor-theme"],
+            vec!["breeze-cursor-theme", "git"],
+        ] {
+            assert_eq!(named(&packages), None, "{packages:?}");
+        }
+        // Claude Code still wins when more than one is installed.
+        assert_eq!(named(&["Cursor", "claude-code"]), Some("claude-code"));
     }
 
     #[test]

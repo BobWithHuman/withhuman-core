@@ -258,18 +258,27 @@ Wazuh build or a machine that reports another of its numbers still finds it. A L
 device set up before either reported the system's or the BIOS's alone, and stays apart from its
 Wazuh agent until it is set up again.
 
-`edr_devices.agent` is `claude-code` or `codex` (Claude Code first when both show):
+`edr_devices.agent` is `claude-code`, `codex` or `cursor` (Claude Code first, else whichever
+the scan showed first):
 
 - from a process running at the agent's last inventory scan, when it is exactly that program:
-  its `name` is `claude` or `codex` (`claude.exe` on Windows), or its `cmd` or one of its
-  `argvs` is a path whose last segment is that name, a path into Claude Code's native install
-  (`~/.local/share/claude/versions/2.1.3`, which runs under its version's name), or a path
-  into the npm package `@anthropic-ai/claude-code` or `@openai/codex` (run under `node`). Case
-  counts, so the Claude desktop app's processes (`Claude`, `Claude Helper (Renderer)`) are not
-  Claude Code;
+  its `name` is `claude`, `codex` or `cursor-agent` (`claude.exe` on Windows), or its `cmd` or
+  one of its `argvs` is a path whose last segment is that name, a path into Claude Code's native
+  install (`~/.local/share/claude/versions/2.1.3`, which runs under its version's name) or
+  Cursor's (`~/.local/share/cursor-agent/versions/2026.11.22/index.js`), or a path into the npm
+  package `@anthropic-ai/claude-code` or `@openai/codex` (run under `node`). Case counts, so the
+  Claude desktop app's processes (`Claude`, `Claude Helper (Renderer)`) are not Claude Code;
 - otherwise from an installed package with `claude` or `codex` in its name in any case
   (`@anthropic-ai/claude-code`, `claude-code`, `codex`, `Codex CLI`), except the desktop app's
-  (`Claude`, or `Claude ` followed by anything but `Code`).
+  (`Claude`, or `Claude ` followed by anything but `Code`), or one named after Cursor (`Cursor`,
+  `cursor-agent`, `Cursor CLI`).
+
+Cursor's CLI is found by the folder it runs from rather than by its name: it runs under `node`
+with the name it was started as, and the setup leaves that as both `cursor-agent` and `agent`.
+Its editor counts as the same agent — it reads the same hooks — so its own binary (`Cursor`,
+`Cursor.exe`, `cursor`) is matched whatever the case, while its helper processes and everything
+else that merely holds the word are not: macOS's own `CursorUIViewService` and a Linux desktop's
+`libxcursor` and `xcursor-themes` are no coding agent.
 
 `edr_devices.running_at` is when such a process was last seen running: the latest `scan.time`
 of the processes that pass, epoch milliseconds. It is NULL when none was running at the last
