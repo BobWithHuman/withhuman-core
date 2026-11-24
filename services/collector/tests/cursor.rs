@@ -540,7 +540,9 @@ impl Recording {
                 version: 1,
                 decision_response: Some(DecisionResponse {
                     decision: Decision::Allow,
-                    reason: "ok".to_owned(),
+                    // An ALLOW carries no reason; one makes the response invalid and every
+                    // Call would be answered as unjudged instead of allowed.
+                    reason: String::new(),
                     rule: "test-rule".to_owned(),
                     start: CausalStart::User,
                     written: true,
