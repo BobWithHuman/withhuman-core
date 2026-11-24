@@ -113,9 +113,11 @@ pub struct FileDiff {
 /// hooks (`hooks.json` and the bridge beside it), configuration and the requirements an
 /// administrator sets; Cursor's hooks (`hooks.json`, the bridge and the engine's address beside
 /// it) and the MCP servers it may call; OpenClaw's state directory, which holds its
-/// configuration, the plugins it loads and the MCP servers it may call; and WithHuman's hooks
-/// installed for a user or the whole device, with the device's client ID, which a device stop is
-/// keyed on.
+/// configuration, the plugins it loads and the MCP servers it may call; Hermes Agent's
+/// WithHuman plugin (its folder in the profile's `plugins`, with the bridge and the engine's
+/// address) and the profile configuration that enables it, in Hermes' default profile
+/// (`~/.hermes`, `%LOCALAPPDATA%\hermes`); and WithHuman's hooks installed for a user or the
+/// whole device, with the device's client ID, which a device stop is keyed on.
 ///
 /// A path here is matched as a prefix, so `.cursor/hooks` covers both `.cursor/hooks.json` and
 /// the folder of that name.
@@ -151,6 +153,15 @@ const SAFEGUARDS: &[&str] = &[
     // (`OPENCLAW_CONFIG_PATH`).
     ".openclaw",
     "openclaw.json",
+    // Hermes' default profile, ~/.hermes or %LOCALAPPDATA%\hermes (also as Git Bash writes it).
+    ".hermes/plugins/withhuman",
+    ".hermes/config.yaml",
+    ".hermes\\plugins\\withhuman",
+    ".hermes\\config.yaml",
+    "appdata/local/hermes/plugins/withhuman",
+    "appdata/local/hermes/config.yaml",
+    "appdata\\local\\hermes\\plugins\\withhuman",
+    "appdata\\local\\hermes\\config.yaml",
 ];
 
 /// Commands, or parts of one, that write; output thrown away does not count.
@@ -212,25 +223,40 @@ const DOTNET_WRITES: &[&str] = &[
 /// (`openclaw --profile dev config set …`) is still caught. A command that only mentions one of
 /// these words is caught too, which errs towards denying a Call that reads rather than letting
 /// one through that disarms the engine.
-const SAFEGUARD_COMMANDS: &[(&str, &[&str])] = &[(
-    "openclaw",
-    &[
-        "config set",
-        "config unset",
-        "config patch",
-        "plugins disable",
-        "plugins uninstall",
-        "plugins install",
-        "mcp add",
-        "mcp set",
-        "mcp unset",
-        "mcp configure",
-        "hooks enable",
-        "hooks disable",
-        "reset",
-        "uninstall",
-    ],
-)];
+const SAFEGUARD_COMMANDS: &[(&str, &[&str])] = &[
+    (
+        "openclaw",
+        &[
+            "config set",
+            "config unset",
+            "config patch",
+            "plugins disable",
+            "plugins uninstall",
+            "plugins install",
+            "mcp add",
+            "mcp set",
+            "mcp unset",
+            "mcp configure",
+            "hooks enable",
+            "hooks disable",
+            "reset",
+            "uninstall",
+        ],
+    ),
+    (
+        // Hermes enables WithHuman as a plugin of the profile, and its CLI turns that off
+        // (`hermes plugins disable withhuman`, `hermes config set plugins.enabled …`).
+        "hermes",
+        &[
+            "plugins disable",
+            "plugins remove",
+            "plugins uninstall",
+            "config set plugins",
+            "config unset plugins",
+            "config edit",
+        ],
+    ),
+];
 
 /// Commands that change the directory the rest of a command line runs in, in lower case.
 const CHANGE_DIRECTORY: &[&str] = &[

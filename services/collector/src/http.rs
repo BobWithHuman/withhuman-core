@@ -217,7 +217,8 @@ pub fn app_with_transport(service: CollectorService) -> Router {
     ),
     components(schemas(
         withhuman_contracts::codex::CodexHookInput,
-        withhuman_contracts::cursor::CursorHookInput
+        withhuman_contracts::cursor::CursorHookInput,
+        withhuman_contracts::hermes::HermesHookInput
     )),
     tags(
         (name = "Collector", description = "Claude Code Hook ingestion and enforcement API"),
@@ -781,7 +782,7 @@ pub(crate) async fn judge_call(
     path = "/v1/hooks/{agent}/{event}",
     tag = "Collector",
     params(
-        ("agent" = String, Path, description = "The agent whose Hooks these are (`codex`); Claude Code has a route per event instead"),
+        ("agent" = String, Path, description = "The agent whose Hooks these are (`codex`, `cursor`, `hermes`); Claude Code has a route per event instead"),
         ("event" = String, Path, description = "The agent's Hook event, or one its bridge made in Claude Code's own form"),
         ("X-WithHuman-Repo" = Option<String>, Header, description = "Repository identity"),
         ("X-WithHuman-Client" = Option<String>, Header, description = "Client identity"),
