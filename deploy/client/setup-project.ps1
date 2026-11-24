@@ -9,7 +9,8 @@
 # default. A team name goes in $env:WITHHUMAN_TEAM first; $env:WITHHUMAN_REF picks the branch the
 # files are fetched from (default: main), $env:WITHHUMAN_BASE_URL another place serving the
 # deploy/client folder (a mirror or a test). $env:WITHHUMAN_AGENT picks the agent: claude
-# (default), codex or cursor. Running it again updates the setup; $env:WITHHUMAN_UNINSTALL = "1" takes WithHuman out
+# (default), codex, cursor or hermes (Hermes is set up for its profile, HERMES_HOME, not for the
+# folder). Running it again updates the setup; $env:WITHHUMAN_UNINSTALL = "1" takes WithHuman out
 # of the folder instead, keeping other hooks. See configure.py for what it changes.
 # $env:WITHHUMAN_KEY is the user's key from the security team, when the engine issues keys.
 # WITHHUMAN_CLIENT_ID (and WITHHUMAN_KEY) are set for new windows and for this one.
@@ -28,6 +29,7 @@
     $bridges = @{
         codex = @("codex/withhuman-hook.py", "codex/codex_transcript.py")
         cursor = @("cursor/withhuman-hook.py")
+        hermes = @("hermes/__init__.py", "hermes/plugin.yaml", "hermes/withhuman-hook.py")
     }
     $files = @("configure.py", "hooks/pre-tool-use.py")
     if ($agent -ne "claude") {

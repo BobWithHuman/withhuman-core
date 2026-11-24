@@ -29,7 +29,8 @@ the engine this device reports to, and every hook below is written against it.
 The setup-project.sh and setup-project.ps1 wrappers fetch this file and the hook, then run it.
 
 With --scope user or --scope managed it sets Claude Code up for every folder instead of one
-project (Codex is set up per project only):
+project (Codex is set up per project only; Hermes Agent, --agent hermes, per Hermes profile, as a
+plugin in $HERMES_HOME/plugins/withhuman that every session of the profile loads):
 
 - user: the hooks go in the user's own settings (~/.claude/settings.json) and the hook in
   ~/.config/withhuman/hooks, for every folder this user works in; no administrator rights, and the
@@ -179,6 +180,18 @@ class AgentSetup:
     notes = ()
     #: Printed once it is taken out again.
     uninstall_notes = ()
+    #: Set up in a project folder, as Claude Code's project setup is. An agent that keeps its
+    #: setup elsewhere (a profile of its own) overrides `install` and `remove`.
+    per_project = True
+
+    def install(self, args, project, stamp, report):
+        """Sets the agent up; returns where its setup was written and the installed bridge."""
+        return setup_agent(self, args, project, stamp, report)
+
+    def remove(self, project, stamp, report):
+        """Takes the agent's setup out again; see [`uninstall_agent`]."""
+        uninstall_agent(self, project, stamp, report)
+
     #: A file the setup writes beside the hook, for an agent whose command cannot carry the
     #: engine's address. None when the command carries it.
     server_file = None
@@ -338,8 +351,87 @@ class CursorSetup(AgentSetup):
         return removed
 
 
+def hermes_home():
+    """The Hermes profile being set up, as Hermes finds it: HERMES_HOME, else its platform
+    default, %LOCALAPPDATA%\\hermes on Windows (where the desktop app keeps it) and ~/.hermes
+    elsewhere."""
+    home = os.environ.get("HERMES_HOME", "").strip()
+    if home:
+        return Path(os.path.expandvars(home)).expanduser().resolve()
+    if os.name == "nt":
+        local = os.environ.get("LOCALAPPDATA", "").strip()
+        return (Path(local) if local else Path.home() / "AppData" / "Local") / "hermes"
+    return Path.home() / ".hermes"
+
+
+class HermesSetup(AgentSetup):
+    """Hermes Agent runs every session of a profile in one gateway, which loads plugins from the
+    profile and never from a project folder: WithHuman is a plugin of the profile, for every
+    folder its sessions run in. The plugin keeps the engine's address beside itself."""
+
+    kind = "hermes"
+    name = "Hermes"
+    hook = "withhuman-hook.py"
+    #: The plugin's folder name and the name `hermes plugins enable` takes.
+    plugin = "withhuman"
+    files = ("__init__.py", "plugin.yaml", "withhuman-hook.py") + SHARED_FILES
+    per_project = False
+    notes = ("Next: restart Hermes (hermes gateway restart) so it loads the plugin. It then runs",
+             "for every session of this profile, in every folder; another profile (HERMES_HOME)",
+             "is set up on its own.")
+    uninstall_notes = ("WithHuman is removed from this Hermes profile; restart Hermes "
+                       "(hermes gateway restart) for it to stop.",)
+
+    def folder(self):
+        return hermes_home() / "plugins" / self.plugin
+
+    def hermes(self, *words):
+        """Runs the Hermes CLI on this profile; whether it ran and what it said."""
+        command = shutil.which("hermes")
+        if not command:
+            return False, "the hermes command is not on PATH"
+        try:
+            result = subprocess.run([command, *words], capture_output=True, text=True,
+                                    encoding="utf-8", errors="replace", timeout=300,
+                                    env={**os.environ, "HERMES_HOME": str(hermes_home())})
+        except subprocess.TimeoutExpired:
+            return False, f"`hermes {' '.join(words)}` did not finish in 300 seconds"
+        except OSError as error:
+            return False, f"the hermes command could not run: {error}"
+        return result.returncode == 0, (result.stdout + result.stderr).strip()
+
+    def install(self, args, project, stamp, report):
+        installed = self.folder()
+        if installed.exists() and installed.is_dir():
+            report.append(f"{installed}: earlier WithHuman plugin replaced")
+        installed.mkdir(parents=True, exist_ok=True)
+        for name in self.files:
+            source = self.source(name)
+            if not source.is_file():
+                sys.exit(f"hook file not found: {source}")
+            shutil.copyfile(source, installed / name)
+        (installed / self.hook).chmod(0o755)
+        state = installed / "withhuman-state"
+        state.mkdir(exist_ok=True)
+        (state / ".gitignore").write_text("*\n", encoding="utf-8")
+        save(installed / "withhuman.json", {"server": args.server})
+        enabled, output = self.hermes("plugins", "enable", self.plugin)
+        if not enabled:
+            report.append(f"Hermes plugin not enabled ({output.splitlines()[-1] if output else 'no output'}): "
+                          f"run `hermes plugins enable {self.plugin}` for this profile")
+        return installed, installed / self.hook
+
+    def remove(self, project, stamp, report):
+        installed = self.folder()
+        if not (installed / "plugin.yaml").is_file():
+            return
+        self.hermes("plugins", "disable", self.plugin)
+        shutil.rmtree(installed)
+        report.append(f"{installed}: removed")
+
+
 #: Every agent but Claude Code, by `--agent` value.
-AGENTS = {agent.kind: agent for agent in (CodexSetup(), CursorSetup())}
+AGENTS = {agent.kind: agent for agent in (CodexSetup(), CursorSetup(), HermesSetup())}
 
 
 def is_withhuman(hook):
@@ -786,8 +878,11 @@ def reset(projects, stamp, report):
     uninstall_global("managed", stamp, report)
     for home in user_homes():
         uninstall_user(home, stamp, report)
+    for agent in AGENTS.values():
+        if not agent.per_project:
+            agent.remove(None, stamp, report)
     for project in projects:
-        for kind in ("claude", *AGENTS):
+        for kind in ("claude", *(k for k, agent in AGENTS.items() if agent.per_project)):
             uninstall(kind, project, stamp, report)
 
 
@@ -840,30 +935,42 @@ def uninstall(kind, project, stamp, report):
     device's client ID and the user's own settings are left alone."""
     agent = AGENTS.get(kind)
     if agent:
-        path = project / agent.directory / agent.config
-        if path.exists():
-            config = load(path)
-            removed = agent.strip(config)
-            if removed:
-                report.append(f"{path}: {removed} WithHuman hook(s) removed, copy at {backup(path, stamp)}")
-                save(path, config)
-        installed = project / agent.directory / "hooks"
-        files = [installed / name for name in agent.files]
-        if agent.server_file:
-            files.append(installed / agent.server_file)
-    else:
-        for path in (project / ".claude" / "settings.json", project / ".claude" / "settings.local.json"):
-            clean(path, stamp, report)
-        installed = project / ".claude" / "hooks"
-        files = [installed / HOOK_NAME]
+        agent.remove(project, stamp, report)
+        return
+    for path in (project / ".claude" / "settings.json", project / ".claude" / "settings.local.json"):
+        clean(path, stamp, report)
+    installed = project / ".claude" / "hooks"
+    remove_files(installed, [installed / HOOK_NAME], report)
+
+
+def uninstall_agent(agent, project, stamp, report):
+    """Takes an agent's project setup out: its entries in the agent's hooks file and the bridge
+    files and session state it installed."""
+    path = project / agent.directory / agent.config
+    if path.exists():
+        config = load(path)
+        removed = agent.strip(config)
+        if removed:
+            report.append(f"{path}: {removed} WithHuman hook(s) removed, copy at {backup(path, stamp)}")
+            save(path, config)
+    installed = project / agent.directory / "hooks"
+    state = installed / "withhuman-state"
+    if state.is_dir():
+        shutil.rmtree(state)
+        report.append(f"{state}: removed")
+    files = [installed / name for name in agent.files]
+    if agent.server_file:
+        files.append(installed / agent.server_file)
+    remove_files(installed, files, report)
+
+
+def remove_files(installed, files, report):
+    """Removes the hook files WithHuman installed in `installed`, their compiled copies, and the
+    folder once nothing else is left in it."""
     for path in files:
         if path.is_file():
             path.unlink()
             report.append(f"{path}: removed")
-    state = installed / "withhuman-state"
-    if agent and state.is_dir():
-        shutil.rmtree(state)
-        report.append(f"{state}: removed")
     # Python's compiled copies of the hook files; anyone else's stay.
     cache = installed / "__pycache__"
     if cache.is_dir():
@@ -931,8 +1038,10 @@ def main():
     if sys.version_info < (3, 8):
         sys.exit("WithHuman's hook needs Python 3.8 or later")
     if args.scope != "project" and args.agent != "claude":
-        sys.exit("--scope user and managed are for Claude Code; "
-                 f"{AGENTS[args.agent].name} is set up per project")
+        agent = AGENTS[args.agent]
+        sys.exit("--scope user and managed are for Claude Code; " + (
+            f"{agent.name} is set up per project" if agent.per_project
+            else f"{agent.name} is set up per profile (HERMES_HOME)"))
     if args.managed_hooks_only and args.scope != "managed":
         sys.exit("--managed-hooks-only goes with --scope managed")
     if args.scope == "managed" and args.key:
@@ -988,16 +1097,18 @@ def main():
         stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         report = []
         key_path, key = keep_key(args.key)
-        path, hook = setup_agent(agent, args, project, stamp, report)
+        path, hook = agent.install(args, project, stamp, report)
         id_path, value = client_id(args.team)
         if not args.no_persist:
             persist(id_path, value, stamp, report)
         version = hook_version(hook.parent / name for name in agent.files)
-        notes = finish(args, value, key_path, key, agent.kind, project, version, stamp, report)
+        # An agent set up outside a project is registered with where its setup lives.
+        where = project if agent.per_project else path
+        notes = finish(args, value, key_path, key, agent.kind, where, version, stamp, report)
         for line in report:
             print(line)
         print(f"WithHuman {agent.name} hooks written to {path}")
-        print(f"Hook: {hook} (run with {sys.executable})")
+        print(f"Hook: {hook} (run with {sys.executable if agent.per_project else agent.name + ' Python'})")
         print(f"WITHHUMAN_CLIENT_ID={value}")
         for line in notes:
             print(line)

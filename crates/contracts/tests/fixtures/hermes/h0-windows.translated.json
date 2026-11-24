@@ -1,0 +1,1244 @@
+[
+  {
+    "claude_event": "SessionStart",
+    "hermes_hook": "on_session_start",
+    "request": {
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "SessionStart",
+      "model": "mock-model",
+      "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+      "source": "cli",
+      "transcript_path": null
+    },
+    "scenario": "s1_basic"
+  },
+  {
+    "claude_event": "UserPromptSubmit",
+    "hermes_hook": "pre_llm_call",
+    "request": {
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "UserPromptSubmit",
+      "prompt": "S1 워크스페이스를 점검해줘",
+      "prompt_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0",
+      "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+      "transcript_path": null
+    },
+    "scenario": "s1_basic"
+  },
+  {
+    "claude_event": "MessageDisplay",
+    "hermes_hook": "post_api_request",
+    "request": {
+      "delta": "[의도] 사용자는 워크스페이스 상태를 확인하고 싶음 (확신도 높음)",
+      "final": true,
+      "hook_event_name": "MessageDisplay",
+      "index": 0,
+      "message_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0:api:1",
+      "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+      "turn_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0"
+    },
+    "scenario": "s1_basic"
+  },
+  {
+    "claude_event": "PreToolUse",
+    "hermes_hook": "pre_tool_call",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0",
+      "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+      "tool_input": {
+        "command": "cd sub && pwd"
+      },
+      "tool_name": "Bash",
+      "tool_use_id": "call_s1_cd"
+    },
+    "scenario": "s1_basic"
+  },
+  {
+    "claude_event": "PostToolUse",
+    "hermes_hook": "post_tool_call",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "PostToolUse",
+      "prompt_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0",
+      "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+      "tool_input": {
+        "command": "cd sub && pwd"
+      },
+      "tool_name": "Bash",
+      "tool_response": {
+        "stderr": "",
+        "stdout": "/c/work/project/sub"
+      },
+      "tool_use_id": "call_s1_cd"
+    },
+    "scenario": "s1_basic"
+  },
+  {
+    "claude_event": "",
+    "hermes_hook": "post_api_request",
+    "request": null,
+    "scenario": "s1_basic"
+  },
+  {
+    "claude_event": "PreToolUse",
+    "hermes_hook": "pre_tool_call",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "C:\\work\\project\\sub",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0",
+      "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+      "tool_input": {
+        "command": "pwd"
+      },
+      "tool_name": "Bash",
+      "tool_use_id": "call_s1_pwd"
+    },
+    "scenario": "s1_basic"
+  },
+  {
+    "claude_event": "PostToolUse",
+    "hermes_hook": "post_tool_call",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "C:\\work\\project\\sub",
+      "hook_event_name": "PostToolUse",
+      "prompt_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0",
+      "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+      "tool_input": {
+        "command": "pwd"
+      },
+      "tool_name": "Bash",
+      "tool_response": {
+        "stderr": "",
+        "stdout": "/c/work/project/sub"
+      },
+      "tool_use_id": "call_s1_pwd"
+    },
+    "scenario": "s1_basic"
+  },
+  {
+    "claude_event": "",
+    "hermes_hook": "post_api_request",
+    "request": null,
+    "scenario": "s1_basic"
+  },
+  {
+    "claude_event": "PreToolUse",
+    "hermes_hook": "pre_tool_call",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0",
+      "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+      "tool_input": {
+        "content": "hello",
+        "file_path": "C:/work/project/probe.txt"
+      },
+      "tool_name": "Write",
+      "tool_use_id": "call_s1_write"
+    },
+    "scenario": "s1_basic"
+  },
+  {
+    "claude_event": "PostToolUse",
+    "hermes_hook": "post_tool_call",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "PostToolUse",
+      "prompt_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0",
+      "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+      "tool_input": {
+        "content": "hello",
+        "file_path": "C:/work/project/probe.txt"
+      },
+      "tool_name": "Write",
+      "tool_response": {
+        "content": "hello",
+        "filePath": "C:/work/project/probe.txt",
+        "originalFile": null,
+        "structuredPatch": [],
+        "type": "create",
+        "userModified": false
+      },
+      "tool_use_id": "call_s1_write"
+    },
+    "scenario": "s1_basic"
+  },
+  {
+    "claude_event": "",
+    "hermes_hook": "post_api_request",
+    "request": null,
+    "scenario": "s1_basic"
+  },
+  {
+    "claude_event": "PreToolUse",
+    "hermes_hook": "pre_tool_call",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "C:\\work\\project\\sub",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0",
+      "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+      "tool_input": {
+        "command": "exit 3"
+      },
+      "tool_name": "Bash",
+      "tool_use_id": "call_s1_exit"
+    },
+    "scenario": "s1_basic"
+  },
+  {
+    "claude_event": "PostToolUseFailure",
+    "hermes_hook": "post_tool_call",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "C:\\work\\project\\sub",
+      "error": "exit code 3",
+      "hook_event_name": "PostToolUseFailure",
+      "prompt_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0",
+      "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+      "tool_input": {
+        "command": "exit 3"
+      },
+      "tool_name": "Bash",
+      "tool_use_id": "call_s1_exit"
+    },
+    "scenario": "s1_basic"
+  },
+  {
+    "claude_event": "",
+    "hermes_hook": "post_api_request",
+    "request": null,
+    "scenario": "s1_basic"
+  },
+  {
+    "claude_event": "PreToolUse",
+    "hermes_hook": "pre_tool_call",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0",
+      "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+      "tool_input": {
+        "file_path": "C:/work/project/README.md"
+      },
+      "tool_name": "Read",
+      "tool_use_id": "call_s1_read"
+    },
+    "scenario": "s1_basic"
+  },
+  {
+    "claude_event": "PostToolUse",
+    "hermes_hook": "post_tool_call",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "PostToolUse",
+      "prompt_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0",
+      "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+      "tool_input": {
+        "file_path": "C:/work/project/README.md"
+      },
+      "tool_name": "Read",
+      "tool_response": {
+        "content": "1|# PoC workspace\n2|hello",
+        "file_size": 24,
+        "is_binary": false,
+        "is_image": false,
+        "not_found": false,
+        "total_lines": 2,
+        "truncated": false
+      },
+      "tool_use_id": "call_s1_read"
+    },
+    "scenario": "s1_basic"
+  },
+  {
+    "claude_event": "MessageDisplay",
+    "hermes_hook": "post_api_request",
+    "request": {
+      "delta": "[완료] 시나리오가 끝났습니다.",
+      "final": true,
+      "hook_event_name": "MessageDisplay",
+      "index": 0,
+      "message_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0:api:6",
+      "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+      "turn_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0"
+    },
+    "scenario": "s1_basic"
+  },
+  {
+    "claude_event": "PostToolBatch",
+    "hermes_hook": "on_session_end",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "hook_event_name": "PostToolBatch",
+      "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+      "tool_calls": []
+    },
+    "scenario": "s1_basic"
+  },
+  {
+    "claude_event": "SessionEnd",
+    "hermes_hook": "on_session_finalize",
+    "request": {
+      "cwd": "C:\\Users\\dev",
+      "hook_event_name": "SessionEnd",
+      "reason": "cli_close",
+      "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+      "transcript_path": null
+    },
+    "scenario": "s1_basic"
+  },
+  {
+    "claude_event": "SessionStart",
+    "hermes_hook": "on_session_start",
+    "request": {
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "SessionStart",
+      "model": "mock-model",
+      "session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+      "source": "cli",
+      "transcript_path": null
+    },
+    "scenario": "s2_parallel"
+  },
+  {
+    "claude_event": "UserPromptSubmit",
+    "hermes_hook": "pre_llm_call",
+    "request": {
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "UserPromptSubmit",
+      "prompt": "S2 세 가지를 한 번에 해줘",
+      "prompt_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:ad5ecbd2",
+      "session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+      "transcript_path": null
+    },
+    "scenario": "s2_parallel"
+  },
+  {
+    "claude_event": "MessageDisplay",
+    "hermes_hook": "post_api_request",
+    "request": {
+      "delta": "[의도] 사용자는 세 가지 정보를 한 번에 보고 싶음",
+      "final": true,
+      "hook_event_name": "MessageDisplay",
+      "index": 0,
+      "message_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:ad5ecbd2:api:1",
+      "session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+      "turn_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:ad5ecbd2"
+    },
+    "scenario": "s2_parallel"
+  },
+  {
+    "claude_event": "PreToolUse",
+    "hermes_hook": "pre_tool_call",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:ad5ecbd2",
+      "session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+      "tool_input": {
+        "file_path": "C:/work/project/README.md"
+      },
+      "tool_name": "Read",
+      "tool_use_id": "call_s2_a"
+    },
+    "scenario": "s2_parallel"
+  },
+  {
+    "claude_event": "PostToolUse",
+    "hermes_hook": "post_tool_call",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "PostToolUse",
+      "prompt_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:ad5ecbd2",
+      "session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+      "tool_input": {
+        "file_path": "C:/work/project/README.md"
+      },
+      "tool_name": "Read",
+      "tool_response": {
+        "content": "1|# PoC workspace\n2|hello",
+        "file_size": 24,
+        "is_binary": false,
+        "is_image": false,
+        "not_found": false,
+        "total_lines": 2,
+        "truncated": false
+      },
+      "tool_use_id": "call_s2_a"
+    },
+    "scenario": "s2_parallel"
+  },
+  {
+    "claude_event": "PreToolUse",
+    "hermes_hook": "pre_tool_call",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:ad5ecbd2",
+      "session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+      "tool_input": {
+        "command": "echo parallel"
+      },
+      "tool_name": "Bash",
+      "tool_use_id": "call_s2_b"
+    },
+    "scenario": "s2_parallel"
+  },
+  {
+    "claude_event": "PostToolUse",
+    "hermes_hook": "post_tool_call",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "PostToolUse",
+      "prompt_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:ad5ecbd2",
+      "session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+      "tool_input": {
+        "command": "echo parallel"
+      },
+      "tool_name": "Bash",
+      "tool_response": {
+        "stderr": "",
+        "stdout": "parallel"
+      },
+      "tool_use_id": "call_s2_b"
+    },
+    "scenario": "s2_parallel"
+  },
+  {
+    "claude_event": "PreToolUse",
+    "hermes_hook": "pre_tool_call",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:ad5ecbd2",
+      "session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+      "tool_input": {
+        "output_mode": "content",
+        "path": "C:/work/project",
+        "pattern": "hello"
+      },
+      "tool_name": "Grep",
+      "tool_use_id": "call_s2_c"
+    },
+    "scenario": "s2_parallel"
+  },
+  {
+    "claude_event": "PostToolUse",
+    "hermes_hook": "post_tool_call",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "PostToolUse",
+      "prompt_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:ad5ecbd2",
+      "session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+      "tool_input": {
+        "output_mode": "content",
+        "path": "C:/work/project",
+        "pattern": "hello"
+      },
+      "tool_name": "Grep",
+      "tool_response": "{\"matches\":[{\"content\":\"hello\",\"line\":2,\"path\":\"/c/work/project/README.md\"}],\"total_count\":1}",
+      "tool_use_id": "call_s2_c"
+    },
+    "scenario": "s2_parallel"
+  },
+  {
+    "claude_event": "MessageDisplay",
+    "hermes_hook": "post_api_request",
+    "request": {
+      "delta": "[완료] 시나리오가 끝났습니다.",
+      "final": true,
+      "hook_event_name": "MessageDisplay",
+      "index": 0,
+      "message_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:ad5ecbd2:api:2",
+      "session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+      "turn_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:ad5ecbd2"
+    },
+    "scenario": "s2_parallel"
+  },
+  {
+    "claude_event": "PostToolBatch",
+    "hermes_hook": "on_session_end",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "hook_event_name": "PostToolBatch",
+      "session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+      "tool_calls": []
+    },
+    "scenario": "s2_parallel"
+  },
+  {
+    "claude_event": "SessionEnd",
+    "hermes_hook": "on_session_finalize",
+    "request": {
+      "cwd": "C:\\Users\\dev",
+      "hook_event_name": "SessionEnd",
+      "reason": "cli_close",
+      "session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+      "transcript_path": null
+    },
+    "scenario": "s2_parallel"
+  },
+  {
+    "claude_event": "SessionStart",
+    "hermes_hook": "on_session_start",
+    "request": {
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "SessionStart",
+      "model": "mock-model",
+      "session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+      "source": "cli",
+      "transcript_path": null
+    },
+    "scenario": "s3_block"
+  },
+  {
+    "claude_event": "UserPromptSubmit",
+    "hermes_hook": "pre_llm_call",
+    "request": {
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "UserPromptSubmit",
+      "prompt": "S3 파일 세 개 만들어줘",
+      "prompt_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:b2da1e97",
+      "session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+      "transcript_path": null
+    },
+    "scenario": "s3_block"
+  },
+  {
+    "claude_event": "MessageDisplay",
+    "hermes_hook": "post_api_request",
+    "request": {
+      "delta": "[의도] 사용자는 파일을 만들고 싶음",
+      "final": true,
+      "hook_event_name": "MessageDisplay",
+      "index": 0,
+      "message_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:b2da1e97:api:1",
+      "session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+      "turn_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:b2da1e97"
+    },
+    "scenario": "s3_block"
+  },
+  {
+    "claude_event": "PreToolUse",
+    "hermes_hook": "pre_tool_call",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:b2da1e97",
+      "session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+      "tool_input": {
+        "command": "echo BLOCKME > blocked.txt"
+      },
+      "tool_name": "Bash",
+      "tool_use_id": "call_s3_block"
+    },
+    "scenario": "s3_block"
+  },
+  {
+    "claude_event": "",
+    "hermes_hook": "post_tool_call",
+    "request": null,
+    "scenario": "s3_block"
+  },
+  {
+    "claude_event": "",
+    "hermes_hook": "post_api_request",
+    "request": null,
+    "scenario": "s3_block"
+  },
+  {
+    "claude_event": "PreToolUse",
+    "hermes_hook": "pre_tool_call",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:b2da1e97",
+      "session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+      "tool_input": {
+        "command": "echo RAISEME > raised.txt"
+      },
+      "tool_name": "Bash",
+      "tool_use_id": "call_s3_raise"
+    },
+    "scenario": "s3_block"
+  },
+  {
+    "claude_event": "",
+    "hermes_hook": "post_tool_call",
+    "request": null,
+    "scenario": "s3_block"
+  },
+  {
+    "claude_event": "",
+    "hermes_hook": "post_api_request",
+    "request": null,
+    "scenario": "s3_block"
+  },
+  {
+    "claude_event": "PreToolUse",
+    "hermes_hook": "pre_tool_call",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:b2da1e97",
+      "session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+      "tool_input": {
+        "content": "x",
+        "file_path": "C:/work/project/BLOCKME.txt"
+      },
+      "tool_name": "Write",
+      "tool_use_id": "call_s3_write"
+    },
+    "scenario": "s3_block"
+  },
+  {
+    "claude_event": "",
+    "hermes_hook": "post_tool_call",
+    "request": null,
+    "scenario": "s3_block"
+  },
+  {
+    "claude_event": "MessageDisplay",
+    "hermes_hook": "post_api_request",
+    "request": {
+      "delta": "[완료] 시나리오가 끝났습니다.",
+      "final": true,
+      "hook_event_name": "MessageDisplay",
+      "index": 0,
+      "message_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:b2da1e97:api:4",
+      "session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+      "turn_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:b2da1e97"
+    },
+    "scenario": "s3_block"
+  },
+  {
+    "claude_event": "PostToolBatch",
+    "hermes_hook": "on_session_end",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "hook_event_name": "PostToolBatch",
+      "session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+      "tool_calls": []
+    },
+    "scenario": "s3_block"
+  },
+  {
+    "claude_event": "SessionEnd",
+    "hermes_hook": "on_session_finalize",
+    "request": {
+      "cwd": "C:\\Users\\dev",
+      "hook_event_name": "SessionEnd",
+      "reason": "cli_close",
+      "session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+      "transcript_path": null
+    },
+    "scenario": "s3_block"
+  },
+  {
+    "claude_event": "SessionStart",
+    "hermes_hook": "on_session_start",
+    "request": {
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "SessionStart",
+      "model": "mock-model",
+      "session_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+      "source": "cli",
+      "transcript_path": null
+    },
+    "scenario": "s5_execute_code"
+  },
+  {
+    "claude_event": "UserPromptSubmit",
+    "hermes_hook": "pre_llm_call",
+    "request": {
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "UserPromptSubmit",
+      "prompt": "S5 스크립트로 처리해줘",
+      "prompt_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:eaa06d41",
+      "session_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+      "transcript_path": null
+    },
+    "scenario": "s5_execute_code"
+  },
+  {
+    "claude_event": "MessageDisplay",
+    "hermes_hook": "post_api_request",
+    "request": {
+      "delta": "[의도] 사용자는 스크립트로 작업하고 싶음",
+      "final": true,
+      "hook_event_name": "MessageDisplay",
+      "index": 0,
+      "message_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:eaa06d41:api:1",
+      "session_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+      "turn_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:eaa06d41"
+    },
+    "scenario": "s5_execute_code"
+  },
+  {
+    "claude_event": "PreToolUse",
+    "hermes_hook": "pre_tool_call",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:eaa06d41",
+      "session_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+      "tool_input": {
+        "command": "python3 - <<'WITHHUMAN_HERMES_SCRIPT'\nfrom hermes_tools import terminal\nprint(terminal('echo NESTED-BLOCKME > nested.txt'))\nprint(terminal('echo nested-ok'))\n\nWITHHUMAN_HERMES_SCRIPT"
+      },
+      "tool_name": "Bash",
+      "tool_use_id": "call_s5_code"
+    },
+    "scenario": "s5_execute_code"
+  },
+  {
+    "claude_event": "PreToolUse",
+    "hermes_hook": "pre_tool_call",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:eaa06d41",
+      "session_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+      "tool_input": {
+        "command": "echo NESTED-BLOCKME > nested.txt"
+      },
+      "tool_name": "Bash",
+      "tool_use_id": "withhuman-script-1"
+    },
+    "scenario": "s5_execute_code"
+  },
+  {
+    "claude_event": "PreToolUse",
+    "hermes_hook": "pre_tool_call",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:eaa06d41",
+      "session_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+      "tool_input": {
+        "command": "echo nested-ok"
+      },
+      "tool_name": "Bash",
+      "tool_use_id": "withhuman-script-2"
+    },
+    "scenario": "s5_execute_code"
+  },
+  {
+    "claude_event": "PostToolUse",
+    "hermes_hook": "post_tool_call",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "PostToolUse",
+      "prompt_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:eaa06d41",
+      "session_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+      "tool_input": {
+        "command": "python3 - <<'WITHHUMAN_HERMES_SCRIPT'\nfrom hermes_tools import terminal\nprint(terminal('echo NESTED-BLOCKME > nested.txt'))\nprint(terminal('echo nested-ok'))\n\nWITHHUMAN_HERMES_SCRIPT"
+      },
+      "tool_name": "Bash",
+      "tool_response": {
+        "stderr": "",
+        "stdout": "{'error': 'WithHuman: nested call blocked'}\n{'output': 'nested-ok', 'exit_code': 0, 'error': None}\n"
+      },
+      "tool_use_id": "call_s5_code"
+    },
+    "scenario": "s5_execute_code"
+  },
+  {
+    "claude_event": "MessageDisplay",
+    "hermes_hook": "post_api_request",
+    "request": {
+      "delta": "[완료] 시나리오가 끝났습니다.",
+      "final": true,
+      "hook_event_name": "MessageDisplay",
+      "index": 0,
+      "message_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:eaa06d41:api:2",
+      "session_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+      "turn_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:eaa06d41"
+    },
+    "scenario": "s5_execute_code"
+  },
+  {
+    "claude_event": "PostToolBatch",
+    "hermes_hook": "on_session_end",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "hook_event_name": "PostToolBatch",
+      "session_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+      "tool_calls": []
+    },
+    "scenario": "s5_execute_code"
+  },
+  {
+    "claude_event": "SessionEnd",
+    "hermes_hook": "on_session_finalize",
+    "request": {
+      "cwd": "C:\\Users\\dev",
+      "hook_event_name": "SessionEnd",
+      "reason": "cli_close",
+      "session_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+      "transcript_path": null
+    },
+    "scenario": "s5_execute_code"
+  },
+  {
+    "claude_event": "SessionStart",
+    "hermes_hook": "on_session_start",
+    "request": {
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "SessionStart",
+      "model": "mock-model",
+      "session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+      "source": "cli",
+      "transcript_path": null
+    },
+    "scenario": "s6_delegate"
+  },
+  {
+    "claude_event": "UserPromptSubmit",
+    "hermes_hook": "pre_llm_call",
+    "request": {
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "UserPromptSubmit",
+      "prompt": "S6-DELEGATE 하위 작업을 맡겨줘",
+      "prompt_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:d5e9ee9e",
+      "session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+      "transcript_path": null
+    },
+    "scenario": "s6_delegate"
+  },
+  {
+    "claude_event": "MessageDisplay",
+    "hermes_hook": "post_api_request",
+    "request": {
+      "delta": "[의도] 사용자는 하위 작업을 위임하고 싶음",
+      "final": true,
+      "hook_event_name": "MessageDisplay",
+      "index": 0,
+      "message_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:d5e9ee9e:api:1",
+      "session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+      "turn_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:d5e9ee9e"
+    },
+    "scenario": "s6_delegate"
+  },
+  {
+    "claude_event": "PreToolUse",
+    "hermes_hook": "pre_tool_call",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:d5e9ee9e",
+      "session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+      "tool_input": {
+        "description": "CHILD-GOAL-7: run echo child-call",
+        "prompt": "CHILD-GOAL-7: run echo child-call\n\npoc"
+      },
+      "tool_name": "Task",
+      "tool_use_id": "call_s6_delegate"
+    },
+    "scenario": "s6_delegate"
+  },
+  {
+    "claude_event": "SubagentStart",
+    "hermes_hook": "subagent_start",
+    "request": {
+      "agent_id": "20261123_165456_d84ed9",
+      "agent_type": "leaf",
+      "hook_event_name": "SubagentStart",
+      "session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c"
+    },
+    "scenario": "s6_delegate"
+  },
+  {
+    "claude_event": "",
+    "hermes_hook": "on_session_start",
+    "request": null,
+    "scenario": "s6_delegate"
+  },
+  {
+    "claude_event": "",
+    "hermes_hook": "pre_llm_call",
+    "request": null,
+    "scenario": "s6_delegate"
+  },
+  {
+    "claude_event": "",
+    "hermes_hook": "post_api_request",
+    "request": null,
+    "scenario": "s6_delegate"
+  },
+  {
+    "claude_event": "PreToolUse",
+    "hermes_hook": "pre_tool_call",
+    "request": {
+      "agent_id": "20261123_165456_d84ed9",
+      "agent_type": null,
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "20261123_165456_d84ed9:sa-0-e6302e88:1fcd283b",
+      "session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+      "tool_input": {
+        "command": "echo child-call"
+      },
+      "tool_name": "Bash",
+      "tool_use_id": "call_s6_child"
+    },
+    "scenario": "s6_delegate"
+  },
+  {
+    "claude_event": "PostToolUse",
+    "hermes_hook": "post_tool_call",
+    "request": {
+      "agent_id": "20261123_165456_d84ed9",
+      "agent_type": null,
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "PostToolUse",
+      "prompt_id": "20261123_165456_d84ed9:sa-0-e6302e88:1fcd283b",
+      "session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+      "tool_input": {
+        "command": "echo child-call"
+      },
+      "tool_name": "Bash",
+      "tool_response": {
+        "stderr": "",
+        "stdout": "child-call"
+      },
+      "tool_use_id": "call_s6_child"
+    },
+    "scenario": "s6_delegate"
+  },
+  {
+    "claude_event": "",
+    "hermes_hook": "post_api_request",
+    "request": null,
+    "scenario": "s6_delegate"
+  },
+  {
+    "claude_event": "",
+    "hermes_hook": "on_session_end",
+    "request": null,
+    "scenario": "s6_delegate"
+  },
+  {
+    "claude_event": "SubagentStop",
+    "hermes_hook": "subagent_stop",
+    "request": {
+      "agent_id": "20261123_165456_d84ed9",
+      "agent_type": "leaf",
+      "hook_event_name": "SubagentStop",
+      "session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c"
+    },
+    "scenario": "s6_delegate"
+  },
+  {
+    "claude_event": "PostToolUse",
+    "hermes_hook": "post_tool_call",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "PostToolUse",
+      "prompt_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:d5e9ee9e",
+      "session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+      "tool_input": {
+        "description": "CHILD-GOAL-7: run echo child-call",
+        "prompt": "CHILD-GOAL-7: run echo child-call\n\npoc"
+      },
+      "tool_name": "Task",
+      "tool_response": "{\"delegation_id\":\"deleg_fd0f72ca\",\"live_transcripts\":[\"C:\\\\Users\\\\dev\\\\.hermes\\\\cache\\\\delegation\\\\live\\\\deleg_fd0f72ca\\\\task-0.log\"],\"note\":\"background=true is not available in this session — it cannot receive a detached subagent result after the turn ends (a finite chat using -Q, --oneshot, or non-TTY stdio, `hermes -z`, a /bg background task, a cron job, a Kanban worker, or a stateless HTTP endpoint). The subagent(s) ran SYNCHRONOUSLY and the result is included above.\",\"results\":[{\"api_calls\":2,\"cost_status\":\"unknown\",\"cost_usd\":0.0,\"duration_seconds\":1.22,\"exit_reason\":\"completed\",\"live_transcript\":\"C:\\\\Users\\\\dev\\\\.hermes\\\\cache\\\\delegation\\\\live\\\\deleg_fd0f72ca\\\\task-0.log\",\"model\":\"mock-model\",\"status\":\"completed\",\"subagent_id\":\"sa-0-e6302e88\",\"summary\":\"[완료] 시나리오가 끝났습니다.\",\"task_index\":0,\"tokens\":{\"input\":200,\"output\":40},\"tool_trace\":[{\"args_bytes\":30,\"input_summary\":{\"argument_keys\":[\"command\"],\"targets\":{}},\"result_bytes\":55,\"status\":\"ok\",\"tool\":\"terminal\"}],\"truncated\":false}],\"total_duration_seconds\":1.28}",
+      "tool_use_id": "call_s6_delegate"
+    },
+    "scenario": "s6_delegate"
+  },
+  {
+    "claude_event": "MessageDisplay",
+    "hermes_hook": "post_api_request",
+    "request": {
+      "delta": "[완료] 시나리오가 끝났습니다.",
+      "final": true,
+      "hook_event_name": "MessageDisplay",
+      "index": 0,
+      "message_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:d5e9ee9e:api:2",
+      "session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+      "turn_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:d5e9ee9e"
+    },
+    "scenario": "s6_delegate"
+  },
+  {
+    "claude_event": "PostToolBatch",
+    "hermes_hook": "on_session_end",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "hook_event_name": "PostToolBatch",
+      "session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+      "tool_calls": []
+    },
+    "scenario": "s6_delegate"
+  },
+  {
+    "claude_event": "SessionEnd",
+    "hermes_hook": "on_session_finalize",
+    "request": {
+      "cwd": "C:\\Users\\dev",
+      "hook_event_name": "SessionEnd",
+      "reason": "cli_close",
+      "session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+      "transcript_path": null
+    },
+    "scenario": "s6_delegate"
+  },
+  {
+    "claude_event": "SessionStart",
+    "hermes_hook": "on_session_start",
+    "request": {
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "SessionStart",
+      "model": "mock-model",
+      "session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+      "source": "cli",
+      "transcript_path": null
+    },
+    "scenario": "s8_tool_call"
+  },
+  {
+    "claude_event": "UserPromptSubmit",
+    "hermes_hook": "pre_llm_call",
+    "request": {
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "UserPromptSubmit",
+      "prompt": "S8 지연 도구를 tool_call로 부르기",
+      "prompt_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:78e1d808",
+      "session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+      "transcript_path": null
+    },
+    "scenario": "s8_tool_call"
+  },
+  {
+    "claude_event": "MessageDisplay",
+    "hermes_hook": "post_api_request",
+    "request": {
+      "delta": "[의도] 사용자는 메아리를 듣고 싶음",
+      "final": true,
+      "hook_event_name": "MessageDisplay",
+      "index": 0,
+      "message_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:78e1d808:api:1",
+      "session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+      "turn_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:78e1d808"
+    },
+    "scenario": "s8_tool_call"
+  },
+  {
+    "claude_event": "PreToolUse",
+    "hermes_hook": "pre_tool_call",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:78e1d808",
+      "session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+      "tool_input": {
+        "text": "plain"
+      },
+      "tool_name": "withhuman_poc_echo",
+      "tool_use_id": "call_s8_ok"
+    },
+    "scenario": "s8_tool_call"
+  },
+  {
+    "claude_event": "PostToolUse",
+    "hermes_hook": "post_tool_call",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "PostToolUse",
+      "prompt_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:78e1d808",
+      "session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+      "tool_input": {
+        "text": "plain"
+      },
+      "tool_name": "withhuman_poc_echo",
+      "tool_response": "{\"echo\":\"plain\"}",
+      "tool_use_id": "call_s8_ok"
+    },
+    "scenario": "s8_tool_call"
+  },
+  {
+    "claude_event": "",
+    "hermes_hook": "post_api_request",
+    "request": null,
+    "scenario": "s8_tool_call"
+  },
+  {
+    "claude_event": "PreToolUse",
+    "hermes_hook": "pre_tool_call",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:78e1d808",
+      "session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+      "tool_input": {
+        "text": "BLOCKME"
+      },
+      "tool_name": "withhuman_poc_echo",
+      "tool_use_id": "call_s8_block"
+    },
+    "scenario": "s8_tool_call"
+  },
+  {
+    "claude_event": "",
+    "hermes_hook": "post_tool_call",
+    "request": null,
+    "scenario": "s8_tool_call"
+  },
+  {
+    "claude_event": "",
+    "hermes_hook": "post_api_request",
+    "request": null,
+    "scenario": "s8_tool_call"
+  },
+  {
+    "claude_event": "PreToolUse",
+    "hermes_hook": "pre_tool_call",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "C:\\work\\project",
+      "hook_event_name": "PreToolUse",
+      "prompt_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:78e1d808",
+      "session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+      "tool_input": {
+        "calls": [
+          {
+            "arguments": {
+              "command": "echo via-bridge"
+            },
+            "name": "terminal"
+          }
+        ]
+      },
+      "tool_name": "tool_call",
+      "tool_use_id": "call_s8_core"
+    },
+    "scenario": "s8_tool_call"
+  },
+  {
+    "claude_event": "PostToolUseFailure",
+    "hermes_hook": "post_tool_call",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "cwd": "C:\\work\\project",
+      "error": "'terminal' is a directly-listed tool, not a deferred one. Call it directly instead of via tool_call.",
+      "hook_event_name": "PostToolUseFailure",
+      "prompt_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:78e1d808",
+      "session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+      "tool_input": {
+        "calls": [
+          {
+            "arguments": {
+              "command": "echo via-bridge"
+            },
+            "name": "terminal"
+          }
+        ]
+      },
+      "tool_name": "tool_call",
+      "tool_use_id": "call_s8_core"
+    },
+    "scenario": "s8_tool_call"
+  },
+  {
+    "claude_event": "MessageDisplay",
+    "hermes_hook": "post_api_request",
+    "request": {
+      "delta": "[완료] 시나리오가 끝났습니다.",
+      "final": true,
+      "hook_event_name": "MessageDisplay",
+      "index": 0,
+      "message_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:78e1d808:api:4",
+      "session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+      "turn_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:78e1d808"
+    },
+    "scenario": "s8_tool_call"
+  },
+  {
+    "claude_event": "PostToolBatch",
+    "hermes_hook": "on_session_end",
+    "request": {
+      "agent_id": null,
+      "agent_type": null,
+      "hook_event_name": "PostToolBatch",
+      "session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+      "tool_calls": []
+    },
+    "scenario": "s8_tool_call"
+  },
+  {
+    "claude_event": "SessionEnd",
+    "hermes_hook": "on_session_finalize",
+    "request": {
+      "cwd": "C:\\Users\\dev",
+      "hook_event_name": "SessionEnd",
+      "reason": "cli_close",
+      "session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+      "transcript_path": null
+    },
+    "scenario": "s8_tool_call"
+  }
+]

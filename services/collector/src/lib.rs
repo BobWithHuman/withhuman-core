@@ -6,6 +6,7 @@ mod config;
 pub mod cursor;
 pub mod devices;
 mod ext_authz;
+pub mod hermes;
 mod http;
 mod intent;
 mod inventory;

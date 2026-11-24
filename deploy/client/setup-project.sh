@@ -7,7 +7,8 @@
 #     curl -fsSL https://raw.githubusercontent.com/BobWithHuman/withhuman-core/main/deploy/client/setup-project.sh | bash -s -- [team]
 #
 # WITHHUMAN_SERVER is the address of your own engine; WithHuman is self-hosted, so there is no
-# default. WITHHUMAN_KEY is the user's key from the security team, when the engine issues keys. WITHHUMAN_AGENT picks the agent: claude (default), codex or cursor. Running it again updates
+# default. WITHHUMAN_KEY is the user's key from the security team, when the engine issues keys. WITHHUMAN_AGENT picks the agent: claude (default), codex, cursor or hermes (Hermes is
+# set up for its profile, HERMES_HOME, not for the folder). Running it again updates
 # the setup; WITHHUMAN_UNINSTALL=1 takes WithHuman out of the folder instead, keeping other hooks.
 # From a checkout it uses the checkout's files; otherwise it fetches them from WITHHUMAN_REF
 # (default: main), or from WITHHUMAN_BASE_URL (a deploy/client folder served elsewhere, for a
@@ -26,7 +27,8 @@ case "$agent" in
   claude) ;;
   codex) files="$files hooks/withhuman_bridge.py codex/withhuman-hook.py codex/codex_transcript.py" ;;
   cursor) files="$files hooks/withhuman_bridge.py cursor/withhuman-hook.py" ;;
-  *) echo "WITHHUMAN_AGENT must be claude, codex or cursor: $agent" >&2; exit 1 ;;
+  hermes) files="$files hooks/withhuman_bridge.py hermes/__init__.py hermes/plugin.yaml hermes/withhuman-hook.py" ;;
+  *) echo "WITHHUMAN_AGENT must be claude, codex, cursor or hermes: $agent" >&2; exit 1 ;;
 esac
 
 if [ -z "${WITHHUMAN_SERVER:-}" ] && [ -z "${WITHHUMAN_UNINSTALL:-}" ]; then

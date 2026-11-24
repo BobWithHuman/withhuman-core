@@ -53,6 +53,7 @@ use crate::{
 pub static REGISTRY: &[&(dyn Agent + Sync)] = &[
     &crate::codex::Codex,
     &crate::cursor::Cursor,
+    &crate::hermes::Hermes,
     &crate::openclaw::OpenClaw,
 ];
 

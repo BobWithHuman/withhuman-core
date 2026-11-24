@@ -5,6 +5,7 @@ pub mod cursor;
 pub mod decisions;
 pub mod events;
 pub mod ext_authz;
+pub mod hermes;
 pub mod hooks;
 pub mod inventory;
 pub mod openclaw;

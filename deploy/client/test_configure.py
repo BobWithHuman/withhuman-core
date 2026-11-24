@@ -4,6 +4,7 @@ import http.server
 import json
 import importlib.util
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -640,6 +641,84 @@ class CursorConfigureTest(unittest.TestCase):
             capture_output=True, text=True, env=env, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(self.hooks_json.read_text())["hooks"], {})
+
+class HermesConfigureTest(unittest.TestCase):
+    """Hermes takes WithHuman as a plugin of its profile; a stand-in `hermes` records the CLI
+    calls the setup makes."""
+
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp()).resolve()
+        self.hermes_home = Path(tempfile.mkdtemp()).resolve()
+        self.bin = Path(tempfile.mkdtemp()).resolve()
+        self.calls = self.bin / "calls.txt"
+        if os.name == "nt":
+            (self.bin / "hermes.cmd").write_text(
+                f'@echo %* %HERMES_HOME%>> "{self.calls}"\r\n', encoding="utf-8")
+        else:
+            script = self.bin / "hermes"
+            script.write_text(f'#!/bin/sh\necho "$* $HERMES_HOME" >> "{self.calls}"\n')
+            script.chmod(0o755)
+
+    def configure(self, *extra, hermes=True):
+        # The device's own Hermes, if one is installed, is kept out of reach.
+        path = os.pathsep.join(entry for entry in os.environ.get("PATH", "").split(os.pathsep)
+                               if entry and not shutil.which("hermes", path=entry))
+        env = {**os.environ, "HOME": str(self.home), "USERPROFILE": str(self.home),
+               "HERMES_HOME": str(self.hermes_home), "SHELL": "/bin/zsh",
+               "PATH": (str(self.bin) + os.pathsep if hermes else "") + path}
+        env.pop("WITHHUMAN_SERVER", None)
+        env.pop("WITHHUMAN_KEY", None)
+        return subprocess.run(
+            [sys.executable, str(CONFIGURE), "--agent", "hermes", "--team", "lab",
+             "--server", SERVER, "--no-persist", "--skip-check", "--no-register", *extra],
+            capture_output=True, text=True, env=env, timeout=60,
+        )
+
+    def calls_made(self):
+        return self.calls.read_text().split("\n") if self.calls.exists() else []
+
+    def test_installs_the_plugin_in_the_profile_and_enables_it(self):
+        result = self.configure()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plugin = self.hermes_home / "plugins" / "withhuman"
+        for name in ("__init__.py", "plugin.yaml", "withhuman-hook.py", "withhuman_bridge.py",
+                     "pre-tool-use.py"):
+            self.assertTrue((plugin / name).is_file(), name)
+        self.assertEqual(json.loads((plugin / "withhuman.json").read_text()), {"server": SERVER})
+        self.assertTrue((plugin / "withhuman-state").is_dir())
+        self.assertIn("plugins enable withhuman", self.calls_made()[0])
+        self.assertIn(str(self.hermes_home), self.calls_made()[0])
+        self.assertIn("hermes gateway restart", result.stdout)
+
+    def test_says_how_to_enable_it_without_the_hermes_command(self):
+        result = self.configure(hermes=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("hermes plugins enable withhuman", result.stdout)
+
+    def test_takes_the_plugin_out_again(self):
+        self.configure()
+        result = self.configure("--uninstall")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.hermes_home / "plugins" / "withhuman").exists())
+        self.assertTrue(any("plugins disable withhuman" in line for line in self.calls_made()),
+                        self.calls_made())
+
+    def test_finds_the_profile_where_hermes_keeps_it(self):
+        spec = importlib.util.spec_from_file_location("withhuman_configure", CONFIGURE)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        local = self.home / "AppData" / "Local"
+        with mock.patch.dict(os.environ, {"LOCALAPPDATA": str(local)}):
+            os.environ.pop("HERMES_HOME", None)
+            expected = local / "hermes" if os.name == "nt" else Path.home() / ".hermes"
+            self.assertEqual(module.hermes_home(), expected)
+            os.environ["HERMES_HOME"] = str(self.hermes_home)
+            self.assertEqual(module.hermes_home(), self.hermes_home)
+
+    def test_takes_no_scope(self):
+        result = self.configure("--scope", "user")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("per profile", result.stderr)
 
 
 class GlobalSetupTest(Setup):
