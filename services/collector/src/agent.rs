@@ -51,6 +51,7 @@ use crate::{
 /// The agents the Collector accepts Hooks from, by the `<kind>` of their route. Claude Code is
 /// not among them: its Hooks are the form every entry here translates into.
 pub static REGISTRY: &[&(dyn Agent + Sync)] = &[
+    &crate::antigravity::Antigravity,
     &crate::codex::Codex,
     &crate::copilot::Copilot,
     &crate::cursor::Cursor,
