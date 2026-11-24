@@ -166,6 +166,15 @@ const SAFEGUARDS: &[&str] = &[
     // shifts that directory (`~/.openclaw-dev`), which the name without a separator covers, on
     // Windows too. `openclaw.json` is named as well, for a configuration kept elsewhere
     // (`OPENCLAW_CONFIG_PATH`).
+    // Antigravity reads a project's hooks, agents, skills and rules from one directory, and a
+    // user's own and its plugins from under `.gemini`, so the directories are named rather
+    // than the files inside them.
+    ".agents/",
+    ".agents\\",
+    ".gemini/config",
+    ".gemini/antigravity",
+    ".gemini\\config",
+    ".gemini\\antigravity",
     ".openclaw",
     "openclaw.json",
     // Hermes' default profile, ~/.hermes or %LOCALAPPDATA%\hermes (also as Git Bash writes it).
