@@ -7,4 +7,5 @@ pub mod events;
 pub mod ext_authz;
 pub mod hooks;
 pub mod inventory;
+pub mod openclaw;
 pub mod triage;
