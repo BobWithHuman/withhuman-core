@@ -441,6 +441,113 @@ async fn a_prompt_opens_the_turn_its_calls_belong_to() {
     assert_eq!(read.event.meta.additional_fields["agent_kind"], "openclaw");
 }
 
+/// A turn's answer reaches the engine as the message OpenClaw showed, named after the turn it
+/// belongs to, so the `[의도]` line it opens with is the intent of that turn and not of another.
+#[tokio::test]
+async fn a_turn_s_answer_reaches_the_engine_as_the_message_it_showed() {
+    let generator = Arc::new(Recording::allowing());
+    let app = app(generator.clone());
+    send(
+        &app,
+        "before_agent_finalize",
+        json!({
+            "sessionId": "s-1", "runId": "r-1", "agentId": "main", "cwd": "/work",
+            "lastAssistantMessage": "[의도] sample.txt 를 읽는다\n읽었어."
+        }),
+    )
+    .await;
+    let events = generator.events.lock().unwrap();
+    let NormalizedEvent::MessageDisplay(message) = &events[0] else {
+        panic!("expected a message, got {:?}", events[0]);
+    };
+    // Intent capture is off here, so the whole answer arrives as the message's text; the line
+    // the engine reads the turn's intent from is its first.
+    assert!(message.payload.text.starts_with("[의도]"));
+    // Named after the turn, so two answers of one turn stay two messages and the same answer
+    // reported twice stays one.
+    assert!(
+        message.payload.message_id.starts_with("r-1-"),
+        "a message says which turn it is of: {}",
+        message.payload.message_id
+    );
+}
+
+/// Two answers of one turn are two messages; the same answer twice is one.
+#[tokio::test]
+async fn an_answer_is_named_by_the_turn_and_by_what_it_says() {
+    let generator = Arc::new(Recording::allowing());
+    let app = app(generator.clone());
+    for answer in ["first pass", "second pass", "first pass"] {
+        send(
+            &app,
+            "before_agent_finalize",
+            json!({"sessionId": "s-1", "runId": "r-1", "lastAssistantMessage": answer}),
+        )
+        .await;
+    }
+    let events = generator.events.lock().unwrap();
+    let ids: std::collections::BTreeSet<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            NormalizedEvent::MessageDisplay(message) => Some(message.payload.message_id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ids.len(), 2, "got {ids:?}");
+}
+
+/// The turn's end closes its open tool batch. `agent_end` says only that the run finished — a
+/// turn whose model failed still ends with `success: true` — so nothing is read from it but the
+/// turn it belongs to.
+#[tokio::test]
+async fn the_turn_s_end_closes_its_tool_batch() {
+    let generator = Arc::new(Recording::allowing());
+    let app = app(generator.clone());
+    send(
+        &app,
+        "agent_end",
+        json!({
+            "sessionId": "s-1", "runId": "r-1", "agentId": "main",
+            "success": true, "error": null, "durationMs": 7176, "messageCount": 27
+        }),
+    )
+    .await;
+    let events = generator.events.lock().unwrap();
+    let NormalizedEvent::PostToolBatch(batch) = &events[0] else {
+        panic!("expected a batch, got {:?}", events[0]);
+    };
+    assert_eq!(batch.meta.additional_fields["agent_kind"], "openclaw");
+}
+
+/// Every captured turn ends in one answer and one batch, in that order: the captures hold
+/// eleven turns and no turn ends twice.
+#[tokio::test]
+async fn every_captured_turn_ends_once() {
+    let generator = Arc::new(Recording::allowing());
+    let app = app(generator.clone());
+    for (event, payload) in captured() {
+        send(&app, &event, payload).await;
+    }
+    let events = generator.events.lock().unwrap();
+    let ends: Vec<&str> = events
+        .iter()
+        .filter_map(|event| match event {
+            NormalizedEvent::MessageDisplay(_) => Some("message"),
+            NormalizedEvent::PostToolBatch(_) => Some("batch"),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        ends.len(),
+        22,
+        "eleven captured turns should end in one answer and one batch each, got {ends:?}"
+    );
+    // The answer comes before the end, as OpenClaw sends them.
+    for pair in ends.chunks(2) {
+        assert_eq!(pair, ["message", "batch"]);
+    }
+}
+
 // ---- the harness ----
 
 /// One Call's Hook, as OpenClaw sends it. The tool Hooks name no workspace, so the client fills
