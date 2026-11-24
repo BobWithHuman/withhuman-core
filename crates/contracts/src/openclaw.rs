@@ -26,10 +26,19 @@
 //!   without it reaches the engine with Calls but no prompt and no intent line.
 //! - `runId` is the turn: a prompt and every Call it leads to share it. It becomes Claude
 //!   Code's `prompt_id`.
-//! - **A Call may run another Call.** `dispatch_action` names an action, and the action
-//!   arrives as a Call of its own whose `toolCallId` holds the dispatching call's; see
-//!   [`dispatched_by`]. The inner Call carries the real tool and its arguments, so it is the
-//!   one judged and the dispatching call is passed over.
+//! - **A Call may run another Call.** `dispatch_action` names an action in its `params.id`
+//!   ([`dispatched_action`]) and passes its arguments in `params.args`; the action then
+//!   arrives a second time as a Call of its own, whose `toolCallId` holds the dispatching
+//!   call's ([`dispatched_by`]). Both carry the real tool and the real arguments, so the
+//!   **dispatching call is the one judged** and the Call it runs is passed over as the
+//!   duplicate it is: blocking a `dispatch_action` keeps the action from being dispatched at
+//!   all, while what blocking the dispatched Call does is not known — the engine does not put
+//!   its only gate on the one of the two whose answer may arrive too late to matter.
+//! - **An MCP call reaches the same Hook**, so the Hook judges MCP as it judges any other
+//!   Call. Its tool is named `<server>__<tool>` and its action id `mcp:<server>:<server>__<tool>`,
+//!   so Claude Code's name for it is `mcp__` and the tool name as it stands; the result adds
+//!   `details.mcpServer` and `details.mcpTool`. Nothing has to be remembered from an earlier
+//!   Hook, as Cursor's server name does.
 //! - OpenClaw's tool surface is not fixed: `tool_search` and `tool_describe` let the model
 //!   look tools up mid-turn, so what an agent can call cannot be read off the session's start.
 //! - `session_start` and `session_end` did not fire in any captured session, resumed or not,
@@ -296,8 +305,12 @@ pub struct OpenClawHookInput {
 }
 
 /// The call that dispatched this one, as its id holds it: `dispatch_action` runs an action,
-/// and the action arrives as a Call of its own named
-/// `tool_call:<caller>:<tool>:<n>`. None when the Call is the agent's own.
+/// and the action arrives as a Call of its own named `tool_call:<caller>:<tool>:<n>`. None when
+/// the Call is the agent's own.
+///
+/// This is what tells a dispatched Call apart from a Call the agent made itself, and so which
+/// of the two Calls of one dispatch is the duplicate to pass over — the dispatching call is
+/// the one judged, since blocking it is what keeps the action from running.
 ///
 /// The caller is written with `_` where its own id has `|`, so [`dispatch_key`] puts a
 /// dispatching call's id into the same form before the two are compared.
@@ -316,6 +329,46 @@ pub fn dispatched_by(tool_call_id: &str) -> Option<&str> {
 /// A call's id in the form a call it dispatches writes it.
 pub fn dispatch_key(tool_call_id: &str) -> String {
     tool_call_id.replace('|', "_")
+}
+
+/// The action a `dispatch_action` call runs, as its `params.id` names it:
+/// `<namespace>:<group>:<tool>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DispatchedAction<'a> {
+    /// Where the action comes from: `openclaw` for one of the host's own, `mcp` for a server's.
+    pub namespace: &'a str,
+    /// What it belongs to within that namespace: `core`, or the MCP server's name.
+    pub group: &'a str,
+    /// The tool as the Call that runs it names it, `<server>__<tool>` for an MCP tool.
+    pub tool: &'a str,
+}
+
+impl<'a> DispatchedAction<'a> {
+    /// The MCP server this action goes to, or none when the host runs it itself. Claude Code's
+    /// name for the tool is then `mcp__` and [`Self::tool`] as it stands, since that already
+    /// holds the server.
+    pub fn mcp_server(&self) -> Option<&'a str> {
+        (self.namespace == "mcp").then_some(self.group)
+    }
+}
+
+/// The action `dispatch_action` was given, read off its `params.id`
+/// (`openclaw:core:agents_list`, `mcp:<server>:<server>__<tool>`). None when the id is not
+/// three parts, so nothing is assumed of an id this host writes differently.
+pub fn dispatched_action(id: &str) -> Option<DispatchedAction<'_>> {
+    let mut parts = id.splitn(3, ':');
+    let namespace = parts.next()?;
+    let group = parts.next()?;
+    // The tool keeps any colon of its own; only the first two parts are taken off.
+    let tool = parts.next()?;
+    match namespace.is_empty() || group.is_empty() || tool.is_empty() {
+        true => None,
+        false => Some(DispatchedAction {
+            namespace,
+            group,
+            tool,
+        }),
+    }
 }
 
 #[cfg(test)]
@@ -343,6 +396,30 @@ mod tests {
         assert_eq!(dispatched_by("tool_call:only-one-part"), None);
         assert_eq!(dispatched_by("tool_call::tool:1"), None);
         assert_eq!(dispatched_by("call_plain"), None);
+    }
+
+    /// The two kinds of action one dispatch can name, as OpenClaw 2026.11.7 wrote them.
+    #[test]
+    fn a_dispatch_names_where_its_action_comes_from() {
+        let own = dispatched_action("openclaw:core:agents_list").expect("the host's own action");
+        assert_eq!(own.namespace, "openclaw");
+        assert_eq!(own.group, "core");
+        assert_eq!(own.tool, "agents_list");
+        assert_eq!(own.mcp_server(), None);
+
+        let mcp = dispatched_action("mcp:wh-probe:wh-probe__echo_back").expect("an MCP action");
+        assert_eq!(mcp.mcp_server(), Some("wh-probe"));
+        // Claude Code's name for it is `mcp__` and the tool as it stands.
+        assert_eq!(format!("mcp__{}", mcp.tool), "mcp__wh-probe__echo_back");
+    }
+
+    #[test]
+    fn nothing_is_assumed_of_an_action_id_of_another_shape() {
+        assert_eq!(dispatched_action("agents_list"), None);
+        assert_eq!(dispatched_action("openclaw:core"), None);
+        assert_eq!(dispatched_action(":core:agents_list"), None);
+        assert_eq!(dispatched_action("openclaw::agents_list"), None);
+        assert_eq!(dispatched_action("openclaw:core:"), None);
     }
 
     #[test]

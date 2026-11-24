@@ -22,10 +22,10 @@ use std::collections::BTreeSet;
 
 use serde_json::Value;
 use withhuman_contracts::openclaw::{
-    OpenClawHookEvent, OpenClawHookInput, dispatch_key, dispatched_by,
+    OpenClawHookEvent, OpenClawHookInput, dispatch_key, dispatched_action, dispatched_by,
 };
 
-const CAPTURES: [(&str, &str); 4] = [
+const CAPTURES: [(&str, &str); 5] = [
     (
         "session-1",
         include_str!("fixtures/openclaw/capture-session-1.jsonl"),
@@ -41,6 +41,10 @@ const CAPTURES: [(&str, &str); 4] = [
     (
         "session-4-nested",
         include_str!("fixtures/openclaw/capture-session-4-nested.jsonl"),
+    ),
+    (
+        "session-5-mcp",
+        include_str!("fixtures/openclaw/capture-session-5-mcp.jsonl"),
     ),
 ];
 
@@ -232,8 +236,9 @@ fn a_file_edit_carries_its_edits_and_its_patch() {
 }
 
 /// OpenClaw runs a Call for another: `dispatch_action` names an action, and the action arrives
-/// as a Call of its own naming the one that dispatched it. The inner Call carries the real
-/// tool, so it is the one the engine judges.
+/// a second time as a Call of its own naming the one that dispatched it. **Both carry the real
+/// tool and the real arguments**, which is what lets the engine judge the dispatching call —
+/// the one whose block certainly keeps the action from running — and pass the other over.
 #[test]
 fn a_dispatched_call_arrives_as_a_call_of_its_own() {
     let rows = captured();
@@ -256,12 +261,51 @@ fn a_dispatched_call_arrives_as_a_call_of_its_own() {
         .next()
         .expect("the dispatched action should arrive as a Call of its own");
     let tool = inner.payload["toolName"].as_str().unwrap();
-    assert!(
-        dispatched_id.ends_with(tool),
+    let action = dispatched_action(dispatched_id).expect("a dispatch names a three-part action");
+    assert_eq!(
+        action.tool, tool,
         "the dispatch named {dispatched_id} but the Call that ran it was {tool}"
     );
-    // Nothing of the dispatching call is lost: both carry the turn they belong to.
+    // Nothing of the dispatching call is lost: it holds the arguments and the turn as well, so
+    // judging it costs the engine nothing the dispatched Call would have added.
+    assert_eq!(dispatch.payload["params"]["args"], inner.payload["params"]);
     assert_eq!(inner.payload["runId"], dispatch.payload["runId"]);
+}
+
+/// An MCP call reaches the same `before_tool_call` Hook as any other, which is what lets the
+/// Hook enforce MCP rather than leave it to AgentGateway. The server is in the tool's own name
+/// and in the action id, so nothing has to be remembered from an earlier Hook.
+#[test]
+fn an_mcp_call_reaches_the_hook_that_judges_every_call() {
+    let rows = captured();
+    let dispatch = rows
+        .iter()
+        .filter(|row| row.event == "before_tool_call")
+        .filter(|row| row.payload["toolName"] == "dispatch_action")
+        .find_map(|row| {
+            let id = row.payload["params"]["id"].as_str()?;
+            dispatched_action(id)?
+                .mcp_server()
+                .map(|server| (row, server))
+        });
+    let (dispatch, server) = dispatch.expect("session-5-mcp should dispatch an MCP tool");
+    assert_eq!(server, "wh-probe");
+
+    let action = dispatched_action(dispatch.payload["params"]["id"].as_str().unwrap()).unwrap();
+    // Claude Code's name for the tool is `mcp__` and the tool as it stands, since the tool
+    // already holds the server it goes to.
+    assert_eq!(
+        format!("mcp__{}", action.tool),
+        "mcp__wh-probe__echo_back",
+        "an MCP tool must translate to the name the engine's MCP rules are written against"
+    );
+
+    let result = rows
+        .iter()
+        .find(|row| row.event == "after_tool_call" && row.payload["toolName"] == action.tool)
+        .expect("the MCP call should have a result");
+    assert_eq!(result.payload["result"]["details"]["mcpServer"], "wh-probe");
+    assert_eq!(result.payload["result"]["details"]["mcpTool"], "echo_back");
 }
 
 /// The turn is `runId`: a prompt and every Call it leads to share it.
