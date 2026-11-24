@@ -12,6 +12,7 @@ mod inventory;
 pub mod keys;
 mod normalize;
 pub mod openclaw;
+pub mod patch;
 mod state;
 mod store;
 mod transport;
