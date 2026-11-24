@@ -548,6 +548,46 @@ async fn every_captured_turn_ends_once() {
     }
 }
 
+/// A Call hard to undo that nothing could judge is put to the user rather than blocked. The
+/// engine does that only for a client that both asks and loses no event to a resend, which
+/// OpenClaw's does: its plugin runs the bridge once per Hook and reads the answer in the same
+/// breath.
+#[tokio::test]
+async fn a_hard_to_undo_call_the_engine_could_not_judge_is_put_to_the_user() {
+    let failing = Arc::new(Failing);
+    let app = app_with_transport(CollectorService::new(
+        CollectorConfig {
+            intent_capture: false,
+            failure_policy: withhuman_collector::FailurePolicy::Closed,
+            ..CollectorConfig::default()
+        },
+        failing.clone(),
+    ));
+    let (status, body) = send(
+        &app,
+        "before_tool_call",
+        call(
+            "exec",
+            json!({"command": "rm -rf /work/build", "workdir": "/work"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["hookSpecificOutput"]["permissionDecision"], "ask",
+        "a call the engine could not judge, and that is hard to undo, is the user's to decide"
+    );
+
+    // A call nothing graded that highly is still blocked: no judgment stands behind it.
+    let (_, body) = send(
+        &app,
+        "before_tool_call",
+        call("read", json!({"path": "/work/a.md"})),
+    )
+    .await;
+    assert_eq!(body["hookSpecificOutput"]["permissionDecision"], "deny");
+}
+
 // ---- the harness ----
 
 /// One Call's Hook, as OpenClaw sends it. The tool Hooks name no workspace, so the client fills
@@ -624,6 +664,25 @@ async fn send(app: &axum::Router, event: &str, body: Value) -> (StatusCode, Valu
         false => serde_json::from_slice(&bytes).unwrap(),
     };
     (status, body)
+}
+
+/// A generator nothing reaches, for the failure policies.
+struct Failing;
+
+#[async_trait]
+impl GeneratorTransport for Failing {
+    async fn send(&self, _event: NormalizedEvent) -> Result<EventResponse, GeneratorError> {
+        Err(GeneratorError::InvalidResponse(
+            "engine unavailable".to_owned(),
+        ))
+    }
+
+    async fn session_cursor(
+        &self,
+        _session_id: &str,
+    ) -> Result<withhuman_contracts::events::SessionCursor, GeneratorError> {
+        Ok(withhuman_contracts::events::SessionCursor::default())
+    }
 }
 
 struct Recording {
