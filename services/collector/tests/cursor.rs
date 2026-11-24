@@ -327,6 +327,106 @@ async fn the_answer_carries_the_turns_intent() {
     );
 }
 
+/// G: Cursor reports a turn's answer once, with the text of every pass joined by nothing. The
+/// intent line of a pass a Call interrupted then runs into the next pass's text, and the engine
+/// judged the turn against its whole answer. Recorded from the real client:
+/// `"[의도] X[의도] X`notes.md` is a short…"` for a turn whose first Call was turned back.
+#[tokio::test]
+async fn the_intent_survives_a_turn_the_engine_interrupted() {
+    let generator = Arc::new(Recording::allowing());
+    let app = app_capturing(generator.clone());
+    let (status, _) = send(
+        &app,
+        "afterAgentResponse",
+        json!({
+            "session_id": "s", "generation_id": "g",
+            "text": "[의도] notes.md 를 한 줄로 요약받고 싶음\
+        [의도] notes.md 를 한 줄로 요약받고 싶음`notes.md` 는 짧은 메모다."
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let events = generator.events.lock().unwrap();
+    let intents: Vec<&str> = events
+        .iter()
+        .filter_map(|event| match event {
+            NormalizedEvent::Intent(intent) => Some(intent.payload.intent.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(intents, ["notes.md 를 한 줄로 요약받고 싶음"]);
+}
+
+/// A turn the engine did not interrupt keeps its own line breaks, and nothing is added.
+#[tokio::test]
+async fn an_uninterrupted_answer_is_passed_on_as_it_came() {
+    let generator = Arc::new(Recording::allowing());
+    let app = app_capturing(generator.clone());
+    send(
+        &app,
+        "afterAgentResponse",
+        json!({"session_id": "s", "generation_id": "g", "text": "[의도] 2+2 를 알고 싶음\n\n2+2 = 4"}),
+    )
+    .await;
+    let events = generator.events.lock().unwrap();
+    let intent = events.iter().find_map(|event| match event {
+        NormalizedEvent::Intent(intent) => Some(intent.payload.intent.as_str()),
+        _ => None,
+    });
+    assert_eq!(intent, Some("2+2 를 알고 싶음"));
+    let message = events.iter().find_map(|event| match event {
+        NormalizedEvent::MessageDisplay(message) => Some(message.payload.text.as_str()),
+        _ => None,
+    });
+    // Everything after the intent line's own line ending, as Claude Code's messages keep it.
+    assert_eq!(message, Some("\n2+2 = 4"));
+}
+
+/// Two answers of one turn, should Cursor ever report them apart, stay two messages.
+#[tokio::test]
+async fn each_answer_of_a_turn_is_its_own_message() {
+    let generator = Arc::new(Recording::allowing());
+    let app = app_capturing(generator.clone());
+    let turn = "8c9af799-b8a9-4f87-85d1-fbe03912cc92";
+    for text in [
+        "[의도] 빌드를 고치고 싶음\n먼저 테스트를 돌립니다.",
+        "[의도] 빌드를 고치고 싶음\n테스트가 통과했습니다.",
+    ] {
+        let (status, _) = send(
+            &app,
+            "afterAgentResponse",
+            json!({"session_id": "s", "generation_id": turn, "text": text}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    let events = generator.events.lock().unwrap();
+    let intents: Vec<&str> = events
+        .iter()
+        .filter_map(|event| match event {
+            NormalizedEvent::Intent(intent) => Some(intent.payload.intent.as_str()),
+            _ => None,
+        })
+        .collect();
+    // The turn states its intent once, and it is the line itself.
+    assert_eq!(intents, ["빌드를 고치고 싶음"]);
+    let messages: Vec<&str> = events
+        .iter()
+        .filter_map(|event| match event {
+            NormalizedEvent::MessageDisplay(message) => Some(message.payload.message_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(messages.len(), 2, "two answers, two messages: {messages:?}");
+    assert_ne!(messages[0], messages[1]);
+    for id in messages {
+        assert!(
+            id.starts_with(turn),
+            "a message says which turn it is of: {id}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn rejects_an_unknown_event_and_an_incomplete_hook() {
     let app = app(Arc::new(Recording::allowing()));
