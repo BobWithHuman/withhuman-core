@@ -50,7 +50,11 @@ use crate::{
 
 /// The agents the Collector accepts Hooks from, by the `<kind>` of their route. Claude Code is
 /// not among them: its Hooks are the form every entry here translates into.
-pub static REGISTRY: &[&(dyn Agent + Sync)] = &[&crate::codex::Codex, &crate::cursor::Cursor];
+pub static REGISTRY: &[&(dyn Agent + Sync)] = &[
+    &crate::codex::Codex,
+    &crate::cursor::Cursor,
+    &crate::openclaw::OpenClaw,
+];
 
 /// The agent of `kind`, or none when no adapter answers for it.
 pub fn find(kind: &str) -> Option<&'static (dyn Agent + Sync)> {
