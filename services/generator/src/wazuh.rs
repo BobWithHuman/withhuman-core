@@ -41,7 +41,8 @@ const PAGE_SIZE: usize = 500;
 const NEVER_CONNECTED: &str = "never_connected";
 const AGENT_FIELDS: &str = "id,name,status,lastKeepAlive,os.name,os.version,os.platform";
 /// Packages whose name holds any of the words (`~` is "like", case-insensitive; `,` is "or").
-const PROGRAM_QUERY: &str = "name~claude,name~codex,name~cursor,name~copilot";
+const PROGRAM_QUERY: &str = "name~claude,name~codex,name~cursor,name~copilot,\
+                             name~antigravity,name~agy";
 /// Processes with any of the words in their name, executable or arguments. The manager's match
 /// is loose (`Claude Helper` and `CursorUIViewService` pass), so each is judged again by
 /// [`process_agent`].
@@ -50,14 +51,22 @@ const PROGRAM_QUERY: &str = "name~claude,name~codex,name~cursor,name~copilot";
 /// session started as `agent` says `cursor` nowhere but in the script path among its arguments.
 /// Copilot needs them for the same reason, and its desktop app's own process is named
 /// `github`, which is too common a word to ask for: the app is found by its path instead.
+///
+/// Antigravity's CLI is asked for by its own short name as well (`agy`): the path it runs from
+/// says `antigravity` nowhere, and the binary is named neither after the product nor after the
+/// company.
 const PROCESS_QUERY: &str = "name~claude,name~codex,name~cursor,name~copilot,\
+                             name~antigravity,name~agy,\
                              cmd~claude,cmd~codex,cmd~cursor,cmd~copilot,\
-                             argvs~claude,argvs~codex,argvs~cursor,argvs~copilot";
+                             cmd~antigravity,cmd~agy,\
+                             argvs~claude,argvs~codex,argvs~cursor,argvs~copilot,\
+                             argvs~antigravity,argvs~agy";
 const PROCESS_FIELDS: &str = "name,cmd,argvs,scan.time";
 const CLAUDE_CODE: &str = "claude-code";
 const CODEX: &str = "codex";
 const CURSOR: &str = "cursor";
 const COPILOT: &str = "copilot";
+const ANTIGRAVITY: &str = "antigravity";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WazuhError {
@@ -702,6 +711,10 @@ fn program_agent(file_name: &str) -> Option<&'static str> {
         // the word is far too common to take for a coding agent, and the app is found by the
         // path it runs from instead.
         "copilot" | "copilot-runtime" => Some(COPILOT),
+        // Antigravity's CLI is `agy`, a name nothing else on a developer's machine carries.
+        // Its own name appears only in the folder it keeps its state in, which `path_agent`
+        // reads.
+        "agy" => Some(ANTIGRAVITY),
         _ => None,
     }
 }
@@ -717,6 +730,11 @@ fn path_agent(path: &str) -> Option<&'static str> {
     }
     if path.contains("@github/copilot") || path.contains("GitHub Copilot.app") {
         return Some(COPILOT);
+    }
+    // Antigravity, by the folder it keeps its state and its CLI in, and by the editor that
+    // ships the same agent.
+    if path.contains("antigravity") || path.contains("Antigravity.app") {
+        return Some(ANTIGRAVITY);
     }
     let segments: Vec<&str> = path
         .split('/')
@@ -765,6 +783,8 @@ fn package_agent(packages: &[Named]) -> Option<&'static str> {
         Some(CURSOR)
     } else if names.iter().any(|name| is_copilot_package(name)) {
         Some(COPILOT)
+    } else if names.iter().any(|name| is_antigravity_package(name)) {
+        Some(ANTIGRAVITY)
     } else {
         None
     }
@@ -788,6 +808,18 @@ fn is_cursor_package(name: &str) -> bool {
 /// see when it does not.
 fn is_copilot_package(name: &str) -> bool {
     name == "copilot" || name == "@github/copilot" || name.starts_with("github copilot")
+}
+
+/// Antigravity's own packages, in lower case: the editor and the CLI it ships, however they
+/// are named, and the command the CLI leaves behind.
+///
+/// Not a name that merely holds the word: `agy` is matched exactly, since a name holding those
+/// three letters (`legacy`, `imagy`) says nothing about a coding agent.
+fn is_antigravity_package(name: &str) -> bool {
+    name == "agy"
+        || name == "antigravity"
+        || name.starts_with("antigravity ")
+        || name.starts_with("google antigravity")
 }
 
 fn is_claude_desktop(package: &str) -> bool {
@@ -1188,6 +1220,87 @@ IqrADJzA8KwFbVE/cGxF1OOGU8eh5qnMQg7U\n\
             named(&["GitHub Copilot", "claude-code"]),
             Some("claude-code")
         );
+    }
+
+    /// Antigravity's CLI is a binary named `agy`, which says nothing about the product, and
+    /// it runs from a path that does not either. Its name is matched exactly, and the folder
+    /// it keeps its state in is the other signal.
+    #[test]
+    fn an_antigravity_session_is_found_by_its_command_or_its_state_folder() {
+        let agent = |name, cmd, argvs| process_agent(&process(name, cmd, argvs));
+        // What `ps` showed for this device's install.
+        assert_eq!(
+            agent("agy", "/Users/ana/.local/bin/agy", ""),
+            Some("antigravity")
+        );
+        assert_eq!(
+            agent(
+                "agy",
+                "/Users/ana/.local/bin/agy",
+                "-p \"fix the build\" --dangerously-skip-permissions"
+            ),
+            Some("antigravity")
+        );
+        // A helper that runs out of its state folder, whatever it is called.
+        assert_eq!(
+            agent(
+                "webm_encoder",
+                "/Users/ana/.gemini/antigravity-cli/bin/webm_encoder",
+                ""
+            ),
+            Some("antigravity")
+        );
+        // The editor that ships the same agent.
+        assert_eq!(
+            agent(
+                "Antigravity",
+                "/Applications/Antigravity.app/Contents/MacOS/Antigravity",
+                ""
+            ),
+            Some("antigravity")
+        );
+        // Three letters are not a coding agent on their own: the manager's match is loose, and
+        // these are what it returns for `agy`.
+        for (name, cmd) in [
+            ("legacy-sync", "/usr/bin/legacy-sync"),
+            ("imagy", "/opt/imagy/bin/imagy"),
+            ("agyrus", ""),
+        ] {
+            assert_eq!(agent(name, cmd, ""), None, "{name}");
+        }
+    }
+
+    /// Antigravity's packages are matched by name and not by the word, as the others' are.
+    #[test]
+    fn antigravity_packages_are_told_from_names_that_merely_hold_the_letters() {
+        let named = |names: &[&str]| {
+            package_agent(
+                &names
+                    .iter()
+                    .map(|name| Named {
+                        name: Some((*name).to_owned()),
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        };
+        for packages in [
+            vec!["Antigravity"],
+            vec!["agy"],
+            vec!["Antigravity CLI"],
+            vec!["Google Antigravity"],
+            vec!["git", "Antigravity", "ripgrep"],
+        ] {
+            assert_eq!(named(&packages), Some("antigravity"), "{packages:?}");
+        }
+        for packages in [
+            vec!["legacy"],
+            vec!["imagy"],
+            vec!["antigravity-themes", "git"],
+        ] {
+            assert_eq!(named(&packages), None, "{packages:?}");
+        }
+        // Claude Code still wins when more than one is installed.
+        assert_eq!(named(&["Antigravity", "claude-code"]), Some("claude-code"));
     }
 
     #[test]

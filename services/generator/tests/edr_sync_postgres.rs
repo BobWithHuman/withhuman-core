@@ -233,8 +233,11 @@ async fn a_sync_mirrors_the_manager_and_matches_registered_clients() {
         assert!(
             fake.requests.contains(
                 &"GET /syscollector/001/processes?q=name%7Eclaude%2Cname%7Ecodex%2Cname%7Ecursor\
-                  %2Cname%7Ecopilot%2Ccmd%7Eclaude%2Ccmd%7Ecodex%2Ccmd%7Ecursor%2Ccmd%7Ecopilot\
+                  %2Cname%7Ecopilot%2Cname%7Eantigravity%2Cname%7Eagy\
+                  %2Ccmd%7Eclaude%2Ccmd%7Ecodex%2Ccmd%7Ecursor%2Ccmd%7Ecopilot\
+                  %2Ccmd%7Eantigravity%2Ccmd%7Eagy\
                   %2Cargvs%7Eclaude%2Cargvs%7Ecodex%2Cargvs%7Ecursor%2Cargvs%7Ecopilot\
+                  %2Cargvs%7Eantigravity%2Cargvs%7Eagy\
                   &select=name%2Ccmd%2Cargvs%2Cscan.time&limit=500"
                     .to_owned()
             ),
@@ -251,7 +254,8 @@ async fn a_sync_mirrors_the_manager_and_matches_registered_clients() {
         assert!(
             fake.requests.contains(
                 &"GET /syscollector/002/packages?q=name%7Eclaude%2Cname%7Ecodex%2Cname%7Ecursor\
-                  %2Cname%7Ecopilot&select=name&limit=500"
+                  %2Cname%7Ecopilot%2Cname%7Eantigravity%2Cname%7Eagy\
+                  &select=name&limit=500"
                     .to_owned()
             )
         );
@@ -946,8 +950,11 @@ async fn answer(
         "processes" => {
             if !expected(
                 "name%7Eclaude%2Cname%7Ecodex%2Cname%7Ecursor%2Cname%7Ecopilot\
+                 %2Cname%7Eantigravity%2Cname%7Eagy\
                  %2Ccmd%7Eclaude%2Ccmd%7Ecodex%2Ccmd%7Ecursor%2Ccmd%7Ecopilot\
-                 %2Cargvs%7Eclaude%2Cargvs%7Ecodex%2Cargvs%7Ecursor%2Cargvs%7Ecopilot",
+                 %2Ccmd%7Eantigravity%2Ccmd%7Eagy\
+                 %2Cargvs%7Eclaude%2Cargvs%7Ecodex%2Cargvs%7Ecursor%2Cargvs%7Ecopilot\
+                 %2Cargvs%7Eantigravity%2Cargvs%7Eagy",
                 "name%2Ccmd%2Cargvs%2Cscan.time",
             ) {
                 return problem(400, "Bad Request", "unexpected q or select");
@@ -965,7 +972,8 @@ async fn answer(
         }
         "packages" => {
             if !expected(
-                "name%7Eclaude%2Cname%7Ecodex%2Cname%7Ecursor%2Cname%7Ecopilot",
+                "name%7Eclaude%2Cname%7Ecodex%2Cname%7Ecursor%2Cname%7Ecopilot\
+                 %2Cname%7Eantigravity%2Cname%7Eagy",
                 "name",
             ) {
                 return problem(400, "Bad Request", "unexpected q or select");
