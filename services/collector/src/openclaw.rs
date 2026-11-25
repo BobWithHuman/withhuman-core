@@ -52,7 +52,9 @@ use withhuman_contracts::{
         PostToolUseFailureRequest, PostToolUseRequest, PreToolUseRequest, SessionEndRequest,
         SessionStartRequest, UserPromptSubmitRequest,
     },
-    openclaw::{OpenClawHookEvent, OpenClawHookInput, dispatched_action, dispatched_by},
+    openclaw::{
+        OpenClawHookEvent, OpenClawHookInput, announced_answer, dispatched_action, dispatched_by,
+    },
 };
 
 use crate::{
@@ -296,6 +298,31 @@ pub fn translate(
                 message_id: message_id(&turn, &answer),
                 index: Some(0),
                 delta: answer,
+                final_: true,
+                turn_id: Some(turn),
+            }))
+        }
+        // The answer a Call was made in, which reaches the plugin before that Call runs. It is
+        // the only answer a first Call can be judged against: the answer the turn settles on
+        // arrives after every Call of the turn is over, and a turn whose last word is a tool's
+        // output never carries the `[의도]` line at all.
+        //
+        // The Hook itself names no session and no turn, so the client keeps the answer and sends
+        // it with the ids of the Call it announces — the same filling-in it does for a Call's
+        // directory. An answer with no words in it (a model that only reasons before calling)
+        // leaves nothing to show.
+        Event::BeforeMessageWrite => {
+            let message = input.message.clone().ok_or_else(|| missing("message"))?;
+            let Some(answer) = announced_answer(&message).filter(|it| !it.text.is_empty()) else {
+                return Ok(Translation::of(Translated::Nothing));
+            };
+            let turn = input.run_id.clone().ok_or_else(|| missing("runId"))?;
+            Translation::of(Translated::MessageDisplay(MessageDisplayRequest {
+                session_id: session(input)?,
+                hook_event_name: Some(HookEventName::MessageDisplay),
+                message_id: message_id(&turn, &answer.text),
+                index: Some(0),
+                delta: answer.text,
                 final_: true,
                 turn_id: Some(turn),
             }))
