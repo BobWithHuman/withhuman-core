@@ -502,23 +502,25 @@ own CLI installs them from there, enables them, and is told the engine's address
 starts, so until then the device is not protected. Another state directory
 (`OPENCLAW_STATE_DIR`, which `--dev` and a named profile set) is set up on its own.
 
-Seven hooks are registered: `before_tool_call` judges calls; `after_tool_call`,
-`before_agent_run`, `before_agent_finalize`, `agent_end` and `session_end` record what happened;
-and `before_prompt_build` is where the turn's instruction goes in. That one is answered from what
-the engine last sent, without running the bridge.
+Eight hooks are registered: `before_tool_call` judges calls; `after_tool_call`,
+`before_agent_run`, `before_message_write`, `before_agent_finalize`, `agent_end` and `session_end`
+record what happened; and `before_prompt_build` is where the turn's instruction goes in. That one
+is answered from what the engine last sent, without running the bridge.
 
 **`allowConversationAccess` is not optional.** OpenClaw refuses a plugin the hooks that carry a
 turn — the prompt, the answer and the turn's end — unless
 `plugins.entries.withhuman.hooks.allowConversationAccess` is `true`. Without it the calls are
-still judged, but against nothing: no prompt, no `[의도]` line, no causal path. The installer sets
-it; taking it away leaves the device at `record` level.
+still judged, but against far less: no prompt, no turn, no causal path. What survives without it
+is `before_message_write`, which is refused to no plugin — so the agent's own words still reach the
+engine, the `[의도]` line among them, without the prompt they answer. The installer sets the
+setting; taking it away leaves the device at `record` level.
 
 OpenClaw can **ask** rather than only block. Its `before_tool_call` takes `requireApproval`, which
 pauses the call until the user answers and blocks it on a deny or a timeout, so a call that needs
 the user's confirmation (REVIEW) is put to them. That is also why a call hard to undo that the
 engine could not judge is put to them instead of being blocked outright.
 
-Four things about OpenClaw are worth knowing before you change this setup, all found by running
+Five things about OpenClaw are worth knowing before you change this setup, all found by running
 the real client:
 
 - **Only its plugin hooks can hold a call back.** OpenClaw's other hook system — the automation
@@ -529,6 +531,13 @@ the real client:
   while what blocking the dispatched call does is not known, so the dispatch is the one judged and
   the second call is passed over. An MCP call arrives this way too, which is why the hook enforces
   MCP rather than leaving it to AgentGateway.
+- **An answer arrives before the calls it announces.** `before_message_write` carries every
+  message the transcript keeps, and the agent's reaches the plugin before the calls that message
+  announces run, under the very ids those calls arrive with. It is the only answer a turn's first
+  call can be judged against, since `before_agent_finalize` carries the answer the turn settled on
+  — so a turn whose last word is a tool's output holds no `[의도]` line at all. The hook is
+  synchronous, and names neither session nor turn, so the plugin keeps what it carries and sends it
+  with the call it announces.
 - **The tool hooks name no directory.** Only the turn's hooks carry `workspaceDir`, so the bridge
   remembers it from the turn and fills it in; a shell call's own `workdir` is preferred when it has
   one.
@@ -544,7 +553,11 @@ builds the prompt before the hook carrying it runs, so the plugin keeps the inst
 the same text every turn — and puts it in front of the system context of the turns after, the way
 OpenClaw's own `agent-guidance` plugin adds instructions. The first turn of a Gateway goes without
 it: the engine asks that turn for its intent by turning its first call back, which the model reads
-and retries, so that one turn costs an extra call attempt.
+and retries, so that one turn costs an extra call attempt. Once the model does write the line,
+though, it reaches the engine before the call it was written beside — `before_message_write` is
+read for exactly that — so the delay is in the asking, not in the judging. Whether a model writes
+the line beside its call or only in the answer that ends the turn is its own habit; the captured
+sessions hold both.
 
 **OpenClaw has more tools than this adapter has counterparts for.** The ones a session actually
 reaches are translated — `exec`, `read`, `write`, `edit`, `ls`, `apply_patch`, `web_search` and the
