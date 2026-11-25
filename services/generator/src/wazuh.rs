@@ -42,7 +42,7 @@ const NEVER_CONNECTED: &str = "never_connected";
 const AGENT_FIELDS: &str = "id,name,status,lastKeepAlive,os.name,os.version,os.platform";
 /// Packages whose name holds any of the words (`~` is "like", case-insensitive; `,` is "or").
 const PROGRAM_QUERY: &str = "name~claude,name~codex,name~cursor,name~copilot,\
-                             name~antigravity,name~agy";
+                             name~antigravity,name~agy,name~openclaw";
 /// Processes with any of the words in their name, executable or arguments. The manager's match
 /// is loose (`Claude Helper` and `CursorUIViewService` pass), so each is judged again by
 /// [`process_agent`].
@@ -55,18 +55,22 @@ const PROGRAM_QUERY: &str = "name~claude,name~codex,name~cursor,name~copilot,\
 /// Antigravity's CLI is asked for by its own short name as well (`agy`): the path it runs from
 /// says `antigravity` nowhere, and the binary is named neither after the product nor after the
 /// company.
+///
+/// OpenClaw's Gateway and CLI are both `openclaw`, a name nothing else carries, and both run
+/// under `node` out of its npm install — so the name is asked for in all three fields.
 const PROCESS_QUERY: &str = "name~claude,name~codex,name~cursor,name~copilot,\
-                             name~antigravity,name~agy,\
+                             name~antigravity,name~agy,name~openclaw,\
                              cmd~claude,cmd~codex,cmd~cursor,cmd~copilot,\
-                             cmd~antigravity,cmd~agy,\
+                             cmd~antigravity,cmd~agy,cmd~openclaw,\
                              argvs~claude,argvs~codex,argvs~cursor,argvs~copilot,\
-                             argvs~antigravity,argvs~agy";
+                             argvs~antigravity,argvs~agy,argvs~openclaw";
 const PROCESS_FIELDS: &str = "name,cmd,argvs,scan.time";
 const CLAUDE_CODE: &str = "claude-code";
 const CODEX: &str = "codex";
 const CURSOR: &str = "cursor";
 const COPILOT: &str = "copilot";
 const ANTIGRAVITY: &str = "antigravity";
+const OPENCLAW: &str = "openclaw";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WazuhError {
@@ -657,12 +661,14 @@ fn command_line(process: &Process) -> Option<String> {
 
 /// Which coding agent a process is, Claude Code first and otherwise the first one seen.
 ///
-/// It is one when its `name` is exactly `claude`, `codex`, `cursor-agent` or `cursor`
+/// It is one when its `name` is exactly `claude`, `codex`, `cursor-agent`, `cursor` or
+/// `openclaw`
 /// (`claude.exe` on Windows), or when its `cmd` or one of its `argvs` is such a program: a path
 /// whose last segment is exactly that name, a path into Claude Code's native install
 /// (`…/claude/versions/2.1.3`, which runs under its version's name) or Cursor's
 /// (`…/cursor-agent/versions/2026.11.22/index.js`), or a path into the npm packages
-/// `@anthropic-ai/claude-code` or `@openai/codex` (installed with npm, both run under `node`).
+/// `@anthropic-ai/claude-code` or `@openai/codex` (installed with npm, both run under
+/// `node`), or a path into OpenClaw's npm install (`…/node_modules/openclaw/…`).
 ///
 /// The case counts: the Claude desktop app's processes (`Claude`, `Claude Helper (Renderer)`)
 /// are not Claude Code. Cursor's CLI is found by its install path rather than its name: it
@@ -715,6 +721,10 @@ fn program_agent(file_name: &str) -> Option<&'static str> {
         // Its own name appears only in the folder it keeps its state in, which `path_agent`
         // reads.
         "agy" => Some(ANTIGRAVITY),
+        // OpenClaw's Gateway and its CLI are the same program, and its name is its own: no
+        // desktop app or library shares it, so the name alone counts. Its own processes run
+        // under `node` with this name in the path, which [`path_agent`] reads.
+        "openclaw" => Some(OPENCLAW),
         _ => None,
     }
 }
@@ -756,6 +766,15 @@ fn path_agent(path: &str) -> Option<&'static str> {
     {
         return Some(COPILOT);
     }
+    // OpenClaw is an npm package, and its Gateway runs out of it under `node`. The folder pair
+    // is the signal rather than the word: a project that merely depends on it would otherwise
+    // report a coding agent on a device that runs none.
+    if segments
+        .windows(2)
+        .any(|pair| pair == ["node_modules", "openclaw"])
+    {
+        return Some(OPENCLAW);
+    }
     match segments[..] {
         [.., "claude", "versions", _] => Some(CLAUDE_CODE),
         [.., last] => program_agent(last),
@@ -785,6 +804,8 @@ fn package_agent(packages: &[Named]) -> Option<&'static str> {
         Some(COPILOT)
     } else if names.iter().any(|name| is_antigravity_package(name)) {
         Some(ANTIGRAVITY)
+    } else if names.iter().any(|name| is_openclaw_package(name)) {
+        Some(OPENCLAW)
     } else {
         None
     }
@@ -820,6 +841,16 @@ fn is_antigravity_package(name: &str) -> bool {
         || name == "antigravity"
         || name.starts_with("antigravity ")
         || name.starts_with("google antigravity")
+}
+
+/// OpenClaw's own package, in lower case: `openclaw`, or a name opening with `openclaw ` such as
+/// `OpenClaw CLI`.
+///
+/// Not a name that merely holds the word, as Cursor's rule is not: a plugin of OpenClaw's
+/// (`openclaw-plugin-…`, which WithHuman's own client is one of) says a plugin was built, not
+/// that the agent runs here, and the agent's own package is there when it does.
+fn is_openclaw_package(name: &str) -> bool {
+    name == "openclaw" || name.starts_with("openclaw ")
 }
 
 fn is_claude_desktop(package: &str) -> bool {
@@ -1068,6 +1099,27 @@ IqrADJzA8KwFbVE/cGxF1OOGU8eh5qnMQg7U\n\
         );
         // Started by its own name, and on Windows.
         assert_eq!(agent("cursor-agent", "", ""), Some("cursor"));
+        // OpenClaw's Gateway and its CLI are the same program, under its own name. Its sessions
+        // run under `node` out of the npm install, which the folder pair finds.
+        assert_eq!(agent("openclaw", "", ""), Some("openclaw"));
+        assert_eq!(
+            agent(
+                "node",
+                "/home/u/.nvm/versions/node/v26.13.1/bin/openclaw",
+                "chat"
+            ),
+            Some("openclaw")
+        );
+        assert_eq!(
+            agent(
+                "node",
+                "",
+                "/usr/lib/node_modules/openclaw/dist/index.js gateway"
+            ),
+            Some("openclaw")
+        );
+        // A project that merely depends on it is not a device running it.
+        assert_eq!(agent("node", "/srv/app/build.js", "--openclaw-theme"), None);
         assert_eq!(
             agent("", r"C:\Users\ana\.local\bin\cursor-agent.exe", ""),
             Some("cursor")
@@ -1124,6 +1176,18 @@ IqrADJzA8KwFbVE/cGxF1OOGU8eh5qnMQg7U\n\
             vec!["git", "Cursor", "ripgrep"],
         ] {
             assert_eq!(named(&packages), Some("cursor"), "{packages:?}");
+        }
+        for packages in [
+            vec!["openclaw"],
+            vec!["OpenClaw CLI"],
+            vec!["git", "openclaw"],
+        ] {
+            assert_eq!(named(&packages), Some("openclaw"), "{packages:?}");
+        }
+        // A plugin of OpenClaw's says a plugin was built, not that the agent runs here; the
+        // agent's own package is there when it does. WithHuman's own client is such a plugin.
+        for packages in [vec!["openclaw-plugin-withhuman"], vec!["openclaw-sdk"]] {
+            assert_eq!(named(&packages), None, "{packages:?}");
         }
         for packages in [
             vec!["libxcursor1"],
