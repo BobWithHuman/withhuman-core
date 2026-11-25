@@ -50,6 +50,37 @@ const CONTEXT = { sessionId: "s-1", sessionKey: "agent:main:main", runId: "r-1",
 const prints = (answer) =>
   `import sys\nsys.stdout.write(${JSON.stringify(JSON.stringify(answer))})\n`;
 
+/// A stand-in bridge that appends the hook it was run for, and what it was sent, to `log`
+/// before printing `answer`. The order of that file is the order the engine saw.
+const records = (log, answer = null) =>
+  [
+    "import json, sys",
+    "payload = sys.stdin.read()",
+    `open(${JSON.stringify(log)}, "a").write(json.dumps({"hook": sys.argv[1], "payload": payload}) + "\\n")`,
+    answer === null ? "" : `sys.stdout.write(${JSON.stringify(JSON.stringify(answer))})`,
+    "",
+  ].join("\n");
+
+/// What a recording bridge was run for, in order.
+const ran = (log) =>
+  fs
+    .readFileSync(log, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+
+/// An agent's message announcing the call the tests judge.
+const ANNOUNCING = {
+  message: {
+    role: "assistant",
+    content: [
+      { type: "thinking", text: "" },
+      { type: "text", text: "[의도] 디렉터리를 본다" },
+      { type: "toolCall", id: CALL.toolCallId, name: "exec", arguments: CALL.params },
+    ],
+  },
+};
+
 const tests = {
   async "registers the hooks the engine judges or records"() {
     const { plugin } = await withBridge(prints({ action: "allow" }));
@@ -61,11 +92,110 @@ const tests = {
         "agent_end",
         "before_agent_finalize",
         "before_agent_run",
+        "before_message_write",
         "before_prompt_build",
         "before_tool_call",
         "session_end",
       ],
     );
+  },
+
+  async "the answer a call was made in is sent before that call is judged"() {
+    const { plugin, directory } = await withBridge("import sys\n");
+    const log = path.join(directory, "ran.jsonl");
+    fs.writeFileSync(path.join(directory, "withhuman-hook.py"), records(log), "utf8");
+    const { hooks } = registered(plugin);
+    hooks.get("before_message_write")(ANNOUNCING, CONTEXT);
+    assert.equal(await hooks.get("before_tool_call")(CALL, CONTEXT), undefined);
+    const rows = ran(log);
+    assert.deepEqual(
+      rows.map((row) => row.hook),
+      ["before_message_write", "before_tool_call"],
+      "the engine judges a call against what the agent said it was doing, so the answer goes first",
+    );
+    // Sent with the call's own session and turn: the hook that carried it named neither.
+    const sent = JSON.parse(rows[0].payload);
+    assert.equal(sent.sessionId, "s-1");
+    assert.equal(sent.runId, "r-1");
+    assert.deepEqual(sent.message.content, [{ type: "text", text: "[의도] 디렉터리를 본다" }]);
+  },
+
+  async "the hook that carries an answer is answered synchronously"() {
+    // OpenClaw ignores a promise returned from it and says so in the log, so the handler must
+    // do its work before it returns.
+    const { plugin } = await withBridge("import sys\n");
+    const { hooks } = registered(plugin);
+    assert.equal(hooks.get("before_message_write")(ANNOUNCING, CONTEXT), undefined);
+  },
+
+  async "a message that says nothing of its own is not sent"() {
+    const { plugin, directory } = await withBridge("import sys\n");
+    const log = path.join(directory, "ran.jsonl");
+    fs.writeFileSync(path.join(directory, "withhuman-hook.py"), records(log), "utf8");
+    const { hooks } = registered(plugin);
+    for (const message of [
+      { message: { role: "user", content: "ls -la 해줘" } },
+      { message: { role: "toolResult", content: [{ type: "text", text: "one" }] } },
+      // A model that only reasons before calling leaves nothing to show.
+      {
+        message: {
+          role: "assistant",
+          content: [
+            { type: "thinking", text: "" },
+            { type: "toolCall", id: CALL.toolCallId, name: "exec", arguments: {} },
+          ],
+        },
+      },
+      // The answer that ends the turn announces no call; before_agent_finalize carries it.
+      { message: { role: "assistant", content: [{ type: "text", text: "끝났어" }] } },
+    ]) {
+      hooks.get("before_message_write")(message, CONTEXT);
+    }
+    await hooks.get("before_tool_call")(CALL, CONTEXT);
+    assert.deepEqual(
+      ran(log).map((row) => row.hook),
+      ["before_tool_call"],
+    );
+  },
+
+  async "an answer is sent once, not with every call it announces"() {
+    const { plugin, directory } = await withBridge("import sys\n");
+    const log = path.join(directory, "ran.jsonl");
+    fs.writeFileSync(path.join(directory, "withhuman-hook.py"), records(log), "utf8");
+    const { hooks } = registered(plugin);
+    hooks.get("before_message_write")(
+      {
+        message: {
+          role: "assistant",
+          content: [
+            { type: "text", text: "[의도] 두 곳을 본다" },
+            { type: "toolCall", id: "call_1|fc_1", name: "exec", arguments: {} },
+            { type: "toolCall", id: "call_2|fc_2", name: "exec", arguments: {} },
+          ],
+        },
+      },
+      CONTEXT,
+    );
+    await hooks.get("before_tool_call")({ ...CALL, toolCallId: "call_1|fc_1" }, CONTEXT);
+    await hooks.get("before_tool_call")({ ...CALL, toolCallId: "call_2|fc_2" }, CONTEXT);
+    assert.deepEqual(
+      ran(log).map((row) => row.hook),
+      ["before_message_write", "before_tool_call", "before_tool_call"],
+    );
+  },
+
+  async "an answer that could not be reported does not hold back the call"() {
+    // Reporting an answer decides nothing, so its failure must not turn into a block.
+    const script = [
+      "import sys",
+      "if sys.argv[1] == 'before_message_write':",
+      "    raise SystemExit(1)",
+      "",
+    ].join("\n");
+    const { plugin } = await withBridge(script);
+    const { hooks } = registered(plugin);
+    hooks.get("before_message_write")(ANNOUNCING, CONTEXT);
+    assert.equal(await hooks.get("before_tool_call")(CALL, CONTEXT), undefined);
   },
 
   async "a block reaches OpenClaw as a block with the engine's reason"() {

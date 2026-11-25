@@ -59,11 +59,22 @@ const BLOCKING = "before_tool_call";
 const PROMPT_BUILD = "before_prompt_build";
 /// The hook whose answer carries that instruction.
 const PROMPT = "before_agent_run";
+/// The hook that carries every message the transcript keeps, the agent's own among them. An
+/// agent's message reaches it **before the calls that message announces run**, which makes it
+/// the only answer a turn's first call can be judged against: the answer the turn settles on
+/// arrives once every call is over. It is synchronous — a handler that returns a promise is
+/// ignored and the host says so — so nothing is sent from it; what it carries is kept and sent
+/// with the call it announces, which is also what gives that send a session and a turn, since
+/// this hook names neither. It is refused to no plugin, so this works in a setup that never
+/// allows the conversation.
+const ANSWER = "before_message_write";
 
 /// Seconds this plugin waits for the bridge. A judged call waits for the engine, so it gets
 /// more; both are above the bridge's own deadlines, so a slow engine ends in the bridge's
 /// answer rather than in this timeout.
-const DEADLINES = { [BLOCKING]: 15 };
+/// An answer is sent before the call it was made in is judged, so its own wait is short: it
+/// decides nothing, and the call is what the user is waiting on.
+const DEADLINES = { [BLOCKING]: 15, [ANSWER]: 5 };
 const DEFAULT_DEADLINE = 8;
 
 /// How long the user has to answer a call put to them, and the decisions they are offered.
@@ -91,6 +102,67 @@ const FROM_CONTEXT = [
 /// came with. It is the same text every time, so one copy serves every session; an engine that
 /// stops asking for it (intent capture off) clears it rather than leaving a stale one behind.
 let standingInstruction = null;
+
+/// Answers kept by the id of a call they announce, until that call arrives. A turn leaves at
+/// most one entry per call it makes, and an id the hook never reaches — a call the host
+/// dropped — would stay, so the oldest are let go once there are more than a turn could own.
+const announced = new Map();
+const ANNOUNCED_LIMIT = 64;
+
+/// Keeps what an agent's message said, under the ids of the calls it announces. A message with
+/// no words in it (a model that only reasons before calling) leaves nothing to show, and one
+/// that announces nothing is the answer that ends the turn, which `before_agent_finalize`
+/// already carries.
+function remember(message) {
+  if (message?.role !== "assistant") return;
+  const content = message.content;
+  const parts = Array.isArray(content) ? content : [];
+  const text = typeof content === "string"
+    ? content.trim()
+    : parts
+        .filter((part) => part?.type === "text" && typeof part.text === "string")
+        .map((part) => part.text.trim())
+        .filter(Boolean)
+        .join("\n\n");
+  const calls = parts
+    .filter((part) => part?.type === "toolCall" && typeof part.id === "string")
+    .map((part) => part.id);
+  if (!text || !calls.length) return;
+  for (const id of calls) {
+    announced.set(id, text);
+    if (announced.size > ANNOUNCED_LIMIT) announced.delete(announced.keys().next().value);
+  }
+}
+
+/// Sends the answer this call was made in, if one was kept, before the call itself is judged.
+/// Its own ids are the call's: the hook that carried it named neither session nor turn. The
+/// bridge's reply decides nothing, and a failure to report an answer must not hold back a call
+/// the engine would have allowed, so nothing here throws.
+async function announce(payload, logger) {
+  const text = announced.get(payload?.toolCallId);
+  if (!text) return;
+  // Every call of the same message carries the same answer; the engine keeps it once, and
+  // sending it once is enough.
+  for (const [id, kept] of announced) {
+    if (kept === text) announced.delete(id);
+  }
+  try {
+    await judge(
+      ANSWER,
+      {
+        sessionId: payload.sessionId,
+        sessionKey: payload.sessionKey,
+        runId: payload.runId,
+        agentId: payload.agentId,
+        message: { role: "assistant", content: [{ type: "text", text }] },
+        hook_event_name: ANSWER,
+      },
+      logger,
+    );
+  } catch (error) {
+    logger?.warn?.(`WithHuman: the answer this call was made in went unreported (${error?.message ?? error})`);
+  }
+}
 
 /// The python that runs the bridge. The installer writes the interpreter it found; the
 /// environment overrides it for a device where that one moved.
@@ -287,11 +359,28 @@ export default {
     } catch (error) {
       refused.push(`${PROMPT_BUILD} (${error?.message ?? error})`);
     }
+    // Kept, not sent: the hook is synchronous, so the bridge cannot be reached from it.
+    try {
+      api.on(ANSWER, (event) => {
+        try {
+          remember(event?.message);
+        } catch (error) {
+          logger?.warn?.(`WithHuman: ${error?.message ?? error}`);
+        }
+        return undefined;
+      });
+    } catch (error) {
+      refused.push(`${ANSWER} (${error?.message ?? error})`);
+    }
     for (const hook of HOOKS) {
       try {
         api.on(hook, async (event, ctx) => {
           try {
-            const answer = await judge(hook, payloadOf(hook, event, ctx), logger);
+            const payload = payloadOf(hook, event, ctx);
+            // The engine judges a call against what the agent said it was doing, so the answer
+            // goes first.
+            if (hook === BLOCKING) await announce(payload, logger);
+            const answer = await judge(hook, payload, logger);
             if (hook === PROMPT) {
               const text = answer?.action === "context" ? answer.text : null;
               standingInstruction = typeof text === "string" && text.trim() ? text : null;

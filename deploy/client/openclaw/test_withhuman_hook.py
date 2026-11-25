@@ -220,6 +220,19 @@ class OpenClawHookTest(unittest.TestCase):
                   params={"id": "openclaw:core:agents_list", "args": {}})
         self.assertEqual(len(self.sent("before_tool_call")), 1)
 
+    def test_sends_the_answer_a_call_was_made_in(self):
+        """The plugin keeps an agent's message until the call it announces arrives, then sends
+        it with that call's ids. The engine judges the call against what the agent said it was
+        doing, so the answer has to reach it first — and reporting it decides nothing."""
+        answer = {"sessionId": "s-1", "runId": "r-1", "agentId": "main",
+                  "message": {"role": "assistant",
+                              "content": [{"type": "text", "text": "[의도] 디렉터리를 본다"}]}}
+        code, out, _ = self.hook("before_message_write", answer)
+        self.assertEqual((code, out), (0, None))
+        sent = self.sent("before_message_write")
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["message"]["content"][0]["text"], "[의도] 디렉터리를 본다")
+
     # ---- what the client adds ----
 
     def test_attaches_the_programs_a_shell_command_may_run(self):
