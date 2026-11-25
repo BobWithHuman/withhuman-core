@@ -112,11 +112,13 @@ pub struct FileDiff {
 /// policy an administrator sets for it (`managed-settings.json`, `managed-settings.d`); Codex's
 /// hooks (`hooks.json` and the bridge beside it), configuration and the requirements an
 /// administrator sets; Cursor's hooks (`hooks.json`, the bridge and the engine's address beside
-/// it) and the MCP servers it may call; OpenClaw's state directory, which holds its
-/// configuration, the plugins it loads and the MCP servers it may call; Hermes Agent's
-/// WithHuman plugin (its folder in the profile's `plugins`, with the bridge and the engine's
-/// address) and the profile configuration that enables it, in Hermes' default profile
-/// (`~/.hermes`, `%LOCALAPPDATA%\hermes`); and WithHuman's hooks installed for a user or the
+/// it) and the MCP servers it may call; Copilot's hooks (a repository's `.github/hooks`, a
+/// user's own `.copilot/hooks`, and the settings that can hold a `hooks` key) with the MCP
+/// servers it may call; OpenClaw's state directory, which holds its configuration, the plugins
+/// it loads and the MCP servers it may call; Hermes Agent's WithHuman plugin (its folder in
+/// the profile's `plugins`, with the bridge and the engine's address) and the profile
+/// configuration that enables it, in Hermes' default profile (`~/.hermes`,
+/// `%LOCALAPPDATA%\hermes`); and WithHuman's hooks installed for a user or the
 /// whole device, with the device's client ID, which a device stop is keyed on.
 ///
 /// A path here is matched as a prefix, so `.cursor/hooks` covers both `.cursor/hooks.json` and
@@ -145,6 +147,19 @@ const SAFEGUARDS: &[&str] = &[
     ".cursor/mcp.json",
     ".cursor\\hooks",
     ".cursor\\mcp.json",
+    ".copilot/hooks",
+    ".copilot/mcp-config.json",
+    ".copilot\\hooks",
+    ".copilot\\mcp-config.json",
+    ".github/hooks",
+    ".github/copilot/settings",
+    ".github/mcp.json",
+    ".github\\hooks",
+    ".github\\copilot\\settings",
+    ".github\\mcp.json",
+    // Copilot reads a workspace's MCP servers from here, in any folder up to the repository
+    // root.
+    ".mcp.json",
     // OpenClaw keeps all of it under one directory — the configuration that registers the
     // WithHuman plugin and allows it the conversation, the plugins themselves, and the MCP
     // servers — so the directory is named rather than the files inside it. A named profile

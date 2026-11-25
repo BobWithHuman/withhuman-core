@@ -36,47 +36,10 @@ MAX_IDS = 500
 MAX_WEB_TEXT = 20000
 
 
-class TranscriptError(Exception):
-    """The transcript could not be read."""
-
-
-def read_records(path, offset):
-    """The JSON records of the complete lines after byte `offset`, and the offset after them.
-
-    A line Codex is still writing (no newline yet) is left for the next read. Invalid complete
-    records and a truncated transcript cannot advance the confirmed cursor.
-    """
-    if not path:
-        raise TranscriptError("no transcript_path")
-    try:
-        with open(path, "rb") as file:
-            size = os.fstat(file.fileno()).st_size
-            if offset > size:
-                raise TranscriptError("transcript was truncated; start a new session")
-            file.seek(offset)
-            data = file.read()
-    except OSError as error:
-        raise TranscriptError(str(error)) from error
-    end = data.rfind(b"\n") + 1
-    records = []
-    for line in data[:end].split(b"\n"):
-        if not line.strip():
-            continue
-        try:
-            record = json.loads(line)
-        except ValueError as error:
-            raise TranscriptError("invalid transcript record") from error
-        if not isinstance(record, dict):
-            raise TranscriptError("transcript record is not an object")
-        records.append(record)
-    return records, offset + end
-
-
-def file_size(path):
-    try:
-        return os.path.getsize(path)
-    except (OSError, TypeError):
-        return 0
+# The transcript reader every agent that keeps a JSONL session shares.
+TranscriptError = withhuman_bridge.TranscriptError
+read_records = withhuman_bridge.read_records
+file_size = withhuman_bridge.file_size
 
 
 def _text(content):

@@ -82,6 +82,30 @@ jobs:
           REDIS_INTEGRATION_URL: redis://127.0.0.1:6379
         run: cargo nextest run --no-tests=pass --test-threads=1
 
+  client:
+    name: Client hooks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Run the client tests
+        # One suite per folder: each agent's tests are named `test_withhuman_hook.py`, which
+        # one discovery run cannot import twice. The folders are found rather than listed, so
+        # an agent added later is not left out quietly. The exit code of each has to reach the
+        # shell, so nothing is piped.
+        run: |
+          set -e
+          for suite in $(find deploy/client -name 'test_*.py' -exec dirname {} \; | sort -u); do
+            echo "== $suite"
+            (cd "$suite" && python -m unittest discover -p 'test_*.py')
+          done
+
   helm:
     name: Helm Chart
     runs-on: ubuntu-latest

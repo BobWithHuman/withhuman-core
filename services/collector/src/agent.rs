@@ -52,6 +52,7 @@ use crate::{
 /// not among them: its Hooks are the form every entry here translates into.
 pub static REGISTRY: &[&(dyn Agent + Sync)] = &[
     &crate::codex::Codex,
+    &crate::copilot::Copilot,
     &crate::cursor::Cursor,
     &crate::hermes::Hermes,
     &crate::openclaw::OpenClaw,

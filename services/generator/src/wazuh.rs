@@ -41,20 +41,23 @@ const PAGE_SIZE: usize = 500;
 const NEVER_CONNECTED: &str = "never_connected";
 const AGENT_FIELDS: &str = "id,name,status,lastKeepAlive,os.name,os.version,os.platform";
 /// Packages whose name holds any of the words (`~` is "like", case-insensitive; `,` is "or").
-const PROGRAM_QUERY: &str = "name~claude,name~codex,name~cursor";
+const PROGRAM_QUERY: &str = "name~claude,name~codex,name~cursor,name~copilot";
 /// Processes with any of the words in their name, executable or arguments. The manager's match
 /// is loose (`Claude Helper` and `CursorUIViewService` pass), so each is judged again by
 /// [`process_agent`].
 ///
 /// Cursor's CLI needs the `argvs` terms: it runs under `node` with its wrapper's name, so a
 /// session started as `agent` says `cursor` nowhere but in the script path among its arguments.
-const PROCESS_QUERY: &str = "name~claude,name~codex,name~cursor,\
-                             cmd~claude,cmd~codex,cmd~cursor,\
-                             argvs~claude,argvs~codex,argvs~cursor";
+/// Copilot needs them for the same reason, and its desktop app's own process is named
+/// `github`, which is too common a word to ask for: the app is found by its path instead.
+const PROCESS_QUERY: &str = "name~claude,name~codex,name~cursor,name~copilot,\
+                             cmd~claude,cmd~codex,cmd~cursor,cmd~copilot,\
+                             argvs~claude,argvs~codex,argvs~cursor,argvs~copilot";
 const PROCESS_FIELDS: &str = "name,cmd,argvs,scan.time";
 const CLAUDE_CODE: &str = "claude-code";
 const CODEX: &str = "codex";
 const CURSOR: &str = "cursor";
+const COPILOT: &str = "copilot";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WazuhError {
@@ -694,6 +697,11 @@ fn program_agent(file_name: &str) -> Option<&'static str> {
         // counts whatever the case (`Cursor` on macOS, `Cursor.exe` on Windows, `cursor` on
         // Linux). Its helpers (`Cursor Helper (Renderer)`) are not this name and do not count.
         name if name.eq_ignore_ascii_case("cursor") => Some(CURSOR),
+        // Copilot's CLI runs as `copilot`, and the process it does the work in as
+        // `copilot-runtime`. Its desktop app's binary is named `github`, which is left out:
+        // the word is far too common to take for a coding agent, and the app is found by the
+        // path it runs from instead.
+        "copilot" | "copilot-runtime" => Some(COPILOT),
         _ => None,
     }
 }
@@ -707,6 +715,9 @@ fn path_agent(path: &str) -> Option<&'static str> {
     if path.contains("@openai/codex") {
         return Some(CODEX);
     }
+    if path.contains("@github/copilot") || path.contains("GitHub Copilot.app") {
+        return Some(COPILOT);
+    }
     let segments: Vec<&str> = path
         .split('/')
         .filter(|segment| !segment.is_empty())
@@ -718,6 +729,14 @@ fn path_agent(path: &str) -> Option<&'static str> {
         .any(|pair| pair == ["cursor-agent", "versions"])
     {
         return Some(CURSOR);
+    }
+    // Copilot's desktop app keeps a CLI of its own under a cache folder, which is what a
+    // session started from the app runs.
+    if segments
+        .windows(2)
+        .any(|pair| pair == ["copilot-sdk", "cli"])
+    {
+        return Some(COPILOT);
     }
     match segments[..] {
         [.., "claude", "versions", _] => Some(CLAUDE_CODE),
@@ -744,6 +763,8 @@ fn package_agent(packages: &[Named]) -> Option<&'static str> {
         Some(CODEX)
     } else if names.iter().any(|name| is_cursor_package(name)) {
         Some(CURSOR)
+    } else if names.iter().any(|name| is_copilot_package(name)) {
+        Some(COPILOT)
     } else {
         None
     }
@@ -757,6 +778,16 @@ fn package_agent(packages: &[Named]) -> Option<&'static str> {
 /// would report a coding agent on devices that have none.
 fn is_cursor_package(name: &str) -> bool {
     name == "cursor" || name == "cursor-agent" || name.starts_with("cursor ")
+}
+
+/// Copilot's own packages, in lower case: the npm package its CLI is installed as, the command
+/// that package leaves behind, and the desktop app that ships a CLI inside it.
+///
+/// Not a name that merely holds the word: `copilot` names an editor extension on many devices
+/// that have no CLI, and reporting those would say a device runs a coding agent WithHuman can
+/// see when it does not.
+fn is_copilot_package(name: &str) -> bool {
+    name == "copilot" || name == "@github/copilot" || name.starts_with("github copilot")
 }
 
 fn is_claude_desktop(package: &str) -> bool {
@@ -1072,6 +1103,91 @@ IqrADJzA8KwFbVE/cGxF1OOGU8eh5qnMQg7U\n\
         }
         // Claude Code still wins when more than one is installed.
         assert_eq!(named(&["Cursor", "claude-code"]), Some("claude-code"));
+    }
+
+    /// Copilot's CLI is an npm package whose command is `copilot`, and the desktop app ships a
+    /// CLI of its own under a cache folder. The app's own process is named `github`, which is
+    /// deliberately not matched: the word says nothing about a coding agent.
+    #[test]
+    fn a_copilot_session_is_found_by_its_command_or_the_path_it_runs_from() {
+        let agent = |name, cmd, argvs| process_agent(&process(name, cmd, argvs));
+        // What `ps` showed on this device: the CLI installed as the npm package, and the
+        // process it does the work in.
+        assert_eq!(
+            agent("copilot", "/opt/homebrew/bin/copilot", ""),
+            Some("copilot")
+        );
+        assert_eq!(
+            agent(
+                "node",
+                "/opt/homebrew/bin/node",
+                "/opt/homebrew/lib/node_modules/@github/copilot/npm-loader.js"
+            ),
+            Some("copilot")
+        );
+        assert_eq!(
+            agent(
+                "copilot-runtime",
+                "/Users/ana/Library/Caches/copilot-sdk/cli/1.0.115-7/copilot-runtime",
+                ""
+            ),
+            Some("copilot")
+        );
+        // The desktop app, found by the path and not by the name its binary happens to have.
+        assert_eq!(
+            agent(
+                "github",
+                "/Applications/GitHub Copilot.app/Contents/MacOS/github",
+                ""
+            ),
+            Some("copilot")
+        );
+        assert_eq!(agent("github", "/usr/local/bin/github", ""), None);
+        // Anything else holding the word is not a coding agent. The first two are the editor
+        // extension's, which run no hook of ours.
+        for other in [
+            "copilot-language-server",
+            "git-credential-copilot",
+            "copilotd",
+        ] {
+            assert_eq!(agent(other, "", ""), None, "{other}");
+        }
+    }
+
+    /// Copilot's packages are matched by name and not by the word: `copilot` names an editor
+    /// extension on many devices that have no CLI.
+    #[test]
+    fn copilot_packages_are_told_from_the_editor_extension() {
+        let named = |names: &[&str]| {
+            package_agent(
+                &names
+                    .iter()
+                    .map(|name| Named {
+                        name: Some((*name).to_owned()),
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        };
+        for packages in [
+            vec!["copilot"],
+            vec!["@github/copilot"],
+            vec!["GitHub Copilot"],
+            vec!["git", "GitHub Copilot", "ripgrep"],
+        ] {
+            assert_eq!(named(&packages), Some("copilot"), "{packages:?}");
+        }
+        for packages in [
+            vec!["copilot-language-server"],
+            vec!["github-copilot-intellij"],
+            vec!["vscode-copilot-chat", "git"],
+        ] {
+            assert_eq!(named(&packages), None, "{packages:?}");
+        }
+        // Claude Code still wins when more than one is installed.
+        assert_eq!(
+            named(&["GitHub Copilot", "claude-code"]),
+            Some("claude-code")
+        );
     }
 
     #[test]
