@@ -142,6 +142,9 @@ NEEDS_ADMIN = ("a managed setup (--scope managed, or --reset where one is) is wr
                "administrator PowerShell (Windows)")
 # Files every bridge shares, kept in deploy/client/hooks and copied beside the agent's own.
 SHARED_FILES = (HOOK_NAME, "withhuman_bridge.py")
+#: OpenClaw's plugin id, which is also the key its configuration records it under.
+OPENCLAW_PLUGIN = "withhuman"
+OPENCLAW_TIMEOUT = 120
 
 
 class AgentSetup:
@@ -183,6 +186,8 @@ class AgentSetup:
     #: Set up in a project folder, as Claude Code's project setup is. An agent that keeps its
     #: setup elsewhere (a profile of its own) overrides `install` and `remove`.
     per_project = True
+    #: What that elsewhere is called, for the message a `--scope` it has no use for gets.
+    scope_note = "project"
 
     def install(self, args, project, stamp, report):
         """Sets the agent up; returns where its setup was written and the installed bridge."""
@@ -523,6 +528,7 @@ class HermesSetup(AgentSetup):
     kind = "hermes"
     name = "Hermes"
     hook = "withhuman-hook.py"
+    scope_note = "profile (HERMES_HOME)"
     #: The plugin's folder name and the name `hermes plugins enable` takes.
     plugin = "withhuman"
     files = ("__init__.py", "plugin.yaml", "withhuman-hook.py") + SHARED_FILES
@@ -581,9 +587,141 @@ class HermesSetup(AgentSetup):
         report.append(f"{installed}: removed")
 
 
+def openclaw_home():
+    """The OpenClaw state directory being set up, as OpenClaw finds it: OPENCLAW_STATE_DIR, else
+    `~/.openclaw`. A named profile and `--dev` move it, and the variable follows them."""
+    configured = os.environ.get("OPENCLAW_STATE_DIR", "").strip()
+    if configured:
+        return Path(os.path.expandvars(configured)).expanduser().resolve()
+    return Path.home() / ".openclaw"
+
+
+class OpenClawSetup(AgentSetup):
+    """OpenClaw runs every session of a state directory in one Gateway, which loads plugins
+    recorded in that directory's configuration and never from a project folder: WithHuman is a
+    plugin of the device, for every folder its sessions run in.
+
+    Unlike Hermes', the plugin is not copied into place here. `openclaw` keeps a registry of
+    what is installed and refuses a configuration change while a Gateway holds it, and the
+    configuration is where the plugin is both recorded and allowed to read a turn. So the files
+    are staged and OpenClaw's own CLI installs them from there.
+    """
+
+    kind = "openclaw"
+    name = "OpenClaw"
+    hook = "withhuman-hook.py"
+    #: The plugin's id, the folder OpenClaw installs it into, and the key its configuration
+    #: records it under.
+    plugin = OPENCLAW_PLUGIN
+    files = ("index.js", "withhuman-hook.py", "openclaw.plugin.json",
+             "package.json") + SHARED_FILES
+    #: Written beside the hook; the plugin passes the event alone, as Cursor's does.
+    server_file = "server"
+    per_project = False
+    scope_note = "state directory (OPENCLAW_STATE_DIR)"
+    notes = (
+        "Next: start OpenClaw again (`openclaw chat`, or restart its Gateway service). A plugin",
+        "is loaded when the Gateway starts, so until then this device is not protected. The",
+        "setup is the device's, not one project's: every session of this OpenClaw is judged,",
+        "whichever folder it runs in; another state directory (OPENCLAW_STATE_DIR) is set up on",
+        "its own.")
+    uninstall_notes = (
+        "WithHuman is removed from this OpenClaw. Start it again for the plugin to be gone from",
+        "a Gateway that is still running.")
+
+    def folder(self):
+        """Where the files are staged. Not `extensions/<id>`, which is where OpenClaw installs a
+        plugin to: installing a folder from there would be installing it over itself."""
+        return openclaw_home() / "withhuman-setup"
+
+    def openclaw(self, *words):
+        """Runs the OpenClaw CLI on this state directory; whether it ran and what it said."""
+        command = shutil.which("openclaw")
+        if not command:
+            return False, "the openclaw command is not on PATH"
+        try:
+            result = subprocess.run([command, *words], capture_output=True, text=True,
+                                    encoding="utf-8", errors="replace",
+                                    timeout=OPENCLAW_TIMEOUT,
+                                    env={**os.environ,
+                                         "OPENCLAW_STATE_DIR": str(openclaw_home())})
+        except subprocess.TimeoutExpired:
+            return False, (f"`openclaw {' '.join(words)}` did not finish in "
+                           f"{OPENCLAW_TIMEOUT} seconds")
+        except OSError as error:
+            return False, f"the openclaw command could not run: {error}"
+        return result.returncode == 0, (result.stdout + result.stderr).strip()
+
+    def install(self, args, project, stamp, report):
+        installed = self.folder()
+        if installed.exists() and installed.is_dir():
+            report.append(f"{installed}: earlier WithHuman staging replaced")
+        installed.mkdir(parents=True, exist_ok=True)
+        for name in self.files:
+            source = self.source(name)
+            if not source.is_file():
+                sys.exit(f"hook file not found: {source}")
+            shutil.copyfile(source, installed / name)
+        (installed / self.hook).chmod(0o755)
+        (installed / self.server_file).write_text(args.server + "\n", encoding="utf-8")
+        # The bridge keeps its state in OpenClaw's state directory rather than beside itself:
+        # OpenClaw builds a package of a plugin when it installs one, and what the Gateway loads
+        # may be a copy, which state beside the file would follow and be lost with.
+        state = openclaw_home() / "withhuman-state"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / ".gitignore").write_text("*\n", encoding="utf-8")
+
+        for words, needed in (
+            (("plugins", "install", str(installed), "--force", "--accept-capabilities",
+              "--acknowledge-install-policy-warning"), True),
+            (("plugins", "enable", self.plugin), True),
+            # Without this OpenClaw refuses the plugin the hooks that carry a turn: the calls are
+            # still judged, but the prompt, its intent and the answer never arrive.
+            (("config", "set",
+              f"plugins.entries.{self.plugin}.hooks.allowConversationAccess", "true"), True),
+            (("config", "set", f"plugins.entries.{self.plugin}.config.server",
+              json.dumps(args.server)), False),
+        ):
+            ok, output = self.openclaw(*words)
+            last = output.splitlines()[-1] if output else "no output"
+            if ok:
+                report.append(f"openclaw {' '.join(words[:3])}: done")
+                continue
+            if not needed:
+                report.append(f"openclaw {' '.join(words[:3])}: skipped ({last}); the engine's "
+                              f"address is kept beside the hook as well")
+                continue
+            hint = ""
+            if "Gateway listener" in output or "state owner" in output:
+                hint = (" Stop OpenClaw first: its Gateway owns the configuration and refuses a "
+                        "change to it while it runs.")
+            sys.exit(f"`openclaw {' '.join(words)}` failed: {last}{hint}")
+        return installed, installed / self.hook
+
+    def remove(self, project, stamp, report):
+        """Takes the plugin out again. Nothing is asked of OpenClaw when this setup left nothing
+        behind: `--reset` runs this for every state directory it knows, and an OpenClaw that
+        WithHuman was never installed into is not one to go changing."""
+        installed = self.folder()
+        if not (installed / "openclaw.plugin.json").is_file():
+            return
+        ok, output = self.openclaw("plugins", "uninstall", self.plugin, "--force")
+        if not ok:
+            report.append(f"openclaw plugins uninstall {self.plugin}: skipped "
+                          f"({output.splitlines()[-1] if output else 'no output'}); run it "
+                          f"yourself for this state directory")
+        shutil.rmtree(installed)
+        report.append(f"{installed}: removed")
+        state = openclaw_home() / "withhuman-state"
+        if state.is_dir():
+            shutil.rmtree(state)
+            report.append(f"{state}: removed")
+
+
 #: Every agent but Claude Code, by `--agent` value.
 AGENTS = {agent.kind: agent for agent in (
-    AntigravitySetup(), CodexSetup(), CopilotSetup(), CursorSetup(), HermesSetup())}
+    AntigravitySetup(), CodexSetup(), CopilotSetup(), CursorSetup(), HermesSetup(),
+    OpenClawSetup())}
 
 
 def is_withhuman(hook):
@@ -1193,7 +1331,7 @@ def main():
         agent = AGENTS[args.agent]
         sys.exit("--scope user and managed are for Claude Code; " + (
             f"{agent.name} is set up per project" if agent.per_project
-            else f"{agent.name} is set up per profile (HERMES_HOME)"))
+            else f"{agent.name} is set up per {agent.scope_note}"))
     if args.managed_hooks_only and args.scope != "managed":
         sys.exit("--managed-hooks-only goes with --scope managed")
     if args.scope == "managed" and args.key:
