@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 use withhuman_decision::{
+    category::{Group, category},
     check::{Effect, effect},
     trace::CallInfo,
 };
@@ -137,6 +138,112 @@ fn leaves_the_rest_of_an_openclaw_workspace_alone() {
             effect(&call_in("/work/project", tool_name, input.clone())),
             Effect::Safeguard,
             "{input}"
+        );
+    }
+}
+
+/// What the rules make of OpenClaw's own tool names, pinned as it stands.
+///
+/// The Collector translates the tools with a Claude Code counterpart, and those are judged by
+/// that tool's rules. The rest keep their own name and are placed by the words in it, which for
+/// most of OpenClaw's names says nothing — `process` is not `execute`, `canvas` is not a verb at
+/// all — so they land in [`Group::Unknown`] and are judged on whether they serve what the user
+/// asked, with no rule for the kind of thing they do.
+///
+/// That is the state this pins, so a release that renames a tool or a change to the classifier
+/// shows here. An operator who turns on more of OpenClaw's tools classifies them with
+/// `WITHHUMAN_TOOL_CATEGORIES`, the table the decision service reads before judging a tool by
+/// its name; nothing here needs changing for that.
+///
+/// Verified against OpenClaw 2026.11.7: of the names below, a session only ever reached `exec`,
+/// `read`, `write`, `edit`, `ls`, `apply_patch`, `web_search`, `dispatch_action` and `process`
+/// — the rest are behind plugins or capabilities a default setup does not enable. A model asked
+/// for one of those (`plugins`, `openclaw`, `terminal`, `code_execution`, `secrets`) looked for
+/// it, did not find it, and reached for the shell instead, where the safeguard rules above
+/// already apply.
+#[test]
+fn openclaw_tool_names_the_rules_can_place() {
+    for (name, expected) in [
+        // Translated by the Collector, and judged by that tool's own rules.
+        ("exec", Group::Execute),
+        ("write", Group::Change),
+        ("edit", Group::Change),
+        ("apply_patch", Group::Change),
+        ("read", Group::Read),
+        ("web_search", Group::Read),
+        ("x_search", Group::Read),
+        ("view_image", Group::Read),
+        // Placed by their own name, correctly.
+        ("message", Group::Send),
+        ("github_publish", Group::Send),
+        ("conversations_send", Group::Send),
+        ("sessions_send", Group::Send),
+        ("sessions_create", Group::Change),
+        ("image_generate", Group::Change),
+        ("memory_search", Group::Read),
+        ("skills_read", Group::Read),
+        ("agents_list", Group::Read),
+        ("show_widget", Group::Read),
+    ] {
+        assert_eq!(category(name).group, expected, "{name}");
+    }
+}
+
+/// The names the words in them say nothing about. Each is judged on its purpose alone, which is
+/// what `WITHHUMAN_TOOL_CATEGORIES` exists to improve on; the list is here so an operator
+/// writing that table has it, and so a change to either side is visible.
+#[test]
+fn openclaw_tool_names_the_rules_cannot_place() {
+    for name in [
+        // Runs or operates something, and the name does not say so.
+        "process",
+        "terminal",
+        "code_execution",
+        "computer",
+        "mobile_ui",
+        "screen",
+        "gateway",
+        "nodes",
+        // Changes what the agent is or may do.
+        "plugins",
+        "openclaw",
+        "personal_instructions",
+        "skill_workshop",
+        "secrets",
+        // Hands work to another agent.
+        "subagents",
+        "sessions_spawn",
+        // Searches and reads whose names are not verbs.
+        "fd",
+        "ripgrep",
+        "ls",
+        "pdf",
+        "transcripts",
+        "sessions_history",
+        "session_status",
+        // Shows something on a screen, or waits.
+        "canvas",
+        "dashboard",
+        "portal",
+        "presence",
+        "progress_card",
+        "suggest_task",
+        "dismiss_task",
+        "theme",
+        "tts",
+        "agents_wait",
+        "sessions_yield",
+        "ask_user",
+        "autoreview",
+        "decision_evaluate",
+        "conversations_turn",
+        "github_identity_status",
+        "sessions",
+    ] {
+        assert_eq!(
+            category(name).group,
+            Group::Unknown,
+            "{name} is placed after all; the README says it is not"
         );
     }
 }
