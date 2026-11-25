@@ -805,6 +805,95 @@ class CopilotConfigureTest(unittest.TestCase):
         self.assertFalse((self.project / ".github" / "hooks" / "withhuman-hook.py").exists())
 
 
+
+class AntigravityConfigureTest(unittest.TestCase):
+    """--agent antigravity: the project's own .agents/hooks.json, whose shape is Antigravity's."""
+
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp()).resolve()
+        self.project = Path(tempfile.mkdtemp()).resolve()
+        self.hooks_json = self.project / ".agents" / "hooks.json"
+
+    def configure(self, *extra):
+        env = {**os.environ, "HOME": str(self.home), "USERPROFILE": str(self.home),
+               "SHELL": "/bin/zsh"}
+        env.pop("WITHHUMAN_SERVER", None)
+        env.pop("WITHHUMAN_KEY", None)
+        return subprocess.run(
+            [sys.executable, str(CONFIGURE), "--agent", "antigravity",
+             "--project", str(self.project), "--team", "lab", "--server", SERVER,
+             "--no-persist", "--skip-check", "--no-register", *extra],
+            capture_output=True, text=True, env=env, timeout=30,
+        )
+
+    def test_writes_the_project_hooks_in_antigravitys_own_shape(self):
+        result = self.configure()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        config = json.loads(self.hooks_json.read_text())
+        # Antigravity names hooks at the top level, so ours sit under one name of our own.
+        self.assertEqual(list(config), ["withhuman"])
+        hooks = config["withhuman"]
+        self.assertEqual(sorted(hooks), sorted(
+            ["SessionStart", "PreInvocation", "PreToolUse", "PostToolUse", "Stop"]))
+        installed = (self.project / ".agents" / "hooks" / "withhuman-hook.py").as_posix()
+        python = Path(sys.executable).as_posix()
+        # The tool events take a matcher group; an empty matcher is every tool.
+        gated = hooks["PreToolUse"][0]
+        self.assertEqual(gated["matcher"], "")
+        handler = gated["hooks"][0]
+        self.assertEqual(handler["command"], f'"{python}" "{installed}" PreToolUse')
+        self.assertEqual(handler["type"], "command")
+        # Seconds, not Claude Code's milliseconds, and under the 30 Antigravity kills a hook at.
+        self.assertGreaterEqual(handler["timeout"], 20)
+        self.assertLess(handler["timeout"], 30)
+        # The rest take handlers directly, with no matcher.
+        self.assertEqual(hooks["Stop"][0]["type"], "command")
+        self.assertNotIn("matcher", hooks["Stop"][0])
+        self.assertNotIn("hooks", hooks["Stop"][0])
+        for name in ("withhuman-hook.py", "antigravity_transcript.py", "pre-tool-use.py",
+                     "withhuman_bridge.py", "server"):
+            self.assertTrue((self.project / ".agents" / "hooks" / name).is_file(), name)
+        self.assertFalse((self.home / ".agents").exists())
+
+    def test_the_engines_address_is_kept_beside_the_hook(self):
+        self.assertEqual(self.configure().returncode, 0)
+        self.assertEqual(
+            (self.project / ".agents" / "hooks" / "server").read_text().strip(), SERVER)
+        hooks = json.loads(self.hooks_json.read_text())["withhuman"]
+        for event, entries in hooks.items():
+            handlers = entries[0].get("hooks", [entries[0]])
+            for handler in handlers:
+                self.assertNotIn("http", handler["command"], event)
+
+    def test_running_again_changes_nothing(self):
+        self.assertEqual(self.configure().returncode, 0)
+        first = self.hooks_json.read_text()
+        self.assertEqual(self.configure().returncode, 0)
+        self.assertEqual(self.hooks_json.read_text(), first)
+
+    def test_uninstall_leaves_the_other_named_hooks_alone(self):
+        """Antigravity's file holds every hook by name, including other people's."""
+        self.hooks_json.parent.mkdir(parents=True)
+        theirs = {"lint-checker": {"PostToolUse": [
+            {"matcher": "run_command", "hooks": [{"command": "./lint.sh"}]}]}}
+        self.hooks_json.write_text(json.dumps(theirs))
+        self.assertEqual(self.configure().returncode, 0)
+        self.assertEqual(sorted(json.loads(self.hooks_json.read_text())), ["lint-checker", "withhuman"])
+        result = self.configure("--uninstall")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(self.hooks_json.read_text()), theirs)
+        self.assertFalse((self.project / ".agents" / "hooks" / "withhuman-hook.py").exists())
+
+    def test_uninstall_takes_an_earlier_hook_of_ours_out_under_any_name(self):
+        """A hook of ours an older version wrote under another name is still ours."""
+        self.hooks_json.parent.mkdir(parents=True)
+        mine = {"withhuman-guard": {"PreToolUse": [
+            {"matcher": "", "hooks": [{"command": "python3 /old/withhuman-hook.py PreToolUse"}]}]}}
+        self.hooks_json.write_text(json.dumps(mine))
+        self.assertEqual(self.configure().returncode, 0)
+        self.assertEqual(list(json.loads(self.hooks_json.read_text())), ["withhuman"])
+
+
 class GlobalSetupTest(Setup):
     """--scope user and --scope managed: every folder of the user, or of every user."""
 

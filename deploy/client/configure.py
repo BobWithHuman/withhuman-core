@@ -295,6 +295,93 @@ class FlatHooksFile(AgentSetup):
         return removed
 
 
+class AntigravitySetup(AgentSetup):
+    kind = "antigravity"
+    name = "Antigravity"
+    #: Antigravity reads a project's hooks from its customization root, which also holds the
+    #: agents, skills and rules that steer it.
+    directory = ".agents"
+    config = "hooks.json"
+    hook = "withhuman-hook.py"
+    files = ("withhuman-hook.py", "antigravity_transcript.py") + SHARED_FILES
+    # Antigravity's six events. `PostInvocation` is deliberately not here: the turn's calls are
+    # judged on their own events and its answer is read from the transcript, so there is
+    # nothing to do on it and every event registered is one more process per turn.
+    events = ("SessionStart", "PreInvocation", "PreToolUse", "PostToolUse", "Stop")
+    #: Antigravity's events that take a `matcher` group rather than handlers directly.
+    grouped = ("PreToolUse", "PostToolUse")
+    # Seconds, not Claude Code's milliseconds. Antigravity kills a hook that runs past this and
+    # blocks the call, so the limit is generous and the bridge ends itself well inside it.
+    timeouts = {"PreToolUse": 25}
+    timeout = 10
+    #: The one top-level hook of ours; everything under it is this agent's.
+    name_key = "withhuman"
+    notes = ("Next: trust this folder, or Antigravity runs none of these hooks and the project",
+             "is not protected. It says so when a session starts, and `--skip-trust` or",
+             "GEMINI_CLI_TRUST_WORKSPACE=true trusts it in an automated run.",
+             "The hooks live in .agents, which is part of the repository: add it to",
+             ".gitignore if these are only for your device.")
+    uninstall_notes = ("WithHuman is removed from this project. Nothing of it runs any more.",)
+    #: Written beside the hook, so the command carries the event alone.
+    server_file = "server"
+
+    def entry(self, python, hook, server, event):
+        """One handler of ours, as Antigravity's hooks.json holds it. `timeout` is in seconds,
+        and there is no separate Windows command: Antigravity runs the command through the
+        platform's own shell."""
+        return {
+            "type": "command",
+            "command": f'"{python}" "{hook}" {event}',
+            "timeout": self.timeouts.get(event, self.timeout),
+        }
+
+    def groups(self, python, hook, server):
+        """Our events under one named hook. `PreToolUse` and `PostToolUse` take a `matcher`
+        group — an empty matcher is every tool — and the rest take handlers directly."""
+        found = {}
+        for event in self.events:
+            handler = self.entry(python, hook, server, event)
+            found[event] = (
+                [{"matcher": "", "hooks": [handler]}] if event in self.grouped else [handler]
+            )
+        return found
+
+    def installed(self, args, installed):
+        """The engine's address, where the bridge looks for it."""
+        (installed / self.server_file).write_text(args.server + "\n", encoding="utf-8")
+
+    def is_ours(self, hook):
+        return isinstance(hook, dict) and self.hook in str(hook.get("command", ""))
+
+    def _holds_ours(self, events):
+        """Whether a named hook's events hold a handler of ours."""
+        if not isinstance(events, dict):
+            return False
+        for entries in events.values():
+            for entry in entries if isinstance(entries, list) else []:
+                if self.is_ours(entry):
+                    return True
+                inner = entry.get("hooks") if isinstance(entry, dict) else None
+                if any(self.is_ours(hook) for hook in inner or []):
+                    return True
+        return False
+
+    def insert(self, config, groups):
+        """Puts our hooks in under our own name, keeping everyone else's. Antigravity's file is
+        named hooks at the top level, so ours need not be woven into theirs."""
+        config[self.name_key] = groups
+
+    def strip(self, config):
+        """Takes our named hook out in place; the number taken out. A hook of ours left under
+        another name by an earlier version goes too."""
+        removed = 0
+        for name in list(config):
+            if name == self.name_key or self._holds_ours(config.get(name)):
+                del config[name]
+                removed += 1
+        return removed
+
+
 class CodexSetup(AgentSetup):
     kind = "codex"
     name = "Codex"
@@ -496,7 +583,7 @@ class HermesSetup(AgentSetup):
 
 #: Every agent but Claude Code, by `--agent` value.
 AGENTS = {agent.kind: agent for agent in (
-    CodexSetup(), CopilotSetup(), CursorSetup(), HermesSetup())}
+    AntigravitySetup(), CodexSetup(), CopilotSetup(), CursorSetup(), HermesSetup())}
 
 
 def is_withhuman(hook):

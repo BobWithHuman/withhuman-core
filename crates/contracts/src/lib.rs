@@ -1,5 +1,6 @@
 //! Shared service-boundary contracts for the WithHuman Engine.
 
+pub mod antigravity;
 pub mod codex;
 pub mod copilot;
 pub mod cursor;
