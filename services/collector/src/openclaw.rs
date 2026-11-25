@@ -32,6 +32,13 @@
 //! - **The tool Hooks name no directory.** Only the turn's Hooks carry `workspaceDir`, so the
 //!   client fills it in from the turn it kept; a shell call carries its own `workdir` as well.
 //!
+//! A turn ends in two Hooks, in this order: `before_agent_finalize` carries the answer the turn
+//! settled on, and `agent_end` says the run is over. The answer is the engine's
+//! `MessageDisplay` — the `[의도]` line it opens with is the turn's intent — and the end closes
+//! the turn's open tool batch, as Claude Code's `PostToolBatch` does. `agent_end` says only that
+//! the run finished: a turn whose model failed still ends with `success: true`, so nothing is
+//! read from it but the turn it belongs to.
+//!
 //! What the Hooks leave out and the client supplies: the session OpenClaw never announced
 //! (`withhuman_synthesized`), the directory of a Call (`workspaceDir`), and the program files a
 //! shell command may run (`withhuman_programs`).
@@ -40,8 +47,9 @@ use axum::http::{HeaderMap, StatusCode};
 use serde_json::{Map, Value, json};
 use withhuman_contracts::{
     hooks::{
-        ClientShell, HookEventName, PostToolUseFailureRequest, PostToolUseRequest,
-        PreToolUseRequest, SessionEndRequest, SessionStartRequest, UserPromptSubmitRequest,
+        ClientShell, HookEventName, MessageDisplayRequest, PostToolBatchRequest,
+        PostToolUseFailureRequest, PostToolUseRequest, PreToolUseRequest, SessionEndRequest,
+        SessionStartRequest, UserPromptSubmitRequest,
     },
     openclaw::{OpenClawHookEvent, OpenClawHookInput, dispatched_action, dispatched_by},
 };
@@ -263,12 +271,41 @@ pub fn translate(
                 untranslated: call.untranslated,
             }
         }
-        // Accepted and passed over. The turn's end, the messages it showed, its subagents and
-        // the changes to what the agent can do are translated where their captures are;
-        // turning them away here would, on an event that decides a Call, block it.
-        Event::AgentEnd
-        | Event::BeforeAgentFinalize
-        | Event::SubagentSpawned
+        // The answer the turn settled on. OpenClaw has shown it by the time this Hook runs, so
+        // the `[의도]` line stays on the user's screen; the engine keeps it as the turn's intent
+        // either way.
+        //
+        // OpenClaw gives an answer no id of its own, so it is named after the turn it belongs to
+        // and what it says: a turn the engine interrupted settles more than once, and each
+        // answer stays a message of its own, while the same answer reported twice stays one.
+        Event::BeforeAgentFinalize => {
+            let answer = input
+                .last_assistant_message
+                .clone()
+                .ok_or_else(|| missing("lastAssistantMessage"))?;
+            let turn = input.run_id.clone().ok_or_else(|| missing("runId"))?;
+            Translation::of(Translated::MessageDisplay(MessageDisplayRequest {
+                session_id: session(input)?,
+                hook_event_name: Some(HookEventName::MessageDisplay),
+                message_id: message_id(&turn, &answer),
+                index: Some(0),
+                delta: answer,
+                final_: true,
+                turn_id: Some(turn),
+            }))
+        }
+        // The turn ended, which closes its open tool batch.
+        Event::AgentEnd => Translation::of(Translated::PostToolBatch(PostToolBatchRequest {
+            session_id: session(input)?,
+            hook_event_name: Some(HookEventName::PostToolBatch),
+            agent_id: None,
+            agent_type: None,
+            tool_calls: Vec::new(),
+        })),
+        // Accepted and passed over. The agent's subagents and the changes to what it can do are
+        // translated where their captures are; turning them away here would, on an event that
+        // decides a Call, block it.
+        Event::SubagentSpawned
         | Event::SubagentEnded
         | Event::SkillChanged
         | Event::BeforeInstall
@@ -424,6 +461,13 @@ fn tool(name: &str, params: Value, shell: ClientShell, mcp: bool) -> Call {
             untranslated: true,
         },
     }
+}
+
+/// Names one answer of a turn. OpenClaw gives an answer no id of its own, so it is named after
+/// the turn it belongs to and what it says.
+fn message_id(turn: &str, answer: &str) -> String {
+    let digest = withhuman_common::chunking::sha256(answer);
+    format!("{turn}-{}", &digest[..12])
 }
 
 /// `word` quoted for a POSIX shell when it needs it.
