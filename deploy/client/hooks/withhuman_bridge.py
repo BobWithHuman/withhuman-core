@@ -412,8 +412,9 @@ class Bridge:
             event = json.loads(payload)
             result = json.loads(output) if output else {}
             decision = self.decision_of(result)
-            row = {"time": time.time(), "session_id": event.get("session_id"),
-                   "event": event_name, "tool_use_id": event.get("tool_use_id"),
+            session_id, tool_use_id = self.ids_of(event)
+            row = {"time": time.time(), "session_id": session_id,
+                   "event": event_name, "tool_use_id": tool_use_id,
                    "decision": decision or (
                        "allow" if event_name in self.blocking_events else None),
                    "source": "bridge_error" if error else "collector",
@@ -429,6 +430,12 @@ class Bridge:
         answers in a shape of its own reads it differently — recording a deny as an allow would
         make the only local evidence say the opposite of what happened."""
         return (answer or {}).get("hookSpecificOutput", {}).get("permissionDecision")
+
+    def ids_of(self, event):
+        """The session and the call an event is of, for the local audit log. An agent that
+        names them its own way reads them differently — a row naming neither cannot be matched
+        to what the engine recorded, which is the whole point of keeping one."""
+        return event.get("session_id"), event.get("tool_use_id")
 
     def check(self, server):
         """Checks the hook can run here and that the engine knows this agent.

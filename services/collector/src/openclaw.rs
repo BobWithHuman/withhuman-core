@@ -80,15 +80,20 @@ impl Agent for OpenClaw {
 
     /// OpenClaw's `before_tool_call` takes `requireApproval`, which pauses the Call until the
     /// user answers and blocks it on a deny or a timeout, so a REVIEW can be asked rather than
-    /// denied — the first client of the engine's that can. MCP calls reach the same Hook, so
-    /// the Hook enforces them rather than AgentGateway. A Call that cannot be judged is
-    /// blocked, and the client sends every event with a delivery ID.
+    /// denied. MCP calls reach the same Hook, so the Hook enforces them rather than
+    /// AgentGateway. A Call that cannot be judged is blocked.
+    ///
+    /// The client loses no event to a resend: its plugin runs the bridge once per Hook and
+    /// reads the answer in the same breath, so there is no delivery ID to retry. Asking rather
+    /// than denying follows from that — a Call hard to undo that nothing could judge is put to
+    /// the user instead of blocked outright, which the engine only does for a client that both
+    /// asks and does not resend.
     fn policy(&self) -> HookPolicy {
         HookPolicy {
             review: ReviewPolicy::Ask,
             mcp_at_hook: true,
             failure: FailurePolicy::Closed,
-            resends: true,
+            resends: false,
         }
     }
 

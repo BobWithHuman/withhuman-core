@@ -1,0 +1,15 @@
+{
+  "id": "withhuman",
+  "name": "WithHuman",
+  "description": "Judges what this agent does against what the user asked for, and holds back a call that does not follow from it.",
+  "version": "0.1.0",
+  "categories": ["security"],
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "server": { "type": "string", "description": "The WithHuman engine's address" }
+    },
+    "additionalProperties": false
+  },
+  "activation": { "onStartup": true }
+}
