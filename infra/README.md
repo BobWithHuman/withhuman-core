@@ -4,7 +4,7 @@ Terraform for the shared-cluster deployment. The engine itself is deployed by Ar
 Helm chart in `deploy/k8s/withhuman` and the values in `withhuman-gitops`.
 
 Nothing here is needed for a personal deployment: that one is the root `compose.yaml` on a single
-Docker host, with no cloud account involved. See the repository's README.
+Docker host, with no cloud account involved. See [docs/deployment.md](../docs/deployment.md).
 
 The deployment stays portable across AWS, Azure and GCP: everything above the cluster (images, the
 chart, Argo CD) is the same on each cloud, and each cloud has its own directory here that provides
@@ -77,7 +77,7 @@ the first PostgreSQL deployment.
 1. Apply Terraform to create the PostgreSQL instance and its `database-url` secret. Keep the
    existing Neo4j deployment and credentials available for rollback. If its sessions must be
    retained, pause graph writes and follow the export, import and verification steps in the
-   [repository README](../README.md#upgrading-an-existing-neo4j-deployment).
+   [deployment guide](../docs/deployment.md#upgrading-an-existing-neo4j-deployment).
 2. In one `withhuman-gitops` change, pin the engine chart in `apps/staging.yaml` to the
    PostgreSQL release commit, set `imageTag` in `envs/staging/values.yaml` to that published
    image SHA, and map the `database-url` secret to the chart. Keep the Redis and Jev mappings.
