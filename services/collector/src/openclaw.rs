@@ -15,6 +15,7 @@
 //! | `read`, `view_image`, `pdf` | `Read`, with `path` under the name the rules read it by (`file_path`) |
 //! | `write` | `Write` |
 //! | `edit` | `MultiEdit`, with `oldText` / `newText` under `old_string` / `new_string` |
+//! | `apply_patch` | the calls making its changes, as Codex's patches become ([`crate::patch`]) |
 //! | `ripgrep` / `fd` | `Grep` / `Glob` |
 //! | `web_search`, `x_search` / `browser` | `WebSearch` / `WebFetch` |
 //! | `sessions_spawn` | `Task` |
@@ -368,6 +369,9 @@ fn call(input: &OpenClawHookInput, shell: ClientShell) -> Result<Call, Rejection
         .as_deref()
         .ok_or_else(|| missing("toolName"))?;
     let params = input.params.clone().unwrap_or(Value::Null);
+    // The directory a patch's paths are relative to. The tool Hooks name none, so this is the
+    // turn's, which the client fills in.
+    let cwd = input.workspace_dir.as_deref();
     // A dispatch runs the action its id names, with its arguments; it carries both, so the
     // Call the engine judges is the real one even though the dispatch is the Hook it answers.
     if name == DISPATCH_TOOL {
@@ -379,11 +383,12 @@ fn call(input: &OpenClawHookInput, shell: ClientShell) -> Result<Call, Rejection
                     arguments,
                     shell,
                     action.mcp_server().is_some(),
+                    cwd,
                 ));
             }
         }
     }
-    Ok(tool(name, params, shell, mcp_tool(name)))
+    Ok(tool(name, params, shell, mcp_tool(name), cwd))
 }
 
 /// Whether a tool's name is an MCP server's and its tool (`<server>__<tool>`). OpenClaw's own
@@ -396,7 +401,7 @@ fn mcp_tool(name: &str) -> bool {
 }
 
 /// One tool of OpenClaw's as the Claude Code tool doing the same thing.
-fn tool(name: &str, params: Value, shell: ClientShell, mcp: bool) -> Call {
+fn tool(name: &str, params: Value, shell: ClientShell, mcp: bool, cwd: Option<&str>) -> Call {
     let plain = |tool_name: &str, tool_input: Value| Call {
         tool_name: tool_name.to_owned(),
         tool_input,
@@ -452,6 +457,14 @@ fn tool(name: &str, params: Value, shell: ClientShell, mcp: bool) -> Call {
             "MultiEdit",
             json!({ "file_path": text("path"), "edits": edits(&params) }),
         ),
+        // The same patch Codex sends, under a field of OpenClaw's own name, so it becomes the
+        // same Claude Code calls: a file added is a `Write`, a file updated a `MultiEdit` with
+        // one edit per hunk, a file deleted or moved the command doing it, and a patch touching
+        // more than one file an `apply_patch` listing them in `changes`.
+        "apply_patch" => {
+            let (tool_name, tool_input) = crate::patch::translate(&params, cwd);
+            plain(&tool_name, tool_input)
+        }
         // Named from the host's tool registry; their inputs are passed through as sent, since
         // no captured session has run one.
         "ripgrep" => plain("Grep", params),

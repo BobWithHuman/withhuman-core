@@ -164,6 +164,67 @@ async fn tools_become_their_claude_code_counterparts() {
     );
 }
 
+/// An `apply_patch` becomes the Claude Code calls making its changes, so the file-change check
+/// reads the lines rather than a patch it would have to parse itself. OpenClaw sends the same
+/// text Codex does, under a field of its own name (`input`), which is why the translation is
+/// shared.
+#[tokio::test]
+async fn a_patch_becomes_the_calls_making_its_changes() {
+    // One file updated in place: a MultiEdit with one edit per hunk.
+    let (name, input, _) = translated_call(
+        call(
+            "apply_patch",
+            json!({"input": "*** Begin Patch\n*** Update File: /work/alpha.md\n@@\n-alpha\n+alpha patched\n*** End Patch"}),
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(name, "MultiEdit");
+    assert_eq!(input["file_path"], "/work/alpha.md");
+    assert_eq!(input["edits"][0]["old_string"], "alpha");
+    assert_eq!(input["edits"][0]["new_string"], "alpha patched");
+
+    // One file added: a Write.
+    let (name, input, _) = translated_call(
+        call(
+            "apply_patch",
+            json!({"input": "*** Begin Patch\n*** Add File: /work/new.md\n+hello\n*** End Patch"}),
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(name, "Write");
+    assert_eq!(input["file_path"], "/work/new.md");
+    assert_eq!(input["content"], "hello\n");
+
+    // More than one file: the calls are listed, so each change is still judged as its own.
+    let (name, input, _) = translated_call(
+        call(
+            "apply_patch",
+            json!({"input": "*** Begin Patch\n*** Add File: /work/a.md\n+a\n*** Delete File: /work/b.md\n*** End Patch"}),
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(name, "apply_patch");
+    let changes = input["changes"].as_array().expect("the calls it became");
+    assert_eq!(changes.len(), 2);
+    assert_eq!(changes[0]["tool_name"], "Write");
+    assert_eq!(changes[1]["tool_name"], "Bash");
+
+    // A patch whose paths are relative resolves against the turn's directory, which the client
+    // fills in: `call` above sends `/work` as the workspace.
+    let (_, input, _) = translated_call(
+        call(
+            "apply_patch",
+            json!({"input": "*** Begin Patch\n*** Add File: nested/c.md\n+c\n*** End Patch"}),
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(input["file_path"], "/work/nested/c.md");
+}
+
 /// OpenClaw runs a Call for another: `dispatch_action` names an action, and the action arrives
 /// a second time as a Call of its own. Blocking the dispatch keeps the action from running at
 /// all, so the dispatch is the Call the engine judges — and the one that follows it is the
