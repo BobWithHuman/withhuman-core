@@ -30,6 +30,10 @@
         codex = @("codex/withhuman-hook.py", "codex/codex_transcript.py")
         cursor = @("cursor/withhuman-hook.py")
         hermes = @("hermes/__init__.py", "hermes/plugin.yaml", "hermes/withhuman-hook.py")
+        # OpenClaw loads a plugin recorded in its own configuration, so its own files are
+        # that plugin and what OpenClaw needs to install it.
+        openclaw = @("openclaw/withhuman-hook.py", "openclaw/index.js",
+                     "openclaw/openclaw.plugin.json", "openclaw/package.json")
     }
     $files = @("configure.py", "hooks/pre-tool-use.py")
     if ($agent -ne "claude") {

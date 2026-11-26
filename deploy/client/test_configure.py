@@ -894,6 +894,127 @@ class AntigravityConfigureTest(unittest.TestCase):
         self.assertEqual(list(json.loads(self.hooks_json.read_text())), ["withhuman"])
 
 
+class OpenClawConfigureTest(unittest.TestCase):
+    """OpenClaw takes WithHuman as a plugin of its state directory, installed by its own CLI; a
+    stand-in `openclaw` records the calls the setup makes.
+
+    Unlike Hermes', the files are not copied into place here: `openclaw` keeps a registry of what
+    is installed and the configuration that records a plugin is also where it is allowed to read
+    a turn, so the files are staged and that CLI installs them from there.
+    """
+
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp()).resolve()
+        self.state = Path(tempfile.mkdtemp()).resolve()
+        self.bin = Path(tempfile.mkdtemp()).resolve()
+        self.calls = self.bin / "calls.txt"
+        if os.name == "nt":
+            (self.bin / "openclaw.cmd").write_text(
+                f'@echo %* %OPENCLAW_STATE_DIR%>> "{self.calls}"\r\n', encoding="utf-8")
+        else:
+            script = self.bin / "openclaw"
+            script.write_text(f'#!/bin/sh\necho "$* $OPENCLAW_STATE_DIR" >> "{self.calls}"\n')
+            script.chmod(0o755)
+
+    def configure(self, *extra, openclaw=True, refusing=False):
+        if refusing:
+            script = self.bin / "openclaw"
+            script.write_text(
+                '#!/bin/sh\n'
+                f'echo "$* $OPENCLAW_STATE_DIR" >> "{self.calls}"\n'
+                'case "$1 $2" in "config set") '
+                'echo "The state owner has no Gateway listener." >&2; exit 1 ;; esac\n')
+            script.chmod(0o755)
+        # The device's own OpenClaw, if one is installed, is kept out of reach.
+        path = os.pathsep.join(entry for entry in os.environ.get("PATH", "").split(os.pathsep)
+                               if entry and not shutil.which("openclaw", path=entry))
+        env = {**os.environ, "HOME": str(self.home), "USERPROFILE": str(self.home),
+               "OPENCLAW_STATE_DIR": str(self.state), "SHELL": "/bin/zsh",
+               "PATH": (str(self.bin) + os.pathsep if openclaw else "") + path}
+        env.pop("WITHHUMAN_SERVER", None)
+        env.pop("WITHHUMAN_KEY", None)
+        return subprocess.run(
+            [sys.executable, str(CONFIGURE), "--agent", "openclaw", "--team", "lab",
+             "--server", SERVER, "--no-persist", "--skip-check", "--no-register", *extra],
+            capture_output=True, text=True, env=env, timeout=60,
+        )
+
+    def calls_made(self):
+        return self.calls.read_text().splitlines() if self.calls.exists() else []
+
+    def test_stages_the_plugin_and_installs_it_with_openclaws_own_cli(self):
+        result = self.configure()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        staged = self.state / "withhuman-setup"
+        for name in ("index.js", "withhuman-hook.py", "openclaw.plugin.json", "package.json",
+                     "withhuman_bridge.py", "pre-tool-use.py"):
+            self.assertTrue((staged / name).is_file(), name)
+        # The engine's address is kept beside the hook, as Cursor's is.
+        self.assertEqual((staged / "server").read_text().strip(), SERVER)
+        calls = self.calls_made()
+        self.assertIn(f"plugins install {staged} --force", calls[0])
+        self.assertIn("--accept-capabilities", calls[0])
+        # Installed from where it was staged, never from the folder OpenClaw installs into:
+        # that would be installing a folder over itself.
+        self.assertNotIn("extensions", calls[0])
+        self.assertIn(str(self.state), calls[0])
+        self.assertIn("openclaw chat", result.stdout)
+
+    def test_allows_the_plugin_the_turn_it_judges_calls_against(self):
+        """Without this OpenClaw refuses the plugin the hooks that carry a turn: the calls are
+        still judged, but the prompt, its intent and the answer never arrive."""
+        self.assertEqual(self.configure().returncode, 0)
+        calls = self.calls_made()
+        self.assertTrue(any("plugins enable withhuman" in line for line in calls), calls)
+        self.assertTrue(
+            any("config set plugins.entries.withhuman.hooks.allowConversationAccess true" in line
+                for line in calls), calls)
+
+    def test_keeps_the_state_where_a_rebuilt_plugin_cannot_take_it(self):
+        """OpenClaw builds a package of a plugin when it installs one, and what the Gateway
+        loads may be a copy of it; state beside the plugin followed that copy and was lost with
+        it, which left no audit log at all."""
+        self.assertEqual(self.configure().returncode, 0)
+        self.assertEqual((self.state / "withhuman-state" / ".gitignore").read_text().strip(), "*")
+        self.assertFalse((self.state / "withhuman-setup" / "withhuman-state").exists())
+
+    def test_a_gateway_holding_the_configuration_stops_the_setup(self):
+        """`openclaw config set` is refused while a Gateway owns the state, and the setup cannot
+        finish without it, so the message has to say what to do about it."""
+        result = self.configure(refusing=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Stop OpenClaw first", result.stdout + result.stderr)
+
+    def test_says_so_without_the_openclaw_command(self):
+        result = self.configure(openclaw=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not on PATH", result.stdout + result.stderr)
+
+    def test_takes_the_plugin_out_again(self):
+        self.configure()
+        result = self.configure("--uninstall")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.state / "withhuman-setup").exists())
+        self.assertFalse((self.state / "withhuman-state").exists())
+        self.assertTrue(any("plugins uninstall withhuman --force" in line
+                            for line in self.calls_made()), self.calls_made())
+
+    def test_finds_the_state_directory_where_openclaw_keeps_it(self):
+        spec = importlib.util.spec_from_file_location("withhuman_configure", CONFIGURE)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with mock.patch.dict(os.environ, {}):
+            os.environ.pop("OPENCLAW_STATE_DIR", None)
+            self.assertEqual(module.openclaw_home(), Path.home() / ".openclaw")
+            os.environ["OPENCLAW_STATE_DIR"] = str(self.state)
+            self.assertEqual(module.openclaw_home(), self.state)
+
+    def test_takes_no_scope(self):
+        result = self.configure("--scope", "user")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("per state directory", result.stderr)
+
+
 class GlobalSetupTest(Setup):
     """--scope user and --scope managed: every folder of the user, or of every user."""
 
