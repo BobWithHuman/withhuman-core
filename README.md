@@ -1,12 +1,137 @@
-# WithHuman
+<!-- Banner image goes here: .github/readme-banner.png (2400×600) -->
 
-WithHuman records an agent's intent and checks tool calls against it. Collector, Generator and
-Decision run with PostgreSQL and Redis; AgentGateway is the single HTTP entry point.
+<div align="center">
+   <h1>WithHuman</h1>
+   <div>
+      <h3>
+         <a href="#quickstart">
+            <strong>Quickstart</strong>
+         </a> · 
+         <a href="#deploy">
+            <strong>Self-Host</strong>
+         </a> · 
+         <a href="#supported-agents">
+            <strong>Supported Agents</strong>
+         </a>
+      </h3>
+   </div>
 
-## Personal Docker deployment
+   <div>
+      <a href="#how-it-works"><strong>How it works</strong></a> ·
+      <a href="https://github.com/BobWithHuman/withhuman-core/issues/new/choose"><strong>Report Bug</strong></a> ·
+      <a href="https://github.com/BobWithHuman/withhuman-core/pulls"><strong>Pull Requests</strong></a> ·
+      <a href="https://github.com/BobWithHuman/withhuman-core/commits/main"><strong>Changelog</strong></a>
+   </div>
+   <br/>
+</div>
 
-Docker 24+ with the Compose plugin 2.20 or later is required. Set `GATEWAY_BIND=127.0.0.1` for
-local-only access.
+<p align="center">
+   <a href="https://github.com/BobWithHuman/withhuman-core/blob/main/LICENSE">
+   <img src="https://img.shields.io/badge/License-MIT-E11311.svg" alt="MIT License"></a>
+   <a href="https://github.com/BobWithHuman/withhuman-core/actions/workflows/ci.yml">
+   <img src="https://github.com/BobWithHuman/withhuman-core/actions/workflows/ci.yml/badge.svg?event=pull_request" alt="Basic CI"></a>
+   <a href="https://github.com/BobWithHuman/withhuman-core/actions/workflows/images.yml">
+   <img src="https://github.com/BobWithHuman/withhuman-core/actions/workflows/images.yml/badge.svg?branch=main" alt="Service Images"></a>
+   <a href="https://github.com/orgs/BobWithHuman/packages?repo_name=withhuman-core">
+   <img src="https://img.shields.io/badge/ghcr.io-amd64%20%7C%20arm64-528bff?logo=docker&logoColor=white" alt="Images on GHCR"></a>
+   <a href="Cargo.toml">
+   <img src="https://img.shields.io/badge/Rust-1.87%2B-DEA584?logo=rust&logoColor=white" alt="Rust 1.87 or later"></a>
+   <br/>
+   <a href="https://github.com/BobWithHuman/withhuman-core/graphs/commit-activity">
+   <img alt="Commits last month" src="https://img.shields.io/github/commit-activity/m/BobWithHuman/withhuman-core?labelColor=%20%2332b583&color=%20%2312b76a"></a>
+   <a href="https://github.com/BobWithHuman/withhuman-core/issues?q=is%3Aclosed">
+   <img alt="Issues closed" src="https://img.shields.io/github/issues-search?query=repo%3ABobWithHuman%2Fwithhuman-core%20is%3Aclosed&label=issues%20closed&labelColor=%20%237d89b0&color=%20%235d6b98"></a>
+   <a href="https://github.com/BobWithHuman/withhuman-core/commits/main">
+   <img alt="Last commit" src="https://img.shields.io/github/last-commit/BobWithHuman/withhuman-core?labelColor=%20%239b8afb&color=%20%237a5af8"></a>
+</p>
+
+WithHuman is a **security engine for AI coding agents** that **detects and prevents unintended
+tool calls**. It records what the user asked for and the intent the agent states for each turn,
+**traces every tool call back to its cause** (the user's request or a tool result someone else
+wrote) and allows, reviews or denies it **before it runs**. Claude Code, Codex, Cursor, Hermes,
+OpenClaw, GitHub Copilot and Antigravity plug in through their own hooks; the engine is
+**self-hosted** with one Docker Compose file.
+
+<!-- Demo video or GIF goes here -->
+
+> [!NOTE]
+> The personal Compose stack starts in **`shadow` mode**: every call is judged and recorded, but
+> nothing is blocked. Set `WITHHUMAN_MODE=enforce` in `.env` once the verdicts look right for
+> your work.
+
+<a id="core-features"></a>
+
+## ✨ Core Features
+
+<!-- Feature overview image goes here -->
+
+- [Intent capture](#judging): every prompt asks the model to open its answer with an `[의도]`
+  line, the user's goal as the model reads it. The line is hidden from the screen, kept as the
+  turn's intent, and every call of the turn is judged against it.
+- [Causal tracing](#how-it-works): each call is linked to what made the agent take it (the
+  user's request, a tool result, or a paragraph of one) through the session's execution graph,
+  so an instruction planted in a web page, an issue or a file is caught where it takes effect.
+- [Reversibility grades](#judging): every call is graded 0 to 3-2 by how far its effect can be
+  undone (KISA agentic-AI zero-trust guide, table 2-5). The grade decides what happens when the
+  engine cannot judge, and hard-to-undo calls are never let through unjudged.
+- [Line-by-line change checks](#judging): a file change, a shell write or a service update is
+  asked about each line it adds, so a line an attacker planted is not lost among the lines of a
+  fix; a change that only undoes the session's own earlier changes is allowed.
+- **Safeguard protection**: a call that changes an agent's own settings or hooks (`.claude`,
+  `.codex`, `.cursor`, `.github/hooks`, OpenClaw's state, WithHuman's own files) is denied by
+  rule.
+- **Secrets and hidden content**: passwords, keys, PII and financial identifiers are masked
+  before they are stored and indexed by hash, so a value that later leaves the session is traced
+  to where it came in. Text a person cannot see (unrendered markup, invisible Unicode, metadata)
+  is marked as hidden.
+- [Keys, inventory and kill switch](#for-security-teams): per-user keys tie every hook to a
+  person, the engine keeps an inventory of devices and agents, and the security team can revoke
+  a key or stop a device at once.
+- [Triage and evidence](#for-security-teams): session marks, distrusted sources whose effects
+  are held for review, a per-call evidence API, and a read-only database login for the security
+  team's viewer.
+- [EDR matching](#for-security-teams): the device list from a Wazuh manager, matched to
+  registered devices, with coding agents seen running beside the sessions their hooks reported.
+
+<a id="how-it-works"></a>
+
+## 🧭 How it works
+
+<!-- Architecture image goes here -->
+
+```mermaid
+flowchart LR
+    agent["Coding agent<br/>Claude Code · Codex · Cursor · …"] -- "hooks" --> gw["AgentGateway<br/>:3000"]
+    gw --> col["Collector<br/>normalize · session state"]
+    col <--> redis[("Redis")]
+    col --> gen["Generator<br/>execution graph"]
+    gen <--> pg[("PostgreSQL")]
+    gen --> dec["Decision<br/>trace · check · grade"]
+    dec <--> jev["Jev"]
+    col -. "ALLOW · REVIEW · DENY" .-> agent
+```
+
+| Service | Role |
+|---|---|
+| **AgentGateway** | The single HTTP entry point. Routes hooks, device registration and the admin API to the Collector, and checks MCP calls served through it with Envoy extAuthz. |
+| **Collector** | Takes each agent's hooks, translates other agents into Claude Code's hook form, numbers events per session (state shared in Redis for several replicas) and answers the hook with the verdict. |
+| **Generator** | Commits every event to the session's execution graph in PostgreSQL: requests, messages, intents, calls and their results, split into paragraphs, with sensitive values masked and indexed. |
+| **Decision** | Traces the call to its cause, checks it against the user's request with Jev, grades it, and stores the verdict and the full trace with the call. |
+
+Claude Code's hook contract is the engine's own form: its hooks reach `/v1/hooks/<Event>`
+unchanged, and every other agent is translated into them, so the normalization, graph and
+judgment behind them are the same code for every agent.
+
+<a id="deploy"></a>
+
+## 📦 Deploy WithHuman
+
+<!-- Deployment image goes here -->
+
+### Personal Docker deployment
+
+One machine, one user. Docker 24+ with the Compose plugin 2.20 or later is required. Set
+`GATEWAY_BIND=127.0.0.1` for local-only access.
 
 ```sh
 git clone https://github.com/BobWithHuman/withhuman-core.git
@@ -30,7 +155,19 @@ docker compose pull && docker compose up --detach --wait
 
 Set `IMAGE_TAG` to a release (`0.1.0`) or a full commit SHA to stay on one build instead.
 
-### PostgreSQL graph store
+### Shared cluster
+
+`infra/aws/staging` provisions EKS, RDS for PostgreSQL and ElastiCache Valkey with Terraform; Argo
+CD runs the Helm chart in `deploy/k8s/withhuman` with the values in `withhuman-gitops`. Every
+merge to `main` publishes new images and points staging at them. Infrastructure instructions are
+in [`infra/README.md`](infra/README.md).
+
+> [!TIP]
+> Each service serves its OpenAPI document at `/api-docs/openapi.json` and Swagger UI at
+> `/swagger-ui`. The Collector's covers every hook route, the admin API and the evidence schema.
+
+<details>
+<summary><strong>PostgreSQL graph store</strong></summary>
 
 PostgreSQL 16 starts with Compose. Set a URL-safe `POSTGRES_PASSWORD` in `.env`. Outside Compose,
 set `DATABASE_URL` (and optionally `DATABASE_POOL_SIZE`, default 16) on Generator and Decision.
@@ -38,7 +175,10 @@ Both services initialize the schema on startup.
 
 If PostgreSQL was already enabled, use the same Compose project, volume and password.
 
-### Upgrading an existing Neo4j deployment
+</details>
+
+<details>
+<summary><strong>Upgrading an existing Neo4j deployment</strong></summary>
 
 1. Pause every writer to the old graph, including experiment stacks. Keep the old images, Compose
    file and volumes for rollback, and take a Neo4j backup before changing the deployment.
@@ -63,6 +203,11 @@ Compose project and keep its volume and backup through the rollback window. If c
 traffic resumes, restore the old stack. After new writes are accepted, back up PostgreSQL and
 reconcile those writes before rolling back.
 
+</details>
+
+<details>
+<summary><strong>Maintenance commands and how secrets are traced</strong></summary>
+
 The PostgreSQL `reindex-paragraphs` command runs with the Generator and Decision stopped. It replaces
 paragraphs and removes their old classifications and paragraph-level cause links. It retains
 original token keys and result-level links.
@@ -80,6 +225,36 @@ password, API key or JWT whose first mention in its session is the agent's, it f
 again from the token's masked ends and key hash, then masks and records as above. It can run with
 the Generator and Decision up, one token per transaction under its session's lock, and a second
 run changes nothing. It prints counts only.
+
+</details>
+
+<a id="supported-agents"></a>
+
+## 🔌 Supported Agents
+
+<!-- Supported agents image goes here -->
+
+| Agent | Set up for | Hooks | A call that needs the user's confirmation (REVIEW) | Verified with |
+|---|---|---|---|---|
+| [Claude Code](#claude-code) | a project, a user or a whole device | HTTP hooks, and a command hook for PreToolUse | asked of the user (`WITHHUMAN_ASK=ask`) | the engine's own hook form |
+| [Codex CLI](#codex-cli) | a project (`.codex/hooks.json`) | command hook | blocked | Windows, Codex CLI 0.154 and 0.167 |
+| [Cursor CLI](#cursor-cli) | a project (`.cursor/hooks.json`) | command hook | blocked | macOS, Cursor CLI 2026.11.22 |
+| [Hermes Agent](#hermes-agent) | a profile | plugin | blocked | Windows, Hermes Agent 0.23.3 |
+| [OpenClaw](#openclaw) | a device (state directory) | plugin | asked of the user (`requireApproval`) | Linux, OpenClaw 2026.11.7 |
+| [GitHub Copilot CLI](#github-copilot-cli) | a project (`.github/hooks/`) | command hook | blocked | recorded against Copilot CLI 1.0.115-7 |
+| [Antigravity CLI](#antigravity-cli) | a project (`.agents/hooks.json`) | command hook | blocked | recorded against Antigravity CLI 1.5.16 |
+
+Every agent but Claude Code reaches the Collector's `/v1/hooks/<kind>/{event}` route, where its
+adapter turns each hook into the Claude Code request doing the same thing. A tool is translated
+to the Claude Code tool doing the same thing rather than to a name of its own: Codex's shell
+calls become `Bash` (or `PowerShell`), its one-file patches `Write`, `Edit` or `MultiEdit`, its
+web operations `WebSearch` or `WebFetch`; Cursor's `Shell` becomes `Bash`, and its `Grep` keeps
+its pattern under the name the rules read it by.
+
+<a id="claude-code"></a>
+
+<details>
+<summary><strong>Claude Code</strong></summary>
 
 Configure a Claude Code project against the local gateway:
 
@@ -114,239 +289,20 @@ per project.
 
 To start over on a device set up more than one way (an earlier hook version, a user setup and a
 managed one, projects set up one by one), `--reset` takes every WithHuman setup out at once: the
-managed one, the user one, and the project ones of the folders named after it (every agent's). Other hooks and settings stay, each file changed is copied first, and the device's
-client ID is kept, so the setup made after is the same device:
+managed one, the user one, and the project ones of the folders named after it (every agent's).
+Other hooks and settings stay, each file changed is copied first, and the device's client ID is
+kept, so the setup made after is the same device:
 
 ```bash
 sudo python3 deploy/client/configure.py --reset ~/src/app ~/src/api
 ```
 
-### Keys and the agent inventory
+</details>
 
-The engine records which device and which user run each agent session. Every setup registers
-its device (`POST /v1/clients/register`: client ID, team, host name, OS, OS user, hook version,
-project folder and, where the user may read it, the hardware serial number); a setup that cannot
-reach the engine still completes and says so.
+<a id="codex-cli"></a>
 
-Per-user keys tie Hooks to a person and let the security team stop that person's agents. Set
-`WITHHUMAN_ADMIN_TOKEN` in `.env`, then issue a key and hand it to the user:
-
-```sh
-curl -X POST -H "Authorization: Bearer $WITHHUMAN_ADMIN_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"actor": "security@example.com"}' http://127.0.0.1:3000/v1/admin/users/ana@example.com/keys
-```
-
-The user sets the project up with it, `--key whk_...` (or `WITHHUMAN_KEY=whk_...` for the
-one-line installers). The key is kept in `~/.config/withhuman/key`, readable by the user only, and
-exported as `WITHHUMAN_KEY`. The engine stores keys as SHA-256 hashes only.
-
-Revoking a key (`POST /v1/admin/keys/<key_id>/revoke`) or all of a user's keys
-(`POST /v1/admin/users/<email>/revoke`), each with `{"actor": ..., "reason": ...}`, denies every
-tool call the user's agents make from then on (within `WITHHUMAN_KEY_CACHE_MS`, 5 s by default).
-Hooks without a valid key are taken without a user unless `WITHHUMAN_REQUIRE_KEY=on`, which
-denies their tool calls and refuses their other Hooks; turn it on before relying on revocation,
-since otherwise a user could drop the key.
-
-The inventory keeps two people for a device: `user`, whoever's key it presented last, and
-`owner`, the person the security team names for the machine. Name or clear the owner with
-`POST /v1/admin/clients/<client_id>/owner` and `{"owner": "<email>" | null, "actor": ...}`. A
-client ID holds a slash (`<team>/<uuid>`), sent as one path segment: `team%2F<uuid>`.
-
-```sh
-curl -X POST -H "Authorization: Bearer $WITHHUMAN_ADMIN_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"owner": "ana@example.com", "actor": "security@example.com"}' \
-  http://127.0.0.1:3000/v1/admin/clients/platform%2F6f1c0d1e-0000-4000-8000-000000000000/owner
-```
-
-The security team can also stop one device: `POST /v1/admin/clients/<client_id>/stop` with
-`{"stopped": true, "actor": ..., "reason": ...}` denies every tool call whose Hook carries that
-client ID, in every mode, until `{"stopped": false}` releases it. The device's other Hooks are
-still recorded. An unknown device is a 404; a device already stopped keeps its first stop. The
-stop applies at once on the Collector that took it and within `WITHHUMAN_KEY_CACHE_MS` on the
-others; a tool call already past its PreToolUse Hook is not interrupted. The device shows a fixed
-message, never the team's `reason`. `clients.stopped_at`, `stopped_by` and `stop_reason` hold the
-stop (all null while the device runs), and `stop_denied_count` and `stop_last_denied_at` the calls
-refused for it.
-
-```sh
-curl -X POST -H "Authorization: Bearer $WITHHUMAN_ADMIN_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"stopped": true, "actor": "security@example.com", "reason": "lost laptop"}' \
-  http://127.0.0.1:3000/v1/admin/clients/platform%2F6f1c0d1e-0000-4000-8000-000000000000/stop
-```
-
-A stop is not a lock on the machine. The client ID is a header the device's own Hooks send
-(`~/.config/withhuman/client-id`), so a device that sends another ID, or none, or whose Hooks were
-removed, is not stopped, and `WITHHUMAN_REQUIRE_KEY` does not change that: a key names a person,
-not a machine. It stops a device that keeps running its installed Hooks. To stop a person
-whatever they run, revoke their keys with `WITHHUMAN_REQUIRE_KEY=on`. Tool calls that reach the
-engine through AgentGateway alone (MCP, without a Hook) are not covered, as with a revoked key.
-
-### Triage
-
-The security team records what it decided about a session it looked at, for the whole team:
-`session_marks` and `distrusted_sources` in PostgreSQL, which the viewer reads. Both are set
-through the admin API. A mark is a record only. A distrusted source also holds what it causes:
-when the engine traces a tool call to a tool result (`cause.link` is `segment`) and the call that
-produced that result is on a distrusted source, a call the engine would otherwise allow is put to
-the user for review instead (rule `source::distrusted`), or denied with
-`WITHHUMAN_DISTRUSTED_SOURCE_DENY=1`. The rule only makes a verdict stricter: a call already
-denied or held keeps its verdict and rule. Reading the source is not blocked, only what its
-content then causes. A result's source is the path, URL or folder-relative path its call named, or
-its tool's name, as the evidence shows it. A source distrusted now holds the calls decided from
-now on; the list is read for each such call, so there is nothing to wait out. If the list cannot
-be read within 250 ms the call is decided without it, with a warning in Decision's log and
-`source.error` in the call's trace. The matched source is kept in the call's trace
-(`nodes.trace_json`, `source.distrusted`) and never shown to the agent.
-
-`POST /v1/admin/sessions/<session_id>/mark` with `{"state": ..., "actor": ...}` marks a session
-`reviewing`, `attack`, `benign` or `closed`, replaces its mark, or with `"state": null` takes it
-off (a session without a mark was not handled yet); a session the engine does not hold is a 404.
-`POST /v1/admin/sessions/mark` with `{"session_ids": [...], "state": ..., "actor": ...}` does the
-same for up to 1000 sessions together and answers with `sessions` (each with its mark) and
-`unknown`, the ones the engine does not hold, which it leaves alone. `POST /v1/admin/sources/distrust` with
-`{"source": ..., "on": true | false, "actor": ..., "session_id": ..., "seq": ...}` distrusts a
-source (a document's path, a URL or a tool's name) or with `on: false` trusts it again;
-`session_id` and `seq`, the tool call that showed the source, are optional. The source goes in
-the body as written, since it may be a URL or a path.
-
-```sh
-curl -X POST -H "Authorization: Bearer $WITHHUMAN_ADMIN_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"state": "attack", "actor": "security@example.com"}' \
-  http://127.0.0.1:3000/v1/admin/sessions/0b9f6c1e-0000-4000-8000-000000000001/mark
-curl -X POST -H "Authorization: Bearer $WITHHUMAN_ADMIN_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"source": "https://example.com/setup.md", "on": true, "actor": "security@example.com"}' \
-  http://127.0.0.1:3000/v1/admin/sources/distrust
-```
-
-`GET /v1/admin/sessions/<session_id>/calls/<seq>/evidence` returns one tool call's evidence as
-JSON for other systems (`"schema": "withhuman.evidence/v1"`): the call (tool, input, target,
-time, device, user), the engine's decision (reason, rule, mode), the person's request before
-it, what the engine traced the call to (`cause.link`: `request`, `segment` or `none`; for
-`segment` the tool results in `cause.told_by`, each with the call whose result it was, the
-paragraph, its text and the probability), the session's mark, and whether the cause's source
-is distrusted. `seq` is the call's number in its session (`nodes.seq`). An unknown session or
-call is a 404. Text is as the engine stored it, sensitive values already replaced; no key or
-key hash is in it. The full shape is in the Collector's OpenAPI document (`/swagger-ui`).
-
-### The security team's viewer
-
-The viewer reads PostgreSQL directly, read-only, as `withhuman_viewer`. The Generator creates that
-login when `WITHHUMAN_VIEWER_PASSWORD` is set, and the schema grants it SELECT on the graph,
-inventory and triage tables (`api_keys` without its hash) and nothing else. The personal stack publishes
-PostgreSQL on `127.0.0.1:15432` (`POSTGRES_PORT`):
-`postgres://withhuman_viewer:<WITHHUMAN_VIEWER_PASSWORD>@127.0.0.1:15432/withhuman`.
-
-### Devices from Wazuh
-
-With `WITHHUMAN_WAZUH_URL` set, the Generator reads the company's device list from a Wazuh
-manager every `WITHHUMAN_WAZUH_SYNC_INTERVAL_SECS` and keeps it in `edr_devices`, one row per
-Wazuh agent: `agent_id`, `name`, `os`, `status` (`active`, `disconnected`, `never_connected`,
-`pending`), `serial` (the board serial of the hardware inventory), `last_seen`, `agent`,
-`running_at` and `synced_at`. The table mirrors the manager: a device it no longer lists is removed, and a sync
-that fails changes nothing and is tried again at the next interval. Without the URL nothing runs.
-
-Each sync then matches the registered devices: `clients.edr_agent_id` and `clients.edr_status`
-name the Wazuh agent of a client and its status, or are NULL. Two serial numbers that are both
-known must be equal (firmware placeholders such as `To Be Filled By O.E.M.` count as unknown);
-when either is unknown, the hostnames decide, compared without case or domain (`Mac-1.local` is
-`mac-1`). Every client row of a machine, one per OS account, gets the same agent. The setup
-reports the serial Wazuh does: the motherboard's on Linux (`/sys/class/dmi/id/board_serial`) and
-Windows (`Win32_BaseBoard`), the platform's on macOS. Beside it, it reports the others it can
-read (`other_serials`: the BIOS's on Windows, the system's on Linux when readable), which a PC
-often numbers otherwise, and the Wazuh agent whose serial equals any of them is the device's: a
-Wazuh build or a machine that reports another of its numbers still finds it. A Linux or Windows
-device set up before either reported the system's or the BIOS's alone, and stays apart from its
-Wazuh agent until it is set up again.
-
-`edr_devices.agent` is `claude-code`, `codex`, `cursor` or `openclaw` (Claude Code first, else whichever
-the scan showed first):
-
-- from a process running at the agent's last inventory scan, when it is exactly that program:
-  its `name` is `claude`, `codex`, `cursor-agent` or `openclaw` (`claude.exe` on Windows), or its `cmd` or
-  one of its `argvs` is a path whose last segment is that name, a path into Claude Code's native
-  install (`~/.local/share/claude/versions/2.1.3`, which runs under its version's name) or
-  Cursor's (`~/.local/share/cursor-agent/versions/2026.11.22/index.js`), or a path into the npm
-  package `@anthropic-ai/claude-code` or `@openai/codex`, or a path into OpenClaw's npm install
-  (`…/node_modules/openclaw/…`, which its Gateway runs out of) — all three run under `node`.
-  Case counts, so the Claude desktop app's processes (`Claude`, `Claude Helper (Renderer)`) are
-  not Claude Code;
-- otherwise from an installed package with `claude` or `codex` in its name in any case
-  (`@anthropic-ai/claude-code`, `claude-code`, `codex`, `Codex CLI`), except the desktop app's
-  (`Claude`, or `Claude ` followed by anything but `Code`), or one named after Cursor (`Cursor`,
-  `cursor-agent`, `Cursor CLI`), or one named after OpenClaw (`openclaw`, `OpenClaw CLI`). A
-  plugin of OpenClaw's (`openclaw-plugin-…`) does not count: that says a plugin was built, not
-  that the agent runs here.
-
-Cursor's CLI is found by the folder it runs from rather than by its name: it runs under `node`
-with the name it was started as, and the setup leaves that as both `cursor-agent` and `agent`.
-Its editor counts as the same agent — it reads the same hooks — so its own binary (`Cursor`,
-`Cursor.exe`, `cursor`) is matched whatever the case, while its helper processes and everything
-else that merely holds the word are not: macOS's own `CursorUIViewService` and a Linux desktop's
-`libxcursor` and `xcursor-themes` are no coding agent.
-
-`edr_devices.running_at` is when such a process was last seen running: the latest `scan.time`
-of the processes that pass, epoch milliseconds. It is NULL when none was running at the last
-scan, including when only a package shows the program; a viewer can set it against the
-device's Hook sessions to find a coding agent running without them. NULL in either column means
-only that nothing was seen: the agent's process inventory is a snapshot every scan interval
-(an hour by default), a program installed outside a package manager Wazuh reads leaves no trace
-while it is not running, and on macOS Wazuh reports a process's name only, without its command
-line, so Claude Code or Codex installed with npm (`node`) is not seen running there.
-
-`edr_sightings` keeps what `running_at` overwrites: one row per device and process scan that
-found a coding agent running, `agent_id`, `running_at` (the scan's time), `agent`, `name` (the
-device's name then), `synced_at` (the sync that first saw it) and `command`, keyed by `agent_id`
-and `running_at`. `command` is the command line of the process the scan found (`claude -p …`,
-`claude --resume <session>`, `codex exec …`): its `cmd` and `argvs` joined by spaces, cut to
-1000 characters; among several processes of the scan, one of the agent named and with
-arguments. What Wazuh reports differs by system: Linux gives the whole command line, Windows
-the executable's path only and macOS the process's name only, so there `command` is a path or
-NULL. A scan seen again by a later sync adds nothing and keeps the command line first seen, a
-device with `running_at` NULL adds nothing, and a device the manager no longer lists keeps its
-rows. Each sync deletes the
-rows whose scan is more than 30 days before it (`SIGHTING_RETENTION`). The engine only records
-the scans: telling them apart from Hook sessions, and grouping consecutive ones, is the
-viewer's.
-
-| Variable | Default | |
-|---|---|---|
-| `WITHHUMAN_WAZUH_URL` | empty: no sync | The Wazuh server API, `https://<manager>:55000` |
-| `WITHHUMAN_WAZUH_USER`, `WITHHUMAN_WAZUH_PASSWORD` | required with the URL | An API user that may read agents and their inventory (`agent:read`, `syscollector:read`): the default role `readonly` |
-| `WITHHUMAN_WAZUH_SYNC_INTERVAL_SECS` | `120` | At least 60 |
-| `WITHHUMAN_WAZUH_MAX_REQUESTS_PER_MINUTE` | `150` | The manager refuses everyone past its own limit (300 by default); `0` for no pacing |
-| `WITHHUMAN_WAZUH_CA_FILE` | empty: public authorities | A PEM file trusted instead: authorities, or the manager's own self-signed certificate |
-| `WITHHUMAN_WAZUH_TLS_SKIP_VERIFY` | `0` | `1` skips verifying the certificate, with a warning at start; not with a CA file |
-
-A sync costs one login, one request per 500 agents and up to three per agent. Generators
-running together take turns: one syncs at a time, and none repeats a sync finished less than
-half an interval ago.
-
-### Judging
-
-When the engine gives no judgment (unreachable, an error, no answer in time) a tool call is
-denied: the Collector defaults to `WITHHUMAN_ON_FAILURE=closed`, and `pre-tool-use.py` denies when
-it cannot reach the Collector. With `WITHHUMAN_ASK=ask` (Claude Code), a grade 2 or 3 call the
-engine could not judge is put to the user instead. A stored verdict is kept 5 minutes
-(`WITHHUMAN_VERDICT_TTL_SECS`).
-
-- Each call is graded 0, 1, 2-1, 2-2, 3-1 or 3-2 by how far its effect can be undone (KISA
-  agentic-AI zero-trust guide, table 2-5); the grade is recorded in the trace and sets what
-  happens when judging fails.
-- A file change is never cleared on the first question alone, and is asked about each line it
-  adds: a document the user pointed to counts only for the task it describes. A shell command
-  that writes files is checked the same way, and a change that only undoes the session's own
-  earlier changes to a file is allowed.
-- Jev sees a several-step shell command step by step, and text built from base64, character
-  codes or joined literals.
-- A `---`, `***` or `___` line starts a new paragraph, so a note appended after it is traced
-  apart from the text before; a Codex shell command that exits non-zero is recorded with its
-  output, as Claude Code records a failed Bash command.
-- After `WITHHUMAN_DEGRADED_FAILURES` (3) Jev failures in a row, or at once on 401/402/403/429,
-  the rules judge alone for `WITHHUMAN_DEGRADED_SECONDS` (60): grade 0 and 1 are allowed (except a
-  secret read, a web fetch or an edit of CI or hooks), grade 2 and 3 are reviewed, a safeguard
-  change is denied.
-
-### Codex CLI
+<details>
+<summary><strong>Codex CLI</strong></summary>
 
 Set up a Codex CLI project with the same one-line installers, choosing Codex. In the folder you
 start `codex` in, on Windows PowerShell:
@@ -397,7 +353,12 @@ Subsequent input into an already-open shell and a hook that cannot start or is n
 outside this protection. `observe` records activity without enforcing protection.
 Verified on Windows with Codex CLI 0.154 and 0.167; macOS is not verified yet.
 
-### Cursor CLI
+</details>
+
+<a id="cursor-cli"></a>
+
+<details>
+<summary><strong>Cursor CLI</strong></summary>
 
 Set up a Cursor CLI project with the same one-line installers, choosing Cursor. In the folder you
 start `cursor-agent` in, on macOS and Linux:
@@ -452,7 +413,12 @@ Configuration changes made outside the agent are not recorded (Cursor has no Con
 Cursor Tab's own file access is outside this protection, and Cloud Agents support a different set
 of hooks. Verified on macOS with Cursor CLI 2026.11.22; Windows is not verified yet.
 
-### Hermes Agent
+</details>
+
+<a id="hermes-agent"></a>
+
+<details>
+<summary><strong>Hermes Agent</strong></summary>
 
 Hermes runs every session of a profile in one gateway, which loads plugins from the profile only,
 so WithHuman is set up for the profile rather than a folder. With the same installers, choosing
@@ -482,7 +448,12 @@ engine cannot be reached or answer in time, the call is blocked (`WITHHUMAN_MODE
 through). The `[의도]` line stays visible, and configuration changes are not recorded. Verified on
 Windows with Hermes Agent 0.23.3.
 
-### OpenClaw
+</details>
+
+<a id="openclaw"></a>
+
+<details>
+<summary><strong>OpenClaw</strong></summary>
 
 OpenClaw runs every session of a state directory in one Gateway, which loads plugins recorded in
 that directory's configuration and never from a folder, so WithHuman is set up for the device
@@ -577,12 +548,71 @@ not fixed — `tool_search` lets the model look tools up mid-turn — so what an
 be read off a session's start. Verified on Linux with OpenClaw 2026.11.7; macOS and Windows are not
 verified yet.
 
-### Another agent
+</details>
 
-Claude Code's hook contract is the engine's own form: its hooks reach `/v1/hooks/<Event>`
-unchanged, and every other agent is translated into them, so the normalization, graph and
-judgment behind them are the same code for every agent. Adding one is three pieces, each with
-its own seam and nothing else to change:
+<a id="github-copilot-cli"></a>
+
+<details>
+<summary><strong>GitHub Copilot CLI</strong></summary>
+
+Set up a Copilot CLI project from a checkout (the one-line installers do not offer Copilot yet):
+
+```sh
+python3 deploy/client/configure.py --agent copilot --project /path/to/project \
+  --server http://127.0.0.1:3000
+```
+
+This installs the bridge into `<project>/.github/hooks/` with its entries in
+`.github/hooks/withhuman-copilot.json`. Then trust the folder, or Copilot runs none of these hooks
+and the project is not protected: add the project to `"trustedFolders"` in
+`~/.copilot/config.json`, or answer the trust question Copilot asks in an interactive session.
+`--allow-all-tools` does not trust a folder; `COPILOT_ALLOW_ALL=true` does, but it approves every
+tool as well. `/env` in a session lists the hooks it loaded. The hooks live in `.github/hooks`,
+which is part of the repository: add it to `.gitignore` if these are only for your device.
+
+Copilot sends each event under its own name and under Claude Code's, with Claude Code's field and
+tool names, so the bridge registers Claude Code's and there is little left to translate.
+`PreToolUse` is the only hook Copilot lets stop a call — a deny on its own MCP gate is discarded —
+so MCP calls are judged there too, and a hook that merely times out lets the call run, so the
+bridge answers on a deadline of its own and every failure ends in a deny. No hook carries the
+model's answer or a turn: the `[의도]` line is read from the session transcript, and a turn is
+opened at each prompt. A REVIEW is blocked. Recorded against Copilot CLI 1.0.115-7.
+
+</details>
+
+<a id="antigravity-cli"></a>
+
+<details>
+<summary><strong>Antigravity CLI</strong></summary>
+
+Set up an Antigravity CLI project from a checkout (the one-line installers do not offer
+Antigravity yet):
+
+```sh
+python3 deploy/client/configure.py --agent antigravity --project /path/to/project \
+  --server http://127.0.0.1:3000
+```
+
+This installs the bridge into `<project>/.agents/hooks/` with its entries in `.agents/hooks.json`. Then
+trust the folder, or Antigravity runs none of these hooks and the project is not protected. It says
+so when a session starts, and `--skip-trust` or `GEMINI_CLI_TRUST_WORKSPACE=true` trusts it in an
+automated run. The hooks live in `.agents`, which is part of the repository: add it to
+`.gitignore` if these are only for your device.
+
+Every way an Antigravity hook can fail blocks the call — a deny, a non-zero exit, running past
+the timeout, an answer that does not parse — so the bridge's job is to answer strictly in the
+shape Antigravity reads, and in time. The intent instruction is injected as a step on the
+invocation that opens a turn; a call's result is in no hook, so it is read from the session
+transcript by the step number the hook carries, along with the model's answers. Only the tools a
+real session used are translated; the rest keep their own names, marked
+`antigravity_untranslated`. A REVIEW is blocked. Recorded against Antigravity CLI 1.5.16.
+
+</details>
+
+<details>
+<summary><strong>Adding another agent</strong></summary>
+
+Adding one is three pieces, each with its own seam and nothing else to change:
 
 | Piece | Where | What it is |
 |---|---|---|
@@ -590,22 +620,309 @@ its own seam and nothing else to change:
 | Translation | `services/collector/src/<kind>.rs` | `impl Agent` (see `agent.rs`): each hook as the Claude Code request doing the same thing, and the few answers its client reads differently. Name it in `agent::REGISTRY` and it has its route, `/v1/hooks/<kind>/{event}` |
 | Client bridge | `deploy/client/<kind>/` | a `withhuman_bridge.Bridge` subclass: what only the client can see (its transcript, the directory a command runs in, the program files a command would run). Its installer is one `AgentSetup` in `deploy/client/configure.py` |
 
-The engine's rules are written against Claude Code's tools, so a tool is translated to the
-Claude Code tool doing the same thing rather than to a name of its own: Codex's shell calls
-become `Bash` (or `PowerShell`), its one-file patches `Write`, `Edit` or `MultiEdit`, its web
-operations `WebSearch` or `WebFetch`; Cursor's `Shell` becomes `Bash`, and its `Grep` keeps its
-pattern under the name the rules read it by.
+How much of an agent the hooks reach decides how much work its bridge is. Cursor's hooks carry
+the prompt, the model's answer, the directory a command runs in and a call's exit code, so its
+bridge is one short file; Codex's carry none of those, so its bridge reads the session transcript.
+Record what the client actually sends before writing either. What decides how much protection an
+agent can get is how much its hooks tell: the engine needs the turn's intent before the first call
+of that turn, a call's input before it runs, its result afterwards, and a way to answer with a
+block. An agent whose hooks cannot carry the intent line can still be run in `record` or `shadow`
+mode.
 
-How much of an agent the hooks reach decides how much work its bridge is, and the two supported
-agents sit at opposite ends: Cursor's hooks carry the prompt, the model's answer, the directory a
-command runs in and a call's exit code, so its bridge is one 230-line file; Codex's carry none of
-those, so its bridge reads the session transcript in 560 lines more. Record what the client
-actually sends before writing either. What decides how much protection an agent can get is how
-much its hooks tell: the engine needs the turn's intent before the first call of that turn, a
-call's input before it runs, its result afterwards, and a way to answer with a block. An agent
-whose hooks cannot carry the intent line can still be run in `record` or `shadow` mode.
+</details>
 
-## Development
+<a id="quickstart"></a>
+
+## 🚀 Quickstart
+
+#### 1️⃣ Start the engine
+
+Run the [personal Docker deployment](#deploy) and check `http://127.0.0.1:3000/healthz`.
+
+#### 2️⃣ Connect an agent
+
+Run the one-line installer in the project folder. Claude Code is the default agent;
+`WITHHUMAN_AGENT` picks `codex`, `cursor`, `hermes` or `openclaw` instead.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/BobWithHuman/withhuman-core/main/deploy/client/setup-project.sh \
+  | WITHHUMAN_SERVER=http://127.0.0.1:3000 bash
+```
+
+```powershell
+$env:WITHHUMAN_SERVER = "http://127.0.0.1:3000"
+irm https://raw.githubusercontent.com/BobWithHuman/withhuman-core/main/deploy/client/setup-project.ps1 | iex
+```
+
+Trust the hooks where the agent asks for it (see [Supported Agents](#supported-agents)), then
+start a session as usual.
+
+#### 3️⃣ Read the verdicts, then enforce
+
+In `shadow` mode every call's verdict, rule and full trace are stored with it
+(`nodes.decision`, `nodes.decision_rule`, `nodes.trace_json`) and blocked calls are only
+recorded. Once they match what you expect, set `WITHHUMAN_MODE=enforce` in `.env` and run
+`docker compose up --detach --wait`.
+
+<!-- Example trace screenshot goes here -->
+
+<a id="judging"></a>
+
+## ⚖️ Judging
+
+The engine runs in one of three modes (`WITHHUMAN_MODE`): `record` stores the calls and decides
+them afterwards, `shadow` decides every call before it runs but blocks nothing, and `enforce`
+answers the hook with the verdict.
+
+When the engine gives no judgment (unreachable, an error, no answer in time) a tool call is
+denied: the Collector defaults to `WITHHUMAN_ON_FAILURE=closed`, and `pre-tool-use.py` denies when
+it cannot reach the Collector. With `WITHHUMAN_ASK=ask` (Claude Code), a grade 2 or 3 call the
+engine could not judge is put to the user instead. A stored verdict is kept 5 minutes
+(`WITHHUMAN_VERDICT_TTL_SECS`).
+
+- Each call is graded 0, 1, 2-1, 2-2, 3-1 or 3-2 by how far its effect can be undone (KISA
+  agentic-AI zero-trust guide, table 2-5); the grade is recorded in the trace and sets what
+  happens when judging fails.
+- A file change is never cleared on the first question alone, and is asked about each line it
+  adds: a document the user pointed to counts only for the task it describes. A shell command
+  that writes files is checked the same way, and a change that only undoes the session's own
+  earlier changes to a file is allowed.
+- Jev sees a several-step shell command step by step, and text built from base64, character
+  codes or joined literals.
+- A `---`, `***` or `___` line starts a new paragraph, so a note appended after it is traced
+  apart from the text before; a Codex shell command that exits non-zero is recorded with its
+  output, as Claude Code records a failed Bash command.
+- After `WITHHUMAN_DEGRADED_FAILURES` (3) Jev failures in a row, or at once on 401/402/403/429,
+  the rules judge alone for `WITHHUMAN_DEGRADED_SECONDS` (60): grade 0 and 1 are allowed (except a
+  secret read, a web fetch or an edit of CI or hooks), grade 2 and 3 are reviewed, a safeguard
+  change is denied.
+
+<a id="for-security-teams"></a>
+
+## 🛡️ For Security Teams
+
+<!-- Viewer screenshot goes here -->
+
+<details>
+<summary><strong>Keys and the agent inventory</strong></summary>
+
+The engine records which device and which user run each agent session. Every setup registers
+its device (`POST /v1/clients/register`: client ID, team, host name, OS, OS user, hook version,
+project folder and, where the user may read it, the hardware serial number); a setup that cannot
+reach the engine still completes and says so.
+
+Per-user keys tie Hooks to a person and let the security team stop that person's agents. Set
+`WITHHUMAN_ADMIN_TOKEN` in `.env`, then issue a key and hand it to the user:
+
+```sh
+curl -X POST -H "Authorization: Bearer $WITHHUMAN_ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"actor": "security@example.com"}' http://127.0.0.1:3000/v1/admin/users/ana@example.com/keys
+```
+
+The user sets the project up with it, `--key whk_...` (or `WITHHUMAN_KEY=whk_...` for the
+one-line installers). The key is kept in `~/.config/withhuman/key`, readable by the user only, and
+exported as `WITHHUMAN_KEY`. The engine stores keys as SHA-256 hashes only.
+
+Revoking a key (`POST /v1/admin/keys/<key_id>/revoke`) or all of a user's keys
+(`POST /v1/admin/users/<email>/revoke`), each with `{"actor": ..., "reason": ...}`, denies every
+tool call the user's agents make from then on (within `WITHHUMAN_KEY_CACHE_MS`, 5 s by default).
+Hooks without a valid key are taken without a user unless `WITHHUMAN_REQUIRE_KEY=on`, which
+denies their tool calls and refuses their other Hooks; turn it on before relying on revocation,
+since otherwise a user could drop the key.
+
+The inventory keeps two people for a device: `user`, whoever's key it presented last, and
+`owner`, the person the security team names for the machine. Name or clear the owner with
+`POST /v1/admin/clients/<client_id>/owner` and `{"owner": "<email>" | null, "actor": ...}`. A
+client ID holds a slash (`<team>/<uuid>`), sent as one path segment: `team%2F<uuid>`.
+
+```sh
+curl -X POST -H "Authorization: Bearer $WITHHUMAN_ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"owner": "ana@example.com", "actor": "security@example.com"}' \
+  http://127.0.0.1:3000/v1/admin/clients/platform%2F6f1c0d1e-0000-4000-8000-000000000000/owner
+```
+
+</details>
+
+<details>
+<summary><strong>Stopping a device</strong></summary>
+
+The security team can also stop one device: `POST /v1/admin/clients/<client_id>/stop` with
+`{"stopped": true, "actor": ..., "reason": ...}` denies every tool call whose Hook carries that
+client ID, in every mode, until `{"stopped": false}` releases it. The device's other Hooks are
+still recorded. An unknown device is a 404; a device already stopped keeps its first stop. The
+stop applies at once on the Collector that took it and within `WITHHUMAN_KEY_CACHE_MS` on the
+others; a tool call already past its PreToolUse Hook is not interrupted. The device shows a fixed
+message, never the team's `reason`. `clients.stopped_at`, `stopped_by` and `stop_reason` hold the
+stop (all null while the device runs), and `stop_denied_count` and `stop_last_denied_at` the calls
+refused for it.
+
+```sh
+curl -X POST -H "Authorization: Bearer $WITHHUMAN_ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"stopped": true, "actor": "security@example.com", "reason": "lost laptop"}' \
+  http://127.0.0.1:3000/v1/admin/clients/platform%2F6f1c0d1e-0000-4000-8000-000000000000/stop
+```
+
+A stop is not a lock on the machine. The client ID is a header the device's own Hooks send
+(`~/.config/withhuman/client-id`), so a device that sends another ID, or none, or whose Hooks were
+removed, is not stopped, and `WITHHUMAN_REQUIRE_KEY` does not change that: a key names a person,
+not a machine. It stops a device that keeps running its installed Hooks. To stop a person
+whatever they run, revoke their keys with `WITHHUMAN_REQUIRE_KEY=on`. Tool calls that reach the
+engine through AgentGateway alone (MCP, without a Hook) are not covered, as with a revoked key.
+
+</details>
+
+<details>
+<summary><strong>Triage: session marks, distrusted sources and evidence</strong></summary>
+
+The security team records what it decided about a session it looked at, for the whole team:
+`session_marks` and `distrusted_sources` in PostgreSQL, which the viewer reads. Both are set
+through the admin API. A mark is a record only. A distrusted source also holds what it causes:
+when the engine traces a tool call to a tool result (`cause.link` is `segment`) and the call that
+produced that result is on a distrusted source, a call the engine would otherwise allow is put to
+the user for review instead (rule `source::distrusted`), or denied with
+`WITHHUMAN_DISTRUSTED_SOURCE_DENY=1`. The rule only makes a verdict stricter: a call already
+denied or held keeps its verdict and rule. Reading the source is not blocked, only what its
+content then causes. A result's source is the path, URL or folder-relative path its call named, or
+its tool's name, as the evidence shows it. A source distrusted now holds the calls decided from
+now on; the list is read for each such call, so there is nothing to wait out. If the list cannot
+be read within 250 ms the call is decided without it, with a warning in Decision's log and
+`source.error` in the call's trace. The matched source is kept in the call's trace
+(`nodes.trace_json`, `source.distrusted`) and never shown to the agent.
+
+`POST /v1/admin/sessions/<session_id>/mark` with `{"state": ..., "actor": ...}` marks a session
+`reviewing`, `attack`, `benign` or `closed`, replaces its mark, or with `"state": null` takes it
+off (a session without a mark was not handled yet); a session the engine does not hold is a 404.
+`POST /v1/admin/sessions/mark` with `{"session_ids": [...], "state": ..., "actor": ...}` does the
+same for up to 1000 sessions together and answers with `sessions` (each with its mark) and
+`unknown`, the ones the engine does not hold, which it leaves alone. `POST /v1/admin/sources/distrust` with
+`{"source": ..., "on": true | false, "actor": ..., "session_id": ..., "seq": ...}` distrusts a
+source (a document's path, a URL or a tool's name) or with `on: false` trusts it again;
+`session_id` and `seq`, the tool call that showed the source, are optional. The source goes in
+the body as written, since it may be a URL or a path.
+
+```sh
+curl -X POST -H "Authorization: Bearer $WITHHUMAN_ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"state": "attack", "actor": "security@example.com"}' \
+  http://127.0.0.1:3000/v1/admin/sessions/0b9f6c1e-0000-4000-8000-000000000001/mark
+curl -X POST -H "Authorization: Bearer $WITHHUMAN_ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"source": "https://example.com/setup.md", "on": true, "actor": "security@example.com"}' \
+  http://127.0.0.1:3000/v1/admin/sources/distrust
+```
+
+`GET /v1/admin/sessions/<session_id>/calls/<seq>/evidence` returns one tool call's evidence as
+JSON for other systems (`"schema": "withhuman.evidence/v1"`): the call (tool, input, target,
+time, device, user), the engine's decision (reason, rule, mode), the person's request before
+it, what the engine traced the call to (`cause.link`: `request`, `segment` or `none`; for
+`segment` the tool results in `cause.told_by`, each with the call whose result it was, the
+paragraph, its text and the probability), the session's mark, and whether the cause's source
+is distrusted. `seq` is the call's number in its session (`nodes.seq`). An unknown session or
+call is a 404. Text is as the engine stored it, sensitive values already replaced; no key or
+key hash is in it. The full shape is in the Collector's OpenAPI document (`/swagger-ui`).
+
+</details>
+
+<details>
+<summary><strong>The security team's viewer</strong></summary>
+
+The viewer reads PostgreSQL directly, read-only, as `withhuman_viewer`. The Generator creates that
+login when `WITHHUMAN_VIEWER_PASSWORD` is set, and the schema grants it SELECT on the graph,
+inventory and triage tables (`api_keys` without its hash) and nothing else. The personal stack publishes
+PostgreSQL on `127.0.0.1:15432` (`POSTGRES_PORT`):
+`postgres://withhuman_viewer:<WITHHUMAN_VIEWER_PASSWORD>@127.0.0.1:15432/withhuman`.
+
+</details>
+
+<details>
+<summary><strong>Devices from Wazuh</strong></summary>
+
+With `WITHHUMAN_WAZUH_URL` set, the Generator reads the company's device list from a Wazuh
+manager every `WITHHUMAN_WAZUH_SYNC_INTERVAL_SECS` and keeps it in `edr_devices`, one row per
+Wazuh agent: `agent_id`, `name`, `os`, `status` (`active`, `disconnected`, `never_connected`,
+`pending`), `serial` (the board serial of the hardware inventory), `last_seen`, `agent`,
+`running_at` and `synced_at`. The table mirrors the manager: a device it no longer lists is removed, and a sync
+that fails changes nothing and is tried again at the next interval. Without the URL nothing runs.
+
+Each sync then matches the registered devices: `clients.edr_agent_id` and `clients.edr_status`
+name the Wazuh agent of a client and its status, or are NULL. Two serial numbers that are both
+known must be equal (firmware placeholders such as `To Be Filled By O.E.M.` count as unknown);
+when either is unknown, the hostnames decide, compared without case or domain (`Mac-1.local` is
+`mac-1`). Every client row of a machine, one per OS account, gets the same agent. The setup
+reports the serial Wazuh does: the motherboard's on Linux (`/sys/class/dmi/id/board_serial`) and
+Windows (`Win32_BaseBoard`), the platform's on macOS. Beside it, it reports the others it can
+read (`other_serials`: the BIOS's on Windows, the system's on Linux when readable), which a PC
+often numbers otherwise, and the Wazuh agent whose serial equals any of them is the device's: a
+Wazuh build or a machine that reports another of its numbers still finds it. A Linux or Windows
+device set up before either reported the system's or the BIOS's alone, and stays apart from its
+Wazuh agent until it is set up again.
+
+`edr_devices.agent` is `claude-code`, `codex`, `cursor` or `openclaw` (Claude Code first, else whichever
+the scan showed first):
+
+- from a process running at the agent's last inventory scan, when it is exactly that program:
+  its `name` is `claude`, `codex`, `cursor-agent` or `openclaw` (`claude.exe` on Windows), or its `cmd` or
+  one of its `argvs` is a path whose last segment is that name, a path into Claude Code's native
+  install (`~/.local/share/claude/versions/2.1.3`, which runs under its version's name) or
+  Cursor's (`~/.local/share/cursor-agent/versions/2026.11.22/index.js`), or a path into the npm
+  package `@anthropic-ai/claude-code` or `@openai/codex`, or a path into OpenClaw's npm install
+  (`…/node_modules/openclaw/…`, which its Gateway runs out of) — all three run under `node`.
+  Case counts, so the Claude desktop app's processes (`Claude`, `Claude Helper (Renderer)`) are
+  not Claude Code;
+- otherwise from an installed package with `claude` or `codex` in its name in any case
+  (`@anthropic-ai/claude-code`, `claude-code`, `codex`, `Codex CLI`), except the desktop app's
+  (`Claude`, or `Claude ` followed by anything but `Code`), or one named after Cursor (`Cursor`,
+  `cursor-agent`, `Cursor CLI`), or one named after OpenClaw (`openclaw`, `OpenClaw CLI`). A
+  plugin of OpenClaw's (`openclaw-plugin-…`) does not count: that says a plugin was built, not
+  that the agent runs here.
+
+Cursor's CLI is found by the folder it runs from rather than by its name: it runs under `node`
+with the name it was started as, and the setup leaves that as both `cursor-agent` and `agent`.
+Its editor counts as the same agent — it reads the same hooks — so its own binary (`Cursor`,
+`Cursor.exe`, `cursor`) is matched whatever the case, while its helper processes and everything
+else that merely holds the word are not: macOS's own `CursorUIViewService` and a Linux desktop's
+`libxcursor` and `xcursor-themes` are no coding agent.
+
+`edr_devices.running_at` is when such a process was last seen running: the latest `scan.time`
+of the processes that pass, epoch milliseconds. It is NULL when none was running at the last
+scan, including when only a package shows the program; a viewer can set it against the
+device's Hook sessions to find a coding agent running without them. NULL in either column means
+only that nothing was seen: the agent's process inventory is a snapshot every scan interval
+(an hour by default), a program installed outside a package manager Wazuh reads leaves no trace
+while it is not running, and on macOS Wazuh reports a process's name only, without its command
+line, so Claude Code or Codex installed with npm (`node`) is not seen running there.
+
+`edr_sightings` keeps what `running_at` overwrites: one row per device and process scan that
+found a coding agent running, `agent_id`, `running_at` (the scan's time), `agent`, `name` (the
+device's name then), `synced_at` (the sync that first saw it) and `command`, keyed by `agent_id`
+and `running_at`. `command` is the command line of the process the scan found (`claude -p …`,
+`claude --resume <session>`, `codex exec …`): its `cmd` and `argvs` joined by spaces, cut to
+1000 characters; among several processes of the scan, one of the agent named and with
+arguments. What Wazuh reports differs by system: Linux gives the whole command line, Windows
+the executable's path only and macOS the process's name only, so there `command` is a path or
+NULL. A scan seen again by a later sync adds nothing and keeps the command line first seen, a
+device with `running_at` NULL adds nothing, and a device the manager no longer lists keeps its
+rows. Each sync deletes the
+rows whose scan is more than 30 days before it (`SIGHTING_RETENTION`). The engine only records
+the scans: telling them apart from Hook sessions, and grouping consecutive ones, is the
+viewer's.
+
+| Variable | Default | |
+|---|---|---|
+| `WITHHUMAN_WAZUH_URL` | empty: no sync | The Wazuh server API, `https://<manager>:55000` |
+| `WITHHUMAN_WAZUH_USER`, `WITHHUMAN_WAZUH_PASSWORD` | required with the URL | An API user that may read agents and their inventory (`agent:read`, `syscollector:read`): the default role `readonly` |
+| `WITHHUMAN_WAZUH_SYNC_INTERVAL_SECS` | `120` | At least 60 |
+| `WITHHUMAN_WAZUH_MAX_REQUESTS_PER_MINUTE` | `150` | The manager refuses everyone past its own limit (300 by default); `0` for no pacing |
+| `WITHHUMAN_WAZUH_CA_FILE` | empty: public authorities | A PEM file trusted instead: authorities, or the manager's own self-signed certificate |
+| `WITHHUMAN_WAZUH_TLS_SKIP_VERIFY` | `0` | `1` skips verifying the certificate, with a warning at start; not with a CA file |
+
+A sync costs one login, one request per 500 agents and up to three per agent. Generators
+running together take turns: one syncs at a time, and none repeats a sync finished less than
+half an interval ago.
+
+</details>
+
+<a id="development"></a>
+
+## 🧑‍💻 Development
 
 The development and E2E profile builds the services from the working tree and includes an MCP
 fixture:
@@ -615,10 +932,49 @@ cp deploy/docker/.env.example deploy/docker/.env
 docker compose --file deploy/docker/compose.yaml up --detach --build
 ```
 
-## Deployment profiles
+CI runs `cargo fmt`, `cargo clippy -D warnings`, `cargo nextest`, the client hooks' Python tests,
+`helm lint`, `terraform fmt` and `cargo deny` on every pull request to `main`.
 
-- Personal host: root `compose.yaml` and `.env`, the Docker deployment above. One machine, one user.
-- Shared cluster: `infra/aws/staging`; EKS runs the Helm chart through Argo CD and
-  `withhuman-gitops`.
+## 💭 Support
 
-Infrastructure instructions are in `infra/README.md`.
+- Read the [Supported Agents](#supported-agents) notes for your agent first: most surprises are a
+  hook the agent has not trusted yet, or a difference from Claude Code listed there.
+- Browse the API in Swagger UI at `/swagger-ui` on each service.
+- [Report a bug or open a task](https://github.com/BobWithHuman/withhuman-core/issues/new/choose)
+  on GitHub Issues.
+
+## 🤝 Contributing
+
+Your contributions are welcome!
+
+- Raise and comment on [Issues](https://github.com/BobWithHuman/withhuman-core/issues).
+- Open a PR; the [pull request template](.github/PULL_REQUEST_TEMPLATE.md) lists what a change
+  needs, and [Development](#development) sets up a local stack.
+
+## 🥇 License
+
+This repository is MIT licensed. See [LICENSE](LICENSE) for more details.
+
+## 🔒 Security & Privacy
+
+Please report a vulnerability privately through
+[GitHub Security Advisories](https://github.com/BobWithHuman/withhuman-core/security/advisories/new)
+rather than in a public issue.
+
+### What leaves the engine
+
+To judge a call, Decision sends Jev (`JEV_URL`, `https://api.typesafe.ai` by default) the parts of
+the session the call is judged on: the turns' stated intents, the call and its arguments, the
+tool results it may have come from, and, for the second check, the user's latest prompt.
+Sensitive values (passwords, keys, PII, financial and device identifiers) are masked before they
+are stored or sent. The engine has no telemetry.
+
+## ⭐️ Star History
+
+<a href="https://star-history.com/#BobWithHuman/withhuman-core&Date">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=BobWithHuman/withhuman-core&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=BobWithHuman/withhuman-core&type=Date" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=BobWithHuman/withhuman-core&type=Date" style="border-radius: 15px;" />
+ </picture>
+</a>
