@@ -1,5 +1,6 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 language: ko-KR
+tone_instructions: "Keep each comment short: the problem in one line, why it matters, then the fix. No long prose."
 
 reviews:
   profile: chill
@@ -8,6 +9,24 @@ reviews:
   high_level_summary_in_walkthrough: true
   poem: false
   in_progress_fortune: false
+  # Keep the walkthrough to the summary and the changed files.
+  sequence_diagrams: false
+  estimate_code_review_effort: false
+  related_issues: false
+  related_prs: false
+  assess_linked_issues: false
+  suggested_labels: false
+  suggested_reviewers: false
+  review_info: false
+  # No copy-paste prompt block under every comment.
+  enable_prompt_for_ai_agents: false
+  finishing_touches:
+    unit_tests:
+      enabled: false
+    autofix:
+      enabled: false
+    fix_ci:
+      enabled: false
   auto_review:
     enabled: true
     drafts: false
