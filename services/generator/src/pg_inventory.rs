@@ -658,13 +658,21 @@ impl PgGraphRepository {
         let result: Result<(), PgError> = async {
             let mut client = self.client().await?;
             let tx = client.transaction().await?;
-            let owner = optional(&tx, &format!("{CLIENT_OWNER} FOR UPDATE"), &[&c.client_id])
+            // One check-in of a device at a time, its first included, so two cannot both find
+            // it unowned and both write it.
+            run(
+                &tx,
+                "SELECT pg_advisory_xact_lock(hashtext($1::text))",
+                &[&c.client_id],
+            )
+            .await?;
+            let owner = optional(&tx, CLIENT_OWNER, &[&c.client_id])
                 .await?
                 .and_then(|row| row.get::<_, Option<String>>(0));
-            if let (Some(owner), Some(user)) = (owner, record.user.as_deref()) {
-                if owner != user {
-                    return Err(PgError::Repository(RepositoryError::NotOwner));
-                }
+            // A device that belongs to someone takes their key's check-ins alone, none without
+            // a key.
+            if owner.is_some_and(|owner| record.user.as_deref() != Some(owner.as_str())) {
+                return Err(PgError::Repository(RepositoryError::NotOwner));
             }
             run(
                 &tx,
@@ -709,7 +717,7 @@ impl PgGraphRepository {
                     &request.team,
                     &request.client_id,
                     &request.actor,
-                    &request.reason,
+                    &masked(&request.reason),
                     &at,
                 ],
             )

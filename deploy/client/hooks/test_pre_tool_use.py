@@ -324,6 +324,15 @@ class PreToolUseHookTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
 
+    def test_a_session_stays_excepted_when_the_cache_expires(self):
+        Collector.exceptions = [{"id": 4, "folder": "/work/secret", "created_at": 1}]
+        home = tempfile.mkdtemp()
+        self.session(home, "/work/secret/app", ("SessionStart",))
+        os.remove(os.path.join(home, ".config", "withhuman", "exceptions.json"))
+        Collector.received.clear()
+        sent = self.session(home, "/work/secret/app", ("UserPromptSubmit", "PostToolUse"))
+        self.assertEqual(sent, [[], []])
+
     def test_a_stale_or_broken_cache_covers_nothing(self):
         home = tempfile.mkdtemp()
         cache = os.path.join(home, ".config", "withhuman", "exceptions.json")

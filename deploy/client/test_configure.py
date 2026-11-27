@@ -1267,6 +1267,17 @@ class GlobalSetupTest(Setup):
         self.assertEqual(list(units.iterdir()), [])
         self.assertFalse(checkin.exists())
 
+    @unittest.skipIf(os.name == "nt", "the Task Scheduler is not written to files")
+    def test_no_checkin_takes_out_an_earlier_check_in(self):
+        units = Path(tempfile.mkdtemp())
+        env = {"WITHHUMAN_SCHEDULER": "dry", "WITHHUMAN_SCHEDULER_DIR": str(units)}
+        self.assertEqual(self.run_scope("user", env=env).returncode, 0)
+        self.assertNotEqual(list(units.iterdir()), [])
+        result = self.run_scope("user", "--no-checkin", env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(list(units.iterdir()), [])
+        self.assertFalse((self.home / ".config" / "withhuman" / "checkin.py").exists())
+
     def test_no_checkin_schedules_nothing(self):
         units = Path(tempfile.mkdtemp())
         env = {"WITHHUMAN_SCHEDULER": "dry", "WITHHUMAN_SCHEDULER_DIR": str(units)}

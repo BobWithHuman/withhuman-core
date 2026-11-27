@@ -125,6 +125,21 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 # Every request that carries the key goes through this: a redirect is an error, not a new host.
 OPENER = urllib.request.build_opener(_NoRedirect)
 
+# The engine on this machine is reached directly, never through a proxy the environment names:
+# a proxy elsewhere would carry the key over plain http.
+LOCAL_OPENER = urllib.request.build_opener(_NoRedirect, urllib.request.ProxyHandler({}))
+
+
+def opener(url):
+    """The opener for `url`: without any proxy for a loopback address."""
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    if host == "localhost":
+        return LOCAL_OPENER
+    try:
+        return LOCAL_OPENER if ipaddress.ip_address(host).is_loopback else OPENER
+    except ValueError:
+        return OPENER
+
 EVENTS = [
     "SessionStart",
     "UserPromptSubmit",
@@ -1135,7 +1150,7 @@ def register(server, client, team, key, agent, project, version, scope=None):
         request = urllib.request.Request(f"{server}/v1/clients/register",
                                          data=json.dumps(body).encode("utf-8"),
                                          headers=headers, method="POST")
-        with OPENER.open(request, timeout=REGISTER_TIMEOUT) as response:
+        with opener(request.full_url).open(request, timeout=REGISTER_TIMEOUT) as response:
             response.read()
 
     try:
@@ -1438,6 +1453,11 @@ def setup_global(args, hook_source, key_path, key, stamp, report):
         else:
             report.append(f"WARNING: {checkin_source()} not found, so no daily check-in is "
                           "scheduled; fetch it beside configure.py and run again")
+    elif (folder / CHECKIN_NAME).is_file():
+        # Opting out stops a check-in an earlier setup scheduled.
+        schedule(folder / CHECKIN_NAME, folder, managed, report, remove=True)
+        (folder / CHECKIN_NAME).unlink()
+        report.append(f"{folder / CHECKIN_NAME}: removed (--no-checkin)")
     ours = withhuman_hooks(args.server, hook_command(hook, args.server), client=value)
     if managed:
         # A file of WithHuman's own: written whole, so nothing of the organisation's is in it.

@@ -38,6 +38,7 @@ Python 3.8 or later, standard library only.
 """
 
 import hashlib
+import ipaddress
 import json
 import os
 import shlex
@@ -59,6 +60,10 @@ CONFIG = os.path.join(os.path.expanduser("~"), ".config", "withhuman")
 EXCEPTIONS_CACHE = os.path.join(CONFIG, "exceptions.json")
 EXCEPTIONS_MAX_AGE = 24 * 3600
 EXCEPTIONS_TIMEOUT = 3
+# The sessions that started under an exception, one file each: the session stays excepted until
+# it ends, whatever becomes of the cache. Files older than this are cleared.
+EXCEPTED_SESSIONS = os.path.join(CONFIG, "excepted-sessions")
+EXCEPTED_MAX_AGE = 30 * 24 * 3600
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -70,6 +75,21 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 # Every request that carries the key goes through this: a redirect is an error, not a new host.
 OPENER = urllib.request.build_opener(_NoRedirect)
+
+# The engine on this machine is reached directly, never through a proxy the environment names:
+# a proxy elsewhere would carry the key over plain http.
+LOCAL_OPENER = urllib.request.build_opener(_NoRedirect, urllib.request.ProxyHandler({}))
+
+
+def opener(url):
+    """The opener for `url`: without any proxy for a loopback address."""
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    if host == "localhost":
+        return LOCAL_OPENER
+    try:
+        return LOCAL_OPENER if ipaddress.ip_address(host).is_loopback else OPENER
+    except ValueError:
+        return OPENER
 UNREACHABLE_REASON = ("WithHuman에 연결하지 못해 이 도구 호출을 차단했습니다. "
                       "엔진이 실행 중인지 확인한 뒤 다시 시도하세요.")
 
@@ -221,7 +241,7 @@ def fetch_exceptions(server, client_id, key):
         query = urllib.parse.urlencode({"client_id": client_id or ""})
         request = urllib.request.Request(f"{server}/v1/clients/exceptions?{query}",
                                          headers=auth_headers(client_id, key))
-        with OPENER.open(request, timeout=EXCEPTIONS_TIMEOUT) as response:
+        with opener(request.full_url).open(request, timeout=EXCEPTIONS_TIMEOUT) as response:
             found = json.loads(response.read())
         if not isinstance(found, list):
             raise ValueError("not a list")
@@ -256,6 +276,51 @@ def exception_for(folder, client_id):
     except Exception:  # noqa: BLE001
         return None
     return None
+
+
+def session_file(session_id):
+    """The file that keeps a session excepted; None for an id that is not a plain name."""
+    if not isinstance(session_id, str) or not session_id or len(session_id) > 200:
+        return None
+    if not all(c.isalnum() or c in "-_." for c in session_id) or session_id.startswith("."):
+        return None
+    return os.path.join(EXCEPTED_SESSIONS, session_id)
+
+
+def remember_exception(session_id, exception):
+    """Keeps the session excepted until it ends, and clears files of long-ended sessions."""
+    path = session_file(session_id)
+    if path is None:
+        return
+    try:
+        os.makedirs(EXCEPTED_SESSIONS, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(str(exception))
+        now = time.time()
+        for name in os.listdir(EXCEPTED_SESSIONS):
+            other = os.path.join(EXCEPTED_SESSIONS, name)
+            if now - os.path.getmtime(other) > EXCEPTED_MAX_AGE:
+                os.remove(other)
+    except OSError:
+        pass
+
+
+def forget_exception(session_id):
+    path = session_file(session_id)
+    try:
+        os.remove(path)
+    except (TypeError, OSError):
+        pass
+
+
+def session_exception(session_id):
+    """The exception the session started under, or None."""
+    path = session_file(session_id)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return int(handle.read().strip())
+    except (TypeError, OSError, ValueError):
+        return None
 
 
 def auth_headers(client_id, key):
@@ -298,10 +363,22 @@ def main():
         # A session the security team excepted keeps its start, without content, and nothing
         # else. The project folder is where the session started.
         folder = os.environ.get("CLAUDE_PROJECT_DIR") or event.get("cwd")
+        exception = None
         if marked and name == "SessionStart":
             fetch_exceptions(server, client_id, key)
-        exception = exception_for(folder, client_id) if marked else None
+            exception = exception_for(folder, client_id)
+            if exception is None:
+                # A session (re)started without one is sent whole, whatever an earlier start of
+                # it was.
+                forget_exception(event.get("session_id"))
+        elif marked:
+            # Decided at the session's start and kept until it ends: a cache that expires or
+            # is dropped mid-session does not start sending the session's content.
+            exception = session_exception(event.get("session_id"))
+            if exception is None:
+                exception = exception_for(folder, client_id)
         if exception is not None and name == "SessionStart":
+            remember_exception(event.get("session_id"), exception)
             event = {field: event[field] for field in ("session_id", "hook_event_name", "source",
                                                        "cwd") if field in event}
             event["withhuman_exception"] = exception
@@ -331,15 +408,16 @@ def main():
     request = urllib.request.Request(url, data=raw, headers=auth_headers(client_id, key),
                                      method="POST")
     try:
-        with OPENER.open(request, timeout=TIMEOUT_SECONDS) as response:
+        with opener(request.full_url).open(request, timeout=TIMEOUT_SECONDS) as response:
             body = response.read()
     except urllib.error.HTTPError as error:
         # A blocking answer the Collector sends with an error status (fail-closed) still counts.
         try:
             body = error.read()
             answer = json.loads(body)
-            if answer.get("hookSpecificOutput", {}).get("permissionDecision") or (
-                    not judged and answer.get("decision")):
+            # Only a refusal stands on an error status; an "allow" there is no verdict.
+            decision = answer.get("hookSpecificOutput", {}).get("permissionDecision")
+            if decision in ("deny", "ask") or (not judged and answer.get("decision") == "block"):
                 sys.stdout.buffer.write(body)
                 return 0
         except (OSError, ValueError, AttributeError):

@@ -1284,6 +1284,11 @@ async fn a_checked_in_project_is_protected_once_hooks_ran_there() {
         )
         .await;
     assert_eq!(owner, json!([200, "ana@example.com"]));
+    // Nor can a check-in without a key.
+    let mut keyless = checkin(300, 60);
+    keyless["user"] = Value::Null;
+    let (status, _) = send(&url, "POST", "/v1/clients/checkin", Some(keyless)).await;
+    assert_eq!(status, 403);
     let encoded = client.replace('/', "%2F");
     for (user, expected) in [
         ("&user=ana%40example.com", 200),

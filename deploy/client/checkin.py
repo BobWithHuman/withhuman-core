@@ -19,6 +19,7 @@ has none. Python 3.8 or later, standard library only.
 
 import argparse
 import getpass
+import ipaddress
 import json
 import os
 import platform
@@ -26,6 +27,7 @@ import re
 import socket
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -39,6 +41,21 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 # Every request that carries the key goes through this: a redirect is an error, not a new host.
 OPENER = urllib.request.build_opener(_NoRedirect)
+
+# The engine on this machine is reached directly, never through a proxy the environment names:
+# a proxy elsewhere would carry the key over plain http.
+LOCAL_OPENER = urllib.request.build_opener(_NoRedirect, urllib.request.ProxyHandler({}))
+
+
+def opener(url):
+    """The opener for `url`: without any proxy for a loopback address."""
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    if host == "localhost":
+        return LOCAL_OPENER
+    try:
+        return LOCAL_OPENER if ipaddress.ip_address(host).is_loopback else OPENER
+    except ValueError:
+        return OPENER
 
 TIMEOUT = 20
 # Claude Code names a project's directory after its path, every other character than a letter or
@@ -135,7 +152,7 @@ def main():
                                      data=json.dumps(body).encode("utf-8"),
                                      headers=headers, method="POST")
     try:
-        with OPENER.open(request, timeout=TIMEOUT) as response:
+        with opener(request.full_url).open(request, timeout=TIMEOUT) as response:
             response.read()
     except urllib.error.HTTPError as error:
         print(f"WithHuman check-in: the engine answered {error.code}", file=sys.stderr)

@@ -641,7 +641,9 @@ impl PgGraphRepository {
         // Last, so the shared row is held only until the commit.
         if let Some(client_id) = &m.client_id {
             if let Some(cwd) = &m.cwd {
-                run(&tx, SEE_CWD, &[client_id, cwd, &m.observed_at]).await?;
+                // A folder name can hold a secret too: it is masked as the event is.
+                let cwd = withhuman_common::tokens::redact(cwd);
+                run(&tx, SEE_CWD, &[client_id, &cwd.as_ref(), &m.observed_at]).await?;
             }
             run(&tx, SEE_CLIENT, &[client_id, &m.user, &m.observed_at]).await?;
         }
