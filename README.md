@@ -107,17 +107,33 @@ Keys, inventory, triage and Wazuh matching are under [For security teams](#for-s
 
 ## Supported agents
 
-| Agent | Windows | macOS | Linux | When a call needs your OK |
-|---|:-:|:-:|:-:|---|
-| [Claude Code](#claude-code) | ✅ | ✅ | ❌ | asks you |
-| [Codex CLI](#codex-cli) | ✅ | ❌ | ❌ | blocked |
-| [Cursor CLI](#cursor-cli) | ✅ | ✅ | ❌ | blocked |
-| [Hermes Agent](#hermes-agent) | ✅ | ❌ | ❌ | blocked |
-| [OpenClaw](#openclaw) | ❌ | ❌ | ✅ | asks you |
-| [GitHub Copilot CLI](#github-copilot-cli) | ❌ | ❌ | ❌ | blocked |
-| [Antigravity CLI](#antigravity-cli) | ✅ | ❌ | ❌ | blocked |
+<table align="center">
+  <tr>
+    <td align="center" width="110">
+      <a href="#claude-code"><img src="https://cdn.simpleicons.org/claude/D97757" width="48" height="48" alt="Claude Code"><br><sub><b>Claude Code</b></sub></a>
+    </td>
+    <td align="center" width="110">
+      <a href="#codex-cli"><img src="https://github.com/openai.png?size=128" width="48" height="48" alt="Codex CLI"><br><sub><b>Codex CLI</b></sub></a>
+    </td>
+    <td align="center" width="110">
+      <a href="#cursor-cli"><img src="https://github.com/cursor.png?size=128" width="48" height="48" alt="Cursor CLI"><br><sub><b>Cursor CLI</b></sub></a>
+    </td>
+    <td align="center" width="110">
+      <a href="#hermes-agent"><img src="https://github.com/NousResearch.png?size=128" width="48" height="48" alt="Hermes Agent"><br><sub><b>Hermes Agent</b></sub></a>
+    </td>
+    <td align="center" width="110">
+      <a href="#openclaw"><img src="https://github.com/openclaw.png?size=128" width="48" height="48" alt="OpenClaw"><br><sub><b>OpenClaw</b></sub></a>
+    </td>
+    <td align="center" width="110">
+      <a href="#github-copilot-cli"><img src="https://cdn.simpleicons.org/githubcopilot/848d97" width="48" height="48" alt="Copilot CLI"><br><sub><b>Copilot CLI</b></sub></a>
+    </td>
+    <td align="center" width="110">
+      <a href="#antigravity-cli"><img src="https://github.com/google-antigravity.png?size=128" width="48" height="48" alt="Antigravity CLI"><br><sub><b>Antigravity CLI</b></sub></a>
+    </td>
+  </tr>
+</table>
 
-✅ verified · ❌ not verified yet
+<p align="center"><sub>Windows · macOS · Linux — setup for each agent is under <a href="#agents">Reference</a>.</sub></p>
 
 ## FAQ
 
