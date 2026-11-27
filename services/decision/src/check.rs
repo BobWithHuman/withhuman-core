@@ -979,6 +979,10 @@ pub struct CheckSettings {
     pub degraded_failures: u32,
     /// Seconds the rules-only mode lasts before Jev is tried again; 0 means 60.
     pub degraded_seconds: u64,
+    /// The judge's capacity is shared by every key (JevStyle): a 429 says it is busy now, so it
+    /// counts as one more failure instead of starting the mode at once, and a 413 says this
+    /// request was too large, not that the judge is down, so it does not count.
+    pub shared_capacity: bool,
 }
 
 /// Lower-case marks of a shell command that writes a file Narrower than the safeguard's
