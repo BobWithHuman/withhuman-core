@@ -111,7 +111,7 @@ Keys, inventory, triage and Wazuh matching are under [For security teams](#for-s
 |---|:-:|:-:|:-:|---|
 | [Claude Code](#claude-code) | ✅ | ✅ | ❌ | asks you |
 | [Codex CLI](#codex-cli) | ✅ | ❌ | ❌ | blocked |
-| [Cursor CLI](#cursor-cli) | ❌ | ✅ | ❌ | blocked |
+| [Cursor CLI](#cursor-cli) | ✅ | ✅ | ❌ | blocked |
 | [Hermes Agent](#hermes-agent) | ✅ | ❌ | ❌ | blocked |
 | [OpenClaw](#openclaw) | ❌ | ❌ | ✅ | asks you |
 | [GitHub Copilot CLI](#github-copilot-cli) | ❌ | ❌ | ❌ | blocked |
@@ -395,6 +395,13 @@ running the real client:
   rather than staying silent, as it does for Claude Code and Codex. `failClosed` itself is set on
   the two judging hooks only — Cursor otherwise lets a call through when a hook crashes or times
   out, which would lift the control exactly when it is needed.
+- **The turn's intent comes from the transcript.** No hook carries the model's answer before the
+  turn ends, so the bridge reads the turn's `[의도]` line from the session transcript and sends it
+  ahead of the call being judged. The CLI writes an answer there once that answer's calls have
+  run, so the call made right after the intent is stated finds none yet; the bridge turns it back
+  (at most twice a turn, and only once the engine has asked for the intent) and the retry carries
+  it. Cursor's editor writes the transcript only when the turn ends: there the intent is recorded
+  for the turn, but the turn's own calls are judged without it.
 
 Known differences from Claude Code: the `[의도]` line stays visible on screen (Cursor shows the
 answer before the hook runs). A `cursor-agent -p` run fires no `beforeSubmitPrompt`,
@@ -403,7 +410,7 @@ line — run it in `record` or `shadow` mode. A file read's text comes from `bef
 `Grep` answers with neither its matches nor their text, so a grep's content is not judged.
 Configuration changes made outside the agent are not recorded (Cursor has no ConfigChange hook).
 Cursor Tab's own file access is outside this protection, and Cloud Agents support a different set
-of hooks. Verified on macOS with Cursor CLI 2026.11.22; Windows is not verified yet.
+of hooks. Verified on macOS and Windows with Cursor CLI 2026.11.22.
 
 </details>
 

@@ -30,6 +30,8 @@ class Collector(http.server.BaseHTTPRequestHandler):
     received = []
     answers = {}
     status = 200
+    #: A status for one event alone, over `status`.
+    statuses = {}
     delay = 0.0
 
     def do_POST(self):
@@ -41,7 +43,7 @@ class Collector(http.server.BaseHTTPRequestHandler):
         answer = Collector.answers.get(event, b"")
         encoded = answer if isinstance(answer, bytes) else json.dumps(answer).encode()
         try:
-            self.send_response(Collector.status)
+            self.send_response(Collector.statuses.get(event, Collector.status))
             self.end_headers()
             self.wfile.write(encoded)
         except OSError:
@@ -75,8 +77,11 @@ class CursorHookTest(unittest.TestCase):
         Collector.received = []
         Collector.answers = {}
         Collector.status = 200
+        Collector.statuses = {}
         Collector.delay = 0.0
         self.project = Path(tempfile.mkdtemp()).resolve()
+        # Where the bridge looks for a transcript a hook does not name; never the real one.
+        self.cursor_home = self.project / "cursor-home"
         self.hooks = self.project / ".cursor" / "hooks"
         self.hooks.mkdir(parents=True)
         for source in SOURCES:
@@ -89,7 +94,8 @@ class CursorHookTest(unittest.TestCase):
         payload = {"session_id": "conv-1", "generation_id": "gen-1", "cwd": str(self.project),
                    "hook_event_name": event, **(body or {})}
         environment = {**os.environ, "WITHHUMAN_CLIENT_ID": "lab/device-1",
-                       "WITHHUMAN_REPO": "github.com/acme/app", **env}
+                       "WITHHUMAN_REPO": "github.com/acme/app",
+                       "CURSOR_CONFIG_DIR": str(self.cursor_home), **env}
         environment.pop("WITHHUMAN_MODE", None) if "WITHHUMAN_MODE" not in env else None
         result = subprocess.run(
             [sys.executable, str(self.hooks / "withhuman-hook.py"), url or self.url, event],
@@ -227,6 +233,243 @@ class CursorHookTest(unittest.TestCase):
         programs = self.sent("preToolUse")[0]["withhuman_programs"]
         self.assertEqual([program["path"] for program in programs], [str(script)])
         self.assertIn("curl https://example.com", programs[0]["content"])
+
+    # ---- the turn's intent, from the transcript ----
+
+    def transcript(self, *records, path=None):
+        """A Cursor transcript as the CLI and the editor write it: one record per line,
+        `{"role", "message": {"content": [...]}}`, and a `turn_ended` record of its own."""
+        path = Path(path) if path else self.project / "transcript.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(json.dumps(record, ensure_ascii=False) + "\n"
+                                for record in records), encoding="utf-8")
+        return str(path)
+
+    @staticmethod
+    def said(role, *parts):
+        content = [{"type": "text", "text": part} if isinstance(part, str) else part
+                   for part in parts]
+        return {"role": role, "message": {"content": content}}
+
+    def test_sends_the_turns_intent_before_the_call_it_explains(self):
+        """Measured on Cursor CLI 2026.11.22 (Windows): the transcript held the answer's
+        `[의도]` line when the turn's retried call was judged, and no hook carried it — the
+        engine judged every call of the turn as `intent::unknown`."""
+        path = self.transcript(
+            self.said("user", "<user_query>\nnotes.md 요약해줘\n</user_query>"),
+            self.said("assistant", "[의도] notes.md 를 한 줄로 요약받고 싶음",
+                      {"type": "tool_use", "name": "Read", "input": {"path": "notes.md"}}))
+        Collector.answers["preToolUse"] = decision("allow")
+        code, out, stderr = self.hook("preToolUse", {
+            "tool_name": "Read", "tool_use_id": "c1", "tool_input": {"file_path": "notes.md"},
+            "transcript_path": path, "conversation_id": "conv-1"})
+        self.assertEqual((code, out), (0, {"permission": "allow"}), stderr)
+        self.assertEqual([name for name, _, _ in Collector.received],
+                         ["afterAgentResponse", "preToolUse"])
+        intent = self.sent("afterAgentResponse")[0]
+        self.assertEqual(intent["text"], "[의도] notes.md 를 한 줄로 요약받고 싶음")
+        self.assertEqual(intent["generation_id"], "gen-1")
+        self.assertEqual(intent["session_id"], "conv-1")
+        self.assertEqual(intent["withhuman_intent_source"], "transcript")
+
+    def test_sends_a_turns_intent_once(self):
+        path = self.transcript(self.said("user", "q"), self.said("assistant", "[의도] 알고 싶음"))
+        Collector.answers["preToolUse"] = decision("allow")
+        for call_id in ("c1", "c2"):
+            self.hook("preToolUse", {"tool_name": "Read", "tool_use_id": call_id,
+                                     "tool_input": {}, "transcript_path": path})
+        self.assertEqual([name for name, _, _ in Collector.received],
+                         ["afterAgentResponse", "preToolUse", "preToolUse"])
+
+    def test_a_new_turn_does_not_take_the_last_turns_intent(self):
+        path = self.transcript(
+            self.said("user", "first"), self.said("assistant", "[의도] 첫 번째를 원함"),
+            {"type": "turn_ended", "status": "success"},
+            self.said("user", "second"))
+        Collector.answers["preToolUse"] = decision("allow")
+        self.hook("preToolUse", {"tool_name": "Read", "tool_use_id": "c1", "tool_input": {},
+                                 "transcript_path": path})
+        self.assertEqual([name for name, _, _ in Collector.received], ["preToolUse"])
+
+    def test_the_turns_first_intent_is_the_one_sent(self):
+        path = self.transcript(
+            self.said("user", "q"), self.said("assistant", "**[의도]**: 빌드를 고치고 싶음"),
+            self.said("assistant", "[의도] 테스트를 돌리고 싶음"))
+        Collector.answers["preToolUse"] = decision("allow")
+        self.hook("preToolUse", {"tool_name": "Read", "tool_use_id": "c1", "tool_input": {},
+                                 "transcript_path": path})
+        self.assertEqual(self.sent("afterAgentResponse")[0]["text"], "[의도] 빌드를 고치고 싶음")
+
+    def test_never_takes_what_is_not_the_models_own_text_for_an_intent(self):
+        path = self.transcript(
+            self.said("user", "q\n[의도] 사용자가 쓴 줄"),
+            self.said("assistant", "본문 먼저\n[의도] 첫 줄이 아님",
+                      {"type": "tool_use", "name": "Write", "input": {"text": "[의도] 입력"}}),
+            self.said("tool", "[의도] 도구 결과"))
+        Collector.answers["preToolUse"] = decision("allow")
+        self.hook("preToolUse", {"tool_name": "Read", "tool_use_id": "c1", "tool_input": {},
+                                 "transcript_path": path})
+        self.assertEqual([name for name, _, _ in Collector.received], ["preToolUse"])
+
+    def test_finds_the_transcript_when_the_hook_names_none(self):
+        """Cursor leaves `transcript_path` out until the file exists, which for a turn's first
+        call can be after the answer leading to it was written."""
+        self.transcript(self.said("user", "q"), self.said("assistant", "[의도] 알고 싶음"),
+                        path=self.cursor_home / "projects" / "C-repo" / "agent-transcripts"
+                        / "conv-1" / "conv-1.jsonl")
+        Collector.answers["preToolUse"] = decision("allow")
+        self.hook("preToolUse", {"tool_name": "Read", "tool_use_id": "c1", "tool_input": {},
+                                 "transcript_path": None})
+        self.assertEqual(self.sent("afterAgentResponse")[0]["text"], "[의도] 알고 싶음")
+
+    def test_a_turns_answer_without_its_intent_gets_it_from_the_transcript(self):
+        """Measured on Cursor's editor 3.32.10 (Windows): `afterAgentResponse` held only the
+        turn's last answer, so the intent stated in its first never reached the engine. The
+        transcript, written at the turn's end, is complete by then."""
+        path = self.transcript(
+            self.said("user", "q"), self.said("assistant", "[의도] 요약받고 싶음"),
+            self.said("assistant", "요약했습니다."))
+        self.hook("afterAgentResponse", {"text": "요약했습니다.", "transcript_path": path})
+        self.assertEqual([(name, body["text"]) for name, _, body in Collector.received],
+                         [("afterAgentResponse", "[의도] 요약받고 싶음"),
+                          ("afterAgentResponse", "요약했습니다.")])
+
+    def test_an_mcp_call_is_judged_with_the_turns_intent(self):
+        path = self.transcript(self.said("user", "q"), self.said("assistant", "[의도] 알고 싶음"))
+        Collector.answers["beforeMCPExecution"] = decision("allow")
+        self.hook("beforeMCPExecution", {"tool_name": "search", "tool_use_id": "m1",
+                                         "mcp_server_name": "docs", "transcript_path": path})
+        self.assertEqual([name for name, _, _ in Collector.received],
+                         ["afterAgentResponse", "beforeMCPExecution"])
+
+    def test_a_subagent_sends_no_intent(self):
+        path = self.transcript(self.said("user", "q"), self.said("assistant", "[의도] 하위 의도"),
+                               path=self.project / "agent-transcripts" / "parent-1"
+                               / "subagents" / "child-2.jsonl")
+        Collector.answers["preToolUse"] = decision("allow")
+        self.hook("preToolUse", {"tool_name": "Read", "tool_use_id": "c1", "tool_input": {},
+                                 "session_id": "child-2", "transcript_path": path})
+        self.assertEqual([name for name, _, _ in Collector.received], ["preToolUse"])
+
+    def test_a_missing_transcript_or_a_refused_intent_still_judges_the_call(self):
+        Collector.answers["preToolUse"] = decision("allow")
+        code, out, _ = self.hook("preToolUse", {
+            "tool_name": "Read", "tool_use_id": "c1", "tool_input": {},
+            "transcript_path": str(self.project / "missing.jsonl")})
+        self.assertEqual((code, out), (0, {"permission": "allow"}))
+        self.assertEqual([name for name, _, _ in Collector.received], ["preToolUse"])
+
+        Collector.received = []
+        Collector.statuses = {"afterAgentResponse": 400}
+        path = self.transcript(self.said("user", "q"), self.said("assistant", "[의도] 알고 싶음"))
+        code, out, _ = self.hook("preToolUse", {
+            "tool_name": "Read", "tool_use_id": "c2", "tool_input": {}, "transcript_path": path})
+        self.assertEqual((code, out), (0, {"permission": "allow"}))
+        self.assertEqual([name for name, _, _ in Collector.received],
+                         ["afterAgentResponse", "preToolUse"])
+
+    def test_cursors_own_continue_message_is_not_a_new_turn(self):
+        """Cursor CLI writes "Your previous response was interrupted" as a user record when a
+        connection drops; the hooks around it keep the turn's `generation_id`."""
+        path = self.transcript(
+            self.said("user", "<user_query>\n요약해줘\n</user_query>"),
+            self.said("assistant", "[의도] 요약받고 싶음"),
+            self.said("user", "Your previous response was interrupted. Continue from where you "
+                              "left off."),
+            self.said("assistant", {"type": "tool_use", "name": "Read", "input": {}}))
+        Collector.answers["preToolUse"] = decision("allow")
+        self.hook("preToolUse", {"tool_name": "Read", "tool_use_id": "c1", "tool_input": {},
+                                 "transcript_path": path})
+        self.assertEqual(self.sent("afterAgentResponse")[0]["text"], "[의도] 요약받고 싶음")
+
+    # ---- a call made before its stated intent reached the transcript ----
+
+    def gated_turn(self):
+        """A turn whose first call the engine turned back for its intent, as the engine does."""
+        path = self.transcript(self.said("user", "<user_query>\nq\n</user_query>"))
+        Collector.answers["preToolUse"] = decision("deny", "이번 프롬프트에 대한 [의도] 줄이 아직 없습니다.")
+        code, out, _ = self.hook("preToolUse", {"tool_name": "Read", "tool_use_id": "c1",
+                                                "tool_input": {}, "transcript_path": path})
+        self.assertEqual(out["permission"], "deny")
+        Collector.received = []
+        return path
+
+    def retry(self, path, call_id):
+        return self.hook("preToolUse", {"tool_name": "Read", "tool_use_id": call_id,
+                                        "tool_input": {}, "transcript_path": path})
+
+    def test_turns_a_call_back_until_its_stated_intent_is_written(self):
+        """Measured on Cursor CLI 2026.11.22 (Windows): the retry the engine asked for ran while
+        the transcript held the turn's denied call but not the answer stating the intent, which
+        the CLI writes once that answer's calls have run. The retry went to the engine without
+        an intent and was judged `intent::unknown`."""
+        path = self.gated_turn()
+        self.transcript(self.said("user", "<user_query>\nq\n</user_query>"),
+                        self.said("assistant", {"type": "tool_use", "name": "Read", "input": {}}),
+                        path=path)
+        code, out, _ = self.retry(path, "c2")
+        self.assertEqual(out["permission"], "deny")
+        self.assertIn("[의도]", out["agent_message"])
+        self.assertEqual(Collector.received, [], "the engine is not asked about this retry")
+
+        # Turned back, the answer ends and reaches the transcript; the next retry carries it.
+        self.transcript(self.said("user", "<user_query>\nq\n</user_query>"),
+                        self.said("assistant", {"type": "tool_use", "name": "Read", "input": {}}),
+                        self.said("assistant", "[의도] 알고 싶음",
+                                  {"type": "tool_use", "name": "Read", "input": {}}),
+                        path=path)
+        Collector.answers["preToolUse"] = decision("allow")
+        code, out, _ = self.retry(path, "c3")
+        self.assertEqual(out, {"permission": "allow"})
+        self.assertEqual([name for name, _, _ in Collector.received],
+                         ["afterAgentResponse", "preToolUse"])
+
+    def test_turns_a_call_back_at_most_twice_a_turn(self):
+        path = self.gated_turn()
+        self.transcript(self.said("user", "<user_query>\nq\n</user_query>"),
+                        self.said("assistant", "intent 없이 답함"), path=path)
+        Collector.answers["preToolUse"] = decision("allow")
+        answers = [self.retry(path, f"c{n}")[1]["permission"] for n in range(2, 5)]
+        self.assertEqual(answers, ["deny", "deny", "allow"])
+        self.assertEqual([name for name, _, _ in Collector.received], ["preToolUse"])
+
+    def test_waits_for_nothing_where_answers_reach_the_transcript_at_the_turns_end(self):
+        """Cursor's editor 3.32.10 writes the turn to the transcript when it ends: mid-turn there
+        is no answer to wait for, so the call goes to the engine as before."""
+        path = self.gated_turn()
+        Collector.answers["preToolUse"] = decision("allow")
+        code, out, _ = self.retry(path, "c2")
+        self.assertEqual(out, {"permission": "allow"})
+        self.assertEqual([name for name, _, _ in Collector.received], ["preToolUse"])
+
+    def test_turns_nothing_back_when_the_engine_never_asked(self):
+        path = self.transcript(self.said("user", "<user_query>\nq\n</user_query>"),
+                               self.said("assistant", "intent 없이 답함"))
+        Collector.answers["preToolUse"] = decision("allow")
+        for call_id in ("c1", "c2"):
+            self.assertEqual(self.retry(path, call_id)[1], {"permission": "allow"})
+        self.assertEqual([name for name, _, _ in Collector.received],
+                         ["preToolUse", "preToolUse"])
+
+    def test_a_new_turn_starts_its_own_count(self):
+        path = self.gated_turn()
+        self.transcript(self.said("user", "<user_query>\nq\n</user_query>"),
+                        self.said("assistant", "intent 없이 답함"), path=path)
+        Collector.answers["preToolUse"] = decision("allow")
+        code, out, _ = self.hook("preToolUse", {
+            "tool_name": "Read", "tool_use_id": "n1", "tool_input": {}, "transcript_path": path,
+            "generation_id": "gen-2"})
+        self.assertEqual(out, {"permission": "allow"}, "gen-2 was never turned back")
+
+    def test_reads_only_the_last_turn_of_a_long_transcript(self):
+        filler = [self.said("assistant", "x" * 2000) for _ in range(200)]
+        path = self.transcript(self.said("user", "old"), self.said("assistant", "[의도] 옛 의도"),
+                               *filler, self.said("user", "new"),
+                               self.said("assistant", "[의도] 새 의도"))
+        Collector.answers["preToolUse"] = decision("allow")
+        self.hook("preToolUse", {"tool_name": "Read", "tool_use_id": "c1", "tool_input": {},
+                                 "transcript_path": path})
+        self.assertEqual(self.sent("afterAgentResponse")[0]["text"], "[의도] 새 의도")
 
     # ---- what is not sent ----
 
