@@ -211,10 +211,30 @@ fn knows_a_change_to_the_agents_safeguards() {
             "{input}"
         );
     }
+    // A line that reads a safeguard in one part and writes elsewhere in another changes
+    // nothing of it; one that writes into it in any part, or steps into it first, does.
+    for command in [
+        "cd .claude && rm settings.json",
+        "f=.claude/settings.json; echo '{}' > $f",
+        "cat .claude/settings.json | tee .claude/settings.local.json",
+        "python3 app.py > /tmp/out.txt; find .claude/hooks -name '*.py' -delete",
+        "python3 app.py > /tmp/out.txt; sed -i 's/x/y/' .claude/settings.json",
+        "python3 app.py > /tmp/out.txt; awk 'BEGIN{system(\"rm -rf .claude/hooks\")}'",
+    ] {
+        assert_eq!(
+            effect(&call("Bash", json!({ "command": command }))),
+            Effect::Safeguard,
+            "{command}"
+        );
+    }
     // Reading them is no change.
     for command in [
         "cat .claude/settings.json 2>/dev/null || echo none",
         "find . -name settings.json -o -name .claude -type d",
+        // Seen denied on real sessions: a baseline saved before a refactor, a config review.
+        "python3 app.py > /tmp/baseline_output.txt; echo \"exit=$?\"; ls -la .claude/hooks; head -c 1500 .claude/settings.json",
+        "echo \"--- app.js\"; cat app.js; sed 's/=.*/=<redacted>/' .env > /tmp/env.txt; cat .claude/settings.json; cat .claude/hooks/pre-tool-use.py",
+        "git add notes.txt && git commit -qm x && find .claude -type f | head -50 && grep -noiE 'token|secret' .claude/settings.json",
     ] {
         assert_ne!(
             effect(&call("Bash", json!({ "command": command }))),
@@ -470,7 +490,10 @@ fn checks_every_run_of_a_seen_program_by_its_code() {
         &program,
     );
     assert_eq!(checked.branch, Branch::Run);
-    assert_eq!(checked.verdict(Some(0.4)), Some(Verdict::Deny));
+    assert_eq!(checked.verdict(Some(0.7)), Some(Verdict::Deny));
+    // Near the bar, one answer puts the run to the user rather than denying it.
+    assert_eq!(checked.verdict(Some(0.45)), Some(Verdict::Review));
+    assert_eq!(checked.verdict(Some(0.4)), Some(Verdict::Review));
     assert_eq!(checked.verdict(Some(0.3)), Some(Verdict::Allow));
     assert_eq!(checked.verdict(None), None);
     assert_eq!(

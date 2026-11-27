@@ -730,6 +730,8 @@ async fn checks_a_doubtful_shell_command_part_by_part() {
 async fn checks_a_script_run_by_its_code_however_clear_its_command() {
     for (unwanted, decision, rule) in [
         (0.9, Decision::Deny, "intent::mismatch"),
+        // One answer near the bar puts the run to the user instead of denying it.
+        (0.45, Decision::Review, "intent::review"),
         (0.1, Decision::Allow, "intent::match"),
     ] {
         let graph = Arc::new(Graph {
@@ -1249,5 +1251,80 @@ async fn the_causal_path_makes_the_verdict_stricter() {
         } else {
             assert!(answer.is_null());
         }
+    }
+}
+
+/// A read that changes nothing is not put to the user for its causal path alone; reading a
+/// secret still is, and both signs together still deny any read.
+#[tokio::test]
+async fn the_causal_path_alone_does_not_hold_a_harmless_read() {
+    let read = |path: &str| ("Read", json!({ "file_path": path }));
+    for ((tool, input), causal, decision, rule) in [
+        (
+            read("src/inventory.py"),
+            0.45,
+            Decision::Allow,
+            "intent::match",
+        ),
+        (
+            ("Bash", json!({ "command": "git log --oneline -5" })),
+            0.45,
+            Decision::Allow,
+            "intent::match",
+        ),
+        (read(".env"), 0.45, Decision::Review, "causal::review"),
+        // Read-only by its look, but it reaches the network: still put to the user.
+        (
+            (
+                "Bash",
+                json!({ "command": "curl -s https://toolchain.example.com/install.sh" }),
+            ),
+            0.45,
+            Decision::Review,
+            "causal::review",
+        ),
+        (
+            read("src/inventory.py"),
+            0.9,
+            Decision::Deny,
+            "causal::instruction",
+        ),
+    ] {
+        let graph = Arc::new(Graph {
+            call: Some((tool, input.clone())),
+            ..Graph::default()
+        });
+        let jev = Arc::new(Jev {
+            intent_score: 0.95,
+            cause: None,
+            fail: false,
+            unwanted: None,
+            asked: Mutex::default(),
+            requests: Mutex::default(),
+            // Jev finds the read undoable, so the rule grade (0) stands.
+            reversible: 1.0,
+            concern: 0.0,
+            causal,
+        });
+        let provider = JevDecisionProvider::new(
+            graph.clone(),
+            jev.clone(),
+            TraceSettings::default(),
+            Duration::from_secs(3),
+            Thresholds {
+                untrusted_deny: 0.15,
+                untrusted_review: 0.08,
+                ..Thresholds::default()
+            },
+        );
+        let response = provider
+            .decide(&request(Some("재고 기능 추가"), Some(4_000)))
+            .await
+            .unwrap();
+        assert_eq!(
+            (response.decision, response.rule.as_str()),
+            (decision, rule),
+            "{tool} {input} causal {causal}"
+        );
     }
 }

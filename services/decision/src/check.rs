@@ -41,8 +41,12 @@ pub const EXPLICIT_BREACH: f64 = 0.7;
 /// it is denied.
 pub const PURPOSE_CUT: f64 = 0.4;
 /// Probability that running a program does something the user did not ask for, from which it
-/// is denied.
+/// is put to the user.
 pub const PROGRAM_CUT: f64 = 0.4;
+/// The same probability, from which running the program is denied. One answer near the review
+/// bar denied running the user's own app to save its output before a refactor (unwanted 0.45,
+/// deviation 0.006); a tampered program reads far past it.
+pub const PROGRAM_DENY: f64 = 0.7;
 
 /// Characters of the prompt, of the lines a change adds or removes, and of an action shown.
 const PROMPT_CHARS: usize = 2_000;
@@ -425,7 +429,8 @@ pub fn effect(call: &CallInfo) -> Effect {
             // A command that goes through the agent's own CLI changes a safeguard without
             // writing to it, so it is not asked whether it writes.
             if commands_safeguard(command)
-                || (writes(command) && names_safeguard(command, call.cwd.as_deref()))
+                || (writes(command)
+                    && names_safeguard(&without_read_only_parts(command), call.cwd.as_deref()))
             {
                 return Effect::Safeguard;
             }
@@ -511,6 +516,86 @@ fn programs(call: &CallInfo) -> Vec<Program> {
             Program { path, code }
         })
         .collect()
+}
+
+/// Programs that only print what they read, when run without a writing flag.
+const READ_ONLY_PROGRAMS: &[&str] = &[
+    "cat",
+    "head",
+    "tail",
+    "ls",
+    "find",
+    "grep",
+    "egrep",
+    "fgrep",
+    "rg",
+    "wc",
+    "stat",
+    "file",
+    "less",
+    "more",
+    "jq",
+    "diff",
+    "echo",
+    "printf",
+    "tree",
+    "sed",
+    "cut",
+    "sort",
+    "uniq",
+    "sha256sum",
+    "md5sum",
+    "realpath",
+    "readlink",
+    "basename",
+    "dirname",
+    "true",
+];
+
+/// Flags that make a [`READ_ONLY_PROGRAMS`] program write or run something.
+const WRITING_FLAGS: &[&str] = &[
+    "-i",
+    "--in-place",
+    "-delete",
+    "-exec",
+    "-execdir",
+    "-ok",
+    "-okdir",
+    "-fprint",
+    "-fls",
+    "-fprintf",
+    "-o",
+];
+
+/// Whether a part of a shell command (a pipeline) only prints what it reads: every program in it
+/// is a reader run without a writing flag, and nothing is redirected into a file.
+fn reads_only(part: &str) -> bool {
+    !writes_file(part)
+        && part.split('|').all(|segment| {
+            let words: Vec<&str> = segment.split_whitespace().collect();
+            words.first().is_some_and(|first| {
+                READ_ONLY_PROGRAMS.contains(&first.rsplit('/').next().unwrap_or(first))
+            }) && !words.iter().any(|word| {
+                WRITING_FLAGS.contains(word) || (word.starts_with("-i") && words[0] == "sed")
+            })
+        })
+}
+
+/// `command` without its parts that only read: a part that prints a safeguard (`cat
+/// .claude/settings.json`, `ls .claude/hooks`) changes nothing, though another part of the same
+/// line writes (`python3 app.py > /tmp/baseline.txt`). Such lines were denied as changes to the
+/// agent's hooks. A `cd` into a safeguard or a variable naming one is no reader, so it stays.
+fn without_read_only_parts(command: &str) -> String {
+    let parts = crate::provenance::shell_parts(command);
+    // The parts past the cut are not listed: the whole line is judged then.
+    if parts.len() >= crate::provenance::MAX_PARTS {
+        return command.to_owned();
+    }
+    parts
+        .into_iter()
+        .filter(|part| !reads_only(part))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn writes(command: &str) -> bool {
@@ -1293,6 +1378,11 @@ impl Check {
             }
         };
         Some(match unwanted? {
+            unwanted
+                if self.branch == Branch::Run && unwanted < PROGRAM_DENY && unwanted >= cut =>
+            {
+                Verdict::Review
+            }
             unwanted if unwanted >= cut => Verdict::Deny,
             _ if self.breach => Verdict::Review,
             _ => Verdict::Allow,

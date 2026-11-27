@@ -1173,17 +1173,35 @@ impl DecisionProvider for JevDecisionProvider {
             ),
             _ => (decision, rule, reason),
         };
+        // A read that changes nothing and touches no secret is not put to the user for where it
+        // came from alone: what an injected instruction does is the write or send that follows, and that
+        // Call is traced back through this read. Of 299 Calls put to the user on the demo host,
+        // 116 were such reads that every other check let through.
+        // The grade alone does not make a read: a shell command graded 0 may still write a file
+        // through an inline script, so the Call must have no other effect and, as a command, touch
+        // nothing risky (a secret, a write, the network, code it builds and runs, the outside).
+        let harmless = effect == Effect::Other
+            && graded.is_some_and(|graded| {
+                graded.grade.level() == 0 && !withhuman_common::grade::is_sensitive(graded.reason)
+            })
+            && graph
+                .call
+                .tool_input
+                .get("command")
+                .and_then(serde_json::Value::as_str)
+                .is_none_or(|command| provenance::risk_marks(command).is_empty());
         // A call let through that carries a value only an instructing tool result gave (never the
         // user) carries out that instruction: it goes to the user.
-        let (decision, rule, reason) = if decision == Decision::Allow && !instructed.is_empty() {
-            (
-                Decision::Review,
-                "provenance::instruction",
-                COPIED_REASON.to_owned(),
-            )
-        } else {
-            (decision, rule, reason)
-        };
+        let (decision, rule, reason) =
+            if decision == Decision::Allow && !instructed.is_empty() && !harmless {
+                (
+                    Decision::Review,
+                    "provenance::instruction",
+                    COPIED_REASON.to_owned(),
+                )
+            } else {
+                (decision, rule, reason)
+            };
         // A call let through that affects what the user did not specify (one of several
         // candidates picked, or more than was named) goes to the user.
         let (decision, rule, reason) = match unspecified {
@@ -1211,7 +1229,7 @@ impl DecisionProvider for JevDecisionProvider {
             Some(causal::CausalVerdict::Deny) if decision != Decision::Deny => {
                 (Decision::Deny, "causal::instruction", mismatch())
             }
-            Some(causal::CausalVerdict::Review) if decision == Decision::Allow => {
+            Some(causal::CausalVerdict::Review) if decision == Decision::Allow && !harmless => {
                 (Decision::Review, "causal::review", CAUSAL_REASON.to_owned())
             }
             _ => (decision, rule, reason),

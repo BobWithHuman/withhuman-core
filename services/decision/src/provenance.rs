@@ -61,14 +61,152 @@ const INSTRUCTION_PHRASES: &[&str] = &[
     "ai agent",
 ];
 
+/// Whether `text` tells its reader what to do. Only its prose is read (see [`prose`]): a word of
+/// code or markup is no instruction. `raise ValueError("qty must be positive")` in a file the
+/// agent edits, or `<input name="password_field" required>` on a login page, made every line the
+/// agent then took from them "copied from an instruction".
 fn instructs(text: &str) -> bool {
-    let lower = text.to_lowercase();
+    let lower = prose(text).to_lowercase();
     INSTRUCTION_PHRASES
         .iter()
         .any(|phrase| lower.contains(phrase))
         || lower
-            .split(|c: char| !c.is_alphanumeric() && c != '\'')
+            // `_` joins an identifier (`is_required`): its parts are no words.
+            .split(|c: char| !c.is_alphanumeric() && c != '\'' && c != '_')
             .any(|word| INSTRUCTION_WORDS.contains(&word))
+}
+
+/// Comment openers: what follows one is written for people, wherever it stands.
+const COMMENT_OPENERS: &[&str] = &["<!--", "/*", "//", "#", "--", "*"];
+
+/// Starts of a line of code (a statement or declaration), after any indentation.
+const CODE_STARTS: &[&str] = &[
+    "def ",
+    "class ",
+    "return",
+    "raise ",
+    "import ",
+    "from ",
+    "if ",
+    "if(",
+    "elif ",
+    "else",
+    "for ",
+    "while ",
+    "try",
+    "except",
+    "assert ",
+    "function ",
+    "const ",
+    "let ",
+    "var ",
+    "throw ",
+    "fn ",
+    "pub ",
+    "use ",
+    "@",
+];
+
+/// The prose of `text`: its lines without markup tags, line-number prefixes, lines of code and
+/// `key: value` data, but with every comment kept, also one that trails code (a rule planted as
+/// a comment is prose).
+fn prose(text: &str) -> String {
+    let mut out = String::new();
+    for line in text.lines() {
+        let line = strip_line_number(line);
+        let line = strip_tags(line);
+        let trimmed = line.trim();
+        if let Some(comment) = COMMENT_OPENERS
+            .iter()
+            .find_map(|opener| trimmed.strip_prefix(opener))
+        {
+            out.push_str(comment);
+        } else if is_code(trimmed) {
+            if let Some((_, comment)) = trimmed
+                .split_once(" # ")
+                .or_else(|| trimmed.split_once(" // "))
+            {
+                out.push_str(comment);
+            }
+        } else if !is_data(trimmed) {
+            out.push_str(trimmed);
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// `line` without the number `cat -n` or a file viewer puts before it (`    12\t`, `12→`).
+fn strip_line_number(line: &str) -> &str {
+    let rest = line.trim_start();
+    let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    if digits == 0 {
+        return line;
+    }
+    let after = &rest[digits..];
+    after
+        .strip_prefix('\t')
+        .or_else(|| after.strip_prefix('→'))
+        .or_else(|| after.strip_prefix('|'))
+        .unwrap_or(line)
+}
+
+/// `line` without its markup tags (`<input … required>`); the text between tags stays.
+fn strip_tags(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        let opens_tag = c == '<'
+            && chars
+                .peek()
+                .is_some_and(|next| next.is_ascii_alphabetic() || matches!(next, '/' | '!' | '?'));
+        if !opens_tag {
+            out.push(c);
+            continue;
+        }
+        let mut tag = String::from(c);
+        let mut closed = false;
+        for inner in chars.by_ref() {
+            tag.push(inner);
+            if inner == '>' {
+                closed = true;
+                break;
+            }
+        }
+        if !closed {
+            // No tag after all (`a < b`): keep the text.
+            out.push_str(&tag);
+        }
+        out.push(' ');
+    }
+    out
+}
+
+/// Whether `line` is a line of code: a statement, or a call or block opener whose words are its
+/// names and strings.
+fn is_code(line: &str) -> bool {
+    // A quoted line is a string of data (`"body": "… (urgent) …",`), whatever it holds.
+    !line.starts_with(['"', '\''])
+        && (CODE_STARTS.iter().any(|start| line.starts_with(start))
+            || (line.contains('(') && line.ends_with([')', ';', '{', ':', ','])))
+}
+
+/// Whether `line` is one `key: value` (or `key = value`) whose value is a plain literal, as in a
+/// schema or a settings file (`required: true`).
+fn is_data(line: &str) -> bool {
+    let Some((key, value)) = line.split_once([':', '=']) else {
+        return false;
+    };
+    let key = key.trim().trim_matches(['"', '\'']);
+    let value = value.trim().trim_end_matches(',').trim();
+    !key.is_empty()
+        && key
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.'))
+        && (matches!(
+            value.to_ascii_lowercase().as_str(),
+            "true" | "false" | "yes" | "no" | "null" | "none" | "[]" | "{}"
+        ) || value.parse::<f64>().is_ok())
 }
 
 /// A line a Call adds that stands in a tool result the agent read.
@@ -171,9 +309,10 @@ pub fn is_empty_change(effect: &Effect) -> bool {
 pub fn instruction_seen(paragraphs: &BTreeMap<String, String>) -> bool {
     paragraphs.values().any(|text| {
         let (header, body) = split_header(text);
-        instructs(body)
-            || (names_agent_file(header) && !header.contains([';', '|', '&']))
-            || names_agent_file(first_line(body))
+        !own_write(header)
+            && (instructs(body)
+                || (names_agent_file(header) && !header.contains([';', '|', '&']))
+                || names_agent_file(first_line(body)))
     })
 }
 
@@ -195,13 +334,14 @@ pub fn copied_lines(
         .iter()
         .map(|(key, text)| {
             let (header, body) = split_header(text);
+            let own = own_write(header);
             (
                 key,
                 normalize(body),
-                instructs(body),
+                !own && instructs(body),
                 // A header names every file its command read; it tells only when it read one.
-                (names_agent_file(header) && !header.contains([';', '|', '&']))
-                    || names_agent_file(first_line(body)),
+                !own && ((names_agent_file(header) && !header.contains([';', '|', '&']))
+                    || names_agent_file(first_line(body))),
             )
         })
         .collect();
@@ -335,6 +475,27 @@ fn split_header(text: &str) -> (&str, &str) {
         }
     }
     ("", text)
+}
+
+/// Tools whose result only echoes what the agent itself wrote.
+const OWN_WRITES: &[&str] = &[
+    "[Write result",
+    "[Edit result",
+    "[MultiEdit result",
+    "[NotebookEdit result",
+];
+
+/// Whether a paragraph with this `header` echoes the agent's own write: what the agent wrote is
+/// no instruction to it. A test file it wrote ("the refactored code must produce the same
+/// output") made every later step of the same refactor "carry out an instruction".
+fn own_write(header: &str) -> bool {
+    OWN_WRITES.iter().any(|tool| header.starts_with(tool))
+}
+
+/// [`instructs`] for a whole paragraph, header and all.
+fn paragraph_instructs(text: &str) -> bool {
+    let (header, body) = split_header(text);
+    !own_write(header) && instructs(body)
 }
 
 fn first_line(text: &str) -> &str {
@@ -519,6 +680,11 @@ const COMMON_WORDS: &[&str] = &[
     "--short",
     "--no-ext-diff",
     "verify",
+    // Python's own names, in every module.
+    "__main__",
+    "__name__",
+    "__init__",
+    "__future__",
 ];
 
 /// Most lines and characters of a paragraph read as the line an instruction right before it quotes.
@@ -541,7 +707,7 @@ fn split_bodies(paragraphs: &BTreeMap<String, String>) -> (Vec<String>, Vec<Stri
     };
     let instructing: BTreeSet<(&str, usize)> = paragraphs
         .iter()
-        .filter(|(_, text)| instructs(split_header(text).1))
+        .filter(|(_, text)| paragraph_instructs(text))
         .filter_map(|(key, _)| place(key))
         .collect();
     let mut taken = Vec::new();
@@ -553,7 +719,7 @@ fn split_bodies(paragraphs: &BTreeMap<String, String>) -> (Vec<String>, Vec<Stri
                 instructing.contains(&(group, index))
                     || (index > 0 && instructing.contains(&(group, index - 1)) && quoted(body))
             }
-            None => instructs(body),
+            None => paragraph_instructs(text),
         };
         if from_instruction {
             taken.push(body.to_lowercase());
