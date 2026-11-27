@@ -518,6 +518,13 @@ mod tests {
 
     #[async_trait]
     impl GeneratorTransport for Sent {
+        async fn session_flags(
+            &self,
+            _session_id: &str,
+        ) -> Result<withhuman_contracts::inventory::SessionFlags, GeneratorError> {
+            Ok(withhuman_contracts::inventory::SessionFlags::default())
+        }
+
         async fn send(&self, event: NormalizedEvent) -> Result<EventResponse, GeneratorError> {
             self.0.lock().unwrap().push(event);
             Ok(EventResponse {

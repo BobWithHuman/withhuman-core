@@ -525,6 +525,14 @@ struct History(Result<SessionCursor, GeneratorError>);
 
 #[async_trait]
 impl GeneratorTransport for History {
+    async fn session_flags(
+        &self,
+        _session_id: &str,
+    ) -> Result<withhuman_contracts::inventory::SessionFlags, withhuman_collector::GeneratorError>
+    {
+        Ok(withhuman_contracts::inventory::SessionFlags::default())
+    }
+
     async fn send(&self, _event: NormalizedEvent) -> Result<EventResponse, GeneratorError> {
         unreachable!("normalization never sends events")
     }

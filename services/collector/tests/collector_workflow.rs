@@ -797,6 +797,14 @@ impl RecordingGenerator {
 
 #[async_trait]
 impl GeneratorTransport for RecordingGenerator {
+    async fn session_flags(
+        &self,
+        _session_id: &str,
+    ) -> Result<withhuman_contracts::inventory::SessionFlags, withhuman_collector::GeneratorError>
+    {
+        Ok(withhuman_contracts::inventory::SessionFlags::default())
+    }
+
     async fn send(&self, event: NormalizedEvent) -> Result<EventResponse, GeneratorError> {
         self.events.lock().unwrap().push(event);
         Ok(self.response.clone())
@@ -812,6 +820,14 @@ struct GatedGenerator {
 
 #[async_trait]
 impl GeneratorTransport for GatedGenerator {
+    async fn session_flags(
+        &self,
+        _session_id: &str,
+    ) -> Result<withhuman_contracts::inventory::SessionFlags, withhuman_collector::GeneratorError>
+    {
+        Ok(withhuman_contracts::inventory::SessionFlags::default())
+    }
+
     async fn send(&self, event: NormalizedEvent) -> Result<EventResponse, GeneratorError> {
         self.events.lock().unwrap().push(event);
         self.entered.notify_one();
@@ -824,6 +840,14 @@ struct FailingGenerator;
 
 #[async_trait]
 impl GeneratorTransport for FailingGenerator {
+    async fn session_flags(
+        &self,
+        _session_id: &str,
+    ) -> Result<withhuman_contracts::inventory::SessionFlags, withhuman_collector::GeneratorError>
+    {
+        Ok(withhuman_contracts::inventory::SessionFlags::default())
+    }
+
     async fn send(&self, _event: NormalizedEvent) -> Result<EventResponse, GeneratorError> {
         Err(GeneratorError::Unavailable("offline".to_owned()))
     }
@@ -833,6 +857,14 @@ struct NeverGenerator;
 
 #[async_trait]
 impl GeneratorTransport for NeverGenerator {
+    async fn session_flags(
+        &self,
+        _session_id: &str,
+    ) -> Result<withhuman_contracts::inventory::SessionFlags, withhuman_collector::GeneratorError>
+    {
+        Ok(withhuman_contracts::inventory::SessionFlags::default())
+    }
+
     async fn send(&self, _event: NormalizedEvent) -> Result<EventResponse, GeneratorError> {
         std::future::pending().await
     }
@@ -884,6 +916,14 @@ struct NoCursorGenerator;
 
 #[async_trait]
 impl GeneratorTransport for NoCursorGenerator {
+    async fn session_flags(
+        &self,
+        _session_id: &str,
+    ) -> Result<withhuman_contracts::inventory::SessionFlags, withhuman_collector::GeneratorError>
+    {
+        Ok(withhuman_contracts::inventory::SessionFlags::default())
+    }
+
     async fn send(&self, _event: NormalizedEvent) -> Result<EventResponse, GeneratorError> {
         Ok(event_response(Some(decision(Decision::Allow, ""))))
     }

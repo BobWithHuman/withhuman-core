@@ -31,6 +31,7 @@ use axum::{
 use serde_json::{Value, json};
 use withhuman_common::chunking::sha256;
 use withhuman_contracts::{
+    decisions::EnforcementMode,
     hooks::PermissionDecision,
     inventory::{
         ClientRegistration, ClientRegistrationRecord, IssueKeyRequest, IssuedKey, KeyDenial,
@@ -41,6 +42,7 @@ use withhuman_contracts::{
 
 use crate::{
     FailurePolicy,
+    agent::{Incoming, Translated},
     devices::DEVICE_STOPPED,
     http::{CLIENT_HEADER, CollectorService, StrictJson, blocking_response, header_value, now},
     keys::{self, KeyCheck},
@@ -57,23 +59,27 @@ const OTHER_SERIALS_LIMIT: usize = 4;
 
 pub async fn authenticate(
     State(service): State<CollectorService>,
-    mut request: Request,
+    request: Request,
     next: Next,
 ) -> Response {
-    request.headers_mut().remove(USER_HEADER);
-    let path = request.uri().path();
-    let call = path.ends_with("/PreToolUse");
-    let codex = path.starts_with("/v1/hooks/codex/");
+    let (mut parts, body) = request.into_parts();
+    parts.headers.remove(USER_HEADER);
+    let Ok(bytes) = to_bytes(body, BODY_LIMIT).await else {
+        return error(StatusCode::BAD_REQUEST, "invalid_json");
+    };
+    let hook = classify(parts.uri.path(), &parts.headers, &bytes);
+    let codex = parts.uri.path().starts_with("/v1/hooks/codex/");
+    let request = Request::from_parts(parts, Body::from(bytes));
     let require = service.config.require_key;
     let (reason, error) = match service.keys.check(request.headers(), now()).await {
         KeyCheck::Active { user, .. } => {
-            return pass_running(&service, request, next, Some(&user), call).await;
+            return pass_running(&service, request, next, Some(&user), &hook).await;
         }
         KeyCheck::Revoked { key_id, user } => {
-            if !call {
-                return admit(&service, request, next, Some(&user), call).await;
+            if !hook.call {
+                return admit(&service, request, next, Some(&user), &hook).await;
             }
-            return refuse_revoked(&service, request, &key_id).await;
+            return refuse_revoked(&service, request, &key_id, &hook).await;
         }
         KeyCheck::Nothing if require => (keys::KEY_MISSING, "key_required"),
         KeyCheck::Invalid if require => (keys::KEY_INVALID, "key_invalid"),
@@ -82,9 +88,9 @@ pub async fn authenticate(
         {
             (keys::KEY_UNCHECKED, "key_unchecked")
         }
-        _ => return pass_running(&service, request, next, None, call).await,
+        _ => return pass_running(&service, request, next, None, &hook).await,
     };
-    if call {
+    if hook.call {
         return blocking_response(PermissionDecision::Deny, reason.to_owned());
     }
     let status = if error == "key_unchecked" {
@@ -97,46 +103,90 @@ pub async fn authenticate(
     (status, Json(json!({ "error": error, "message": message }))).into_response()
 }
 
+/// What a Hook is to the checks here: a tool call the client waits on, and its session.
+struct Hook {
+    call: bool,
+    session_id: Option<String>,
+}
+
+/// Reads a Hook as its route will: Claude Code's PreToolUse, or a call in any other agent's
+/// own words (Cursor's `preToolUse` and `beforeMCPExecution`, Hermes's `pre_tool_call`, ...),
+/// told by the agent's own translation, with the session that translation names. A call the
+/// bridge found after it ran is not one: it is only recorded.
+fn classify(path: &str, headers: &HeaderMap, body: &[u8]) -> Hook {
+    let agent_event = path.strip_prefix("/v1/hooks/").and_then(|rest| {
+        let (kind, event) = rest.split_once('/')?;
+        Some((crate::agent::find(kind)?, event))
+    });
+    let Some((agent, event)) = agent_event else {
+        return Hook {
+            call: path == "/v1/hooks/PreToolUse",
+            session_id: session_of(body),
+        };
+    };
+    let translated = serde_json::from_slice::<Value>(body)
+        .ok()
+        .and_then(|raw| agent.translate(event, raw, headers).ok());
+    match translated {
+        Some(Incoming {
+            request: Translated::PreToolUse(request),
+            record: false,
+            ..
+        }) => Hook {
+            call: true,
+            session_id: Some(request.session_id),
+        },
+        _ => Hook {
+            call: false,
+            session_id: None,
+        },
+    }
+}
+
 /// Passes the Hook on with its user, unless the security team stopped its session (a call) or
-/// excepted it from protection (anything but its start and end).
+/// excepted it from protection (anything but its start and end). A stop comes first: an
+/// excepted session that was stopped has its calls denied. When the session cannot be looked
+/// up, an enforced call fails by the failure policy, as a call the engine cannot judge does: an
+/// unanswered lookup is taken neither for "not stopped" nor for an exception.
 async fn admit(
     service: &CollectorService,
     mut request: Request,
     next: Next,
     user: Option<&str>,
-    call: bool,
+    hook: &Hook,
 ) -> Response {
     if let Some(value) = user.and_then(|user| HeaderValue::from_str(user).ok()) {
         request.headers_mut().insert(USER_HEADER, value);
     }
-    let path = request.uri().path().to_owned();
-    let event = path.rsplit('/').next().unwrap_or_default().to_owned();
-    let (parts, body) = request.into_parts();
-    let Ok(bytes) = to_bytes(body, BODY_LIMIT).await else {
-        return error(StatusCode::BAD_REQUEST, "invalid_json");
-    };
-    let session_id = session_of(&bytes);
-    let request = Request::from_parts(parts, Body::from(bytes));
-    let Some(session_id) = session_id else {
+    let Some(session_id) = hook.session_id.clone() else {
         return next.run(request).await;
     };
-    if matches!(event.as_str(), "SessionStart" | "SessionEnd") {
+    let event = request.uri().path().rsplit('/').next().unwrap_or_default();
+    if matches!(event, "SessionStart" | "SessionEnd") {
         // A start may claim an exception; the next Hooks read the session afresh.
         let response = next.run(request).await;
         service.flags.forget(&session_id);
         return response;
     }
-    let flags = service.flags.get(&session_id).await;
-    if flags.exception.is_some() {
-        return StatusCode::OK.into_response();
-    }
-    if call && flags.stop.is_some() {
-        // The denial stands whether or not it could be recorded.
-        let _ = service
-            .generator
-            .record_session_denial(&session_id, SessionDenial { denied_at: now() })
-            .await;
-        return blocking_response(PermissionDecision::Deny, keys::SESSION_STOPPED.to_owned());
+    match service.flags.get(&session_id).await {
+        Ok(flags) if hook.call && flags.stop.is_some() => {
+            // The denial stands whether or not it could be recorded.
+            let _ = service
+                .generator
+                .record_session_denial(&session_id, SessionDenial { denied_at: now() })
+                .await;
+            return blocking_response(PermissionDecision::Deny, keys::SESSION_STOPPED.to_owned());
+        }
+        Ok(flags) if flags.exception.is_some() => return StatusCode::OK.into_response(),
+        Ok(_) => {}
+        Err(_)
+            if hook.call
+                && service.config.enforcement_mode == EnforcementMode::Enforce
+                && service.config.failure_policy == FailurePolicy::Closed =>
+        {
+            return blocking_response(PermissionDecision::Deny, keys::SESSION_UNCHECKED.to_owned());
+        }
+        Err(_) => {}
     }
     next.run(request).await
 }
@@ -159,14 +209,14 @@ async fn pass_running(
     request: Request,
     next: Next,
     user: Option<&str>,
-    call: bool,
+    hook: &Hook,
 ) -> Response {
-    let device = header_value(request.headers(), CLIENT_HEADER).filter(|_| call);
+    let device = header_value(request.headers(), CLIENT_HEADER).filter(|_| hook.call);
     let Some(client_id) = device else {
-        return admit(service, request, next, user, call).await;
+        return admit(service, request, next, user, hook).await;
     };
     if !service.devices.stopped(&client_id).await {
-        return admit(service, request, next, user, call).await;
+        return admit(service, request, next, user, hook).await;
     }
     // The denial stands whether or not it could be counted.
     let _ = service
@@ -178,19 +228,20 @@ async fn pass_running(
 
 /// The kill switch: the call is denied and the denial recorded with the key, so the audit shows
 /// when the stop first took effect.
-async fn refuse_revoked(service: &CollectorService, request: Request, key_id: &str) -> Response {
+async fn refuse_revoked(
+    service: &CollectorService,
+    request: Request,
+    key_id: &str,
+    hook: &Hook,
+) -> Response {
     let client_id = header_value(request.headers(), CLIENT_HEADER);
-    let session_id = to_bytes(request.into_body(), BODY_LIMIT)
-        .await
-        .ok()
-        .and_then(|bytes| session_of(&bytes));
     // The denial stands whether or not it could be recorded.
     let _ = service
         .generator
         .record_key_denial(
             key_id,
             KeyDenial {
-                session_id,
+                session_id: hook.session_id.clone(),
                 client_id,
                 denied_at: now(),
             },
@@ -671,7 +722,11 @@ pub async fn revoke_user(
     if let Some(response) = not_admin(&service, &headers) {
         return response;
     }
-    let Some(user) = key_user(&email, UserKind::Service) else {
+    // Every name a key can be issued to: a person's email (`ana+ci@example.com` included), or
+    // an automation's name.
+    let Some(user) =
+        key_user(&email, UserKind::Person).or_else(|| key_user(&email, UserKind::Service))
+    else {
         return error(StatusCode::BAD_REQUEST, "invalid_user");
     };
     let response = forward(
