@@ -917,7 +917,13 @@ class OpenClawConfigureTest(unittest.TestCase):
             script.chmod(0o755)
 
     def configure(self, *extra, openclaw=True, refusing=False):
-        if refusing:
+        if refusing and os.name == "nt":
+            # Windows runs the `.cmd` stand-in; a shell script beside it never runs.
+            (self.bin / "openclaw.cmd").write_text(
+                f'@echo %* %OPENCLAW_STATE_DIR%>> "{self.calls}"\r\n'
+                '@if "%1 %2"=="config set" (echo The state owner has no Gateway listener.'
+                ' 1>&2 & exit /b 1)\r\n', encoding="utf-8")
+        elif refusing:
             script = self.bin / "openclaw"
             script.write_text(
                 '#!/bin/sh\n'

@@ -58,7 +58,8 @@ class PreToolUseHookTest(unittest.TestCase):
     def write(self, name, text, executable=False):
         path = os.path.join(self.workspace, name)
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as file:
+        # As written, byte for byte: Windows' text mode would turn each "\n" into "\r\n".
+        with open(path, "w", newline="") as file:
             file.write(text)
         if executable:
             os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
@@ -97,8 +98,9 @@ class PreToolUseHookTest(unittest.TestCase):
         result = self.run_hook(self.bash(command))
         self.assertEqual(result.returncode, 0, result.stderr)
         _, body = Collector.received[-1]
+        # The hook reports the platform's own path; compared here in one form.
         return {
-            os.path.relpath(program["path"], self.workspace): program
+            os.path.relpath(program["path"], self.workspace).replace(os.sep, "/"): program
             for program in body.get("withhuman_programs", [])
         }
 
@@ -114,7 +116,12 @@ class PreToolUseHookTest(unittest.TestCase):
         self.assertNotIn("truncated", run)
 
     def test_never_reads_files_a_command_could_not_run(self):
-        self.assertEqual(self.attached("cat secret.txt bin/data blob.py"), {})
+        self.assertEqual(self.attached("cat secret.txt blob.py"), {})
+
+    @unittest.skipIf(os.name == "nt", "Windows keeps no execute bit: a file starting with #! "
+                                      "is one Git Bash runs, so it could run")
+    def test_never_reads_a_script_without_its_execute_bit(self):
+        self.assertEqual(self.attached("cat bin/data"), {})
 
     def test_cuts_a_long_program_and_keeps_its_hash(self):
         big = self.attached("python big.py")["big.py"]
@@ -185,6 +192,19 @@ class PreToolUseHookTest(unittest.TestCase):
         output = json.loads(result.stdout)["hookSpecificOutput"]
         self.assertEqual(output["permissionDecision"], "deny")
         self.assertEqual(output["hookEventName"], "PreToolUse")
+
+    def test_denies_when_unreachable_whatever_the_consoles_encoding(self):
+        """Found on Windows: printed through the text stream, the Korean reason could not be
+        encoded in cp1252, the hook died with exit 1 and no answer, and Claude Code runs a call
+        whose hook fails that way. Under cp949 the deny held, garbled. The answer is UTF-8
+        either way."""
+        for encoding in ("ascii", "cp1252", "cp949"):
+            result = self.run_hook(self.bash("ls"), url="http://127.0.0.1:9/v1/hooks/PreToolUse",
+                                   env={"PYTHONIOENCODING": encoding})
+            self.assertEqual(result.returncode, 0, f"{encoding}: {result.stderr}")
+            output = json.loads(result.stdout.decode("utf-8"))["hookSpecificOutput"]
+            self.assertEqual(output["permissionDecision"], "deny", encoding)
+            self.assertIn("WithHuman", output["permissionDecisionReason"], encoding)
 
     def test_no_setting_lifts_the_deny_when_unreachable(self):
         # The old fail-open escape hatch is gone: an unreachable engine always denies.

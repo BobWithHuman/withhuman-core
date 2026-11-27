@@ -47,13 +47,18 @@ UNREACHABLE_REASON = ("WithHuman에 연결하지 못해 이 도구 호출을 차
 
 
 def unreachable(message):
-    """What the hook answers when the Collector gave no judgment: a deny."""
+    """What the hook answers when the Collector gave no judgment: a deny.
+
+    Written as UTF-8 bytes, as Claude Code reads it. Through the text stream, Windows encodes it
+    in the console's code page: cp949 garbles the Korean reason, and cp1252 cannot encode it at
+    all — the hook then dies with exit 1, which Claude Code takes as a non-blocking error and runs
+    the call."""
     print(f"WithHuman: {message}", file=sys.stderr)
-    sys.stdout.write(json.dumps({"hookSpecificOutput": {
+    sys.stdout.buffer.write(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "permissionDecision": "deny",
         "permissionDecisionReason": UNREACHABLE_REASON,
-    }}, ensure_ascii=False))
+    }}, ensure_ascii=False).encode("utf-8"))
     return 0
 
 
