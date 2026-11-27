@@ -3,6 +3,18 @@ name: End-to-End
 on:
   pull_request:
     branches: [main]
+    # The suite builds the services and runs them with the gateway in Compose: it runs when one
+    # of those changes, not for docs or client hooks alone.
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**"
+      - "services/**"
+      - "tests/fixtures/**"
+      - "tests/e2e/**"
+      - "deploy/docker/**"
+      - "deploy/agentgateway/**"
+      - ".github/workflows/e2e.yml"
   workflow_dispatch:
 
 permissions:
