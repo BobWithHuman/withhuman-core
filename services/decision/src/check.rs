@@ -572,14 +572,14 @@ const WRITING_FLAGS: &[&str] = &[
 /// thing to another (`grep -R` only reads): by program, the short letters and the long names.
 /// `sort -o f`/`--output`, `--compress-program` (runs it); `tree -o f`, `-R` (an HTML file into
 /// every folder); `file -C` (compiles a magic file); `less`/`more` `-o`/`-O` (a log file); `rg
-/// --pre` (runs it on every file).
+/// --pre` (runs it on every file), `--hostname-bin` (runs it).
 const PROGRAM_WRITES: &[(&str, &str, &[&str])] = &[
     ("sort", "o", &["output", "compress-program"]),
     ("tree", "oR", &["output"]),
     ("file", "C", &["compile"]),
     ("less", "oO", &["log-file", "LOG-FILE"]),
     ("more", "oO", &["log-file", "LOG-FILE"]),
-    ("rg", "", &["pre"]),
+    ("rg", "", &["pre", "hostname-bin"]),
 ];
 
 /// Whether a part of a shell command (a pipeline) only prints what it reads: every program in it
@@ -673,16 +673,14 @@ fn unquoted(text: &str) -> String {
 
 /// Whether `words` give `program` one of its [`PROGRAM_WRITES`] options in any form getopt takes:
 /// a short letter alone, bundled or with its value joined on (`-o f`, `-ro`, `-ofile`), or a long
-/// name in full, abbreviated or with `=` (`--output=f`, `--out=f`, `--comp`). Words after `--` are
-/// operands.
+/// name in full, abbreviated or with `=` (`--output=f`, `--out=f`, `--comp`). Every word is
+/// looked at, also after a `--`: that may be the value of the option before it
+/// (`sort --temporary-directory -- --output=f`), and a file named like an option is only kept.
 fn writing_option(program: &str, words: &[&str]) -> bool {
     let Some((_, short, long)) = PROGRAM_WRITES.iter().find(|(name, _, _)| *name == program) else {
         return false;
     };
     for word in words.iter().skip(1) {
-        if *word == "--" {
-            break;
-        }
         if let Some(name) = word.strip_prefix("--") {
             let name = name.split('=').next().unwrap_or(name);
             if !name.is_empty()
@@ -692,8 +690,9 @@ fn writing_option(program: &str, words: &[&str]) -> bool {
             {
                 return true;
             }
-        } else if let Some(letters) = word.strip_prefix('-')
-            && letters.chars().any(|letter| short.contains(letter))
+        } else if word
+            .strip_prefix('-')
+            .is_some_and(|letters| letters.chars().any(|letter| short.contains(letter)))
         {
             return true;
         }

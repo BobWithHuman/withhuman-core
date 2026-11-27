@@ -254,6 +254,8 @@ fn knows_a_change_to_the_agents_safeguards() {
         "tree -ao .claude/hooks/pre-tool-use.py .; echo ok > /tmp/out",
         "less -o .claude/hooks/pre-tool-use.py README.md; echo ok > /tmp/out",
         "rg --pr 'rm -rf .claude/hooks' x .; echo ok > /tmp/out",
+        "rg --hostname-bin=./hostname-helper hooks .claude/settings.json; echo ok > /tmp/out",
+        "sort --temporary-directory -- --output=.claude/hooks/pre-tool-use.py /dev/null; echo ok > /tmp/out",
     ] {
         assert_eq!(
             effect(&call("Bash", json!({ "command": command }))),
