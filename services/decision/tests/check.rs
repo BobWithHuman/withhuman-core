@@ -258,6 +258,13 @@ fn knows_a_change_to_the_agents_safeguards() {
         "sort --temporary-directory -- --output=.claude/hooks/pre-tool-use.py /dev/null; echo ok > /tmp/out",
         "printf -v f .claude/hooks/pre-tool-use.py; echo x > \"$f\"",
         "echo \\\" 2>.claude/hooks/pre-tool-use.py; echo ok > /tmp/out",
+        // A glob, a program named by a path, a reader's name given to something else.
+        "sort -? .claude/hooks/pre-tool-use.py /dev/null; echo ok > /tmp/out",
+        "sort * .claude/hooks/pre-tool-use.py; echo ok > /tmp/out",
+        "./cat .claude/hooks/pre-tool-use.py; echo x > /tmp/out",
+        "/tmp/bin/cat .claude/settings.json; echo x > /tmp/out",
+        "cat(){ rm -f \"$1\"; }; cat .claude/settings.json; echo x > /tmp/out",
+        "alias cat='rm -f'; cat .claude/settings.json; echo x > /tmp/out",
     ] {
         assert_eq!(
             effect(&call("Bash", json!({ "command": command }))),

@@ -592,6 +592,11 @@ fn reads_only(part: &str) -> bool {
     if ["$(", "`", "<(", ">("].iter().any(|run| part.contains(run)) || redirects_into_file(part) {
         return false;
     }
+    // A glob is expanded before the program sees it, into names that may be options (`-?` into
+    // `-o`, `*` into a file named `-o`): its words are not known.
+    if unquoted(part).contains(['*', '?', '[']) {
+        return false;
+    }
     !writes_file(part)
         && part.split('|').all(|segment| {
             // The words as the shell hands them over, quotes and escapes taken off
@@ -605,7 +610,11 @@ fn reads_only(part: &str) -> bool {
             let Some(first) = words.first() else {
                 return false;
             };
-            let program = first.rsplit('/').next().unwrap_or(first);
+            // A program named by a path (`./cat`) is whatever that file is, not the reader.
+            if first.contains('/') {
+                return false;
+            }
+            let program = *first;
             READ_ONLY_PROGRAMS.contains(&program)
                 && !words.iter().any(|word| WRITING_FLAGS.contains(word))
                 && !writing_option(program, &words)
@@ -870,6 +879,12 @@ fn substitution_only_prints(after_s: &str) -> bool {
 /// line writes (`python3 app.py > /tmp/baseline.txt`). Such lines were denied as changes to the
 /// agent's hooks. A `cd` into a safeguard or a variable naming one is no reader, so it stays.
 fn without_read_only_parts(command: &str) -> String {
+    // A line that defines a function or an alias may give a reader's name to anything
+    // (`cat(){ rm "$1"; }; cat .claude/settings.json`): no part of it is taken for a reader.
+    let defines = unquoted(command);
+    if defines.contains("()") || defines.contains("alias ") || defines.contains("function ") {
+        return command.to_owned();
+    }
     let parts = crate::provenance::shell_parts(command);
     // The parts past the cut are not listed: the whole line is judged then.
     if parts.len() >= crate::provenance::MAX_PARTS {

@@ -793,7 +793,13 @@ fn split_bodies(paragraphs: &BTreeMap<String, String>) -> (Vec<String>, Vec<Stri
     let mut taken = Vec::new();
     let mut other = Vec::new();
     for (key, text) in paragraphs {
-        let body = split_header(text).1;
+        let (header, body) = split_header(text);
+        // What the agent wrote itself tells nothing of where a value came from: it neither
+        // instructs, nor takes away a value an instructing result gave (a README's command the
+        // agent copied into its own plan stays the README's).
+        if own_write(header) {
+            continue;
+        }
         let from_instruction = match place(key) {
             Some((group, index)) => {
                 instructing.contains(&(group, index))
