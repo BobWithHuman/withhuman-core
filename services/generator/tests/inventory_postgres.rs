@@ -1270,6 +1270,33 @@ async fn a_checked_in_project_is_protected_once_hooks_ran_there() {
         )
         .await;
     assert_eq!(device, json!([200, "user", "mac", "ana@example.com"]));
+    // Another user's key cannot check in for the device, nor read the exceptions covering it.
+    let mut other = checkin(300, 60);
+    other["user"] = json!("bo@example.com");
+    let (status, _) = send(&url, "POST", "/v1/clients/checkin", Some(other)).await;
+    assert_eq!(status, 403);
+    let owner = db
+        .row(
+            "SELECT jsonb_build_array(last_checkin_at, user_email) FROM clients              WHERE client_id = $1",
+            &[&client],
+        )
+        .await;
+    assert_eq!(owner, json!([200, "ana@example.com"]));
+    let encoded = client.replace('/', "%2F");
+    for (user, expected) in [
+        ("&user=ana%40example.com", 200),
+        ("&user=bo%40example.com", 403),
+        ("", 403),
+    ] {
+        let (status, _) = send(
+            &url,
+            "GET",
+            &format!("/v1/exceptions?client_id={encoded}{user}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, expected, "{user}");
+    }
     db.exec(
         "DELETE FROM client_seen_projects WHERE client_id = $1",
         &[&client],

@@ -432,10 +432,26 @@ pub async fn client_exceptions(
     headers: HeaderMap,
     axum::extract::Query(query): axum::extract::Query<ClientQuery>,
 ) -> Response {
-    if let Err(response) = device_user(&service, &headers).await {
-        return *response;
-    }
-    match service.generator.client_exceptions(&query.client_id).await {
+    let user = match device_user(&service, &headers).await {
+        Ok(user) => user,
+        Err(response) => return *response,
+    };
+    // The Generator refuses a device registered to another user than the key's.
+    match service
+        .generator
+        .client_exceptions(&query.client_id, user.as_deref())
+        .await
+    {
+        // A device needs which folders are excepted, and nothing of who excepted them or why.
+        Ok((status @ 200..=299, Value::Array(exceptions))) => passed(
+            status,
+            Value::Array(
+                exceptions
+                    .iter()
+                    .map(|exception| json!({"id": exception["id"], "folder": exception["folder"]}))
+                    .collect(),
+            ),
+        ),
         Ok((status, body)) => passed(status, body),
         Err(_) => error(StatusCode::BAD_GATEWAY, "generator_unavailable"),
     }
@@ -517,13 +533,18 @@ pub async fn remove_exception(
     if let Some(response) = not_admin(&service, &headers) {
         return response;
     }
-    forward(
+    let response = forward(
         &service,
         reqwest::Method::POST,
         &["exceptions", &id.to_string(), "remove"],
         Some(json!(removal)),
     )
-    .await
+    .await;
+    if response.status().is_success() {
+        // The sessions it covered are read afresh: none keeps passing on a cached exception.
+        service.flags.forget_all();
+    }
+    response
 }
 
 /// The answer to a request that is not an administrator's, who presents

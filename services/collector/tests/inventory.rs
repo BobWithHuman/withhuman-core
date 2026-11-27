@@ -64,6 +64,8 @@ struct Generator {
     flag_lookups: Mutex<usize>,
     /// The Generator cannot say whether a session is stopped.
     flags_down: AtomicBool,
+    /// The verified users that asked for a device's exceptions.
+    exception_users: Mutex<Vec<Option<String>>>,
     session_denials: Mutex<Vec<(String, SessionDenial)>>,
 }
 
@@ -205,11 +207,19 @@ impl GeneratorTransport for Generator {
         })
     }
 
-    async fn client_exceptions(&self, client_id: &str) -> Result<(u16, Value), GeneratorError> {
+    async fn client_exceptions(
+        &self,
+        client_id: &str,
+        user: Option<&str>,
+    ) -> Result<(u16, Value), GeneratorError> {
+        self.exception_users
+            .lock()
+            .unwrap()
+            .push(user.map(str::to_owned));
         Ok((
             200,
             json!([{"id": 4, "folder": "/work/secret", "client_id": client_id,
-                          "created_at": 1}]),
+                          "actor": "sec@example.com", "reason": "legal hold", "created_at": 1}]),
         ))
     }
 
@@ -1415,7 +1425,8 @@ async fn reviews_and_service_keys_go_through_the_admin_api() {
 async fn an_excepted_session_keeps_only_its_start_and_end() {
     let generator = Arc::new(Generator::default());
     let app = app(generator.clone(), |config| {
-        config.key_cache = Duration::from_secs(3_600)
+        config.key_cache = Duration::from_secs(3_600);
+        config.admin_token = Some(ADMIN.into());
     });
     let start = json!({"session_id": "x-1", "source": "startup", "withhuman_exception": 4,
                        "cwd": "/work/secret/app"});
@@ -1453,7 +1464,52 @@ async fn an_excepted_session_keeps_only_its_start_and_end() {
         .0,
         StatusCode::OK
     );
-    let events = generator.events();
+    // The hook still asks before a call, with the tool's name alone: the engine lets it through
+    // for the exception it checked, not for the device's word.
+    let bare = json!({"session_id": "x-1", "hook_event_name": "PreToolUse", "tool_name": "Bash",
+                      "tool_use_id": "t-2", "cwd": "/work/secret/app"});
+    assert_eq!(
+        post(&app, "/v1/hooks/PreToolUse", bare.clone(), &[]).await,
+        (StatusCode::OK, Value::Null)
+    );
+    // Elsewhere that bare call is not taken, so a forged exception keeps nothing out.
+    let forged = json!({"session_id": "y-1", "hook_event_name": "PreToolUse", "tool_name": "Bash",
+                        "tool_use_id": "t-3", "cwd": "/work/secret/app"});
+    let (status, _) = post(&app, "/v1/hooks/PreToolUse", forged, &[]).await;
+    assert!(status.is_client_error(), "{status}");
+    // A stop comes before the exception.
+    generator
+        .stopped_sessions
+        .lock()
+        .unwrap()
+        .push("x-1".into());
+    let mut stopped = bare;
+    stopped["tool_use_id"] = json!("t-4");
+    let admin = bearer(ADMIN);
+    post(
+        &app,
+        "/v1/admin/sessions/x-1/stop",
+        json!({"actor": "sec@example.com"}),
+        &[("authorization", admin.as_str())],
+    )
+    .await;
+    let (_, body) = post(&app, "/v1/hooks/PreToolUse", stopped, &[]).await;
+    assert_eq!(denial(&body), ("deny", keys::SESSION_STOPPED));
+    // Removing the exception reaches its sessions at once, cache or not.
+    generator.stopped_sessions.lock().unwrap().clear();
+    generator.excepted.lock().unwrap().clear();
+    let (status, _) = post(
+        &app,
+        "/v1/admin/exceptions/4/remove",
+        json!({"actor": "sec@example.com"}),
+        &[("authorization", admin.as_str())],
+    )
+    .await;
+    assert!(status.is_success(), "{status}");
+    let before = generator.events().len();
+    post(&app, "/v1/hooks/PreToolUse", call("x-1"), &[]).await;
+    assert_eq!(generator.events().len(), before + 1, "judged again");
+    let events: Vec<_> = generator.events().into_iter().take(2).collect();
     assert_eq!(events.len(), 2, "only the start and the end: {events:?}");
     let NormalizedEvent::SessionStart(start) = &events[0] else {
         panic!()
@@ -1496,10 +1552,22 @@ async fn devices_check_in_and_read_their_exceptions() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
+    // A device reads which folders are excepted, not who excepted them or why; the Generator
+    // is told whose key asks, so a device registered to another user is refused there.
     let (status, list) = get(&app, "/v1/clients/exceptions?client_id=team%2Fd1", &[]).await;
     assert_eq!(
-        (status, &list[0]["client_id"]),
-        (StatusCode::OK, &json!("team/d1"))
+        (status, list),
+        (StatusCode::OK, json!([{"id": 4, "folder": "/work/secret"}]))
+    );
+    get(
+        &app,
+        "/v1/clients/exceptions?client_id=team%2Fd1",
+        &[("authorization", key.as_str())],
+    )
+    .await;
+    assert_eq!(
+        *generator.exception_users.lock().unwrap(),
+        vec![None, Some("ana@example.com".to_owned())]
     );
 
     let admin = bearer(ADMIN);

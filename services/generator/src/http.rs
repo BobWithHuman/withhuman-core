@@ -853,6 +853,8 @@ async fn add_exception(
 struct ExceptionQuery {
     /// Only the active exceptions that can cover this client's sessions.
     client_id: Option<String>,
+    /// The verified user asking for them; refused when the device is registered to another.
+    user: Option<String>,
 }
 
 #[utoipa::path(
@@ -869,7 +871,7 @@ async fn exceptions(
     reply(
         service
             .repository
-            .exceptions(query.client_id.as_deref())
+            .exceptions(query.client_id.as_deref(), query.user.as_deref())
             .await,
     )
 }
@@ -1000,6 +1002,7 @@ fn repository_error_response(error: RepositoryError) -> Response {
     let (status, message) = match error {
         RepositoryError::InvalidEvent(_) => (StatusCode::BAD_REQUEST, "invalid_enrichment"),
         RepositoryError::NotFound => (StatusCode::NOT_FOUND, "graph_resource_not_found"),
+        RepositoryError::NotOwner => (StatusCode::FORBIDDEN, "client_owned"),
         _ => (StatusCode::INTERNAL_SERVER_ERROR, "graph_update_failed"),
     };
     (status, Json(ErrorResponse { error: message })).into_response()

@@ -592,8 +592,8 @@ RETURNING id";
 
 const SESSION_EXCEPTION: &str = "SELECT exception_id FROM sessions WHERE session_id = $1::text";
 
-// A check-in fills what the device reports and keeps the rest; a project it reports again keeps
-// when it was first reported.
+// A check-in fills what the device reports and keeps the rest, the user it is registered to
+// included; a project it reports again keeps when it was first reported.
 const CHECKIN_CLIENT: &str = "\
 INSERT INTO clients (client_id, team, hostname, os, os_user, hook_version, user_email, \
   install_scope, last_checkin_at) \
@@ -604,7 +604,7 @@ ON CONFLICT (client_id) DO UPDATE SET \
   os = coalesce(EXCLUDED.os, clients.os), \
   os_user = coalesce(EXCLUDED.os_user, clients.os_user), \
   hook_version = coalesce(EXCLUDED.hook_version, clients.hook_version), \
-  user_email = coalesce(EXCLUDED.user_email, clients.user_email), \
+  user_email = coalesce(clients.user_email, EXCLUDED.user_email), \
   install_scope = coalesce(EXCLUDED.install_scope, clients.install_scope), \
   last_checkin_at = GREATEST(coalesce(clients.last_checkin_at, 0), EXCLUDED.last_checkin_at)";
 
@@ -617,6 +617,10 @@ WHERE p.path IS NOT NULL AND p.path <> '' \
 ON CONFLICT (client_id, project) DO UPDATE SET \
   last_used_at = GREATEST(client_seen_projects.last_used_at, EXCLUDED.last_used_at), \
   last_reported_at = EXCLUDED.last_reported_at";
+
+// The user a device is registered to. Another user's key cannot check in for it or read the
+// exceptions covering it.
+const CLIENT_OWNER: &str = "SELECT user_email FROM clients WHERE client_id = $1::text";
 
 const EXCEPTION_COLUMNS: &str = "id, folder, team, client_id, actor, reason, created_at, \
 removed_at, removed_by";
@@ -646,6 +650,14 @@ impl PgGraphRepository {
         let result: Result<(), PgError> = async {
             let mut client = self.client().await?;
             let tx = client.transaction().await?;
+            let owner = optional(&tx, &format!("{CLIENT_OWNER} FOR UPDATE"), &[&c.client_id])
+                .await?
+                .and_then(|row| row.get::<_, Option<String>>(0));
+            if let (Some(owner), Some(user)) = (owner, record.user.as_deref()) {
+                if owner != user {
+                    return Err(PgError::Repository(RepositoryError::NotOwner));
+                }
+            }
             run(
                 &tx,
                 CHECKIN_CLIENT,
@@ -726,15 +738,24 @@ impl PgGraphRepository {
         Ok(exception(&result?.ok_or(RepositoryError::NotFound)?)?)
     }
 
-    /// Every exception, or those that can cover `client_id`'s sessions (active only).
+    /// Every exception, or those that can cover `client_id`'s sessions (active only). A device
+    /// registered to a user answers that user alone: another user's key, or none, is refused,
+    /// and its hook then sends the session whole.
     pub(crate) async fn list_exceptions(
         &self,
         client_id: Option<&str>,
+        user: Option<&str>,
     ) -> Result<Vec<withhuman_contracts::inventory::Exception>, RepositoryError> {
         let result: Result<Vec<Row>, PgError> = async {
             let client = self.client().await?;
             Ok(match client_id {
                 Some(client_id) => {
+                    let owner = optional(&client, CLIENT_OWNER, &[&client_id])
+                        .await?
+                        .and_then(|row| row.get::<_, Option<String>>(0));
+                    if owner.is_some_and(|owner| user != Some(owner.as_str())) {
+                        return Err(PgError::Repository(RepositoryError::NotOwner));
+                    }
                     client
                         .query(
                             &client.prepare_cached(CLIENT_EXCEPTIONS).await?,

@@ -80,7 +80,11 @@ pub trait GeneratorTransport: Send + Sync {
     }
 
     /// The active exceptions that can cover a client's sessions, as the Generator answers.
-    async fn client_exceptions(&self, _client_id: &str) -> Result<(u16, Value), GeneratorError> {
+    async fn client_exceptions(
+        &self,
+        _client_id: &str,
+        _user: Option<&str>,
+    ) -> Result<(u16, Value), GeneratorError> {
         Ok((200, Value::Array(Vec::new())))
     }
 
@@ -186,12 +190,19 @@ impl GeneratorTransport for GeneratorHttpClient {
         }
     }
 
-    async fn client_exceptions(&self, client_id: &str) -> Result<(u16, Value), GeneratorError> {
+    async fn client_exceptions(
+        &self,
+        client_id: &str,
+        user: Option<&str>,
+    ) -> Result<(u16, Value), GeneratorError> {
         let mut url = reqwest::Url::parse(&self.base_url).map_err(invalid_request)?;
         url.path_segments_mut()
             .map_err(|()| GeneratorError::InvalidRequest("Generator URL has no path".to_owned()))?
             .extend(["v1", "exceptions"]);
         url.query_pairs_mut().append_pair("client_id", client_id);
+        if let Some(user) = user {
+            url.query_pairs_mut().append_pair("user", user);
+        }
         let response = self
             .client
             .get(url)

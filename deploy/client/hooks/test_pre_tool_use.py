@@ -8,6 +8,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import threading
 import unittest
 
@@ -283,6 +284,26 @@ class PreToolUseHookTest(unittest.TestCase):
         self.assertEqual([len(batch) for batch in sent], [1, 1, 1])
         self.assertNotIn("withhuman_exception", sent[0][0][1])
         self.assertFalse(os.path.exists(os.path.join(home, ".config", "withhuman", "exceptions.json")))
+
+    def test_a_call_in_an_excepted_folder_still_asks_the_engine(self):
+        # The user's own cache, forged or not, never lets a call through by itself.
+        home = tempfile.mkdtemp()
+        cache = os.path.join(home, ".config", "withhuman", "exceptions.json")
+        os.makedirs(os.path.dirname(cache))
+        with open(cache, "w") as file:
+            json.dump({"fetched_at": time.time(), "client_id": "team/device",
+                       "exceptions": [{"id": 1, "folder": None}]}, file)
+        Collector.answer = json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny",
+            "permissionDecisionReason": "no"}}).encode()
+        event = {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Bash",
+                 "tool_use_id": "t", "cwd": "/work/app", "tool_input": {"command": "cat .env"}}
+        result = self.run_marked(event, home, "/work/app")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
+        sent = Collector.received[-1][1]
+        self.assertEqual(sent, {"session_id": "s", "hook_event_name": "PreToolUse",
+                                "tool_name": "Bash", "tool_use_id": "t", "cwd": "/work/app"})
 
     def test_a_stale_or_broken_cache_covers_nothing(self):
         home = tempfile.mkdtemp()

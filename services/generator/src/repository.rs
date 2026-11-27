@@ -229,10 +229,12 @@ pub trait GraphRepository: Send + Sync + 'static {
         Err(RepositoryError::NotFound)
     }
 
-    /// Every exception, or the active ones that can cover a client's sessions.
+    /// Every exception, or the active ones that can cover a client's sessions, for `user` (the
+    /// caller's verified key user): `NotOwner` when the device is registered to someone else.
     async fn exceptions(
         &self,
         _client_id: Option<&str>,
+        _user: Option<&str>,
     ) -> Result<Vec<withhuman_contracts::inventory::Exception>, RepositoryError> {
         Ok(Vec::new())
     }
@@ -288,6 +290,8 @@ pub enum RepositoryError {
     Query(String),
     InvalidResponse(String),
     NotFound,
+    /// The device is registered to another user than the key's.
+    NotOwner,
 }
 
 impl fmt::Display for RepositoryError {
@@ -300,6 +304,7 @@ impl fmt::Display for RepositoryError {
                 write!(formatter, "invalid PostgreSQL response: {error}")
             }
             Self::NotFound => formatter.write_str("graph resource not found"),
+            Self::NotOwner => formatter.write_str("the device is registered to another user"),
         }
     }
 }

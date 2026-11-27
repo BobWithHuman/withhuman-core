@@ -10,8 +10,9 @@ usage: pre-tool-use.py --withhuman-hook <WithHuman server>
 
 At a session's start it fetches the exceptions that can cover this device and keeps them a day
 (~/.config/withhuman/exceptions.json). When one covers the session's folder (CLAUDE_PROJECT_DIR),
-it sends only that the session started and under which exception, and nothing else of it. When
-the list cannot be fetched, the cache is dropped and everything is sent.
+it sends that the session started and under which exception, and each call's tool name without
+its input, so the engine, not this file, lets the call through; the prompts and results stay
+here. When the list cannot be fetched, the cache is dropped and everything is sent.
 
 For PreToolUse it attaches the local program files a Bash command may run, read just before the
 call, so the engine can judge the code a script run executes even when the agent never read the
@@ -289,13 +290,22 @@ def main():
         if marked and name == "SessionStart":
             fetch_exceptions(server, client_id, key)
         exception = exception_for(folder, client_id) if marked else None
-        if exception is not None:
-            if name != "SessionStart":
-                return 0
+        if exception is not None and name == "SessionStart":
             event = {field: event[field] for field in ("session_id", "hook_event_name", "source",
                                                        "cwd") if field in event}
             event["withhuman_exception"] = exception
             raw = json.dumps(event).encode("utf-8")
+        elif exception is not None and judged:
+            # The cache is this user's own file, so it never lets a call through by itself: the
+            # call still goes to the engine, with its tool's name and not its input. The engine
+            # lets it through for the exception it checked at the session's start; without one
+            # it cannot take a call with no input, and the call is denied.
+            event = {field: event[field] for field in ("session_id", "hook_event_name",
+                                                       "tool_name", "tool_use_id", "cwd")
+                     if field in event}
+            raw = json.dumps(event).encode("utf-8")
+        elif exception is not None:
+            return 0
         elif judged:
             # Reading the programs must never keep the event from being judged.
             try:

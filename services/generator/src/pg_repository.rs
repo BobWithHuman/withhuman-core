@@ -1038,8 +1038,9 @@ impl GraphRepository for PgGraphRepository {
     async fn exceptions(
         &self,
         client_id: Option<&str>,
+        user: Option<&str>,
     ) -> Result<Vec<withhuman_contracts::inventory::Exception>, RepositoryError> {
-        self.list_exceptions(client_id).await
+        self.list_exceptions(client_id, user).await
     }
 }
 

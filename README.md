@@ -304,7 +304,14 @@ or mount `~/.config/withhuman` read-only, so the device keeps one ID.
 
 The events that carry content (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse,
 PostToolUseFailure) go through the command hook rather than over HTTP, so a session the security
-team excepted can be kept on the device: it sends only that it started.
+team excepted keeps its prompts, tool input and results on the device. What still leaves it:
+
+- that the session started, under which exception, and each tool call's name (not its input),
+  so the engine lets the call through for the exception it checked. The device's own list of
+  exceptions never lets a call through by itself;
+- the events that stay HTTP hooks (SubagentStart, SubagentStop, ConfigChange, MessageDisplay,
+  PostToolBatch, SessionEnd), which the engine receives and drops for an excepted session;
+- everything, when the list of exceptions cannot be fetched at the session's start.
 
 To start over on a device set up more than one way (an earlier hook version, a user setup and a
 managed one, projects set up one by one), `--reset` takes every WithHuman setup out at once: the
@@ -788,7 +795,8 @@ engine through AgentGateway alone (MCP, without a Hook) are not covered, as with
 The security team can also stop one session (`POST /v1/admin/sessions/<id>/stop`, released
 with `.../release`), review calls after the fact (`POST /v1/admin/reviews`), issue keys to
 automations (`{"kind": "service"}`), and except folders, teams or devices from protection
-(`POST /v1/admin/exceptions`): an excepted session sends only that it started. A call is checked against a revoked key first, then its
+(`POST /v1/admin/exceptions`): an excepted session keeps its content on the device, with the
+limits under Claude Code above. A call is checked against a revoked key first, then its
 device's stop, then its session's. Revoked keys and session stops (released ones kept) are in the
 `stop_audit` view; a device's stop is on its `clients` row. Benchmark runs name their client
 `bench/...` so the inventory can leave them out (`clients.test`).
