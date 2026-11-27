@@ -9,9 +9,50 @@ permissions:
   contents: read
 
 jobs:
+  # Each check runs only when the pull request touches what it checks: a README change starts
+  # none of them, a client hook change only the client tests. A change to this file runs them all.
+  changes:
+    name: Changed areas
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.areas.outputs.rust }}
+      deny: ${{ steps.areas.outputs.deny }}
+      client: ${{ steps.areas.outputs.client }}
+      deploy: ${{ steps.areas.outputs.deploy }}
+      infra: ${{ steps.areas.outputs.infra }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Find the changed areas
+        id: areas
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          changed=$(git diff --name-only "$BASE...$HEAD")
+          printf '%s\n' "$changed"
+          area() {
+            if printf '%s\n' "$changed" | grep -qE "^\.github/workflows/ci\.yml$|$2"; then
+              echo "$1=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "$1=false" >> "$GITHUB_OUTPUT"
+            fi
+          }
+          # What the Rust workspace builds from (its members and the fixtures its tests read).
+          area rust '^(Cargo\.(toml|lock)$|crates/|services/|tests/fixtures/)'
+          area deny '(^|/)Cargo\.(toml|lock)$|^deny\.toml$'
+          area client '^deploy/client/'
+          area deploy '^(deploy/(k8s|docker|agentgateway)/|compose(\.override)?\.yaml$|\.env\.example$|infra/modules/platform/chart/)'
+          area infra '^infra/'
+
   # Keep formatting and lint checks separate so failures are easy to identify.
   rustfmt:
     name: Rustfmt
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -27,6 +68,8 @@ jobs:
 
   clippy:
     name: Clippy
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -49,6 +92,8 @@ jobs:
 
   nextest:
     name: Nextest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -91,6 +136,8 @@ jobs:
 
   client:
     name: Client hooks
+    needs: changes
+    if: needs.changes.outputs.client == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -115,6 +162,8 @@ jobs:
 
   helm:
     name: Helm Chart
+    needs: changes
+    if: needs.changes.outputs.deploy == 'true'
     runs-on: ubuntu-latest
     env:
       CHART: deploy/k8s/withhuman
@@ -148,6 +197,8 @@ jobs:
 
   terraform:
     name: Terraform
+    needs: changes
+    if: needs.changes.outputs.infra == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -168,6 +219,8 @@ jobs:
 
   cargo-deny:
     name: Cargo Deny
+    needs: changes
+    if: needs.changes.outputs.deny == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
