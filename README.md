@@ -115,7 +115,7 @@ Keys, inventory, triage and Wazuh matching are under [For security teams](#for-s
 | [Hermes Agent](#hermes-agent) | ✅ | ❌ | ❌ | blocked |
 | [OpenClaw](#openclaw) | ❌ | ❌ | ✅ | asks you |
 | [GitHub Copilot CLI](#github-copilot-cli) | ❌ | ❌ | ❌ | blocked |
-| [Antigravity CLI](#antigravity-cli) | ❌ | ❌ | ❌ | blocked |
+| [Antigravity CLI](#antigravity-cli) | ✅ | ❌ | ❌ | blocked |
 
 ✅ verified · ❌ not verified yet
 
@@ -617,7 +617,8 @@ shape Antigravity reads, and in time. The intent instruction is injected as a st
 invocation that opens a turn; a call's result is in no hook, so it is read from the session
 transcript by the step number the hook carries, along with the model's answers. Only the tools a
 real session used are translated; the rest keep their own names, marked
-`antigravity_untranslated`. A REVIEW is blocked. Recorded against Antigravity CLI 1.5.16.
+`antigravity_untranslated`. A REVIEW is blocked. Recorded against Antigravity CLI 1.5.16, and verified on Windows with
+Antigravity CLI 1.5.18.
 
 </details>
 

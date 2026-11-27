@@ -124,6 +124,14 @@ class AntigravityBridge(bridge.Bridge):
         """This bridge's own output carries the decision at the top level."""
         return (answer or {}).get("decision")
 
+    def ids_of(self, event):
+        """Antigravity names the session `conversationId` and the call `toolCall.id`, the id
+        the engine records the call under. Read under Claude Code's names, every row of the
+        local audit log named neither."""
+        call = event.get("toolCall")
+        return (event.get("conversationId"),
+                call.get("id") if isinstance(call, dict) else None)
+
     # ---- one hook ----
 
     def run(self, collector, event_name, payload):
