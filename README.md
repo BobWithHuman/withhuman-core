@@ -114,7 +114,7 @@ Keys, inventory, triage and Wazuh matching are under [For security teams](#for-s
 | [Cursor CLI](#cursor-cli) | ✅ | ✅ | ❌ | blocked |
 | [Hermes Agent](#hermes-agent) | ✅ | ❌ | ❌ | blocked |
 | [OpenClaw](#openclaw) | ❌ | ❌ | ✅ | asks you |
-| [GitHub Copilot CLI](#github-copilot-cli) | ❌ | ❌ | ❌ | blocked |
+| [GitHub Copilot CLI](#github-copilot-cli) | ✅ | ❌ | ❌ | blocked |
 | [Antigravity CLI](#antigravity-cli) | ✅ | ❌ | ❌ | blocked |
 
 ✅ verified · ❌ not verified yet
@@ -588,7 +588,8 @@ tool names, so the bridge registers Claude Code's and there is little left to tr
 so MCP calls are judged there too, and a hook that merely times out lets the call run, so the
 bridge answers on a deadline of its own and every failure ends in a deny. No hook carries the
 model's answer or a turn: the `[의도]` line is read from the session transcript, and a turn is
-opened at each prompt. A REVIEW is blocked. Recorded against Copilot CLI 1.0.115-7.
+opened at each prompt. A REVIEW is blocked. Recorded against Copilot CLI 1.0.115-7, and verified on Windows with
+Copilot CLI 1.0.116.
 
 </details>
 

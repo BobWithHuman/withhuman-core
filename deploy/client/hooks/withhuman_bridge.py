@@ -186,10 +186,15 @@ class State:
     DEFAULTS = {}
     #: How long a run waits for a state file another run of this hook holds.
     lock_wait = 3.0
+    #: The state file's extension. An agent that reads every `.json` file under the folder this
+    #: state sits in, as its own configuration, gets another one.
+    SUFFIX = ".json"
 
     def __init__(self, directory, session_id):
         key_of = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:32]
-        self.path = os.path.join(directory, key_of + ".json")
+        self.path = os.path.join(directory, key_of + self.SUFFIX)
+        #: Where an earlier version of the bridge kept this session's state.
+        self.legacy_path = os.path.join(directory, key_of + ".json")
         self.lock_path = self.path + ".lock"
         self.locked = False
         self.state = {**State.BASE_DEFAULTS, **self.DEFAULTS}
@@ -210,6 +215,13 @@ class State:
                 if time.monotonic() >= deadline:
                     break
                 time.sleep(0.02)
+        if self.locked and self.path != self.legacy_path and not os.path.exists(self.path):
+            # Carried over from where an earlier bridge kept it, so its outbox is not lost and
+            # the old file stops being read as something else.
+            try:
+                os.replace(self.legacy_path, self.path)
+            except FileNotFoundError:
+                pass
         try:
             with open(self.path, encoding="utf-8") as file:
                 loaded = json.load(file)
