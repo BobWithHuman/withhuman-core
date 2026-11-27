@@ -238,6 +238,14 @@ fn knows_a_change_to_the_agents_safeguards() {
         "sort --compress-program='rm -rf .claude/hooks' big.txt; echo ok > /tmp/out",
         "tree -aRH . .claude/hooks; echo ok > /tmp/out",
         "file -C -m .claude/hooks/magic; echo ok > /tmp/out",
+        // Quoted, escaped or expanding flags are the flags the shell hands over.
+        "sort '--output=.claude/hooks/pre-tool-use.py' /dev/null; echo ok > /tmp/out",
+        "sort \"--output\"=.claude/hooks/pre-tool-use.py /dev/null; echo ok > /tmp/out",
+        "sort \\--output=.claude/hooks/pre-tool-use.py /dev/null; echo ok > /tmp/out",
+        "sort -'o' .claude/hooks/pre-tool-use.py /dev/null; echo ok > /tmp/out",
+        "O=--output=.claude/hooks/pre-tool-use.py; sort $O /dev/null; echo ok > /tmp/out",
+        "sort $'--output=.claude/hooks/pre-tool-use.py' /dev/null; echo ok > /tmp/out",
+        "'uniq' /dev/null .claude/hooks/pre-tool-use.py; echo ok > /tmp/out",
     ] {
         assert_eq!(
             effect(&call("Bash", json!({ "command": command }))),
@@ -259,6 +267,7 @@ fn knows_a_change_to_the_agents_safeguards() {
         "python3 app.py > /tmp/out.txt; sort .claude/settings.json | uniq -c",
         "python3 app.py > /tmp/out.txt; uniq .claude/hooks/pre-tool-use.py",
         "python3 app.py > /tmp/out.txt; grep -R hooks .claude; tree -a .claude; file .claude/settings.json",
+        "python3 app.py > /tmp/out.txt; sort '.claude/settings.json'; grep -n 'hooks' \".claude/settings.json\"",
     ] {
         assert_ne!(
             effect(&call("Bash", json!({ "command": command }))),

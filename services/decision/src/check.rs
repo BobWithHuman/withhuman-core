@@ -587,7 +587,14 @@ fn reads_only(part: &str) -> bool {
     }
     !writes_file(part)
         && part.split('|').all(|segment| {
-            let words: Vec<&str> = segment.split_whitespace().collect();
+            // The words as the shell hands them over, quotes and escapes taken off
+            // (`sort '--output=f'` is `--output=f`). A word that expands (`$OPT`, `$'…'`) may
+            // become any flag, so a segment with one is no reader.
+            if segment.contains('$') {
+                return false;
+            }
+            let words = quoted_words(segment);
+            let words: Vec<&str> = words.iter().map(String::as_str).collect();
             let Some(first) = words.first() else {
                 return false;
             };
@@ -601,7 +608,7 @@ fn reads_only(part: &str) -> bool {
                 && !words.iter().any(|word| {
                     PROGRAM_WRITING_FLAGS
                         .iter()
-                        .any(|(writer, flag)| program == *writer && (word == flag || bundles(word, flag)))
+                        .any(|(writer, flag)| program == *writer && (*word == *flag || bundles(word, flag)))
                 })
                 && (program != "sed" || sed_only_prints(segment))
                 // `uniq in out` writes its second file.
@@ -691,8 +698,16 @@ fn quoted_words(segment: &str) -> Vec<String> {
     let mut word = String::new();
     let mut quote: Option<char> = None;
     let mut started = false;
+    let mut escaped = false;
     for c in segment.chars() {
+        if escaped {
+            word.push(c);
+            escaped = false;
+            continue;
+        }
         match (quote, c) {
+            // A backslash escapes the next character, outside quotes and inside double ones.
+            (None | Some('"'), '\\') => escaped = true,
             (Some(open), c) if c == open => quote = None,
             (Some(_), c) => word.push(c),
             (None, '\'' | '"') => {
