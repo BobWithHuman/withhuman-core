@@ -876,8 +876,15 @@ fn hook_failure(
     error: impl fmt::Display,
 ) -> Response {
     // Record and shadow modes observe only: a failure must not block either. (Record mode never
-    // waits for a decision, so a missing one is expected there.)
-    if service.config.enforcement_mode != EnforcementMode::Enforce {
+    // waits for a decision, so a missing one is expected there.) The personal engine's shadow is
+    // the exception: with no gateway behind it, a Call it could not judge (an error, no answer in
+    // time) gets the failure policy, a deny by default, though a judged deny still runs.
+    let observes = match service.config.enforcement_mode {
+        EnforcementMode::Enforce => false,
+        EnforcementMode::Record => true,
+        EnforcementMode::Shadow => !service.config.profile.is_personal(),
+    };
+    if observes {
         return StatusCode::OK.into_response();
     }
     match policy.failure {

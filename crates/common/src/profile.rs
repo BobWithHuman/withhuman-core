@@ -6,10 +6,10 @@
 //!   Redis, able to stop a Call, with its EDR sync and administration API.
 //! - `personal`: one developer's engine on their own machine (`withhuman-local`): it records and
 //!   judges but stops nothing, keeps its state in memory, takes the hooks straight at the
-//!   Collector without a key, and has no EDR sync, administration or triage. Stopping nothing
-//!   includes a Call it could not judge (an error, no answer in time): `shadow`, its default, lets
-//!   it run as it lets a judged deny run, and records it. A personal engine that must stop Calls
-//!   is not this profile but the enterprise one.
+//!   Collector without a key, and has no EDR sync, administration or triage. A Call it could not
+//!   judge (an error, no answer in time) is the exception: as everywhere in the engine, no
+//!   judgment is no allow, so it gets the failure policy (`WITHHUMAN_ON_FAILURE`, a deny by
+//!   default) even in `shadow`.
 
 use std::{env, io};
 

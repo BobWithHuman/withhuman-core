@@ -1,5 +1,5 @@
-//! The personal profile stops nothing, a Call it could not judge included: it runs and is
-//! recorded, as a judged deny does. The enterprise default denies it.
+//! A Call the engine could not judge gets the failure policy, a deny by default, on the personal
+//! engine as on the enterprise one: the personal engine's shadow observes judged Calls only.
 
 use std::sync::Arc;
 
@@ -43,14 +43,23 @@ async fn pre_tool_use(config: CollectorConfig) -> Value {
 }
 
 #[tokio::test]
-async fn a_call_the_engine_could_not_judge_runs_on_the_personal_engine_alone() {
+async fn a_call_the_engine_could_not_judge_is_denied_on_the_personal_engine_too() {
     let personal = CollectorConfig {
         profile: Profile::Personal,
         enforcement_mode: EnforcementMode::Shadow,
         intent_capture: false,
         ..CollectorConfig::default()
     };
-    assert_eq!(pre_tool_use(personal).await, Value::Null);
+    let denied = pre_tool_use(personal).await;
+    assert_eq!(denied["hookSpecificOutput"]["permissionDecision"], "deny");
+
+    // Enterprise shadow observes as before.
+    let shadow = CollectorConfig {
+        enforcement_mode: EnforcementMode::Shadow,
+        intent_capture: false,
+        ..CollectorConfig::default()
+    };
+    assert_eq!(pre_tool_use(shadow).await, Value::Null);
 
     let enterprise = CollectorConfig {
         intent_capture: false,
