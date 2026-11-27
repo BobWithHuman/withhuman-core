@@ -102,7 +102,13 @@ class Session(bridge.State):
     transcript's `turnId` only appears once the model has answered — after the prompt whose
     turn it is. A turn minted when the prompt arrives covers every event until the next one,
     which is what the engine judges a Call against.
+
+    Kept as `.state`, not `.json`: Copilot CLI 1.0.116 reads every `.json` file under
+    `.github/hooks` as a hooks file — this bridge's state included — and warns at each session's
+    start that its `hooks` is not an object.
     """
+
+    SUFFIX = ".state"
 
     DEFAULTS = {
         #: Bytes of the transcript already read.

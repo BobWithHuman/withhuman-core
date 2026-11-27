@@ -503,8 +503,21 @@ class CopilotSetup(FlatHooksFile):
         }
 
     def installed(self, args, installed):
-        """The engine's address, where the bridge looks for it."""
+        """The engine's address, where the bridge looks for it. And the session state an
+        earlier bridge kept as `.json`, renamed to the `.state` the bridge keeps now: Copilot
+        reads every `.json` file under `.github/hooks` as a hooks file, and warned about each of
+        these at every session's start."""
         (installed / self.server_file).write_text(args.server + "\n", encoding="utf-8")
+        for legacy in (installed / "withhuman-state").glob("*.json"):
+            current = legacy.with_suffix(".state")
+            try:
+                if current.exists():
+                    legacy.unlink()
+                else:
+                    legacy.rename(current)
+            except FileNotFoundError:
+                # A running session carried it over between the listing and here: done.
+                pass
 
 
 def hermes_home():

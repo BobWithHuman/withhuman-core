@@ -205,5 +205,46 @@ class BridgeTest(unittest.TestCase):
         self.assertIn("has no Demo route", result.stderr)
 
 
+class StateTest(unittest.TestCase):
+    """The session state file, under an extension of an agent's own."""
+
+    def setUp(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import withhuman_bridge
+        self.bridge = withhuman_bridge
+        self.directory = tempfile.mkdtemp()
+
+        class Kept(withhuman_bridge.State):
+            SUFFIX = ".state"
+
+        self.Kept = Kept
+
+    def tearDown(self):
+        shutil.rmtree(self.directory, ignore_errors=True)
+
+    def test_carries_an_earlier_json_state_over(self):
+        legacy = self.Kept(self.directory, "s1").legacy_path
+        with open(legacy, "w", encoding="utf-8") as file:
+            json.dump({"outbox": None, "resync_required": False, "turn": "t1"}, file)
+        with self.Kept(self.directory, "s1") as session:
+            self.assertEqual(session.state["turn"], "t1")
+        self.assertFalse(os.path.exists(legacy))
+
+    def test_a_failed_carry_over_releases_the_lock(self):
+        """`__exit__` does not run when `__enter__` raises; a lock left behind would turn back
+        every later call of the session."""
+        session = self.Kept(self.directory, "s2")
+        with open(session.legacy_path, "w", encoding="utf-8") as file:
+            file.write("{}")
+        from unittest import mock
+        with mock.patch.object(self.bridge.os, "replace", side_effect=PermissionError("busy")):
+            with self.assertRaises(PermissionError):
+                with session:
+                    pass
+        self.assertFalse(os.path.exists(session.lock_path))
+        with self.Kept(self.directory, "s2") as again:
+            self.assertTrue(again.locked)
+
+
 if __name__ == "__main__":
     unittest.main()

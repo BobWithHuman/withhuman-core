@@ -288,6 +288,32 @@ class CopilotHookTest(unittest.TestCase):
         self.assertEqual([row["decision"] for row in rows], ["deny"])
         self.assertEqual(rows[0]["tool_use_id"], "call_1")
 
+    def test_keeps_no_json_file_where_copilot_reads_its_hooks(self):
+        """Found on Windows with Copilot CLI 1.0.116: every `.json` file under `.github/hooks`
+        is read as a hooks file, this bridge's session state included, and each session started
+        with "Invalid hook configuration … hooks must be an object"."""
+        Collector.answers["PreToolUse"] = decision("allow")
+        self.hook("UserPromptSubmit", {"prompt": "hi"})
+        self.call()
+        state = self.hooks / "withhuman-state"
+        self.assertEqual(sorted(path.name for path in state.rglob("*.json")), [])
+        self.assertEqual(len(list(state.glob("*.state"))), 1)
+
+    def test_carries_an_earlier_bridges_state_over(self):
+        """A session an earlier bridge kept as `.json` keeps its state, outbox included, and the
+        old file no longer sits where Copilot reads hooks."""
+        Collector.answers["PreToolUse"] = decision("allow")
+        self.hook("UserPromptSubmit", {"prompt": "hi"})
+        state = self.hooks / "withhuman-state"
+        current = next(state.glob("*.state"))
+        turn = json.loads(current.read_text())["turn"]
+        legacy = current.with_suffix(".json")
+        current.rename(legacy)
+        self.call()
+        self.assertFalse(legacy.exists())
+        self.assertEqual(json.loads(current.read_text())["turn"], turn)
+        self.assertEqual(self.sent("PreToolUse")[-1]["withhuman_turn"], turn)
+
     def test_the_check_reports_the_engine_knows_copilot(self):
         Collector.answers["PreToolUse"] = b'{"error": "invalid_copilot_hook"}'
         Collector.status = 400

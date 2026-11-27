@@ -742,6 +742,34 @@ class CopilotConfigureTest(unittest.TestCase):
             capture_output=True, text=True, env=env, timeout=30,
         )
 
+    def test_an_update_moves_earlier_session_state_out_of_copilots_reach(self):
+        """Copilot reads every `.json` file under `.github/hooks` as a hooks file; an earlier
+        bridge kept its session state there as `.json`, and each of those files was warned
+        about at every session's start until the update renamed it."""
+        state = self.project / ".github" / "hooks" / "withhuman-state"
+        state.mkdir(parents=True)
+        (state / "a1.json").write_text('{"turn": "t1"}', encoding="utf-8")
+        (state / "b2.json").write_text('{"turn": "old"}', encoding="utf-8")
+        (state / "b2.state").write_text('{"turn": "new"}', encoding="utf-8")
+        self.assertEqual(self.configure().returncode, 0)
+        self.assertEqual(sorted(path.name for path in state.glob("*.json")), [])
+        self.assertEqual(json.loads((state / "a1.state").read_text()), {"turn": "t1"})
+        self.assertEqual(json.loads((state / "b2.state").read_text()), {"turn": "new"})
+
+    def test_an_update_takes_a_state_file_moved_meanwhile_in_its_stride(self):
+        """A running session can carry its `.json` over between the listing and the rename."""
+        state = self.project / ".github" / "hooks" / "withhuman-state"
+        state.mkdir(parents=True)
+        (state / "c3.json").write_text("{}", encoding="utf-8")
+        spec = importlib.util.spec_from_file_location("withhuman_configure", CONFIGURE)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        installed = self.project / ".github" / "hooks"
+        args = mock.Mock(server=SERVER)
+        with mock.patch.object(Path, "rename", side_effect=FileNotFoundError):
+            module.CopilotSetup().installed(args, installed)
+        self.assertEqual((installed / "server").read_text().strip(), SERVER)
+
     def test_writes_the_repository_hooks_in_copilots_own_shape(self):
         result = self.configure()
         self.assertEqual(result.returncode, 0, result.stderr)
