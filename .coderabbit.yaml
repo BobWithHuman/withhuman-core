@@ -1,22 +1,63 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 language: ko-KR
+tone_instructions: "Security review only. Keep each comment short: the risk in one line, how it can be exploited, then the fix."
 
 reviews:
   profile: chill
-  # PR descriptions follow .github/PULL_REQUEST_TEMPLATE.md; keep the summary in the walkthrough.
+  # Comment only on security. No summary of the change: the PR description has it.
   high_level_summary: false
-  high_level_summary_in_walkthrough: true
+  high_level_summary_in_walkthrough: false
+  changed_files_summary: false
+  sequence_diagrams: false
+  estimate_code_review_effort: false
+  related_issues: false
+  related_prs: false
+  assess_linked_issues: false
+  suggested_labels: false
+  suggested_reviewers: false
+  review_info: false
   poem: false
   in_progress_fortune: false
+  slop_detection:
+    enabled: false
+  enable_prompt_for_ai_agents: false
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+    autofix:
+      enabled: false
+    fix_ci:
+      enabled: false
+  pre_merge_checks:
+    docstrings:
+      mode: "off"
+    title:
+      mode: "off"
+    description:
+      mode: "off"
+    issue_assessment:
+      mode: "off"
   auto_review:
     enabled: true
     drafts: false
     base_branches:
       - main
   path_filters:
-    - "!Cargo.lock"
     - "!**/tests/fixtures/**"
+  security_risk_instructions: |
+    The Gateway (port 3000) takes hook traffic from agents on users' machines.
+    Admin endpoints under /v1/admin require WITHHUMAN_ADMIN_TOKEN.
+    The Decision service sends the request, the call and the text the agent read to Jev (JEV_URL).
+    Sessions, including prompts and tool results, are stored in PostgreSQL.
   path_instructions:
+    - path: "**"
+      instructions: |
+        Report security issues only: injection, auth and access control, secrets or personal
+        data in code, logs or responses, unsafe deserialization, path traversal, SSRF,
+        vulnerable dependencies, insecure defaults. Do not comment on style, naming,
+        readability, performance, tests or docs unless they cause a security issue.
     - path: "services/**/*.rs"
       instructions: |
         A tool call the engine cannot judge (unreachable, error, timeout) must end in a deny,
@@ -26,13 +67,130 @@ reviews:
         Sensitive values must be masked before they are stored or sent to Jev.
     - path: "deploy/client/**/*.py"
       instructions: |
-        Client hooks run on users' machines: Python 3.8 or later, standard library only.
-        When the Collector cannot be reached, times out or answers with an error, the hook must
-        deny the call. Never read files a command names other than the programs it may run.
-    - path: "crates/contracts/**"
-      instructions: |
-        Hook input types must match what the real client sends, as recorded in the fixtures
-        under crates/contracts/tests/fixtures/, not what its documentation says.
+        Client hooks run on users' machines. When the Collector cannot be reached, times out or
+        answers with an error, the hook must deny the call. Never read files a command names
+        other than the programs it may run.
+  # Security scanners only: secrets, known-vulnerable dependencies, IaC and workflow checks.
+  tools:
+    gitleaks:
+      enabled: true
+    trufflehog:
+      enabled: true
+    checkov:
+      enabled: true
+    zizmor:
+      enabled: true
+    opengrep:
+      enabled: true
+    semgrep:
+      enabled: true
+    trivy:
+      enabled: true
+    osvScanner:
+      enabled: true
+    presidio:
+      enabled: true
+    # Linters and style checkers stay off.
+    ast-grep:
+      enabled: false
+    shellcheck:
+      enabled: false
+    ruff:
+      enabled: false
+    markdownlint:
+      enabled: false
+    github-checks:
+      enabled: false
+    languagetool:
+      enabled: false
+    biome:
+      enabled: false
+    hadolint:
+      enabled: false
+    swiftlint:
+      enabled: false
+    phpstan:
+      enabled: false
+    phpmd:
+      enabled: false
+    phpcs:
+      enabled: false
+    golangci-lint:
+      enabled: false
+    yamllint:
+      enabled: false
+    tflint:
+      enabled: false
+    detekt:
+      enabled: false
+    eslint:
+      enabled: false
+    flake8:
+      enabled: false
+    fbinfer:
+      enabled: false
+    fortitudeLint:
+      enabled: false
+    rubocop:
+      enabled: false
+    buf:
+      enabled: false
+    regal:
+      enabled: false
+    actionlint:
+      enabled: false
+    pmd:
+      enabled: false
+    clang:
+      enabled: false
+    cppcheck:
+      enabled: false
+    vale:
+      enabled: false
+    verilator:
+      enabled: false
+    circleci:
+      enabled: false
+    clippy:
+      enabled: false
+    sqlfluff:
+      enabled: false
+    squawk:
+      enabled: false
+    prismaLint:
+      enabled: false
+    pylint:
+      enabled: false
+    oxc:
+      enabled: false
+    shopifyThemeCheck:
+      enabled: false
+    luacheck:
+      enabled: false
+    brakeman:
+      enabled: false
+    dotenvLint:
+      enabled: false
+    htmlhint:
+      enabled: false
+    stylelint:
+      enabled: false
+    checkmake:
+      enabled: false
+    oasdiff:
+      enabled: false
+    reactDoctor:
+      enabled: false
+    blinter:
+      enabled: false
+    smartyLint:
+      enabled: false
+    emberTemplateLint:
+      enabled: false
+    skillspector:
+      enabled: false
+    psscriptanalyzer:
+      enabled: false
 
 chat:
   auto_reply: true
