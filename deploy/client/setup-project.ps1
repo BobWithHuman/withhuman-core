@@ -1,5 +1,5 @@
-# Sets up WithHuman for Claude Code, Codex CLI or Cursor CLI in the current folder (Windows),
-# replacing any
+# Sets up WithHuman for Claude Code, Codex CLI, Cursor CLI, GitHub Copilot CLI or Antigravity
+# CLI in the current folder (Windows), replacing any
 # earlier WithHuman setup. Run it in PowerShell, in the folder you start the agent in:
 #
 #   $env:WITHHUMAN_SERVER = "https://withhuman.example.com"
@@ -9,7 +9,8 @@
 # default. A team name goes in $env:WITHHUMAN_TEAM first; $env:WITHHUMAN_REF picks the branch the
 # files are fetched from (default: main), $env:WITHHUMAN_BASE_URL another place serving the
 # deploy/client folder (a mirror or a test). $env:WITHHUMAN_AGENT picks the agent: claude
-# (default), codex, cursor or hermes (Hermes is set up for its profile, HERMES_HOME, not for the
+# (default), antigravity, codex, copilot, cursor, hermes or openclaw (Hermes is set up for its
+# profile, HERMES_HOME, not for the
 # folder). Running it again updates the setup; $env:WITHHUMAN_UNINSTALL = "1" takes WithHuman out
 # of the folder instead, keeping other hooks. See configure.py for what it changes.
 # $env:WITHHUMAN_KEY is the user's key from the security team, when the engine issues keys.
@@ -27,7 +28,9 @@
     # command would run) and its own, named here. Adding an agent is one entry here and one in
     # configure.py's AGENTS.
     $bridges = @{
+        antigravity = @("antigravity/withhuman-hook.py", "antigravity/antigravity_transcript.py")
         codex = @("codex/withhuman-hook.py", "codex/codex_transcript.py")
+        copilot = @("copilot/withhuman-hook.py", "copilot/copilot_transcript.py")
         cursor = @("cursor/withhuman-hook.py")
         hermes = @("hermes/__init__.py", "hermes/plugin.yaml", "hermes/withhuman-hook.py")
         # OpenClaw loads a plugin recorded in its own configuration, so its own files are

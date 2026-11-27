@@ -1180,5 +1180,21 @@ def configure_module():
     spec.loader.exec_module(module)
     return module
 
+
+class InstallerTest(unittest.TestCase):
+    """The one-line installers fetch each agent's files before configure.py runs. An agent
+    configure.py knows but an installer does not cannot be set up that way at all: Copilot and
+    Antigravity were added to configure.py and left out of both installers."""
+
+    def test_every_installer_fetches_every_agents_files(self):
+        module = configure_module()
+        for installer in ("setup-project.sh", "setup-project.ps1"):
+            text = (HERE / installer).read_text(encoding="utf-8")
+            for kind, agent in module.AGENTS.items():
+                for name in agent.files:
+                    if name in module.SHARED_FILES:
+                        continue
+                    self.assertIn(f"{kind}/{name}", text, f"{installer} misses {kind}")
+
 if __name__ == "__main__":
     unittest.main()
