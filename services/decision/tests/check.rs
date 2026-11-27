@@ -256,6 +256,8 @@ fn knows_a_change_to_the_agents_safeguards() {
         "rg --pr 'rm -rf .claude/hooks' x .; echo ok > /tmp/out",
         "rg --hostname-bin=./hostname-helper hooks .claude/settings.json; echo ok > /tmp/out",
         "sort --temporary-directory -- --output=.claude/hooks/pre-tool-use.py /dev/null; echo ok > /tmp/out",
+        "printf -v f .claude/hooks/pre-tool-use.py; echo x > \"$f\"",
+        "echo \\\" 2>.claude/hooks/pre-tool-use.py; echo ok > /tmp/out",
     ] {
         assert_eq!(
             effect(&call("Bash", json!({ "command": command }))),
@@ -279,6 +281,7 @@ fn knows_a_change_to_the_agents_safeguards() {
         "python3 app.py > /tmp/out.txt; grep -R hooks .claude; tree -a .claude; file .claude/settings.json",
         "python3 app.py > /tmp/out.txt; sort '.claude/settings.json'; grep -n 'hooks' \".claude/settings.json\"",
         "python3 app.py > /tmp/out.txt; sort -r -t: -k2 .claude/settings.json; tree -a -L 2 .claude; less .claude/settings.json",
+        "python3 app.py > /tmp/out.txt; printf '%s\\n' .claude/settings.json",
     ] {
         assert_ne!(
             effect(&call("Bash", json!({ "command": command }))),

@@ -572,7 +572,8 @@ const WRITING_FLAGS: &[&str] = &[
 /// thing to another (`grep -R` only reads): by program, the short letters and the long names.
 /// `sort -o f`/`--output`, `--compress-program` (runs it); `tree -o f`, `-R` (an HTML file into
 /// every folder); `file -C` (compiles a magic file); `less`/`more` `-o`/`-O` (a log file); `rg
-/// --pre` (runs it on every file), `--hostname-bin` (runs it).
+/// --pre` (runs it on every file), `--hostname-bin` (runs it); `printf -v` (sets a variable a
+/// later part may write through).
 const PROGRAM_WRITES: &[(&str, &str, &[&str])] = &[
     ("sort", "o", &["output", "compress-program"]),
     ("tree", "oR", &["output"]),
@@ -580,6 +581,7 @@ const PROGRAM_WRITES: &[(&str, &str, &[&str])] = &[
     ("less", "oO", &["log-file", "LOG-FILE"]),
     ("more", "oO", &["log-file", "LOG-FILE"]),
     ("rg", "", &["pre", "hostname-bin"]),
+    ("printf", "v", &[]),
 ];
 
 /// Whether a part of a shell command (a pipeline) only prints what it reads: every program in it
@@ -652,21 +654,34 @@ fn redirects_into_file(part: &str) -> bool {
     false
 }
 
-/// `text` with what stands inside quotes blanked out, the quotes kept.
+/// `text` with what stands inside quotes blanked out, the quotes kept. A character after a
+/// backslash (outside quotes, or inside double ones) is literal: it opens or closes no quote and
+/// is blanked too (`\"` is no quote, `\>` no redirect).
 fn unquoted(text: &str) -> String {
     let mut quote: Option<char> = None;
+    let mut escaped = false;
     text.chars()
-        .map(|c| match (quote, c) {
-            (Some(open), c) if c == open => {
-                quote = None;
-                c
+        .map(|c| {
+            if escaped {
+                escaped = false;
+                return ' ';
             }
-            (Some(_), _) => ' ',
-            (None, '\'' | '"') => {
-                quote = Some(c);
-                c
+            match (quote, c) {
+                (None | Some('"'), '\\') => {
+                    escaped = true;
+                    ' '
+                }
+                (Some(open), c) if c == open => {
+                    quote = None;
+                    c
+                }
+                (Some(_), _) => ' ',
+                (None, '\'' | '"') => {
+                    quote = Some(c);
+                    c
+                }
+                (None, c) => c,
             }
-            (None, c) => c,
         })
         .collect()
 }

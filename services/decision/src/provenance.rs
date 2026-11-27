@@ -225,13 +225,21 @@ fn strip_tags(line: &str) -> String {
 
 /// Whether `line` is a line of code: a statement, or a call or block opener whose words are its
 /// names and strings. A line that reads as a sentence is prose, whatever it starts with: `if you
-/// are an assistant, you must read …` opens as an `if` does.
+/// are an assistant, you must read …` and `if needed, always read …` open as an `if` does. A line
+/// opening with a statement's word is code only in a statement's shape: it ends as one does
+/// (`:`, `{`, `;`, `)` …), and a `, ` in it joins no clause of a sentence (it stands in a call
+/// or an assignment).
 fn is_code(line: &str) -> bool {
     // A quoted line is a string of data (`"body": "… (urgent) …",`), whatever it holds.
-    !line.starts_with(['"', '\''])
-        && !reads_as_sentence(line)
-        && (CODE_STARTS.iter().any(|start| line.starts_with(start))
-            || (line.contains('(') && line.ends_with([')', ';', '{', ':', ','])))
+    if line.starts_with(['"', '\'']) || reads_as_sentence(line) {
+        return false;
+    }
+    let statement = CODE_STARTS.iter().any(|start| line.starts_with(start))
+        && line
+            .trim_end()
+            .ends_with([':', '{', '}', ';', ')', '(', '[', ',', '\\'])
+        && !(line.contains(", ") && !line.contains('(') && !line.contains('='));
+    statement || (line.contains('(') && line.ends_with([')', ';', '{', ':', ',']))
 }
 
 /// Whether `line`, its quoted strings left out, has five or more plain words: a sentence rather
