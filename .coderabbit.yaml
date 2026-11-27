@@ -1,0 +1,38 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: ko-KR
+
+reviews:
+  profile: chill
+  # PR descriptions follow .github/PULL_REQUEST_TEMPLATE.md; keep the summary in the walkthrough.
+  high_level_summary: false
+  high_level_summary_in_walkthrough: true
+  poem: false
+  in_progress_fortune: false
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+  path_filters:
+    - "!Cargo.lock"
+    - "!**/tests/fixtures/**"
+  path_instructions:
+    - path: "services/**/*.rs"
+      instructions: |
+        A tool call the engine cannot judge (unreachable, error, timeout) must end in a deny,
+        never an allow. Flag any path that lets a call through without a verdict.
+        The reason sent back to the agent must not name a score, the stated intent or the
+        causal path; those stay in the call's trace.
+        Sensitive values must be masked before they are stored or sent to Jev.
+    - path: "deploy/client/**/*.py"
+      instructions: |
+        Client hooks run on users' machines: Python 3.8 or later, standard library only.
+        When the Collector cannot be reached, times out or answers with an error, the hook must
+        deny the call. Never read files a command names other than the programs it may run.
+    - path: "crates/contracts/**"
+      instructions: |
+        Hook input types must match what the real client sends, as recorded in the fixtures
+        under crates/contracts/tests/fixtures/, not what its documentation says.
+
+chat:
+  auto_reply: true
