@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Sets up WithHuman for Claude Code, Codex CLI or Cursor CLI in the current folder (macOS,
-# Linux), replacing
+# Sets up WithHuman for Claude Code, Codex CLI, Cursor CLI, GitHub Copilot CLI or Antigravity
+# CLI in the current folder (macOS, Linux), replacing
 # any earlier WithHuman setup. Run it in the folder you start the agent in:
 #
 #   WITHHUMAN_SERVER=https://withhuman.example.com \
 #     curl -fsSL https://raw.githubusercontent.com/BobWithHuman/withhuman-core/main/deploy/client/setup-project.sh | bash -s -- [team]
 #
 # WITHHUMAN_SERVER is the address of your own engine; WithHuman is self-hosted, so there is no
-# default. WITHHUMAN_KEY is the user's key from the security team, when the engine issues keys. WITHHUMAN_AGENT picks the agent: claude (default), codex, cursor, hermes or openclaw (Hermes is
+# default. WITHHUMAN_KEY is the user's key from the security team, when the engine issues keys. WITHHUMAN_AGENT picks the agent: claude (default), antigravity, codex, copilot, cursor, hermes or openclaw (Hermes is
 # set up for its profile, HERMES_HOME, and OpenClaw for its state directory,
 # OPENCLAW_STATE_DIR, not for the folder). Running it again updates
 # the setup; WITHHUMAN_UNINSTALL=1 takes WithHuman out of the folder instead, keeping other hooks.
@@ -26,13 +26,15 @@ agent=${WITHHUMAN_AGENT:-claude}
 files="configure.py hooks/pre-tool-use.py"
 case "$agent" in
   claude) ;;
+  antigravity) files="$files hooks/withhuman_bridge.py antigravity/withhuman-hook.py antigravity/antigravity_transcript.py" ;;
   codex) files="$files hooks/withhuman_bridge.py codex/withhuman-hook.py codex/codex_transcript.py" ;;
+  copilot) files="$files hooks/withhuman_bridge.py copilot/withhuman-hook.py copilot/copilot_transcript.py" ;;
   cursor) files="$files hooks/withhuman_bridge.py cursor/withhuman-hook.py" ;;
   hermes) files="$files hooks/withhuman_bridge.py hermes/__init__.py hermes/plugin.yaml hermes/withhuman-hook.py" ;;
   # OpenClaw loads a plugin recorded in its own configuration, so its own files are that
   # plugin and what OpenClaw needs to install it.
   openclaw) files="$files hooks/withhuman_bridge.py openclaw/withhuman-hook.py openclaw/index.js openclaw/openclaw.plugin.json openclaw/package.json" ;;
-  *) echo "WITHHUMAN_AGENT must be claude, codex, cursor, hermes or openclaw: $agent" >&2; exit 1 ;;
+  *) echo "WITHHUMAN_AGENT must be claude, antigravity, codex, copilot, cursor, hermes or openclaw: $agent" >&2; exit 1 ;;
 esac
 
 if [ -z "${WITHHUMAN_SERVER:-}" ] && [ -z "${WITHHUMAN_UNINSTALL:-}" ]; then
