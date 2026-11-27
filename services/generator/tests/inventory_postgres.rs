@@ -1084,7 +1084,8 @@ async fn sessions_are_stopped_released_and_audited() {
             "session",
             "ana@example.com",
             "sec@example.com",
-            "exfiltration",
+            // The audit keeps the reason as stored: the token masked.
+            "exfiltration ghp_…6789",
             "sec@example.com",
             500,
             2
