@@ -67,6 +67,15 @@ pub enum OpenClawHookEvent {
     AfterToolCall,
     AgentEnd,
     BeforeAgentFinalize,
+    /// Every message the transcript is about to keep, the agent's own among them, and the
+    /// agent's arrives **before the Calls it announces run**. That is what makes it the
+    /// answer the engine judges a first Call against: [`Self::BeforeAgentFinalize`] carries
+    /// the answer the turn settled on, which is the last one, so a turn whose last answer is
+    /// a tool's output has no `[의도]` line in it at all. See [`announced_answer`].
+    ///
+    /// It is synchronous: a handler that returns a promise is ignored and the host says so.
+    /// A plugin can therefore keep what it carries, but cannot reach the engine from it.
+    BeforeMessageWrite,
     SubagentSpawned,
     SubagentEnded,
     SkillChanged,
@@ -98,6 +107,7 @@ impl OpenClawHookEvent {
             "after_tool_call" => Self::AfterToolCall,
             "agent_end" => Self::AgentEnd,
             "before_agent_finalize" => Self::BeforeAgentFinalize,
+            "before_message_write" => Self::BeforeMessageWrite,
             "subagent_spawned" => Self::SubagentSpawned,
             "subagent_ended" => Self::SubagentEnded,
             "skill_changed" => Self::SkillChanged,
@@ -121,6 +131,11 @@ impl OpenClawHookEvent {
     /// Whether OpenClaw refuses this Hook to a plugin that was not allowed the conversation
     /// (`plugins.entries.<id>.hooks.allowConversationAccess`). A setup without it keeps the
     /// Calls and loses the turn around them.
+    ///
+    /// [`Self::BeforeMessageWrite`] is not among them, although it carries the agent's own
+    /// words: a capture made with the setting off holds it beside the Call Hooks and nothing
+    /// else. It is the only way an answer reaches the engine in a setup that never turns the
+    /// setting on.
     pub fn needs_conversation_access(self) -> bool {
         matches!(
             self,
@@ -210,6 +225,13 @@ pub struct OpenClawHookInput {
     /// line. This is the one the engine keeps.
     #[serde(default)]
     pub last_assistant_message: Option<String>,
+    /// `before_message_write`: the message the transcript is about to keep. `role` is
+    /// `user`, `assistant` or `toolResult`, and `content` is either a string or the parts the
+    /// message is made of (`text`, `thinking`, `toolCall`). [`announced_answer`] reads an
+    /// agent's out of it.
+    #[serde(default)]
+    #[schema(value_type = Option<Object>)]
+    pub message: Option<Value>,
     /// `llm_output`: the provider's last message as it came back — the whole message, its
     /// thinking blocks included, not the text alone. `assistant_texts` holds that.
     #[serde(default)]
@@ -431,4 +453,62 @@ mod tests {
         assert!(OpenClawHookEvent::BeforeToolCall.blocks_a_call());
         assert!(!OpenClawHookEvent::AfterToolCall.blocks_a_call());
     }
+}
+
+/// An agent's answer as [`OpenClawHookEvent::BeforeMessageWrite`] carries it: the words it
+/// wrote, and the Calls that same message announces.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AnnouncedAnswer {
+    /// The message's own text, its `text` parts joined by a blank line. A `thinking` part is
+    /// left out: it is the model's reasoning, which the engine does not keep.
+    pub text: String,
+    /// The ids of the Calls this answer announces, in the order it names them. Each arrives
+    /// again as [`OpenClawHookEvent::BeforeToolCall`] with that id as its `toolCallId` —
+    /// whole and unchanged, the `|` composite an OpenAI model's id carries included.
+    pub calls: Vec<String>,
+}
+
+/// Reads an agent's answer out of a message `before_message_write` is about to keep. None
+/// unless the message is the agent's own, so a prompt and a tool's output are passed over.
+///
+/// A message that announces Calls is the answer those Calls were made in: it reaches the
+/// plugin before they run, which is what lets the turn's intent be known while the first one
+/// is still being judged. Whether the agent puts any words there is the model's own habit —
+/// some write the `[의도]` line beside the Call, others only in the answer that ends the turn.
+pub fn announced_answer(message: &Value) -> Option<AnnouncedAnswer> {
+    if message.get("role")?.as_str()? != "assistant" {
+        return None;
+    }
+    let content = message.get("content");
+    // A message with nothing but text carries it as a string rather than as parts.
+    if let Some(text) = content.and_then(Value::as_str) {
+        return Some(AnnouncedAnswer {
+            text: text.trim().to_owned(),
+            calls: Vec::new(),
+        });
+    }
+    let mut texts = Vec::new();
+    let mut calls = Vec::new();
+    for part in content.and_then(Value::as_array).into_iter().flatten() {
+        match part.get("type").and_then(Value::as_str) {
+            Some("text") => {
+                if let Some(text) = part.get("text").and_then(Value::as_str) {
+                    let text = text.trim();
+                    if !text.is_empty() {
+                        texts.push(text.to_owned());
+                    }
+                }
+            }
+            Some("toolCall") => {
+                if let Some(id) = part.get("id").and_then(Value::as_str) {
+                    calls.push(id.to_owned());
+                }
+            }
+            _ => {}
+        }
+    }
+    Some(AnnouncedAnswer {
+        text: texts.join("\n\n"),
+        calls,
+    })
 }

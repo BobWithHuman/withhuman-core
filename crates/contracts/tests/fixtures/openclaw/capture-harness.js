@@ -113,6 +113,7 @@ const HOOKS = [
   "agent_end",
   "before_agent_reply",
   "before_agent_finalize",
+  "before_message_write",
   "message_received",
   "message_sending",
   "subagent_spawned",
@@ -156,7 +157,7 @@ export default {
     const refused = [];
     for (const hook of HOOKS) {
       try {
-        api.on(hook, async (event, ctx) => {
+        api.on(hook, (event, ctx) => {
           try {
             const payload = plain(event) ?? {};
             for (const field of FROM_CONTEXT) {

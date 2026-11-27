@@ -789,3 +789,64 @@ impl GeneratorTransport for Recording {
         Ok(self.response.clone())
     }
 }
+
+/// The answer a Call was made in, sent with that Call's ids. This is the answer a first Call
+/// can be judged against: the one the turn settles on arrives after every Call is over.
+#[tokio::test]
+async fn an_answer_made_beside_a_call_reaches_the_engine_before_it() {
+    let generator = Arc::new(Recording::allowing());
+    let app = app(generator.clone());
+    send(
+        &app,
+        "before_message_write",
+        json!({
+            // The client fills these in from the turn it kept: the Hook itself names neither.
+            "sessionId": "s-1", "runId": "r-1", "agentId": "main",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "text": ""},
+                    {"type": "text", "text": "[의도] sample.txt 를 읽는다"},
+                    {"type": "toolCall", "id": "call_a|fc_b", "name": "read",
+                     "arguments": {"path": "/work/sample.txt"}}
+                ]
+            }
+        }),
+    )
+    .await;
+    let events = generator.events.lock().unwrap();
+    let NormalizedEvent::MessageDisplay(message) = &events[0] else {
+        panic!("expected a message, got {:?}", events[0]);
+    };
+    // The words alone: the model's reasoning and the Call itself are not what it said.
+    assert_eq!(message.payload.text, "[의도] sample.txt 를 읽는다");
+    assert!(message.payload.message_id.starts_with("r-1-"));
+}
+
+/// The Hook carries every message the transcript keeps. Only the agent's own words are an
+/// answer, and an answer with nothing but reasoning in it leaves nothing to show.
+#[tokio::test]
+async fn only_an_answer_with_words_in_it_becomes_a_message() {
+    let generator = Arc::new(Recording::allowing());
+    let app = app(generator.clone());
+    for message in [
+        json!({"role": "user", "content": "sample.txt 를 읽어줘"}),
+        json!({"role": "toolResult", "content": [{"type": "text", "text": "one\n"}]}),
+        json!({"role": "assistant", "content": [
+            {"type": "thinking", "text": ""},
+            {"type": "toolCall", "id": "call_a|fc_b", "name": "read", "arguments": {}}
+        ]}),
+    ] {
+        send(
+            &app,
+            "before_message_write",
+            json!({"sessionId": "s-1", "runId": "r-1", "message": message}),
+        )
+        .await;
+    }
+    let events = generator.events.lock().unwrap();
+    assert!(
+        events.is_empty(),
+        "nothing of this was the agent's own words: {events:?}"
+    );
+}

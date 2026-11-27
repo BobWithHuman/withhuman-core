@@ -22,10 +22,11 @@ use std::collections::BTreeSet;
 
 use serde_json::Value;
 use withhuman_contracts::openclaw::{
-    OpenClawHookEvent, OpenClawHookInput, dispatch_key, dispatched_action, dispatched_by,
+    OpenClawHookEvent, OpenClawHookInput, announced_answer, dispatch_key, dispatched_action,
+    dispatched_by,
 };
 
-const CAPTURES: [(&str, &str); 5] = [
+const CAPTURES: [(&str, &str); 6] = [
     (
         "session-1",
         include_str!("fixtures/openclaw/capture-session-1.jsonl"),
@@ -45,6 +46,10 @@ const CAPTURES: [(&str, &str); 5] = [
     (
         "session-5-mcp",
         include_str!("fixtures/openclaw/capture-session-5-mcp.jsonl"),
+    ),
+    (
+        "session-6-answer",
+        include_str!("fixtures/openclaw/capture-session-6-answer.jsonl"),
     ),
 ];
 
@@ -132,10 +137,14 @@ fn the_fields_the_translation_needs_are_there() {
         let what = |name: &str, present: bool| {
             assert!(present, "{} {}: no {name}", row.session, row.event);
         };
-        what("sessionId", input.session_id.is_some());
-        what("runId", input.run_id.is_some());
+        let event = OpenClawHookEvent::from_path(&row.event).unwrap();
+        // The one Hook that names no session and no turn; see the test below.
+        if event != OpenClawHookEvent::BeforeMessageWrite {
+            what("sessionId", input.session_id.is_some());
+            what("runId", input.run_id.is_some());
+        }
         what("agentId", input.agent_id.is_some());
-        match OpenClawHookEvent::from_path(&row.event).unwrap() {
+        match event {
             OpenClawHookEvent::BeforeToolCall => {
                 what("toolName", input.tool_name.is_some());
                 what("toolCallId", input.tool_call_id.is_some());
@@ -351,4 +360,121 @@ fn the_captures_were_allowed_the_conversation() {
                 .needs_conversation_access()
         );
     }
+}
+
+/// The answer a Call was made in reaches the plugin before the Call runs, named by the very id
+/// the Call arrives under. That is the whole reason this Hook is read: it is what lets the
+/// turn's intent be known while its first Call is still being judged.
+#[test]
+fn an_answer_arrives_before_the_calls_it_announces() {
+    let rows = captured();
+    let mut announced = 0;
+    for (at, row) in rows.iter().enumerate() {
+        if OpenClawHookEvent::from_path(&row.event) != Some(OpenClawHookEvent::BeforeMessageWrite) {
+            continue;
+        }
+        let input: OpenClawHookInput =
+            serde_json::from_value(row.payload.clone()).unwrap_or_else(|error| {
+                panic!("{} holds a message off the contract: {error}", row.session)
+            });
+        let message = input
+            .message
+            .expect("before_message_write carries a message");
+        let Some(answer) = announced_answer(&message) else {
+            continue;
+        };
+        for id in &answer.calls {
+            let found = rows[at + 1..]
+                .iter()
+                .filter(|later| {
+                    OpenClawHookEvent::from_path(&later.event)
+                        == Some(OpenClawHookEvent::BeforeToolCall)
+                })
+                .any(|later| later.payload["toolCallId"].as_str() == Some(id.as_str()));
+            assert!(
+                found,
+                "{}: the answer announced {id}, which no later call carries",
+                row.session
+            );
+            announced += 1;
+        }
+    }
+    assert!(
+        announced > 0,
+        "a capture should hold an answer that announces a call"
+    );
+}
+
+/// What the engine gains from the Hook: the answer's own words, kept apart from the model's
+/// reasoning, and none of the host's other messages mistaken for the agent's.
+#[test]
+fn only_the_agents_own_messages_are_read_as_an_answer() {
+    let mut roles = BTreeSet::new();
+    let mut with_text = 0;
+    for row in captured() {
+        if OpenClawHookEvent::from_path(&row.event) != Some(OpenClawHookEvent::BeforeMessageWrite) {
+            continue;
+        }
+        let message = row.payload["message"].clone();
+        let role = message["role"].as_str().expect("a message names its role");
+        roles.insert(role.to_owned());
+        match announced_answer(&message) {
+            None => assert_ne!(role, "assistant", "an agent's message should be read"),
+            Some(answer) => {
+                assert_eq!(role, "assistant", "only an agent's message should be read");
+                assert!(
+                    !answer.text.contains("\"type\""),
+                    "the parts should be read, not printed: {}",
+                    answer.text
+                );
+                if !answer.text.is_empty() {
+                    with_text += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        roles.len() > 1,
+        "the Hook carries more than the agent's messages: {roles:?}"
+    );
+    assert!(
+        with_text > 0,
+        "a capture should hold an answer with words in it"
+    );
+}
+
+/// The Hook that carries an answer is refused to no one: a setup that never allows the
+/// conversation keeps it, which is why it is the carrier the engine can count on.
+#[test]
+fn the_hook_that_carries_an_answer_needs_no_conversation_access() {
+    assert!(!OpenClawHookEvent::BeforeMessageWrite.needs_conversation_access());
+    assert!(OpenClawHookEvent::BeforeAgentFinalize.needs_conversation_access());
+}
+
+/// The Hook that carries an answer names neither the session nor the turn — `sessionKey` and
+/// the agent are all it says, and the run id it holds is buried in the message OpenClaw adds
+/// its own fields to. So the answer cannot be sent from this Hook on its own: it is kept here
+/// and sent from the Call it announces, which carries both ids.
+#[test]
+fn the_hook_that_carries_an_answer_names_no_session_and_no_turn() {
+    let mut seen = 0;
+    for row in captured() {
+        if OpenClawHookEvent::from_path(&row.event) != Some(OpenClawHookEvent::BeforeMessageWrite) {
+            continue;
+        }
+        let input: OpenClawHookInput = serde_json::from_value(row.payload.clone()).unwrap();
+        assert!(
+            input.session_id.is_none(),
+            "{}: named a session",
+            row.session
+        );
+        assert!(input.run_id.is_none(), "{}: named a turn", row.session);
+        assert!(
+            input.session_key.is_some() && input.agent_id.is_some(),
+            "{}: carries neither the session's name nor the agent",
+            row.session
+        );
+        seen += 1;
+    }
+    assert!(seen > 0, "a capture should hold the Hook");
 }
