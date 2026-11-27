@@ -222,6 +222,11 @@ class State:
                 os.replace(self.legacy_path, self.path)
             except FileNotFoundError:
                 pass
+            except OSError:
+                # `__exit__` does not run when `__enter__` raises: without this the lock would
+                # outlive the run and turn back every later call of the session.
+                self.__exit__(None, None, None)
+                raise
         try:
             with open(self.path, encoding="utf-8") as file:
                 loaded = json.load(file)

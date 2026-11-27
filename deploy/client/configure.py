@@ -510,10 +510,14 @@ class CopilotSetup(FlatHooksFile):
         (installed / self.server_file).write_text(args.server + "\n", encoding="utf-8")
         for legacy in (installed / "withhuman-state").glob("*.json"):
             current = legacy.with_suffix(".state")
-            if current.exists():
-                legacy.unlink()
-            else:
-                legacy.rename(current)
+            try:
+                if current.exists():
+                    legacy.unlink()
+                else:
+                    legacy.rename(current)
+            except FileNotFoundError:
+                # A running session carried it over between the listing and here: done.
+                pass
 
 
 def hermes_home():
