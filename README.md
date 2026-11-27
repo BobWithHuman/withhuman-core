@@ -46,7 +46,7 @@ Start the engine (Docker 24+ with Compose 2.20+):
 
 ```bash
 git clone https://github.com/BobWithHuman/withhuman-core.git && cd withhuman-core
-cp .env.example .env    # set the two passwords and JEV_API_KEY
+cp .env.example .env    # set the two passwords and JEV_API_KEY (or DECISION_PROVIDER=jevstyle, free)
 docker compose up --detach --wait
 ```
 
@@ -122,7 +122,7 @@ Keys, inventory, triage and Wazuh matching are under [For security teams](#for-s
 ## FAQ
 
 **Does my code leave my machine?** Only to Jev, the model that answers the engine's questions
-(`JEV_URL`). It gets what a call is judged on — your prompt, the agent's stated intent, the call
+(`JEV_URL`), or to JevStyle with `DECISION_PROVIDER=jevstyle`. It gets what a call is judged on — your prompt, the agent's stated intent, the call
 and the tool results it may have come from — with passwords, keys and PII masked. No telemetry.
 
 **What if the engine is down?** The call is denied. Switching the engine off must not lift every
@@ -675,6 +675,13 @@ engine could not judge is put to the user instead. A stored verdict is kept 5 mi
   the rules judge alone for `WITHHUMAN_DEGRADED_SECONDS` (60): grade 0 and 1 are allowed (except a
   secret read, a web fetch or an edit of CI or hooks), grade 2 and 3 are reviewed, a safeguard
   change is denied.
+- `DECISION_PROVIDER=jevstyle` judges through [JevStyle](https://jevstyle.com), a free model
+  trained on Jev's answers, at `https://api.jevstyle.com` with a key from its console in
+  `JEV_API_KEY`. It is less accurate than Jev and has no SLA. Its capacity is shared, so a 429
+  counts as one failure instead of starting the rules-only mode, and a request over its 8,000-token
+  limit (413) is not counted. Cause and Call texts are cut to 3,000 and 600 characters
+  (`WITHHUMAN_TRACE_CAUSE_CHARS`, `WITHHUMAN_TRACE_TEXT_CHARS`) to fit. JevStyle is not run by
+  TypeSafe; check its terms before using it for work.
 
 </details>
 

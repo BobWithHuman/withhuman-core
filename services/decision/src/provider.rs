@@ -179,7 +179,8 @@ impl JevDecisionProvider {
     }
 
     /// Counts a Jev failure; true when it starts the rules-only mode. A refusal for the key or
-    /// the request rate (401, 402, 403, 429) starts it at once: waiting will not fix it.
+    /// the request rate (401, 402, 403, 429) starts it at once: waiting will not fix it. On a
+    /// judge with shared capacity a 429 is counted like any failure, and a 413 is not counted.
     fn breaker_failure(&self, error: &JevError) -> bool {
         let settings = &self.settings.check;
         let limit = if settings.degraded_failures == 0 {
@@ -192,9 +193,17 @@ impl JevDecisionProvider {
         } else {
             settings.degraded_seconds
         };
+        let shared = settings.shared_capacity;
+        if shared && matches!(error, JevError::Rejected(413)) {
+            return false;
+        }
         let mut breaker = self.breaker();
         breaker.failures += 1;
-        let refused = matches!(error, JevError::Rejected(401 | 402 | 403 | 429));
+        let refused = match error {
+            JevError::Rejected(401..=403) => true,
+            JevError::Rejected(429) => !shared,
+            _ => false,
+        };
         if refused || breaker.failures >= limit {
             breaker.open_until = Some(Instant::now() + Duration::from_secs(seconds));
             true

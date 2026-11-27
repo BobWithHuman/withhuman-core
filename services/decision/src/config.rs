@@ -24,7 +24,7 @@ pub struct DecisionConfig {
     pub mock_decision: Decision,
     pub mock_reason: Option<String>,
     pub mock_delay: Duration,
-    /// Set when `DECISION_PROVIDER=jev`.
+    /// Set when `DECISION_PROVIDER` is `jev` or `jevstyle`.
     pub jev: Option<JevSettings>,
     /// Deviations at which a Call is denied or reviewed, by what it follows from.
     pub thresholds: Thresholds,
@@ -56,14 +56,18 @@ impl DecisionConfig {
                 "the mock decision provider is forbidden in production",
             ));
         }
-        let jev = if provider.eq_ignore_ascii_case("jev") {
+        let preset = JevPreset::named(&provider);
+        let jev = if let Some(preset) = preset {
             let api_key = env::var("JEV_API_KEY").unwrap_or_default();
             if api_key.trim().is_empty() {
                 return Err(invalid(
-                    "JEV_API_KEY must be configured for the jev provider",
+                    "JEV_API_KEY must be configured for the jev and jevstyle providers",
                 ));
             }
-            let url = env::var("JEV_URL").unwrap_or_else(|_| "https://api.typesafe.ai".into());
+            let url = env::var("JEV_URL")
+                .ok()
+                .filter(|url| !url.trim().is_empty())
+                .unwrap_or_else(|| preset.url.into());
             if environment == RuntimeEnvironment::Production && !url.starts_with("https://") {
                 return Err(invalid("JEV_URL must use https in production"));
             }
@@ -84,9 +88,12 @@ impl DecisionConfig {
             )));
         };
         let thresholds = thresholds()?;
-        let defaults = TraceSettings::default();
+        let defaults = preset.map_or_else(TraceSettings::default, JevPreset::trace_defaults);
         let trace = TraceSettings {
-            model: env::var("JEV_MODEL").unwrap_or(defaults.model),
+            model: env::var("JEV_MODEL")
+                .ok()
+                .filter(|model| !model.trim().is_empty())
+                .unwrap_or(defaults.model),
             max_segments: parse_range(
                 "WITHHUMAN_TRACE_MAX_SEGMENTS",
                 defaults.max_segments,
@@ -108,7 +115,7 @@ impl DecisionConfig {
             )?,
             max_hops: parse_range("WITHHUMAN_PARENT_MAX_HOPS", defaults.max_hops, 1, 1_000)?,
             max_intents: parse_range("WITHHUMAN_TRACE_MAX_INTENTS", defaults.max_intents, 1, 200)?,
-            check: check_settings()?,
+            check: check_settings(preset.is_some_and(|preset| preset.shared_capacity))?,
             distrusted_deny: flag("WITHHUMAN_DISTRUSTED_SOURCE_DENY")?,
         };
         let mock_decision = match env::var("MOCK_DECISION")
@@ -144,6 +151,57 @@ impl DecisionConfig {
     }
 }
 
+/// A Jev-compatible judge `DECISION_PROVIDER` names, and the defaults it needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct JevPreset {
+    url: &'static str,
+    /// The model named in requests, and the longest cause and Call texts sent
+    /// (`WITHHUMAN_TRACE_CAUSE_CHARS`, `_TEXT_CHARS`), where they differ from Jev's.
+    trace: Option<(&'static str, usize, usize)>,
+    /// Capacity shared by every key, so a 429 means busy now rather than refused.
+    shared_capacity: bool,
+}
+
+impl JevPreset {
+    /// TypeSafe's Jev, the paid judge.
+    const JEV: Self = Self {
+        url: "https://api.typesafe.ai",
+        trace: None,
+        shared_capacity: false,
+    };
+    /// JevStyle, a free model trained on Jev's answers, for trying WithHuman without paying.
+    /// It answers with its own model whatever is named. Its hosted API takes at most 8,000
+    /// tokens (32,000 bytes) a request, so the texts sent are cut shorter: a Korean prompt
+    /// costs about a token a character.
+    const JEVSTYLE: Self = Self {
+        url: "https://api.jevstyle.com",
+        trace: Some(("jev-style-2b-decision-v4", 3_000, 600)),
+        shared_capacity: true,
+    };
+
+    fn named(provider: &str) -> Option<Self> {
+        if provider.eq_ignore_ascii_case("jev") {
+            Some(Self::JEV)
+        } else if provider.eq_ignore_ascii_case("jevstyle") {
+            Some(Self::JEVSTYLE)
+        } else {
+            None
+        }
+    }
+
+    fn trace_defaults(self) -> TraceSettings {
+        match self.trace {
+            None => TraceSettings::default(),
+            Some((model, cause_chars, text_chars)) => TraceSettings {
+                model: model.to_owned(),
+                cause_chars,
+                text_chars,
+                ..TraceSettings::default()
+            },
+        }
+    }
+}
+
 /// The deviation thresholds, each between 0 and 1 and none reviewing above where it denies.
 fn thresholds() -> io::Result<Thresholds> {
     let defaults = Thresholds::default();
@@ -174,10 +232,11 @@ fn thresholds() -> io::Result<Thresholds> {
 }
 
 /// The rules-only mode's settings.
-fn check_settings() -> io::Result<CheckSettings> {
+fn check_settings(shared_capacity: bool) -> io::Result<CheckSettings> {
     Ok(CheckSettings {
         degraded_failures: parse_range("WITHHUMAN_DEGRADED_FAILURES", 3, 1, 100)?,
         degraded_seconds: parse_range("WITHHUMAN_DEGRADED_SECONDS", 60, 1, 3_600)?,
+        shared_capacity,
     })
 }
 
@@ -218,4 +277,30 @@ where
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn jevstyle_fits_its_hosted_limit_and_jev_keeps_the_trace_defaults() {
+        assert_eq!(JevPreset::named("JevStyle"), Some(JevPreset::JEVSTYLE));
+        assert_eq!(JevPreset::named("jev"), Some(JevPreset::JEV));
+        assert_eq!(JevPreset::named("mock"), None);
+
+        let jev = JevPreset::JEV.trace_defaults();
+        let defaults = TraceSettings::default();
+        assert_eq!(
+            (jev.model, jev.cause_chars, jev.text_chars),
+            (defaults.model, defaults.cause_chars, defaults.text_chars)
+        );
+
+        let style = JevPreset::JEVSTYLE.trace_defaults();
+        assert_eq!(JevPreset::JEVSTYLE.url, "https://api.jevstyle.com");
+        assert_eq!(style.model, "jev-style-2b-decision-v4");
+        // The action, the turn (twice the text limit) and the causes stay well under the
+        // 8,000-token cap even at a token a character.
+        assert!(style.cause_chars + style.text_chars * 3 < 6_000);
+    }
 }
