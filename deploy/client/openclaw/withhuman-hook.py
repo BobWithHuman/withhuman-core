@@ -85,7 +85,7 @@ def state_directory():
 STATE_DIRECTORY = state_directory()
 # Events the engine judges or records. The plugin registers these and no others.
 SENT = ("session_start", "session_end", "before_agent_run", "before_tool_call",
-        "after_tool_call", "before_agent_finalize", "agent_end")
+        "after_tool_call", "before_message_write", "before_agent_finalize", "agent_end")
 # The hooks that carry the directory the agent works in; the tool hooks do not.
 TURN_EVENTS = ("session_start", "before_agent_run", "before_agent_finalize", "agent_end")
 # OpenClaw's own name for its shell tool, and for a tool that runs another tool.
