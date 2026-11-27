@@ -261,7 +261,7 @@ impl PgGraphRepository {
             let mut client = self.client().await?;
             let tx = client.transaction().await?;
             if request.stopped {
-                let (actor, reason) = (text(&request.actor), text(&request.reason));
+                let (actor, reason) = (text(&request.actor), text(&masked(&request.reason)));
                 run(&tx, STOP_CLIENT, &[&client_id, &at, &actor, &reason]).await?;
             } else {
                 run(&tx, RELEASE_CLIENT, &[&client_id]).await?;
@@ -483,6 +483,7 @@ impl PgGraphRepository {
             KeyScope::Key(key_id) => ("key_id", key_id),
             KeyScope::User(user) => ("user_email", user),
         };
+        let reason = masked(&request.reason);
         let result: Result<Vec<KeyRecord>, PgError> = async {
             let mut client = self.client().await?;
             let tx = client.transaction().await?;
@@ -495,7 +496,7 @@ impl PgGraphRepository {
                          RETURNING key_id, user_email"
                     ))
                     .await?,
-                    &[&value, &at, &request.actor, &request.reason],
+                    &[&value, &at, &request.actor, &reason],
                 )
                 .await?;
             for row in &revoked {
@@ -503,14 +504,7 @@ impl PgGraphRepository {
                 run(
                     &tx,
                     KEY_EVENT,
-                    &[
-                        &key_id,
-                        &user,
-                        &"revoked",
-                        &request.actor,
-                        &request.reason,
-                        &at,
-                    ],
+                    &[&key_id, &user, &"revoked", &request.actor, &reason, &at],
                 )
                 .await?;
             }
@@ -618,7 +612,7 @@ impl PgGraphRepository {
             run(
                 &client,
                 STOP_SESSION,
-                &[&session_id, &at, &request.actor, &request.reason],
+                &[&session_id, &at, &request.actor, &masked(&request.reason)],
             )
             .await?;
             optional(&client, ACTIVE_STOP, &[&session_id])
@@ -643,7 +637,7 @@ impl PgGraphRepository {
             optional(
                 &client,
                 RELEASE_SESSION,
-                &[&session_id, &at, &request.actor, &request.reason],
+                &[&session_id, &at, &request.actor, &masked(&request.reason)],
             )
             .await?
             .as_ref()
@@ -678,6 +672,8 @@ impl PgGraphRepository {
     ) -> Result<Review, RepositoryError> {
         let seq = signed(request.seq)?;
         let at_signed = signed(at)?;
+        // Stored and answered alike, so the masked note is the only one there is.
+        let note = masked(&request.note);
         let result: Result<Option<Row>, PgError> = async {
             let client = self.client().await?;
             optional(
@@ -687,7 +683,7 @@ impl PgGraphRepository {
                     &request.session_id,
                     &seq,
                     &request.status.as_str(),
-                    &request.note,
+                    &note,
                     &request.actor,
                     &at_signed,
                 ],
@@ -701,11 +697,18 @@ impl PgGraphRepository {
             session_id: request.session_id,
             seq: request.seq,
             status: request.status,
-            note: request.note,
+            note,
             actor: request.actor,
             at,
         })
     }
+}
+
+/// A note or reason the security team typed, with any secret pasted into it masked before it is
+/// stored: the viewer's read-only role reads these tables.
+fn masked(text: &Option<String>) -> Option<String> {
+    text.as_deref()
+        .map(|text| withhuman_common::tokens::redact(text).into_owned())
 }
 
 fn session_stop(row: &Row) -> Result<SessionStop, PgError> {

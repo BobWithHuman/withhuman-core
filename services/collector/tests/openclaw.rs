@@ -732,6 +732,14 @@ struct Failing;
 
 #[async_trait]
 impl GeneratorTransport for Failing {
+    async fn session_flags(
+        &self,
+        _session_id: &str,
+    ) -> Result<withhuman_contracts::inventory::SessionFlags, withhuman_collector::GeneratorError>
+    {
+        Ok(withhuman_contracts::inventory::SessionFlags::default())
+    }
+
     async fn send(&self, _event: NormalizedEvent) -> Result<EventResponse, GeneratorError> {
         Err(GeneratorError::InvalidResponse(
             "engine unavailable".to_owned(),
@@ -784,6 +792,14 @@ impl Recording {
 
 #[async_trait]
 impl GeneratorTransport for Recording {
+    async fn session_flags(
+        &self,
+        _session_id: &str,
+    ) -> Result<withhuman_contracts::inventory::SessionFlags, withhuman_collector::GeneratorError>
+    {
+        Ok(withhuman_contracts::inventory::SessionFlags::default())
+    }
+
     async fn send(&self, event: NormalizedEvent) -> Result<EventResponse, GeneratorError> {
         self.events.lock().unwrap().push(event);
         Ok(self.response.clone())

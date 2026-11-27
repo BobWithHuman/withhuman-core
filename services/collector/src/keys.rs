@@ -34,6 +34,8 @@ pub const KEY_MISSING: &str = "WithHuman 키가 없어 이 도구 호출을 막�
 pub const KEY_INVALID: &str = "WithHuman 키가 올바르지 않아 이 도구 호출을 막았습니다. \
 보안팀에서 받은 키로 설치 스크립트를 다시 실행하세요.";
 pub const KEY_UNCHECKED: &str = "WithHuman 키를 확인하지 못해 이 도구 호출을 막았습니다.";
+pub const SESSION_UNCHECKED: &str =
+    "WithHuman이 이 세션이 멈춰졌는지 확인하지 못해 이 도구 호출을 막았습니다.";
 
 /// A key as the Hook presented it.
 #[derive(Debug, Clone, PartialEq, Eq)]

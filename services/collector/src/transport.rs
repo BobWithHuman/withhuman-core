@@ -66,10 +66,9 @@ pub trait GeneratorTransport: Send + Sync {
         Ok(())
     }
 
-    /// The session's active stop and exception.
-    async fn session_flags(&self, _session_id: &str) -> Result<SessionFlags, GeneratorError> {
-        Ok(SessionFlags::default())
-    }
+    /// The session's active stop. No default: a transport that cannot look it up must say so
+    /// with an error, which a call meets by the failure policy, never as "not stopped".
+    async fn session_flags(&self, session_id: &str) -> Result<SessionFlags, GeneratorError>;
 
     /// Records a PreToolUse its session's stop turned back.
     async fn record_session_denial(

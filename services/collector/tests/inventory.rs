@@ -61,6 +61,8 @@ struct Generator {
     /// The sessions the security team stopped.
     stopped_sessions: Mutex<Vec<String>>,
     flag_lookups: Mutex<usize>,
+    /// The Generator cannot say whether a session is stopped.
+    flags_down: AtomicBool,
     session_denials: Mutex<Vec<(String, SessionDenial)>>,
 }
 
@@ -169,6 +171,9 @@ impl GeneratorTransport for Generator {
 
     async fn session_flags(&self, session_id: &str) -> Result<SessionFlags, GeneratorError> {
         *self.flag_lookups.lock().unwrap() += 1;
+        if self.flags_down.load(Ordering::SeqCst) {
+            return Err(GeneratorError::Timeout);
+        }
         let stopped = self
             .stopped_sessions
             .lock()
@@ -1441,4 +1446,101 @@ async fn administrators_delete_a_device_with_its_sessions() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     let (_, document) = get(&app, "/api-docs/openapi.json", &[]).await;
     assert!(document["paths"]["/v1/admin/clients/{client_id}"]["delete"].is_object());
+}
+
+/// A Cursor call in Cursor's own words (`preToolUse`, `beforeMCPExecution`), as the bridge
+/// posts it.
+fn cursor_call(session: &str) -> Value {
+    json!({"session_id": session, "generation_id": "g", "tool_use_id": "t",
+           "tool_name": "Shell", "tool_input": {"command": "ls"}, "cwd": "/p"})
+}
+
+#[tokio::test]
+async fn another_agents_call_meets_the_session_stop_and_the_kill_switch() {
+    let generator = Arc::new(Generator::with_keys());
+    let app = app(generator.clone(), |_| {});
+    generator
+        .stopped_sessions
+        .lock()
+        .unwrap()
+        .push("s-1".into());
+    let (_, body) = post(&app, "/v1/hooks/cursor/preToolUse", cursor_call("s-1"), &[]).await;
+    assert_eq!(denial(&body), ("deny", keys::SESSION_STOPPED));
+    let mcp = json!({"session_id": "s-1", "generation_id": "g", "tool_use_id": "t",
+                     "tool_name": "list", "tool_input": "{}", "mcp_server_name": "srv"});
+    let (_, body) = post(&app, "/v1/hooks/cursor/beforeMCPExecution", mcp, &[]).await;
+    assert_eq!(denial(&body), ("deny", keys::SESSION_STOPPED));
+    assert_eq!(generator.session_denials.lock().unwrap().len(), 2);
+    // A revoked key stops the call too, and the denial names the agent's session.
+    let revoked = bearer(REVOKED);
+    let (_, body) = post(
+        &app,
+        "/v1/hooks/cursor/preToolUse",
+        cursor_call("s-2"),
+        &[("authorization", revoked.as_str())],
+    )
+    .await;
+    assert_eq!(denial(&body).1, keys::KEY_REVOKED);
+    let denials = generator.denials.lock().unwrap();
+    assert_eq!(denials.last().unwrap().1.session_id.as_deref(), Some("s-2"));
+}
+
+#[tokio::test]
+async fn a_stop_that_cannot_be_looked_up_fails_by_the_failure_policy() {
+    let generator = Arc::new(Generator::default());
+    generator.flags_down.store(true, Ordering::SeqCst);
+    let enforced = app(generator.clone(), |_| {});
+    let (status, body) = post(&enforced, "/v1/hooks/PreToolUse", call("s-1"), &[]).await;
+    assert_eq!(
+        (status, denial(&body)),
+        (StatusCode::OK, ("deny", keys::SESSION_UNCHECKED))
+    );
+    // Fail open, or only watching: the call goes on to be judged.
+    for configure in [
+        (|config: &mut CollectorConfig| config.failure_policy = FailurePolicy::Open)
+            as fn(&mut CollectorConfig),
+        |config: &mut CollectorConfig| {
+            config.enforcement_mode = withhuman_contracts::decisions::EnforcementMode::Shadow;
+        },
+    ] {
+        let app = app(generator.clone(), configure);
+        let (_, body) = post(&app, "/v1/hooks/PreToolUse", call("s-1"), &[]).await;
+        assert_ne!(denial(&body).1, keys::SESSION_UNCHECKED);
+    }
+}
+
+#[tokio::test]
+async fn every_name_a_key_was_issued_to_can_be_revoked() {
+    let generator = Arc::new(Generator::default());
+    let app = app(generator.clone(), |config| {
+        config.admin_token = Some(ADMIN.into())
+    });
+    let admin = bearer(ADMIN);
+    let admin = [("authorization", admin.as_str())];
+    for (name, user) in [
+        ("Ana+CI@example.com", "ana+ci@example.com"),
+        ("ci-deploy", "ci-deploy"),
+    ] {
+        let (status, _) = post(
+            &app,
+            &format!("/v1/admin/users/{name}/revoke"),
+            json!({"actor": "sec@example.com"}),
+            &admin,
+        )
+        .await;
+        assert_ne!(status, StatusCode::BAD_REQUEST, "{name}");
+        let sent = generator.inventory.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(
+            sent.1,
+            vec!["users".to_owned(), user.to_owned(), "revoke".to_owned()]
+        );
+    }
+    let (status, _) = post(
+        &app,
+        "/v1/admin/users/not%20a%20name/revoke",
+        json!({}),
+        &admin,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 }

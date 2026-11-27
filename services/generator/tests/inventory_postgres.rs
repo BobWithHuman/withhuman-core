@@ -1012,7 +1012,9 @@ async fn sessions_are_stopped_released_and_audited() {
         &url,
         "POST",
         &format!("/v1/sessions/{session}/stop"),
-        Some(json!({"actor": "sec@example.com", "reason": "exfiltration"})),
+        // A token pasted into the reason is masked before it is stored.
+        Some(json!({"actor": "sec@example.com",
+                    "reason": "exfiltration ghp_abcdefghijklmnopqrstuvwxyz0123456789"})),
     )
     .await;
     assert_eq!(status, 200);
@@ -1029,7 +1031,9 @@ async fn sessions_are_stopped_released_and_audited() {
         (&stop["id"], &json!("sec@example.com"))
     );
     let (_, flags) = send(&url, "GET", &format!("/v1/sessions/{session}/flags"), None).await;
-    assert_eq!(flags["stop"]["reason"], "exfiltration");
+    let reason = flags["stop"]["reason"].as_str().unwrap();
+    assert!(reason.starts_with("exfiltration "), "{reason}");
+    assert!(!reason.contains("ghp_abcdefghijklmnopqrstuvwxyz0123456789"));
     for at in [500, 700] {
         let (status, _) = send(
             &url,
@@ -1138,6 +1142,24 @@ async fn reviews_name_a_call_and_keep_their_history() {
         )
         .await;
     assert_eq!(latest, json!(["no_issue", "false alarm", 2]));
+    // A secret pasted into a note is masked before it is stored, and answered masked.
+    let secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+    let (_, review) = send(
+        &url,
+        "POST",
+        "/v1/reviews",
+        Some(json!({"session_id": session, "seq": seq, "status": "issue",
+        "note": format!("leaked {secret}"), "actor": "sec@example.com"})),
+    )
+    .await;
+    assert!(!review["note"].as_str().unwrap().contains(secret));
+    let stored = db
+        .row(
+            "SELECT to_jsonb(note) FROM call_review_latest WHERE session_id = $1",
+            &[&session],
+        )
+        .await;
+    assert_eq!(stored, review["note"]);
     db.exec(
         "DELETE FROM call_reviews WHERE session_id = $1",
         &[&session],
