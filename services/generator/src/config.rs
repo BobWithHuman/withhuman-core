@@ -1,5 +1,7 @@
 use std::{env, fmt, io, net::SocketAddr, path::PathBuf, time::Duration};
 
+use withhuman_common::profile::{Profile, personal};
+
 const DEFAULT_BIND_ADDRESS: &str = "0.0.0.0:8081";
 const DEFAULT_DECISION_URL: &str = "http://decision:8082";
 // Two minutes: a coding agent is seen by the scan that catches it running, so the sooner a
@@ -16,20 +18,37 @@ pub struct GeneratorConfig {
     pub decision_url: String,
     /// The Wazuh manager whose device list is synced; none while `WITHHUMAN_WAZUH_URL` is unset.
     pub wazuh: Option<WazuhConfig>,
+    /// The engine's own calls carry this, and the Generator takes no other
+    /// (`withhuman_common::internal`).
+    pub internal_token: Option<String>,
 }
 
 impl GeneratorConfig {
     pub fn from_env() -> io::Result<Self> {
+        Self::from_env_as(Profile::from_env()?)
+    }
+
+    /// The settings with `profile`'s defaults. A personal engine has no company EDR to sync
+    /// from: `WITHHUMAN_WAZUH_*` is not read.
+    pub fn from_env_as(profile: Profile) -> io::Result<Self> {
         let bind_address = env::var("GENERATOR_ADDR")
-            .unwrap_or_else(|_| DEFAULT_BIND_ADDRESS.to_owned())
+            .unwrap_or_else(|_| {
+                profile.bind_address(DEFAULT_BIND_ADDRESS, personal::GENERATOR_PORT)
+            })
             .parse()
             .map_err(|error| invalid(format!("invalid GENERATOR_ADDR: {error}")))?;
 
         Ok(Self {
             bind_address,
-            decision_url: env::var("DECISION_URL")
-                .unwrap_or_else(|_| DEFAULT_DECISION_URL.to_owned()),
-            wazuh: WazuhConfig::from_lookup(|name| env::var(name).ok())?,
+            decision_url: env::var("DECISION_URL").unwrap_or_else(|_| {
+                profile.service_url(DEFAULT_DECISION_URL, personal::DECISION_PORT)
+            }),
+            wazuh: if profile.is_personal() {
+                None
+            } else {
+                WazuhConfig::from_lookup(|name| env::var(name).ok())?
+            },
+            internal_token: withhuman_common::internal::token_from_env(),
         })
     }
 }

@@ -458,6 +458,16 @@ CREATE INDEX IF NOT EXISTS nodes_calls_observed_at ON nodes (observed_at) WHERE 
 CREATE INDEX IF NOT EXISTS tokens_sensitive ON tokens (category, session_id)
   WHERE category <> 'address';
 
+-- The contract this schema is: `POSTGRES_SCHEMA_VERSION` (crates/common), raised whenever a table
+-- or column a reader depends on changes, so the security team's app and the personal app can
+-- tell which engine wrote the record they read.
+CREATE TABLE IF NOT EXISTS engine_meta (
+  key    text PRIMARY KEY,
+  value  text NOT NULL
+);
+INSERT INTO engine_meta (key, value) VALUES ('schema_version', '1')
+  ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+
 -- What the security team's viewer reads: role `withhuman_viewer`, which the Generator creates
 -- when WITHHUMAN_VIEWER_PASSWORD is set. SELECT only, and only here: every table of this file
 -- is listed below (a test checks it), and grants made elsewhere, such as an earlier viewer's
@@ -472,7 +482,7 @@ BEGIN
       sessions, event_commits, nodes, subgraphs, paragraphs, tokens, token_mentions, files,
       file_refs, cause_edges, pending_paragraph_enrichments, pending_request_continuations,
       clients, client_projects, users, key_events, edr_devices, edr_sightings, session_marks,
-      distrusted_sources
+      distrusted_sources, engine_meta
     TO withhuman_viewer;
     GRANT SELECT (key_id, user_email, created_at, created_by, note, last_used_at, revoked_at,
       revoked_by, revoke_reason, first_denied_at, last_denied_at, denied_count)

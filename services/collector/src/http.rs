@@ -113,7 +113,10 @@ impl CollectorService {
 }
 
 pub fn app(config: CollectorConfig) -> Router {
-    let generator = Arc::new(GeneratorHttpClient::new(config.generator_url.clone()));
+    let generator = Arc::new(GeneratorHttpClient::with_token(
+        config.generator_url.clone(),
+        config.internal_token.as_deref(),
+    ));
     app_with_transport(CollectorService::new(config, generator))
 }
 
@@ -139,6 +142,7 @@ pub fn app_with_transport(service: CollectorService) -> Router {
         ));
     Router::new()
         .route("/healthz", get(health))
+        .route("/version", get(version))
         .merge(hooks)
         .route("/v1/clients/register", post(inventory::register_client))
         .route("/v1/admin/clients", get(inventory::clients))
@@ -187,6 +191,7 @@ pub fn app_with_transport(service: CollectorService) -> Router {
 #[openapi(
     paths(
         health,
+        version,
         session_start,
         session_end,
         user_prompt_submit,
@@ -234,6 +239,24 @@ async fn openapi_document() -> Json<utoipa::openapi::OpenApi> {
 
 async fn swagger_ui() -> Html<&'static str> {
     Html(SWAGGER_UI_HTML)
+}
+
+#[utoipa::path(
+    get,
+    path = "/version",
+    tag = "Collector",
+    responses((status = 200, description = "The engine's release, profile and the contract versions it speaks", body = withhuman_contracts::version::EngineVersion))
+)]
+async fn version(
+    State(service): State<CollectorService>,
+) -> Json<withhuman_contracts::version::EngineVersion> {
+    Json(withhuman_contracts::version::EngineVersion {
+        engine: env!("CARGO_PKG_VERSION").to_owned(),
+        profile: service.config.profile.name().to_owned(),
+        schema: withhuman_common::POSTGRES_SCHEMA_VERSION,
+        hook_api: withhuman_contracts::version::HOOK_API,
+        contracts: withhuman_contracts::version::CONTRACTS.to_owned(),
+    })
 }
 
 #[utoipa::path(
@@ -853,8 +876,15 @@ fn hook_failure(
     error: impl fmt::Display,
 ) -> Response {
     // Record and shadow modes observe only: a failure must not block either. (Record mode never
-    // waits for a decision, so a missing one is expected there.)
-    if service.config.enforcement_mode != EnforcementMode::Enforce {
+    // waits for a decision, so a missing one is expected there.) The personal engine's shadow is
+    // the exception: with no gateway behind it, a Call it could not judge (an error, no answer in
+    // time) gets the failure policy, a deny by default, though a judged deny still runs.
+    let observes = match service.config.enforcement_mode {
+        EnforcementMode::Enforce => false,
+        EnforcementMode::Record => true,
+        EnforcementMode::Shadow => !service.config.profile.is_personal(),
+    };
+    if observes {
         return StatusCode::OK.into_response();
     }
     match policy.failure {

@@ -12,3 +12,4 @@ pub mod hooks;
 pub mod inventory;
 pub mod openclaw;
 pub mod triage;
+pub mod version;

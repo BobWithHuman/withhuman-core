@@ -39,6 +39,7 @@ async fn verifies_graph_version_and_persists_mock_verdict_over_real_http() {
     db.execute(r#"INSERT INTO nodes (session_id, seq, kind, event_name, "order") VALUES ($1, 7, 'Call', 'PreToolUse', 7)"#, &[&session_id]).await.unwrap();
 
     let config = DecisionConfig {
+        internal_token: None,
         bind_address: "127.0.0.1:0".parse().unwrap(),
         environment: RuntimeEnvironment::Test,
         provider: "mock".into(),

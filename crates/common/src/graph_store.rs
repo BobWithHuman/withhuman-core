@@ -15,15 +15,25 @@ pub struct PostgresSettings {
 impl PostgresSettings {
     /// `DATABASE_URL` (required) and `DATABASE_POOL_SIZE` (optional, at least 1).
     pub fn from_env() -> io::Result<Self> {
+        Self::from_env_as(crate::profile::Profile::from_env()?)
+    }
+
+    /// The settings with `profile`'s pool size when `DATABASE_POOL_SIZE` is unset: a few
+    /// connections for one machine's engine.
+    pub fn from_env_as(profile: crate::profile::Profile) -> io::Result<Self> {
         match env::var("WITHHUMAN_GRAPH_STORE").as_deref() {
             Ok("" | "postgres") | Err(env::VarError::NotPresent) => {}
             _ => return Err(invalid("WITHHUMAN_GRAPH_STORE must be postgres or unset")),
         }
-        Self::parse(
+        let mut settings = Self::parse(
             env::var("DATABASE_URL").ok(),
             env::var("DATABASE_POOL_SIZE").ok().as_deref(),
         )
-        .map_err(invalid)
+        .map_err(invalid)?;
+        if profile.is_personal() && env::var_os("DATABASE_POOL_SIZE").is_none() {
+            settings.pool_size = crate::profile::personal::POOL_SIZE;
+        }
+        Ok(settings)
     }
 
     pub fn parse(database_url: Option<String>, pool_size: Option<&str>) -> Result<Self, String> {

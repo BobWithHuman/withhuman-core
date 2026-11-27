@@ -6,6 +6,7 @@ members = [
     "services/collector",
     "services/decision",
     "services/generator",
+    "services/local",
     "tests/fixtures/mcp-server",
 ]
 

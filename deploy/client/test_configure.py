@@ -1185,6 +1185,24 @@ class GlobalSetupTest(Setup):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Nothing of WithHuman was found.", result.stdout)
 
+    def test_a_user_setup_can_let_calls_through_while_the_engine_is_away(self):
+        allow = self.home / ".config" / "withhuman" / "on-unreachable"
+        result = self.run_scope("user", "--on-unreachable", "allow")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(allow.read_text().strip(), "allow")
+        # Set up again without it, the default deny is back.
+        self.assertEqual(self.run_scope("user").returncode, 0)
+        self.assertFalse(allow.exists())
+        self.assertEqual(self.run_scope("user", "--on-unreachable", "allow").returncode, 0)
+        result = self.run_scope("user", "--uninstall")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(allow.exists())
+        # Neither a project's setup nor the device's takes it.
+        for scope in ("project", "managed"):
+            result = self.run_scope(scope, "--on-unreachable", "allow")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("goes with --scope user", result.stderr)
+
     def test_refuses_what_a_global_setup_cannot_do(self):
         for extra, said in ((("--key", KEY), "takes no key"),
                             (("--agent", "codex"), "per project")):

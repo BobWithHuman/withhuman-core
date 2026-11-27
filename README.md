@@ -679,7 +679,10 @@ whose hooks cannot carry the intent line can still be run in `record` or `shadow
 
 When the engine gives no judgment (unreachable, an error, no answer in time) a tool call is
 denied: the Collector defaults to `WITHHUMAN_ON_FAILURE=closed`, and `pre-tool-use.py` denies when
-it cannot reach the Collector. With `WITHHUMAN_ASK=ask` (Claude Code), a grade 2 or 3 call the
+it cannot reach the Collector. No environment variable lifts that; a user setup of a person's own
+engine (`configure.py --scope user --on-unreachable allow`, as the desktop app's own engine is set
+up) lets calls through while it is away, and a project's or the device's setup cannot. With
+`WITHHUMAN_ASK=ask` (Claude Code), a grade 2 or 3 call the
 engine could not judge is put to the user instead. A stored verdict is kept 5 minutes
 (`WITHHUMAN_VERDICT_TTL_SECS`).
 
@@ -926,6 +929,33 @@ half an interval ago.
 
 </details>
 
+
+## Personal and enterprise engines
+
+One engine, packaged two ways. The judging code is the same in both; `WITHHUMAN_PROFILE`
+(`crates/common/src/profile.rs`) decides every default that differs:
+
+| | `enterprise` (default) | `personal` |
+|---|---|---|
+| Judging | can deny (`WITHHUMAN_MODE=enforce`) | records only (`shadow` or `record`; `enforce` is refused) |
+| A Call it could not judge | denied (`WITHHUMAN_ON_FAILURE=closed`) | denied too, in `shadow` as well: no judgment is no allow |
+| Between its services | the cluster's network; `WITHHUMAN_INTERNAL_TOKEN` when set | a token made at each start: Generator and Decision take only each other's calls |
+| Store | shared PostgreSQL and Redis | its own PostgreSQL, state in memory (`REDIS_URL` not read) |
+| Entry | gateway, keys when `WITHHUMAN_REQUIRE_KEY=on` | the Collector itself, no key, MCP checked at the hook |
+| EDR, administration, triage | with `WITHHUMAN_WAZUH_URL`, `WITHHUMAN_ADMIN_TOKEN` | off (neither is read) |
+| Addresses | `0.0.0.0`, Compose names | `127.0.0.1`, ports 47380–47390, PostgreSQL 47432 |
+
+- Shared cluster (`enterprise`): the three service images; `infra/aws/staging`, where EKS runs the
+  Helm chart through Argo CD and `withhuman-gitops`.
+- Personal host with Docker: root `compose.yaml` and `.env`, the Docker deployment above.
+- Personal app (`personal`): `withhuman-local` (`services/local`) runs Decision, Generator and
+  Collector in one process on a PostgreSQL it installs in `WITHHUMAN_HOME`. The desktop app ships
+  it at a pinned engine version and starts it with `WITHHUMAN_PG_PASSWORD`,
+  `WITHHUMAN_VIEWER_PASSWORD` and `JEV_API_KEY`.
+
+The two products are matched by three contracts, served together at the Collector's
+`GET /version`: the PostgreSQL schema (`POSTGRES_SCHEMA_VERSION`, also the `engine_meta` table),
+the hook HTTP API (`withhuman_contracts::version::HOOK_API`) and `crates/contracts` itself.
 
 ## Contributing
 

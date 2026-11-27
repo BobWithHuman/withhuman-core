@@ -153,6 +153,7 @@ async fn traces_the_cause_and_denies_a_call_against_the_intent() {
     .await;
 
     let generator_config = GeneratorConfig {
+        internal_token: None,
         bind_address: "127.0.0.1:0".parse().unwrap(),
         decision_url,
         wazuh: None,

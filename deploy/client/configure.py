@@ -115,6 +115,9 @@ EVENTS = [
     "SessionEnd",
 ]
 HOOK_NAME = "pre-tool-use.py"
+# Beside the user's hooks folder: `allow` lets that hook's calls through while the engine cannot be
+# reached (--on-unreachable allow). Only a user setup writes it.
+UNREACHABLE_FILE = "on-unreachable"
 PROFILE_MARK = "# WithHuman client ID"
 KEY_MARK = "# WithHuman key"
 # A WithHuman key as the engine issues it.
@@ -1153,13 +1156,28 @@ def setup_agent(agent, args, project, stamp, report):
 
 
 def uninstall_user(home, stamp, report):
-    """Takes the user setup of the user at `home` out: the WithHuman hooks of their settings and
-    the hook in ~/.config/withhuman/hooks. Their client ID is kept."""
+    """Takes the user setup of the user at `home` out: the WithHuman hooks of their settings, the
+    hook in ~/.config/withhuman/hooks and its `on-unreachable`. Their client ID is kept."""
     clean(home / ".claude" / "settings.json", stamp, report)
-    hook = home / ".config" / "withhuman" / "hooks" / HOOK_NAME
-    if hook.is_file():
-        hook.unlink()
-        report.append(f"{hook}: removed")
+    folder = home / ".config" / "withhuman"
+    for path in (folder / "hooks" / HOOK_NAME, folder / UNREACHABLE_FILE):
+        if path.is_file():
+            path.unlink()
+            report.append(f"{path}: removed")
+
+
+def keep_unreachable(choice, report):
+    """What the user's hook does when it cannot reach the engine: `allow` lets calls through,
+    kept in ~/.config/withhuman/on-unreachable, beside the hook's folder where the hook reads it;
+    anything else denies, the default, and takes an earlier `allow` away."""
+    path = config_dir() / UNREACHABLE_FILE
+    if choice == "allow":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("allow\n", encoding="utf-8")
+        report.append(f"{path}: calls go through while the engine cannot be reached")
+    elif path.is_file():
+        path.unlink()
+        report.append(f"{path}: removed, calls are denied while the engine cannot be reached")
 
 
 def uninstall_global(scope, stamp, report):
@@ -1217,6 +1235,7 @@ def setup_global(args, hook_source, key_path, key, stamp, report):
         for home in user_homes():
             uninstall_user(home, stamp, report)
     else:
+        keep_unreachable(args.on_unreachable, report)
         path = Path.home() / ".claude" / "settings.json"
         settings = load(path)
         removed = remove_withhuman(settings)
@@ -1331,6 +1350,10 @@ def main():
     parser.add_argument("--scope", choices=["project", "user", "managed"], default="project",
                         help="claude: one project (default), every folder of this user, or every "
                              "user and folder of the device (managed; needs administrator rights)")
+    parser.add_argument("--on-unreachable", choices=["deny", "allow"], default="deny",
+                        help="with --scope user: what a tool call gets while the engine cannot be "
+                             "reached; deny (default), or allow for a person's own engine on their "
+                             "own machine")
     parser.add_argument("--reset", nargs="*", metavar="FOLDER",
                         help="take every WithHuman setup out: the managed one, this user's, and "
                              "the project ones of the folders named; client IDs are kept")
@@ -1347,6 +1370,9 @@ def main():
             else f"{agent.name} is set up per {agent.scope_note}"))
     if args.managed_hooks_only and args.scope != "managed":
         sys.exit("--managed-hooks-only goes with --scope managed")
+    if args.on_unreachable == "allow" and args.scope != "user":
+        sys.exit("--on-unreachable allow goes with --scope user: a project's or the device's "
+                 "hooks always deny while the engine cannot be reached")
     if args.scope == "managed" and args.key:
         sys.exit("a managed setup is for every user of the device and takes no key: each user "
                  "keeps their own (WITHHUMAN_KEY, or a setup with --key in their own account)")

@@ -582,6 +582,7 @@ async fn a_source_distrusted_through_the_api_holds_what_it_causes() {
     let generator = spawn(generator_app(GeneratorService::with_decision(
         generator_repository,
         HttpDecisionClient::new(&GeneratorConfig {
+            internal_token: None,
             bind_address: "127.0.0.1:0".parse().unwrap(),
             decision_url,
             wazuh: None,
