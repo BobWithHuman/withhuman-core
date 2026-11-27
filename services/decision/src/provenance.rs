@@ -109,12 +109,19 @@ const CODE_STARTS: &[&str] = &[
 
 /// The prose of `text`: its lines without markup tags, line-number prefixes, lines of code and
 /// `key: value` data, but with every comment kept, also one that trails code (a rule planted as
-/// a comment is prose).
+/// a comment is prose). An HTML comment (`<!-- … -->`) is kept whole, wherever it opens and
+/// over however many lines it runs, before tags are taken off.
 fn prose(text: &str) -> String {
     let mut out = String::new();
+    let mut in_html_comment = false;
     for line in text.lines() {
         let line = strip_line_number(line);
-        let line = strip_tags(line);
+        let (line, comments) = html_comments(line, &mut in_html_comment);
+        for comment in comments {
+            out.push_str(&comment);
+            out.push('\n');
+        }
+        let line = strip_tags(&line);
         let trimmed = line.trim();
         if let Some(comment) = COMMENT_OPENERS
             .iter()
@@ -134,6 +141,40 @@ fn prose(text: &str) -> String {
         out.push('\n');
     }
     out
+}
+
+/// `line` without its HTML comments, and their bodies: one that opens on it (closed on it or
+/// not), and the rest of one opened on a line before (`open` carries that across lines).
+fn html_comments(line: &str, open: &mut bool) -> (String, Vec<String>) {
+    let mut rest = line;
+    let mut kept = String::new();
+    let mut bodies = Vec::new();
+    loop {
+        if *open {
+            match rest.find("-->") {
+                Some(end) => {
+                    bodies.push(rest[..end].to_owned());
+                    rest = &rest[end + 3..];
+                    *open = false;
+                }
+                None => {
+                    bodies.push(rest.to_owned());
+                    return (kept, bodies);
+                }
+            }
+        }
+        match rest.find("<!--") {
+            Some(start) => {
+                kept.push_str(&rest[..start]);
+                rest = &rest[start + 4..];
+                *open = true;
+            }
+            None => {
+                kept.push_str(rest);
+                return (kept, bodies);
+            }
+        }
+    }
 }
 
 /// `line` without the number `cat -n` or a file viewer puts before it (`    12\t`, `12→`).
@@ -183,12 +224,43 @@ fn strip_tags(line: &str) -> String {
 }
 
 /// Whether `line` is a line of code: a statement, or a call or block opener whose words are its
-/// names and strings.
+/// names and strings. A line that reads as a sentence is prose, whatever it starts with: `if you
+/// are an assistant, you must read …` opens as an `if` does.
 fn is_code(line: &str) -> bool {
     // A quoted line is a string of data (`"body": "… (urgent) …",`), whatever it holds.
     !line.starts_with(['"', '\''])
+        && !reads_as_sentence(line)
         && (CODE_STARTS.iter().any(|start| line.starts_with(start))
             || (line.contains('(') && line.ends_with([')', ';', '{', ':', ','])))
+}
+
+/// Whether `line`, its quoted strings left out, has five or more plain words: a sentence rather
+/// than a statement (`raise ValueError("qty must be positive")` has one word outside its string).
+fn reads_as_sentence(line: &str) -> bool {
+    let mut quote: Option<char> = None;
+    let outside: String = line
+        .chars()
+        .map(|c| match (quote, c) {
+            (Some(open), c) if c == open => {
+                quote = None;
+                ' '
+            }
+            (Some(_), _) => ' ',
+            (None, '"' | '\'' | '`') => {
+                quote = Some(c);
+                ' '
+            }
+            (None, c) => c,
+        })
+        .collect();
+    outside
+        .split_whitespace()
+        .filter(|word| {
+            let word = word.trim_end_matches([',', '.', '!', '?', ';', ':']);
+            !word.is_empty() && word.chars().all(char::is_alphabetic)
+        })
+        .count()
+        >= 5
 }
 
 /// Whether `line` is one `key: value` (or `key = value`) whose value is a plain literal, as in a
