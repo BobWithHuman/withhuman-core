@@ -265,7 +265,8 @@ async fn registers_a_device_and_its_projects() {
     )
     .await;
     assert_eq!(status, 200);
-    assert_eq!(moved["user"], "cy@example.com");
+    // Nor does another user's key take the device: it stays the first user's.
+    assert_eq!(moved["user"], "ana@example.com");
     assert_eq!(moved["serial"], "C02TEST5678");
     assert_eq!(moved["owner"], "bo@example.com");
     assert_eq!(moved["owner_set_by"], "sec@example.com");
@@ -300,7 +301,7 @@ async fn registers_a_device_and_its_projects() {
     assert_eq!(cleared["owner_set_by"], "lead@example.com");
     assert_eq!(
         db.row(stored, &[&client_id]).await,
-        json!(["C02TEST5678", null, "lead@example.com", "cy@example.com"])
+        json!(["C02TEST5678", null, "lead@example.com", "ana@example.com"])
     );
     // A body that does not say the owner changes nothing; an unknown device is not made.
     let (status, _) = send(&url, "POST", &owner_path, Some(json!({"actor": "x"}))).await;
@@ -1403,6 +1404,9 @@ async fn an_exception_covers_a_session_only_where_it_applies() {
         (status, &removed["removed_by"]),
         (200, &json!("sec@example.com"))
     );
+    // A session that claimed it before is covered no longer.
+    let (_, flags) = send(&url, "GET", &format!("/v1/sessions/{covered}/flags"), None).await;
+    assert_eq!(flags["exception"], Value::Null);
     let (_, listed) = send(
         &url,
         "GET",

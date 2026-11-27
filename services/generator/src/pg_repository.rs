@@ -112,7 +112,8 @@ WHERE EXCLUDED.last_seen > client_cwds.last_seen + 30000 \
   OR EXCLUDED.first_seen < client_cwds.first_seen";
 
 // A client ID a Hook carried. The row is written only when something changes or `last_seen` is
-// 30 s old, so the sessions of one busy device do not queue on it.
+// 30 s old, so the sessions of one busy device do not queue on it. The user the device is
+// registered to is kept: a Hook with another user's key does not take the device over.
 const SEE_CLIENT: &str = "\
 INSERT INTO clients (client_id, team, user_email, first_seen, last_seen) \
 VALUES ($1::text, CASE WHEN position('/' IN $1::text) > 0 THEN split_part($1::text, '/', 1) END, \
@@ -120,7 +121,7 @@ VALUES ($1::text, CASE WHEN position('/' IN $1::text) > 0 THEN split_part($1::te
 ON CONFLICT (client_id) DO UPDATE SET \
   first_seen = LEAST(coalesce(clients.first_seen, EXCLUDED.first_seen), EXCLUDED.first_seen), \
   last_seen = GREATEST(coalesce(clients.last_seen, 0), EXCLUDED.last_seen), \
-  user_email = coalesce(EXCLUDED.user_email, clients.user_email) \
+  user_email = coalesce(clients.user_email, EXCLUDED.user_email) \
 WHERE clients.last_seen IS NULL OR clients.first_seen IS NULL \
   OR EXCLUDED.last_seen > clients.last_seen + 30000 \
   OR EXCLUDED.first_seen < clients.first_seen \

@@ -14,7 +14,8 @@ use crate::{
     repository::{KeyScope, RepositoryError},
 };
 
-// A registration fills what the setup reported and keeps the rest. Hook activity
+// A registration fills what the setup reported and keeps the rest, the first user it was
+// registered by included: another user's key does not take the device over. Hook activity
 // (`first_seen`, `last_seen`) is left to the Hooks, and the owner to the security team.
 const REGISTER_CLIENT: &str = "\
 INSERT INTO clients (client_id, team, hostname, os, os_user, hook_version, agent, user_email, \
@@ -29,7 +30,7 @@ ON CONFLICT (client_id) DO UPDATE SET \
   os_user = coalesce(EXCLUDED.os_user, clients.os_user), \
   hook_version = coalesce(EXCLUDED.hook_version, clients.hook_version), \
   agent = coalesce(EXCLUDED.agent, clients.agent), \
-  user_email = coalesce(EXCLUDED.user_email, clients.user_email), \
+  user_email = coalesce(clients.user_email, EXCLUDED.user_email), \
   serial = coalesce(EXCLUDED.serial, clients.serial), \
   other_serials = CASE WHEN cardinality(EXCLUDED.other_serials) > 0 \
     THEN EXCLUDED.other_serials ELSE clients.other_serials END, \
@@ -590,7 +591,12 @@ WHERE EXISTS (SELECT 1 FROM nodes WHERE session_id = $1::text AND seq = $2::bigi
   AND kind = 'Call') \
 RETURNING id";
 
-const SESSION_EXCEPTION: &str = "SELECT exception_id FROM sessions WHERE session_id = $1::text";
+// The session's exception while it is in force: a removed one covers nothing, sessions that
+// claimed it before included.
+const SESSION_EXCEPTION: &str = "\
+SELECT CASE WHEN e.removed_at IS NULL THEN s.exception_id END \
+FROM sessions s LEFT JOIN exceptions e ON e.id = s.exception_id \
+WHERE s.session_id = $1::text";
 
 // A check-in fills what the device reports and keeps the rest, the user it is registered to
 // included; a project it reports again keeps when it was first reported.
@@ -618,9 +624,11 @@ ON CONFLICT (client_id, project) DO UPDATE SET \
   last_used_at = GREATEST(client_seen_projects.last_used_at, EXCLUDED.last_used_at), \
   last_reported_at = EXCLUDED.last_reported_at";
 
-// The user a device is registered to. Another user's key cannot check in for it or read the
-// exceptions covering it.
-const CLIENT_OWNER: &str = "SELECT user_email FROM clients WHERE client_id = $1::text";
+// Whom a device belongs to: the owner the security team set, else the user whose key first
+// registered or used it. Another user's key cannot check in for it or read the exceptions
+// covering it; the owner is changed through the admin API (`PUT .../owner`), not by a key.
+const CLIENT_OWNER: &str =
+    "SELECT coalesce(owner_email, user_email) FROM clients WHERE client_id = $1::text";
 
 const EXCEPTION_COLUMNS: &str = "id, folder, team, client_id, actor, reason, created_at, \
 removed_at, removed_by";

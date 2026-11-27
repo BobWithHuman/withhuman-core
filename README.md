@@ -763,8 +763,11 @@ Hooks without a valid key are taken without a user unless `WITHHUMAN_REQUIRE_KEY
 denies their tool calls and refuses their other Hooks; turn it on before relying on revocation,
 since otherwise a user could drop the key.
 
-The inventory keeps two people for a device: `user`, whoever's key it presented last, and
-`owner`, the person the security team names for the machine. Name or clear the owner with
+The inventory keeps two people for a device: `user`, the first whose key registered or used it,
+and `owner`, the person the security team names for the machine. Another user's key does not
+take a device over: its check-ins and its read of the exceptions are refused for a device that
+belongs to someone else (the owner, else the user), so a device changes hands by naming its
+owner. Name or clear the owner with
 `POST /v1/admin/clients/<client_id>/owner` and `{"owner": "<email>" | null, "actor": ...}`. A
 client ID holds a slash (`<team>/<uuid>`), sent as one path segment: `team%2F<uuid>`.
 
