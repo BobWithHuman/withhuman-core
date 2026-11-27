@@ -37,6 +37,11 @@ pub struct ClientRegistration {
     /// The machine's hardware serial number; none when the setup could not read it.
     #[serde(default)]
     pub serial: Option<String>,
+    /// The machine's other hardware serial numbers the setup read: the BIOS's or the system's,
+    /// which a PC often numbers otherwise than its motherboard (`serial`). The device is matched
+    /// with its EDR device by any of them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub other_serials: Vec<String>,
 }
 
 /// A registration as the Collector passes it on: with the key's user when one was verified.
@@ -218,6 +223,14 @@ pub struct StopClientRequest {
     /// Why it is stopped; kept with the stop and not shown on the device.
     #[serde(default)]
     pub reason: Option<String>,
+}
+
+/// What `DELETE /v1/admin/clients/{client_id}` took out: the device and the sessions it ran.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
+pub struct DeletedClient {
+    pub client_id: String,
+    /// How many of its sessions were deleted, with every record of them.
+    pub sessions: u64,
 }
 
 /// `GET /v1/clients/{client_id}/state` (Generator): whether the device is stopped. A client

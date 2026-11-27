@@ -1060,6 +1060,7 @@ async fn judges_by_the_rules_alone_while_jev_keeps_failing() {
     let check = withhuman_decision::check::CheckSettings {
         degraded_failures: 1,
         degraded_seconds: 60,
+        ..Default::default()
     };
     let (provider, jev) = graded_provider(1.0, true, check);
     let first = provider
@@ -1086,6 +1087,70 @@ async fn judges_by_the_rules_alone_while_jev_keeps_failing() {
             .await
             .is_err()
     );
+}
+
+/// A judge that refuses every request with one HTTP status.
+struct Refusing {
+    status: u16,
+    asked: Mutex<usize>,
+}
+
+#[async_trait]
+impl JevClient for Refusing {
+    async fn ask(&self, _: &JevRequest, _: Duration) -> Result<JevResponse, JevError> {
+        *self.asked.lock().unwrap() += 1;
+        Err(JevError::Rejected(self.status))
+    }
+}
+
+fn refusing_provider(status: u16, shared_capacity: bool) -> (JevDecisionProvider, Arc<Refusing>) {
+    let jev = Arc::new(Refusing {
+        status,
+        asked: Mutex::default(),
+    });
+    let provider = JevDecisionProvider::new(
+        Arc::new(Graph::default()),
+        jev.clone(),
+        TraceSettings {
+            check: withhuman_decision::check::CheckSettings {
+                degraded_failures: 3,
+                degraded_seconds: 60,
+                shared_capacity,
+            },
+            ..TraceSettings::default()
+        },
+        Duration::from_secs(3),
+        Thresholds::default(),
+    );
+    (provider, jev)
+}
+
+#[tokio::test]
+async fn a_busy_shared_judge_counts_as_one_failure_and_a_too_large_request_as_none() {
+    let call = || request(Some("강제로 올리기"), Some(4_000));
+
+    // Jev's own 429 refuses the key's rate: the rules judge alone at once.
+    let (provider, _) = refusing_provider(429, false);
+    assert_eq!(
+        provider.decide(&call()).await.unwrap().rule,
+        "degraded::3-1"
+    );
+
+    // A shared judge's 429 is busy now: the mode starts only after failures in a row.
+    let (provider, _) = refusing_provider(429, true);
+    assert!(provider.decide(&call()).await.is_err());
+    assert!(provider.decide(&call()).await.is_err());
+    assert_eq!(
+        provider.decide(&call()).await.unwrap().rule,
+        "degraded::3-1"
+    );
+
+    // A 413 is about the request, not the judge: every Call still asks it.
+    let (provider, jev) = refusing_provider(413, true);
+    for _ in 0..5 {
+        assert!(provider.decide(&call()).await.is_err());
+    }
+    assert_eq!(*jev.asked.lock().unwrap(), 5);
 }
 
 /// A call the second question lets through goes to the user when the first question's own concern

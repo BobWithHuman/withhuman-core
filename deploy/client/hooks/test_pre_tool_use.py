@@ -3,6 +3,7 @@
 import http.server
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -73,13 +74,14 @@ class PreToolUseHookTest(unittest.TestCase):
     def write(self, name, text, executable=False):
         path = os.path.join(self.workspace, name)
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as file:
+        # As written, byte for byte: Windows' text mode would turn each "\n" into "\r\n".
+        with open(path, "w", newline="") as file:
             file.write(text)
         if executable:
             os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
 
     def run_marked(self, event, home, project):
-        """Runs the hook as the device-wide setup does, for any event."""
+        """Runs the hook as the setup does, for any event."""
         env = {**os.environ, "HOME": home, "USERPROFILE": home, "CLAUDE_PROJECT_DIR": project,
                "WITHHUMAN_CLIENT_ID": "team/device"}
         env.pop("WITHHUMAN_KEY", None)
@@ -88,7 +90,8 @@ class PreToolUseHookTest(unittest.TestCase):
                               input=json.dumps(event).encode(), capture_output=True, env=env,
                               timeout=30)
 
-    def run_hook(self, event, url=None, client_id="team/device", key=None, home=None, env=None):
+    def run_hook(self, event, url=None, client_id="team/device", key=None, home=None, env=None,
+                 hook=HOOK):
         # A home of its own, so the setup files of whoever runs the tests are not read.
         home = home or tempfile.mkdtemp()
         extra = env or {}
@@ -101,7 +104,7 @@ class PreToolUseHookTest(unittest.TestCase):
         if key:
             env["WITHHUMAN_KEY"] = key
         return subprocess.run(
-            [sys.executable, HOOK, url or self.url],
+            [sys.executable, hook, url or self.url],
             input=json.dumps(event).encode(),
             capture_output=True,
             env=env,
@@ -121,8 +124,9 @@ class PreToolUseHookTest(unittest.TestCase):
         result = self.run_hook(self.bash(command))
         self.assertEqual(result.returncode, 0, result.stderr)
         _, body = Collector.received[-1]
+        # The hook reports the platform's own path; compared here in one form.
         return {
-            os.path.relpath(program["path"], self.workspace): program
+            os.path.relpath(program["path"], self.workspace).replace(os.sep, "/"): program
             for program in body.get("withhuman_programs", [])
         }
 
@@ -138,7 +142,12 @@ class PreToolUseHookTest(unittest.TestCase):
         self.assertNotIn("truncated", run)
 
     def test_never_reads_files_a_command_could_not_run(self):
-        self.assertEqual(self.attached("cat secret.txt bin/data blob.py"), {})
+        self.assertEqual(self.attached("cat secret.txt blob.py"), {})
+
+    @unittest.skipIf(os.name == "nt", "Windows keeps no execute bit: a file starting with #! "
+                                      "is one Git Bash runs, so it could run")
+    def test_never_reads_a_script_without_its_execute_bit(self):
+        self.assertEqual(self.attached("cat bin/data"), {})
 
     def test_cuts_a_long_program_and_keeps_its_hash(self):
         big = self.attached("python big.py")["big.py"]
@@ -186,6 +195,22 @@ class PreToolUseHookTest(unittest.TestCase):
         self.assertEqual(headers["x-withhuman-client"], "team/device")
         self.assertEqual(headers["authorization"], "Bearer whk_env")
 
+    def test_reads_the_devices_client_id_beside_its_folder(self):
+        # A setup for the whole device keeps the hook in <device>/hooks and the ID in <device>.
+        device = tempfile.mkdtemp()
+        os.makedirs(os.path.join(device, "hooks"))
+        hook = os.path.join(device, "hooks", "pre-tool-use.py")
+        shutil.copyfile(HOOK, hook)
+        with open(os.path.join(device, "client-id"), "w") as file:
+            file.write("team/the-device\n")
+        event = {"session_id": "s", "tool_name": "Read", "tool_input": {"file_path": "/x"},
+                 "tool_use_id": "t", "cwd": self.workspace}
+        self.run_hook(event, client_id=None, hook=hook)
+        self.assertEqual(Collector.received[-1][0]["x-withhuman-client"], "team/the-device")
+        # The user's own file and the environment come first.
+        self.run_hook(event, hook=hook)
+        self.assertEqual(Collector.received[-1][0]["x-withhuman-client"], "team/device")
+
     def test_denies_when_the_collector_is_unreachable(self):
         result = self.run_hook(self.bash("ls"), url="http://127.0.0.1:9/v1/hooks/PreToolUse")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -193,6 +218,19 @@ class PreToolUseHookTest(unittest.TestCase):
         output = json.loads(result.stdout)["hookSpecificOutput"]
         self.assertEqual(output["permissionDecision"], "deny")
         self.assertEqual(output["hookEventName"], "PreToolUse")
+
+    def test_denies_when_unreachable_whatever_the_consoles_encoding(self):
+        """Found on Windows: printed through the text stream, the Korean reason could not be
+        encoded in cp1252, the hook died with exit 1 and no answer, and Claude Code runs a call
+        whose hook fails that way. Under cp949 the deny held, garbled. The answer is UTF-8
+        either way."""
+        for encoding in ("ascii", "cp1252", "cp949"):
+            result = self.run_hook(self.bash("ls"), url="http://127.0.0.1:9/v1/hooks/PreToolUse",
+                                   env={"PYTHONIOENCODING": encoding})
+            self.assertEqual(result.returncode, 0, f"{encoding}: {result.stderr}")
+            output = json.loads(result.stdout.decode("utf-8"))["hookSpecificOutput"]
+            self.assertEqual(output["permissionDecision"], "deny", encoding)
+            self.assertIn("WithHuman", output["permissionDecisionReason"], encoding)
 
     def test_no_setting_lifts_the_deny_when_unreachable(self):
         # The old fail-open escape hatch is gone: an unreachable engine always denies.
@@ -202,28 +240,6 @@ class PreToolUseHookTest(unittest.TestCase):
         output = json.loads(result.stdout)["hookSpecificOutput"]
         self.assertEqual(output["permissionDecision"], "deny")
 
-    def test_only_a_tool_call_is_denied_when_the_engine_is_unreachable(self):
-        # The device-wide hook sends every event; only PreToolUse can be denied, and the others
-        # report the failure without holding the prompt or session up.
-        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as project:
-            env = {**os.environ, "HOME": home, "USERPROFILE": home, "CLAUDE_PROJECT_DIR": project,
-                   "WITHHUMAN_CLIENT_ID": "team/device"}
-            env.pop("WITHHUMAN_KEY", None)
-
-            def run(event):
-                return subprocess.run([sys.executable, HOOK, "--withhuman-hook", "http://127.0.0.1:9"],
-                                      input=json.dumps(event).encode(), capture_output=True,
-                                      env=env, timeout=30)
-
-            prompt = run({"session_id": "s", "hook_event_name": "UserPromptSubmit", "cwd": project,
-                          "prompt": "go on"})
-            self.assertEqual(prompt.returncode, 1, prompt.stderr)
-            self.assertEqual(prompt.stdout, b"")
-            self.assertIn(b"unreachable", prompt.stderr)
-            call = run({**self.bash("ls"), "hook_event_name": "PreToolUse", "cwd": project})
-            self.assertEqual(call.returncode, 0, call.stderr)
-            output = json.loads(call.stdout)["hookSpecificOutput"]
-            self.assertEqual(output["permissionDecision"], "deny")
 
     def session(self, home, project, folder_events=("SessionStart", "UserPromptSubmit", "PostToolUse")):
         sent = []
@@ -282,6 +298,21 @@ class PreToolUseHookTest(unittest.TestCase):
             sent = self.session(home, "/work/secret/app", ("UserPromptSubmit",))
             self.assertEqual(len(sent[0]), 1, content)
 
+    def test_another_event_the_engine_cannot_take_goes_on_without_a_deny(self):
+        home = tempfile.mkdtemp()
+        env = {**os.environ, "HOME": home, "USERPROFILE": home}
+        result = subprocess.run([sys.executable, HOOK, "--withhuman-hook", "http://127.0.0.1:9"],
+                                input=json.dumps({"session_id": "s", "hook_event_name": "PostToolUse",
+                                                  "tool_name": "Read"}).encode(),
+                                capture_output=True, env=env, timeout=30)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, b"")
+        result = subprocess.run([sys.executable, HOOK, "--withhuman-hook", "http://127.0.0.1:9"],
+                                input=json.dumps({"session_id": "s", "hook_event_name": "PreToolUse",
+                                                  "tool_name": "Bash", "tool_input": {"command": "ls"}}).encode(),
+                                capture_output=True, env=env, timeout=30)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
 
 if __name__ == "__main__":
     unittest.main()

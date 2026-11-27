@@ -47,6 +47,8 @@ fn request_json(translated: &Translated) -> Value {
         Translated::PostToolUse(request) => serde_json::to_value(request),
         Translated::PostToolUseFailure(request) => serde_json::to_value(request),
         Translated::PostToolBatch(request) => serde_json::to_value(request),
+        Translated::MessageDisplay(request) => serde_json::to_value(request),
+        Translated::ConfigChange(request) => serde_json::to_value(request),
         Translated::SubagentStart(request) | Translated::SubagentStop(request) => {
             serde_json::to_value(request)
         }
@@ -109,6 +111,8 @@ fn claude_event(translated: &Translated) -> &'static str {
         Translated::PostToolUse(_) => "PostToolUse",
         Translated::PostToolUseFailure(_) => "PostToolUseFailure",
         Translated::PostToolBatch(_) => "PostToolBatch",
+        Translated::MessageDisplay(_) => "MessageDisplay",
+        Translated::ConfigChange(_) => "ConfigChange",
         Translated::SubagentStart(_) => "SubagentStart",
         Translated::SubagentStop(_) => "SubagentStop",
         Translated::SessionEnd(_) => "SessionEnd",

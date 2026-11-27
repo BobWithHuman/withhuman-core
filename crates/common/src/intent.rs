@@ -2,7 +2,7 @@
 //! it inferred from the prompt and the session. The Collector hides the line on screen and
 //! records it as the prompt's Intent node, apart from the message.
 
-const MARKER: &str = "[의도]";
+pub const MARKER: &str = "[의도]";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IntentLine<'a> {

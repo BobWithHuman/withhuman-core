@@ -3,7 +3,7 @@
 
 Forwards a hook event to the WithHuman Collector, as an HTTP hook would. The setup runs it for
 the events that carry content (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse,
-PostToolUseFailure), so it can keep a session the security team excepted on this device:
+PostToolUseFailure), so it can keep out a session the security team excepted on this device:
 
 usage: pre-tool-use.py --withhuman-hook <WithHuman server>
        pre-tool-use.py <Collector PreToolUse URL>          (an earlier setup's form)
@@ -13,9 +13,9 @@ At a session's start it fetches the exceptions that can cover this device and ke
 it sends only that the session started and under which exception, and nothing else of it. When
 the list cannot be fetched, the cache is dropped and everything is sent.
 
-For PreToolUse it attaches the local program files a Bash command may run, read just before
-the call, so the engine can judge the code a script run executes even when the agent never read
-the script.
+For PreToolUse it attaches the local program files a Bash command may run, read just before the
+call, so the engine can judge the code a script run executes even when the agent never read the
+script.
 
 Only files a command could run are attached: an existing regular file named in the command
 with a script extension, or an executable one that starts with `#!`. Other files the command
@@ -23,13 +23,15 @@ names, such as data or secrets, are never read. The Collector's answer is printe
 Claude Code gets the same allow, deny or ask as from the HTTP hook.
 
 When the Collector cannot be reached, times out or answers with an error, the hook denies a
-PreToolUse call: with no judgment there is nothing to allow it on, and an engine that is merely
-switched off must not lift every control. Any other event only reports the failure on stderr.
+PreToolUse call: with no judgment there is nothing to allow it on, and an engine that is merely switched off
+must not lift every control.
 
 It sends the device's client ID (WITHHUMAN_CLIENT_ID) and the user's WithHuman key
 (WITHHUMAN_KEY, as `Authorization: Bearer`). When Claude Code was started without them in its
 environment, from an IDE or app for instance, it reads them from ~/.config/withhuman/client-id
-and ~/.config/withhuman/key, which the setup wrote: the engine stops a revoked key's calls here.
+and ~/.config/withhuman/key, which the setup wrote, and then from the folder above its own, where
+a setup for the whole device (--scope managed) keeps the device's client ID: the engine stops a
+revoked key's calls, and a stopped device's, here.
 
 Python 3.8 or later, standard library only.
 """
@@ -56,29 +58,24 @@ CONFIG = os.path.join(os.path.expanduser("~"), ".config", "withhuman")
 EXCEPTIONS_CACHE = os.path.join(CONFIG, "exceptions.json")
 EXCEPTIONS_MAX_AGE = 24 * 3600
 EXCEPTIONS_TIMEOUT = 3
-
 UNREACHABLE_REASON = ("WithHuman에 연결하지 못해 이 도구 호출을 차단했습니다. "
                       "엔진이 실행 중인지 확인한 뒤 다시 시도하세요.")
 
 
 def unreachable(message):
-    """What the hook answers when the Collector gave no judgment: a deny."""
+    """What the hook answers when the Collector gave no judgment: a deny.
+
+    Written as UTF-8 bytes, as Claude Code reads it. Through the text stream, Windows encodes it
+    in the console's code page: cp949 garbles the Korean reason, and cp1252 cannot encode it at
+    all — the hook then dies with exit 1, which Claude Code takes as a non-blocking error and runs
+    the call."""
     print(f"WithHuman: {message}", file=sys.stderr)
-    sys.stdout.write(json.dumps({"hookSpecificOutput": {
+    sys.stdout.buffer.write(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "permissionDecision": "deny",
         "permissionDecisionReason": UNREACHABLE_REASON,
-    }}, ensure_ascii=False))
+    }}, ensure_ascii=False).encode("utf-8"))
     return 0
-
-
-def failed(name, message):
-    """A tool call the Collector gave no judgment for is denied; any other event only reports the
-    failure (a non-blocking error), so a prompt or a session is never held up by it."""
-    if name in (None, "PreToolUse"):
-        return unreachable(message)
-    print(f"WithHuman: {message}", file=sys.stderr)
-    return 1
 
 
 def words(command, powershell=False):
@@ -178,16 +175,21 @@ def programs(event):
 
 
 def setting(name, file):
-    """The environment variable `name`, else the setup's file of that name."""
+    """The environment variable `name`, else the setup's file of that name: the user's, else the
+    one beside the folder this hook is installed in, where a setup for the whole device keeps the
+    device's client ID."""
     value = os.environ.get(name, "").strip()
     if value:
         return value
-    try:
-        path = os.path.join(CONFIG, file)
-        with open(path, encoding="utf-8") as handle:
-            return handle.read().strip() or None
-    except OSError:
-        return None
+    for folder in (CONFIG, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))):
+        try:
+            with open(os.path.join(folder, file), encoding="utf-8") as handle:
+                value = handle.read().strip()
+        except OSError:
+            continue
+        if value:
+            return value
+    return None
 
 
 def under(folder, path):
@@ -268,13 +270,15 @@ def main():
         event = json.loads(raw)
     except ValueError:
         event = None  # Not JSON: forwarded as is, for the Collector to reject.
-    name = (event or {}).get("hook_event_name") if isinstance(event, dict) else None
+    name = event.get("hook_event_name") if isinstance(event, dict) else None
     if marked:
         server = arguments[0].rstrip("/")
         url = f"{server}/v1/hooks/{name or 'PreToolUse'}"
     else:
         url = arguments[0]
         server = url.split("/v1/hooks/")[0]
+    # Without a JSON event there is no telling which event it was: judged as a call.
+    judged = name in (None, "PreToolUse")
     client_id = setting("WITHHUMAN_CLIENT_ID", "client-id")
     key = setting("WITHHUMAN_KEY", "key")
 
@@ -282,17 +286,17 @@ def main():
         # A session the security team excepted keeps its start, without content, and nothing
         # else. The project folder is where the session started.
         folder = os.environ.get("CLAUDE_PROJECT_DIR") or event.get("cwd")
-        if name == "SessionStart":
+        if marked and name == "SessionStart":
             fetch_exceptions(server, client_id, key)
         exception = exception_for(folder, client_id) if marked else None
         if exception is not None:
             if name != "SessionStart":
                 return 0
-            event = {key_: event[key_] for key_ in ("session_id", "hook_event_name", "source",
-                                                    "cwd") if key_ in event}
+            event = {field: event[field] for field in ("session_id", "hook_event_name", "source",
+                                                       "cwd") if field in event}
             event["withhuman_exception"] = exception
             raw = json.dumps(event).encode("utf-8")
-        elif name in (None, "PreToolUse"):
+        elif judged:
             # Reading the programs must never keep the event from being judged.
             try:
                 attached = programs(event)
@@ -312,14 +316,24 @@ def main():
         # A blocking answer the Collector sends with an error status (fail-closed) still counts.
         try:
             body = error.read()
-            if json.loads(body).get("hookSpecificOutput", {}).get("permissionDecision"):
+            answer = json.loads(body)
+            if answer.get("hookSpecificOutput", {}).get("permissionDecision") or (
+                    not judged and answer.get("decision")):
                 sys.stdout.buffer.write(body)
                 return 0
         except (OSError, ValueError, AttributeError):
             pass
-        return failed(name, f"Collector answered {error.code}")
+        if not judged:
+            # Only a call needs a verdict; another event that does not reach the engine is
+            # reported as Claude Code reports a failed HTTP hook, and the session goes on.
+            print(f"WithHuman: Collector answered {error.code}", file=sys.stderr)
+            return 1
+        return unreachable(f"Collector answered {error.code}")
     except (urllib.error.URLError, OSError) as error:
-        return failed(name, f"Collector unreachable: {error}")
+        if not judged:
+            print(f"WithHuman: Collector unreachable: {error}", file=sys.stderr)
+            return 1
+        return unreachable(f"Collector unreachable: {error}")
     sys.stdout.buffer.write(body)
     return 0
 

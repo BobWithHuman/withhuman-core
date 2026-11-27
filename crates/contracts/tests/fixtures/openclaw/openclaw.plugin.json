@@ -1,0 +1,8 @@
+{
+  "id": "withhuman-capture",
+  "name": "WithHuman Capture",
+  "description": "Records the payload of every OpenClaw plugin hook; judges nothing.",
+  "version": "0.0.1",
+  "configSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+  "activation": { "onStartup": true }
+}

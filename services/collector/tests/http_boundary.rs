@@ -69,6 +69,40 @@ async fn no_longer_takes_instructions_or_file_change_hooks() {
     }
 }
 
+/// Every agent of the registry is routed, and one nobody wrote an adapter for is not. Their
+/// Hooks are named differently — Codex's `SessionStart` is Cursor's `sessionStart` — so what is
+/// checked is which of the two the route could not find: the event, or the agent itself.
+#[tokio::test]
+async fn routes_each_agent_of_the_registry_and_no_other() {
+    for agent in withhuman_collector::agent::REGISTRY {
+        let error = error_of(&format!("/v1/hooks/{}/beforeModelCall", agent.kind())).await;
+        assert_eq!(
+            error,
+            (StatusCode::NOT_FOUND, "unknown_event".to_owned()),
+            "agent {} is not routed",
+            agent.kind()
+        );
+    }
+    assert_eq!(
+        error_of("/v1/hooks/gemini/sessionStart").await,
+        (StatusCode::NOT_FOUND, "unknown_agent".to_owned())
+    );
+}
+
+async fn error_of(uri: &str) -> (StatusCode, String) {
+    let response = test_app()
+        .oneshot(json_request(uri, r#"{"session_id":"s","cwd":"/repo"}"#))
+        .await
+        .expect("router should respond");
+    let status = response.status();
+    let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+    let error: Value = serde_json::from_slice(&body).unwrap();
+    (
+        status,
+        error["error"].as_str().unwrap_or_default().to_owned(),
+    )
+}
+
 #[tokio::test]
 async fn rejects_missing_json_content_type() {
     let response = test_app()

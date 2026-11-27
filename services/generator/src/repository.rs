@@ -7,9 +7,10 @@ use withhuman_contracts::{
         RequestContinuationRequest, RequestContinuationResponse, SessionCursor, ToolCall,
     },
     inventory::{
-        ClientRecord, ClientRegistrationRecord, ClientState, KeyDenial, KeyRecord, NewKey, Review,
-        ReviewRequest, RevokeKeyRequest, SessionFlags, SessionStop, SessionStopRequest,
-        SetOwnerRequest, StopClientRequest, StopDenial, VerifyKeyRequest, VerifyKeyResponse,
+        ClientRecord, ClientRegistrationRecord, ClientState, DeletedClient, KeyDenial, KeyRecord,
+        NewKey, Review, ReviewRequest, RevokeKeyRequest, SessionFlags, SessionStop,
+        SessionStopRequest, SetOwnerRequest, StopClientRequest, StopDenial, VerifyKeyRequest,
+        VerifyKeyResponse,
     },
     triage::{
         DistrustSourceRequest, Evidence, MarkSessionRequest, MarkSessionsRequest, MarkedSession,
@@ -110,6 +111,12 @@ pub trait GraphRepository: Send + Sync + 'static {
         _request: StopClientRequest,
         _at: u64,
     ) -> Result<ClientRecord, RepositoryError> {
+        Err(RepositoryError::NotFound)
+    }
+
+    /// Deletes the device and every session it ran, with all that was recorded of them;
+    /// `NotFound` for a device the store holds nothing of.
+    async fn delete_client(&self, _client_id: &str) -> Result<DeletedClient, RepositoryError> {
         Err(RepositoryError::NotFound)
     }
 

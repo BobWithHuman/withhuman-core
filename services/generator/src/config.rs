@@ -2,7 +2,9 @@ use std::{env, fmt, io, net::SocketAddr, path::PathBuf, time::Duration};
 
 const DEFAULT_BIND_ADDRESS: &str = "0.0.0.0:8081";
 const DEFAULT_DECISION_URL: &str = "http://decision:8082";
-const DEFAULT_WAZUH_SYNC_INTERVAL_SECS: u64 = 900;
+// Two minutes: a coding agent is seen by the scan that catches it running, so the sooner a
+// scan is read, the less a short run without hooks slips by between syncs.
+const DEFAULT_WAZUH_SYNC_INTERVAL_SECS: u64 = 120;
 const MIN_WAZUH_SYNC_INTERVAL_SECS: u64 = 60;
 // Half of what a Wazuh manager takes in a minute by default (`max_request_per_minute: 300`),
 // past which it refuses every user's requests until the minute ends.
@@ -205,7 +207,7 @@ mod tests {
     fn the_defaults_verify_the_certificate() {
         let wazuh = with(&[]).unwrap().unwrap();
         assert_eq!(wazuh.url, "https://wazuh.example.com:55000");
-        assert_eq!(wazuh.sync_interval, Duration::from_secs(900));
+        assert_eq!(wazuh.sync_interval, Duration::from_secs(120));
         assert_eq!(wazuh.requests_per_minute, 150);
         assert_eq!(wazuh.tls, WazuhTls::PublicRoots);
         // Empty values are defaults too, as Compose passes them.

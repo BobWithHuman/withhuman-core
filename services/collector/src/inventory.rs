@@ -52,6 +52,8 @@ pub const USER_HEADER: &str = "x-withhuman-user";
 const BODY_LIMIT: usize = 8 * 1024 * 1024;
 /// Longest value a device may register in a field.
 const FIELD_LIMIT: usize = 1_024;
+/// The most other serial numbers a registration may carry (`other_serials`).
+const OTHER_SERIALS_LIMIT: usize = 4;
 
 pub async fn authenticate(
     State(service): State<CollectorService>,
@@ -229,6 +231,11 @@ pub async fn register_client(
     let client_id = registration.client_id.trim();
     if client_id.is_empty()
         || client_id.len() > FIELD_LIMIT
+        || registration.other_serials.len() > OTHER_SERIALS_LIMIT
+        || registration
+            .other_serials
+            .iter()
+            .any(|serial| serial.len() > FIELD_LIMIT)
         || fields.iter().any(|field| {
             field
                 .as_ref()
@@ -248,10 +255,21 @@ pub async fn register_client(
         .map(str::trim)
         .filter(|serial| !serial.is_empty())
         .map(str::to_owned);
+    // The others trimmed, without blanks, repeats or the motherboard's own.
+    let mut other_serials: Vec<String> = Vec::new();
+    for other in registration.other_serials.iter().map(|s| s.trim()) {
+        if !other.is_empty()
+            && serial.as_deref() != Some(other)
+            && !other_serials.iter().any(|kept| kept == other)
+        {
+            other_serials.push(other.to_owned());
+        }
+    }
     let record = ClientRegistrationRecord {
         registration: ClientRegistration {
             client_id: client_id.to_owned(),
             serial,
+            other_serials,
             ..registration
         },
         user,
@@ -857,6 +875,43 @@ pub async fn stop_client(
     .await;
     if response.status().is_success() {
         // This replica applies it at once; others within WITHHUMAN_KEY_CACHE_MS.
+        service.devices.forget();
+    }
+    response
+}
+
+#[utoipa::path(
+    delete,
+    path = "/v1/admin/clients/{client_id}",
+    tag = "Inventory",
+    params(
+        ("client_id" = String, Path, description = "The device's client ID as one path segment, its slash percent-encoded: `team%2Fuuid`"),
+        ("Authorization" = String, Header, description = "`Bearer <WITHHUMAN_ADMIN_TOKEN>`")
+    ),
+    responses(
+        (status = 200, description = "The device deleted from the inventory, with every session it ran and all that was recorded of them (the audit of keys stays). It cannot be undone. A device that sends Hooks again, or registers again, is recorded again: delete a device that is gone, or stop it first", body = withhuman_contracts::inventory::DeletedClient),
+        (status = 401, description = "Admin token missing or wrong"),
+        (status = 404, description = "No such device, or admin API disabled"),
+        (status = 502, description = "Generator unavailable")
+    )
+)]
+pub async fn delete_client(
+    State(service): State<CollectorService>,
+    Path(client_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if let Some(response) = not_admin(&service, &headers) {
+        return response;
+    }
+    let response = forward(
+        &service,
+        reqwest::Method::DELETE,
+        &["clients", &client_id],
+        None,
+    )
+    .await;
+    if response.status().is_success() {
+        // A stopped device deleted is stopped no more.
         service.devices.forget();
     }
     response

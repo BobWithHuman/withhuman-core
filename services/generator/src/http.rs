@@ -5,7 +5,7 @@ use axum::{
     extract::{FromRequest, Path, Request, State},
     http::StatusCode,
     response::{Html, IntoResponse, Response},
-    routing::{get, patch, post},
+    routing::{delete, get, patch, post},
 };
 use serde::{Serialize, de::DeserializeOwned};
 use utoipa::{OpenApi, ToSchema};
@@ -120,6 +120,7 @@ pub fn app(service: GeneratorService) -> Router {
         .route("/v1/sessions/mark", post(mark_sessions))
         .route("/v1/sources/distrust", post(distrust_source))
         .route("/v1/clients", post(register_client).get(clients))
+        .route("/v1/clients/{client_id}", delete(delete_client))
         .route("/v1/clients/{client_id}/owner", post(set_client_owner))
         .route("/v1/clients/{client_id}/stop", post(stop_client))
         .route("/v1/clients/{client_id}/state", get(client_state))
@@ -175,6 +176,7 @@ pub fn app(service: GeneratorService) -> Router {
         clients,
         set_client_owner,
         stop_client,
+        delete_client,
         client_state,
         record_stop_denial,
         verify_key,
@@ -543,6 +545,20 @@ async fn stop_client(
             .stop_client(&client_id, request, now())
             .await,
     )
+}
+
+#[utoipa::path(
+    delete,
+    path = "/v1/clients/{client_id}",
+    tag = "Generator",
+    params(("client_id" = String, Path, description = "As one path segment: `team%2Fuuid`")),
+    responses((status = 200, description = "The device and the sessions it ran, deleted with all that was recorded of them", body = withhuman_contracts::inventory::DeletedClient), (status = 404, body = ErrorResponse))
+)]
+async fn delete_client(
+    State(service): State<GeneratorService>,
+    Path(client_id): Path<String>,
+) -> Response {
+    reply(service.repository.delete_client(&client_id).await)
 }
 
 #[utoipa::path(

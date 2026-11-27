@@ -121,6 +121,32 @@ pub struct PreToolUseRequest {
     pub withhuman_programs: Vec<ProgramFile>,
 }
 
+/// The shell a client runs commands in, as its bridge reports it (`x-withhuman-shell`). It
+/// decides which Claude Code tool a shell call becomes, and so which rules judge it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ClientShell {
+    #[default]
+    Posix,
+    PowerShell,
+}
+
+impl ClientShell {
+    pub fn from_header(value: Option<&str>) -> Self {
+        match value.map(str::trim) {
+            Some(value) if value.eq_ignore_ascii_case("powershell") => Self::PowerShell,
+            _ => Self::Posix,
+        }
+    }
+
+    /// The Claude Code tool a shell call becomes.
+    pub fn tool_name(self) -> &'static str {
+        match self {
+            Self::Posix => "Bash",
+            Self::PowerShell => "PowerShell",
+        }
+    }
+}
+
 /// A local program file as the client read it just before the Call.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 pub struct ProgramFile {

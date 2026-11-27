@@ -274,6 +274,12 @@ impl GeneratorTransport for Generator {
                 json!({"client_id": client_id, "owner": body["owner"],
                        "owner_set_by": body["actor"], "projects": []})
             }
+            ["clients", client_id] if method == reqwest::Method::DELETE => {
+                if *client_id != "team/1234" {
+                    return Ok((404, json!({"error": "graph_resource_not_found"})));
+                }
+                json!({"client_id": client_id, "sessions": 3})
+            }
             ["clients", client_id, "stop"] if *client_id != "team/1234" => {
                 return Ok((404, json!({"error": "graph_resource_not_found"})));
             }
@@ -749,6 +755,25 @@ async fn devices_register_with_their_keys_user() {
     long["serial"] = json!("9".repeat(1_025));
     let (status, _) = post(&app, "/v1/clients/register", long, &[]).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+    // The other serials go on trimmed, without blanks, repeats or the motherboard's own.
+    let mut others = registration.clone();
+    others["other_serials"] = json!([" 5CD5479KD6 ", "", "C02TEST1234", "5CD5479KD6"]);
+    let (status, _) = post(&app, "/v1/clients/register", others, &[]).await;
+    assert_eq!(status, StatusCode::OK);
+    {
+        let calls = generator.inventory.lock().unwrap();
+        assert_eq!(
+            calls.last().unwrap().2.as_ref().unwrap()["other_serials"],
+            json!(["5CD5479KD6"])
+        );
+    }
+    // Too many, or one too long, is refused.
+    for refused in [json!(["a", "b", "c", "d", "e"]), json!(["9".repeat(1_025)])] {
+        let mut others = registration.clone();
+        others["other_serials"] = refused;
+        let (status, _) = post(&app, "/v1/clients/register", others, &[]).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
     // Without a key a device still registers, with no user.
     let (status, body) = post(&app, "/v1/clients/register", registration.clone(), &[]).await;
     assert_eq!((status, &body["user"]), (StatusCode::OK, &Value::Null));
@@ -1509,4 +1534,50 @@ async fn stop_checks_are_cached_per_session() {
         post(&app, "/v1/hooks/PreToolUse", event, &[]).await;
     }
     assert_eq!(*generator.flag_lookups.lock().unwrap(), 1);
+}
+
+#[tokio::test]
+async fn administrators_delete_a_device_with_its_sessions() {
+    let generator = Arc::new(Generator::with_keys());
+    let app = app(generator.clone(), |config| {
+        config.admin_token = Some(ADMIN.into())
+    });
+    let delete = |path: &str, token: Option<&str>| {
+        let mut request = Request::delete(path);
+        if let Some(token) = token {
+            request = request.header("authorization", bearer(token));
+        }
+        let app = app.clone();
+        async move {
+            read(
+                app.oneshot(request.body(Body::empty()).unwrap())
+                    .await
+                    .unwrap(),
+            )
+            .await
+        }
+    };
+    // Only with the admin token.
+    let (status, _) = delete("/v1/admin/clients/team%2F1234", None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(generator.inventory.lock().unwrap().is_empty());
+    let (status, body) = delete("/v1/admin/clients/team%2F1234", Some(ADMIN)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, json!({"client_id": "team/1234", "sessions": 3}));
+    {
+        let calls = generator.inventory.lock().unwrap();
+        // The client ID reaches the Generator whole, as one segment.
+        assert_eq!(
+            calls.last().unwrap(),
+            &(
+                "DELETE".to_owned(),
+                vec!["clients".to_owned(), "team/1234".to_owned()],
+                None
+            )
+        );
+    }
+    let (status, _) = delete("/v1/admin/clients/team%2Fnone", Some(ADMIN)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (_, document) = get(&app, "/api-docs/openapi.json", &[]).await;
+    assert!(document["paths"]["/v1/admin/clients/{client_id}"]["delete"].is_object());
 }
