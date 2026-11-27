@@ -300,6 +300,14 @@ class AntigravityHookTest(unittest.TestCase):
                 (self.data / "audit.jsonl").read_text().splitlines()]
         self.assertEqual([row["decision"] for row in rows], ["deny"])
 
+    def test_the_local_audit_names_the_session_and_the_call(self):
+        """Found on Windows with Antigravity CLI 1.5.18: every row named neither, read under
+        Claude Code's field names, so a row could not be matched to what the engine kept."""
+        Collector.answers["PreToolUse"] = decision("deny", "touches the hooks")
+        self.call(call_id="call_7")
+        row = json.loads((self.data / "audit.jsonl").read_text().splitlines()[-1])
+        self.assertEqual((row["session_id"], row["tool_use_id"]), ("conv-1", "call_7"))
+
     def test_the_check_reports_the_engine_knows_antigravity(self):
         Collector.answers["PreToolUse"] = b'{"error": "invalid_antigravity_hook"}'
         Collector.status = 400
