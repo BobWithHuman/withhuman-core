@@ -432,4 +432,3 @@ fn an_own_copy_keeps_an_instructions_command_from_it() {
         "{found:?}"
     );
 }
-
