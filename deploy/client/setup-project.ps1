@@ -1,4 +1,5 @@
-# Sets up WithHuman for Claude Code or Codex CLI in the current folder (Windows), replacing any
+# Sets up WithHuman for Claude Code, Codex CLI, Cursor CLI, GitHub Copilot CLI or Antigravity
+# CLI in the current folder (Windows), replacing any
 # earlier WithHuman setup. Run it in PowerShell, in the folder you start the agent in:
 #
 #   $env:WITHHUMAN_SERVER = "https://withhuman.example.com"
@@ -7,8 +8,10 @@
 # $env:WITHHUMAN_SERVER is the address of your own engine; WithHuman is self-hosted, so there is no
 # default. A team name goes in $env:WITHHUMAN_TEAM first; $env:WITHHUMAN_REF picks the branch the
 # files are fetched from (default: main), $env:WITHHUMAN_BASE_URL another place serving the
-# deploy/client folder (a mirror or a test). $env:WITHHUMAN_AGENT picks the agent: claude (default)
-# or codex. Running it again updates the setup; $env:WITHHUMAN_UNINSTALL = "1" takes WithHuman out
+# deploy/client folder (a mirror or a test). $env:WITHHUMAN_AGENT picks the agent: claude
+# (default), antigravity, codex, copilot, cursor, hermes or openclaw (Hermes is set up for its
+# profile, HERMES_HOME, not for the
+# folder). Running it again updates the setup; $env:WITHHUMAN_UNINSTALL = "1" takes WithHuman out
 # of the folder instead, keeping other hooks. See configure.py for what it changes.
 # $env:WITHHUMAN_KEY is the user's key from the security team, when the engine issues keys.
 # WITHHUMAN_CLIENT_ID (and WITHHUMAN_KEY) are set for new windows and for this one.
@@ -19,12 +22,29 @@
     $team = if ($env:WITHHUMAN_TEAM) { $env:WITHHUMAN_TEAM } else { "default" }
     $base = if ($env:WITHHUMAN_BASE_URL) { $env:WITHHUMAN_BASE_URL.TrimEnd("/") } else { "https://raw.githubusercontent.com/BobWithHuman/withhuman-core/$ref/deploy/client" }
     $agent = if ($env:WITHHUMAN_AGENT) { $env:WITHHUMAN_AGENT } else { "claude" }
-    if ($agent -notin @("claude", "codex")) { throw "WITHHUMAN_AGENT must be claude or codex: $agent" }
     $uninstall = [bool]$env:WITHHUMAN_UNINSTALL
-    # The files configure.py needs: the Claude Code hook, which the Codex hook also uses to attach
-    # program files, and the Codex hook with its transcript reader.
+    # The files configure.py needs. Claude Code takes only its own hook; every other agent also
+    # takes the shared bridge, that same hook (its bridge uses it to attach the program files a
+    # command would run) and its own, named here. Adding an agent is one entry here and one in
+    # configure.py's AGENTS.
+    $bridges = @{
+        antigravity = @("antigravity/withhuman-hook.py", "antigravity/antigravity_transcript.py")
+        codex = @("codex/withhuman-hook.py", "codex/codex_transcript.py")
+        copilot = @("copilot/withhuman-hook.py", "copilot/copilot_transcript.py")
+        cursor = @("cursor/withhuman-hook.py")
+        hermes = @("hermes/__init__.py", "hermes/plugin.yaml", "hermes/withhuman-hook.py")
+        # OpenClaw loads a plugin recorded in its own configuration, so its own files are
+        # that plugin and what OpenClaw needs to install it.
+        openclaw = @("openclaw/withhuman-hook.py", "openclaw/index.js",
+                     "openclaw/openclaw.plugin.json", "openclaw/package.json")
+    }
     $files = @("configure.py", "hooks/pre-tool-use.py")
-    if ($agent -eq "codex") { $files += @("codex/withhuman-hook.py", "codex/codex_transcript.py") }
+    if ($agent -ne "claude") {
+        if (-not $bridges.ContainsKey($agent)) {
+            throw "WITHHUMAN_AGENT must be claude or one of: $($bridges.Keys -join ', '): $agent"
+        }
+        $files += @("hooks/withhuman_bridge.py") + $bridges[$agent]
+    }
 
     if (-not $env:WITHHUMAN_SERVER -and -not $uninstall) {
         throw @"
@@ -64,8 +84,8 @@ WITHHUMAN_SERVER is required: the address of your own WithHuman engine.
         $project = (Get-Location).Path
         if ($uninstall) {
             & $python $configure --uninstall --agent $agent --project $project
-        } elseif ($agent -eq "codex") {
-            & $python $configure --agent codex --project $project --team $team --server $env:WITHHUMAN_SERVER
+        } elseif ($agent -ne "claude") {
+            & $python $configure --agent $agent --project $project --team $team --server $env:WITHHUMAN_SERVER
         } else {
             & $python $configure --project $project --team $team --server $env:WITHHUMAN_SERVER
         }

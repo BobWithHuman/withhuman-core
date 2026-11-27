@@ -1,0 +1,11 @@
+{
+  "name": "openclaw-plugin-withhuman-capture",
+  "version": "0.0.1",
+  "type": "module",
+  "private": true,
+  "files": ["capture-harness.js", "openclaw.plugin.json"],
+  "openclaw": {
+    "extensions": ["./capture-harness.js"],
+    "compat": { "pluginApi": ">=2026.11.7" }
+  }
+}

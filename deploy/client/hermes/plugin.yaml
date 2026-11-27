@@ -1,0 +1,14 @@
+name: withhuman
+version: "1.0"
+description: WithHuman judges every tool call against what the user asked for, and blocks what does not belong
+provides_hooks:
+  - on_session_start
+  - pre_llm_call
+  - post_api_request
+  - pre_tool_call
+  - post_tool_call
+  - on_session_end
+  - on_session_finalize
+  - subagent_start
+  - subagent_stop
+  - post_compaction

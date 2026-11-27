@@ -1,0 +1,50 @@
+{
+ "withhuman-probe": {
+  "SessionStart": [
+   {
+    "type": "command",
+    "command": "python3 \"<plugin root>/hooks/probe.py\" SessionStart"
+   }
+  ],
+  "PreInvocation": [
+   {
+    "type": "command",
+    "command": "python3 \"<plugin root>/hooks/probe.py\" PreInvocation"
+   }
+  ],
+  "PostInvocation": [
+   {
+    "type": "command",
+    "command": "python3 \"<plugin root>/hooks/probe.py\" PostInvocation"
+   }
+  ],
+  "Stop": [
+   {
+    "type": "command",
+    "command": "python3 \"<plugin root>/hooks/probe.py\" Stop"
+   }
+  ],
+  "PreToolUse": [
+   {
+    "matcher": "",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "python3 \"<plugin root>/hooks/probe.py\" PreToolUse"
+     }
+    ]
+   }
+  ],
+  "PostToolUse": [
+   {
+    "matcher": "",
+    "hooks": [
+     {
+      "type": "command",
+      "command": "python3 \"<plugin root>/hooks/probe.py\" PostToolUse"
+     }
+    ]
+   }
+  ]
+ }
+}

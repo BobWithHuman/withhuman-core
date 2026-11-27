@@ -24,6 +24,8 @@ import re
 import time
 from urllib.parse import unquote, urlparse
 
+import withhuman_bridge  # beside this file, or one directory up in the repository
+
 CODEX_VERSION = "0.154.0"
 
 # Codex names for its shell tool, in the transcript and in hooks.
@@ -32,51 +34,12 @@ SHELL_TOOLS = ("Bash", "exec_command", "shell", "local_shell", "shell_command", 
 MAX_IDS = 500
 # Characters of a web result kept for the engine.
 MAX_WEB_TEXT = 20000
-LOCK_WAIT_SECONDS = 3.0
-STALE_LOCK_SECONDS = 30.0
 
 
-class TranscriptError(Exception):
-    """The transcript could not be read."""
-
-
-def read_records(path, offset):
-    """The JSON records of the complete lines after byte `offset`, and the offset after them.
-
-    A line Codex is still writing (no newline yet) is left for the next read. Invalid complete
-    records and a truncated transcript cannot advance the confirmed cursor.
-    """
-    if not path:
-        raise TranscriptError("no transcript_path")
-    try:
-        with open(path, "rb") as file:
-            size = os.fstat(file.fileno()).st_size
-            if offset > size:
-                raise TranscriptError("transcript was truncated; start a new session")
-            file.seek(offset)
-            data = file.read()
-    except OSError as error:
-        raise TranscriptError(str(error)) from error
-    end = data.rfind(b"\n") + 1
-    records = []
-    for line in data[:end].split(b"\n"):
-        if not line.strip():
-            continue
-        try:
-            record = json.loads(line)
-        except ValueError as error:
-            raise TranscriptError("invalid transcript record") from error
-        if not isinstance(record, dict):
-            raise TranscriptError("transcript record is not an object")
-        records.append(record)
-    return records, offset + end
-
-
-def file_size(path):
-    try:
-        return os.path.getsize(path)
-    except (OSError, TypeError):
-        return 0
+# The transcript reader every agent that keeps a JSONL session shares.
+TranscriptError = withhuman_bridge.TranscriptError
+read_records = withhuman_bridge.read_records
+file_size = withhuman_bridge.file_size
 
 
 def _text(content):
@@ -245,79 +208,26 @@ def _remember(items, value):
     del items[:-MAX_IDS]
 
 
-class Session:
-    """What the hook remembers of one session between its runs, kept in a JSON file."""
+class Session(withhuman_bridge.State):
+    """What the hook remembers of one Codex session between its runs. The file, its lock and
+    the outbox are every bridge's (`withhuman_bridge.State`); what follows is Codex's own."""
 
-    def __init__(self, directory, session_id):
-        key = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:32]
-        self.path = os.path.join(directory, key + ".json")
-        self.lock_path = self.path + ".lock"
-        self.locked = False
-        self.state = {
-            "offset": 0,
-            "calls": {},
-            "pre": [],
-            "posted": [],
-            "messages": [],
-            "batch_open": False,
-            "webrun_hooked": False,
-            "turn_id": None,
-            "last_message": None,
-            # The directory the turn runs in: where Codex runs a shell call given none.
-            "turn_cwd": None,
-            # Shell calls inside code-mode `exec` scripts, waiting for their hooks.
-            "code_shells": [],
-            "completed": [],
-            "outbox": None,
-            "resync_required": False,
-        }
-
-    def __enter__(self):
-        """Takes the session's lock, waiting while a parallel hook holds it. Without the lock
-        the session is still read but its state is not changed."""
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        deadline = time.monotonic() + LOCK_WAIT_SECONDS
-        while True:
-            try:
-                os.close(os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
-                self.locked = True
-                break
-            except FileExistsError:
-                try:
-                    # Never steal a lock from a live or interrupted hook. Its delivery may
-                    # have reached the engine; a new session is the safe recovery path.
-                    pass
-                except OSError:
-                    pass
-                if time.monotonic() >= deadline:
-                    break
-                time.sleep(0.02)
-        try:
-            with open(self.path, encoding="utf-8") as file:
-                loaded = json.load(file)
-            if isinstance(loaded, dict):
-                self.state.update(loaded)
-        except FileNotFoundError:
-            pass
-        except (OSError, ValueError) as error:
-            self.state["resync_required"] = True
-        return self
-
-    def save(self):
-        if not self.locked:
-            return
-        temporary = self.path + ".tmp"
-        with open(temporary, "w", encoding="utf-8") as file:
-            json.dump(self.state, file)
-        os.replace(temporary, self.path)
-
-    def __exit__(self, *_):
-        if self.locked:
-            try:
-                os.remove(self.lock_path)
-            except OSError:
-                pass
-            self.locked = False
+    DEFAULTS = {
+        "offset": 0,
+        "calls": {},
+        "pre": [],
+        "posted": [],
+        "messages": [],
+        "batch_open": False,
+        "webrun_hooked": False,
+        "turn_id": None,
+        "last_message": None,
+        # The directory the turn runs in: where Codex runs a shell call given none.
+        "turn_cwd": None,
+        # Shell calls inside code-mode `exec` scripts, waiting for their hooks.
+        "code_shells": [],
+        "completed": [],
+    }
 
     # ---- what the hooks themselves say ----
 

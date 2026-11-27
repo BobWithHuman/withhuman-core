@@ -1,0 +1,110 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "python3 \"/tmp/project/cursor-capture/.cursor/capture.py\" sessionStart"
+      }
+    ],
+    "sessionEnd": [
+      {
+        "command": "python3 \"/tmp/project/cursor-capture/.cursor/capture.py\" sessionEnd"
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": "python3 \"/tmp/project/cursor-capture/.cursor/capture.py\" preToolUse"
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "python3 \"/tmp/project/cursor-capture/.cursor/capture.py\" postToolUse"
+      }
+    ],
+    "postToolUseFailure": [
+      {
+        "command": "python3 \"/tmp/project/cursor-capture/.cursor/capture.py\" postToolUseFailure"
+      }
+    ],
+    "subagentStart": [
+      {
+        "command": "python3 \"/tmp/project/cursor-capture/.cursor/capture.py\" subagentStart"
+      }
+    ],
+    "subagentStop": [
+      {
+        "command": "python3 \"/tmp/project/cursor-capture/.cursor/capture.py\" subagentStop"
+      }
+    ],
+    "beforeShellExecution": [
+      {
+        "command": "python3 \"/tmp/project/cursor-capture/.cursor/capture.py\" beforeShellExecution"
+      }
+    ],
+    "afterShellExecution": [
+      {
+        "command": "python3 \"/tmp/project/cursor-capture/.cursor/capture.py\" afterShellExecution"
+      }
+    ],
+    "beforeMCPExecution": [
+      {
+        "command": "python3 \"/tmp/project/cursor-capture/.cursor/capture.py\" beforeMCPExecution"
+      }
+    ],
+    "afterMCPExecution": [
+      {
+        "command": "python3 \"/tmp/project/cursor-capture/.cursor/capture.py\" afterMCPExecution"
+      }
+    ],
+    "beforeReadFile": [
+      {
+        "command": "python3 \"/tmp/project/cursor-capture/.cursor/capture.py\" beforeReadFile"
+      }
+    ],
+    "afterFileEdit": [
+      {
+        "command": "python3 \"/tmp/project/cursor-capture/.cursor/capture.py\" afterFileEdit"
+      }
+    ],
+    "beforeSubmitPrompt": [
+      {
+        "command": "python3 \"/tmp/project/cursor-capture/.cursor/capture.py\" beforeSubmitPrompt"
+      }
+    ],
+    "preCompact": [
+      {
+        "command": "python3 \"/tmp/project/cursor-capture/.cursor/capture.py\" preCompact"
+      }
+    ],
+    "stop": [
+      {
+        "command": "python3 \"/tmp/project/cursor-capture/.cursor/capture.py\" stop"
+      }
+    ],
+    "afterAgentResponse": [
+      {
+        "command": "python3 \"/tmp/project/cursor-capture/.cursor/capture.py\" afterAgentResponse"
+      }
+    ],
+    "afterAgentThought": [
+      {
+        "command": "python3 \"/tmp/project/cursor-capture/.cursor/capture.py\" afterAgentThought"
+      }
+    ],
+    "beforeTabFileRead": [
+      {
+        "command": "python3 \"/tmp/project/cursor-capture/.cursor/capture.py\" beforeTabFileRead"
+      }
+    ],
+    "afterTabFileEdit": [
+      {
+        "command": "python3 \"/tmp/project/cursor-capture/.cursor/capture.py\" afterTabFileEdit"
+      }
+    ],
+    "workspaceOpen": [
+      {
+        "command": "python3 \"/tmp/project/cursor-capture/.cursor/capture.py\" workspaceOpen"
+      }
+    ]
+  }
+}

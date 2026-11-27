@@ -1,0 +1,2395 @@
+{
+  "source": "Hermes Agent v0.23.3 plugin hooks on Windows 11, recorded with a scripted model and sent as the WithHuman plugin forwards them",
+  "platform": "windows",
+  "hermes_version": "0.23.3",
+  "fixtures": [
+    {
+      "scenario": "s1_basic",
+      "input": {
+        "hook_event_name": "on_session_start",
+        "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "model": "mock-model",
+        "platform": "cli",
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5"
+      }
+    },
+    {
+      "scenario": "s1_basic",
+      "input": {
+        "hook_event_name": "pre_llm_call",
+        "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "task_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "turn_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0",
+        "user_message": "S1 워크스페이스를 점검해줘",
+        "is_first_turn": true,
+        "model": "mock-model",
+        "platform": "cli",
+        "parent_session_id": "",
+        "sender_id": "sid:S-1-5-21-4069450475-111068158-3907667079-1001",
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5"
+      }
+    },
+    {
+      "scenario": "s1_basic",
+      "input": {
+        "hook_event_name": "post_api_request",
+        "task_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "turn_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0",
+        "api_request_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0:api:1",
+        "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "platform": "cli",
+        "model": "mock-model",
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "api_call_count": 1,
+        "api_duration": 0.928912878036499,
+        "started_at": 1795420315.9099271,
+        "ended_at": 1795420316.83884,
+        "first_chunk_at": 1795420316.826186,
+        "finish_reason": "tool_calls",
+        "message_count": 2,
+        "response_model": "mock-model",
+        "response": {
+          "model": "mock-model",
+          "upstream_provider": null,
+          "finish_reason": "tool_calls",
+          "assistant_message": {
+            "role": "assistant",
+            "content": "[의도] 사용자는 워크스페이스 상태를 확인하고 싶음 (확신도 높음)",
+            "tool_calls": [
+              {
+                "id": "call_s1_cd",
+                "name": "terminal",
+                "arguments": "{\"command\": \"cd sub && pwd\"}",
+                "provider_data": null
+              }
+            ]
+          },
+          "usage": {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "request_count": 1,
+            "cache_write_by_ttl": [],
+            "prompt_tokens": 100,
+            "total_tokens": 120
+          }
+        },
+        "context_length": 131072,
+        "assistant_content_chars": 37,
+        "assistant_tool_call_count": 1,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5"
+      }
+    },
+    {
+      "scenario": "s1_basic",
+      "input": {
+        "hook_event_name": "pre_tool_call",
+        "task_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "tool_call_id": "call_s1_cd",
+        "turn_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0",
+        "api_request_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0:api:1",
+        "conversation_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "tool_name": "terminal",
+        "args": {
+          "command": "cd sub && pwd"
+        },
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "withhuman_workdir": "C:\\work\\project"
+      }
+    },
+    {
+      "scenario": "s1_basic",
+      "input": {
+        "hook_event_name": "post_tool_call",
+        "tool_name": "terminal",
+        "args": {
+          "command": "cd sub && pwd"
+        },
+        "result": "{\"output\": \"/c/work/project/sub\", \"exit_code\": 0, \"error\": null, \"cwd\": \"C:\\\\work\\\\project\\\\sub\"}",
+        "task_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "tool_call_id": "call_s1_cd",
+        "turn_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0",
+        "api_request_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0:api:1",
+        "conversation_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "duration_ms": 1341,
+        "status": "ok",
+        "error_type": null,
+        "error_message": null,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "withhuman_workdir": "C:\\work\\project"
+      }
+    },
+    {
+      "scenario": "s1_basic",
+      "input": {
+        "hook_event_name": "post_api_request",
+        "task_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "turn_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0",
+        "api_request_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0:api:2",
+        "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "platform": "cli",
+        "model": "mock-model",
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "api_call_count": 2,
+        "api_duration": 0.010647773742675781,
+        "started_at": 1795420318.3633778,
+        "ended_at": 1795420318.3740256,
+        "first_chunk_at": 1795420318.3722126,
+        "finish_reason": "tool_calls",
+        "message_count": 4,
+        "response_model": "mock-model",
+        "response": {
+          "model": "mock-model",
+          "upstream_provider": null,
+          "finish_reason": "tool_calls",
+          "assistant_message": {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "call_s1_pwd",
+                "name": "terminal",
+                "arguments": "{\"command\": \"pwd\"}",
+                "provider_data": null
+              }
+            ]
+          },
+          "usage": {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "request_count": 1,
+            "cache_write_by_ttl": [],
+            "prompt_tokens": 100,
+            "total_tokens": 120
+          }
+        },
+        "context_length": 131072,
+        "assistant_content_chars": 0,
+        "assistant_tool_call_count": 1,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5"
+      }
+    },
+    {
+      "scenario": "s1_basic",
+      "input": {
+        "hook_event_name": "pre_tool_call",
+        "task_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "tool_call_id": "call_s1_pwd",
+        "turn_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0",
+        "api_request_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0:api:2",
+        "conversation_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "tool_name": "terminal",
+        "args": {
+          "command": "pwd"
+        },
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "withhuman_workdir": "C:\\work\\project\\sub"
+      }
+    },
+    {
+      "scenario": "s1_basic",
+      "input": {
+        "hook_event_name": "post_tool_call",
+        "tool_name": "terminal",
+        "args": {
+          "command": "pwd"
+        },
+        "result": "{\"output\": \"/c/work/project/sub\", \"exit_code\": 0, \"error\": null}",
+        "task_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "tool_call_id": "call_s1_pwd",
+        "turn_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0",
+        "api_request_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0:api:2",
+        "conversation_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "duration_ms": 268,
+        "status": "ok",
+        "error_type": null,
+        "error_message": null,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "withhuman_workdir": "C:\\work\\project\\sub"
+      }
+    },
+    {
+      "scenario": "s1_basic",
+      "input": {
+        "hook_event_name": "post_api_request",
+        "task_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "turn_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0",
+        "api_request_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0:api:3",
+        "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "platform": "cli",
+        "model": "mock-model",
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "api_call_count": 3,
+        "api_duration": 0.010380029678344727,
+        "started_at": 1795420318.669372,
+        "ended_at": 1795420318.679752,
+        "first_chunk_at": 1795420318.6781335,
+        "finish_reason": "tool_calls",
+        "message_count": 6,
+        "response_model": "mock-model",
+        "response": {
+          "model": "mock-model",
+          "upstream_provider": null,
+          "finish_reason": "tool_calls",
+          "assistant_message": {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "call_s1_write",
+                "name": "write_file",
+                "arguments": "{\"path\": \"probe.txt\", \"content\": \"hello\"}",
+                "provider_data": null
+              }
+            ]
+          },
+          "usage": {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "request_count": 1,
+            "cache_write_by_ttl": [],
+            "prompt_tokens": 100,
+            "total_tokens": 120
+          }
+        },
+        "context_length": 131072,
+        "assistant_content_chars": 0,
+        "assistant_tool_call_count": 1,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5"
+      }
+    },
+    {
+      "scenario": "s1_basic",
+      "input": {
+        "hook_event_name": "pre_tool_call",
+        "task_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "tool_call_id": "call_s1_write",
+        "turn_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0",
+        "api_request_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0:api:3",
+        "conversation_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "tool_name": "write_file",
+        "args": {
+          "path": "probe.txt",
+          "content": "hello"
+        },
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5"
+      }
+    },
+    {
+      "scenario": "s1_basic",
+      "input": {
+        "hook_event_name": "post_tool_call",
+        "tool_name": "write_file",
+        "args": {
+          "path": "probe.txt",
+          "content": "hello"
+        },
+        "result": "{\"bytes_written\": 5, \"dirs_created\": true, \"verified\": true, \"lint\": {\"status\": \"skipped\", \"message\": \"No linter for .txt files\"}, \"resolved_path\": \"C:\\\\work\\\\project\\\\probe.txt\", \"files_modified\": [\"C:\\\\work\\\\project\\\\probe.txt\"]}",
+        "task_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "tool_call_id": "call_s1_write",
+        "turn_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0",
+        "api_request_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0:api:3",
+        "conversation_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "duration_ms": 921,
+        "status": "ok",
+        "error_type": null,
+        "error_message": null,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5"
+      }
+    },
+    {
+      "scenario": "s1_basic",
+      "input": {
+        "hook_event_name": "post_api_request",
+        "task_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "turn_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0",
+        "api_request_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0:api:4",
+        "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "platform": "cli",
+        "model": "mock-model",
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "api_call_count": 4,
+        "api_duration": 0.009890556335449219,
+        "started_at": 1795420319.6321552,
+        "ended_at": 1795420319.6420457,
+        "first_chunk_at": 1795420319.6404111,
+        "finish_reason": "tool_calls",
+        "message_count": 8,
+        "response_model": "mock-model",
+        "response": {
+          "model": "mock-model",
+          "upstream_provider": null,
+          "finish_reason": "tool_calls",
+          "assistant_message": {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "call_s1_exit",
+                "name": "terminal",
+                "arguments": "{\"command\": \"exit 3\"}",
+                "provider_data": null
+              }
+            ]
+          },
+          "usage": {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "request_count": 1,
+            "cache_write_by_ttl": [],
+            "prompt_tokens": 100,
+            "total_tokens": 120
+          }
+        },
+        "context_length": 131072,
+        "assistant_content_chars": 0,
+        "assistant_tool_call_count": 1,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5"
+      }
+    },
+    {
+      "scenario": "s1_basic",
+      "input": {
+        "hook_event_name": "pre_tool_call",
+        "task_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "tool_call_id": "call_s1_exit",
+        "turn_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0",
+        "api_request_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0:api:4",
+        "conversation_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "tool_name": "terminal",
+        "args": {
+          "command": "exit 3"
+        },
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "withhuman_workdir": "C:\\work\\project\\sub"
+      }
+    },
+    {
+      "scenario": "s1_basic",
+      "input": {
+        "hook_event_name": "post_tool_call",
+        "tool_name": "terminal",
+        "args": {
+          "command": "exit 3"
+        },
+        "result": "{\"output\": \"\", \"exit_code\": 3, \"error\": null}",
+        "task_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "tool_call_id": "call_s1_exit",
+        "turn_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0",
+        "api_request_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0:api:4",
+        "conversation_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "duration_ms": 167,
+        "status": "error",
+        "error_type": "tool_error",
+        "error_message": "exit 3",
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "withhuman_workdir": "C:\\work\\project\\sub"
+      }
+    },
+    {
+      "scenario": "s1_basic",
+      "input": {
+        "hook_event_name": "post_api_request",
+        "task_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "turn_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0",
+        "api_request_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0:api:5",
+        "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "platform": "cli",
+        "model": "mock-model",
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "api_call_count": 5,
+        "api_duration": 0.009918928146362305,
+        "started_at": 1795420319.8373585,
+        "ended_at": 1795420319.8472774,
+        "first_chunk_at": 1795420319.8457468,
+        "finish_reason": "tool_calls",
+        "message_count": 10,
+        "response_model": "mock-model",
+        "response": {
+          "model": "mock-model",
+          "upstream_provider": null,
+          "finish_reason": "tool_calls",
+          "assistant_message": {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "call_s1_read",
+                "name": "read_file",
+                "arguments": "{\"path\": \"README.md\"}",
+                "provider_data": null
+              }
+            ]
+          },
+          "usage": {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "request_count": 1,
+            "cache_write_by_ttl": [],
+            "prompt_tokens": 100,
+            "total_tokens": 120
+          }
+        },
+        "context_length": 131072,
+        "assistant_content_chars": 0,
+        "assistant_tool_call_count": 1,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5"
+      }
+    },
+    {
+      "scenario": "s1_basic",
+      "input": {
+        "hook_event_name": "pre_tool_call",
+        "task_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "tool_call_id": "call_s1_read",
+        "turn_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0",
+        "api_request_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0:api:5",
+        "conversation_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "tool_name": "read_file",
+        "args": {
+          "path": "README.md"
+        },
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5"
+      }
+    },
+    {
+      "scenario": "s1_basic",
+      "input": {
+        "hook_event_name": "post_tool_call",
+        "tool_name": "read_file",
+        "args": {
+          "path": "README.md"
+        },
+        "result": "{\"content\": \"1|# PoC workspace\\n2|hello\", \"total_lines\": 2, \"file_size\": 24, \"truncated\": false, \"is_binary\": false, \"is_image\": false, \"not_found\": false}",
+        "task_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "tool_call_id": "call_s1_read",
+        "turn_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0",
+        "api_request_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0:api:5",
+        "conversation_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "duration_ms": 470,
+        "status": "ok",
+        "error_type": null,
+        "error_message": null,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5"
+      }
+    },
+    {
+      "scenario": "s1_basic",
+      "input": {
+        "hook_event_name": "post_api_request",
+        "task_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "turn_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0",
+        "api_request_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0:api:6",
+        "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "platform": "cli",
+        "model": "mock-model",
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "api_call_count": 6,
+        "api_duration": 0.011228561401367188,
+        "started_at": 1795420320.350739,
+        "ended_at": 1795420320.3619676,
+        "first_chunk_at": 1795420320.3595946,
+        "finish_reason": "stop",
+        "message_count": 12,
+        "response_model": "mock-model",
+        "response": {
+          "model": "mock-model",
+          "upstream_provider": null,
+          "finish_reason": "stop",
+          "assistant_message": {
+            "role": "assistant",
+            "content": "[완료] 시나리오가 끝났습니다.",
+            "tool_calls": []
+          },
+          "usage": {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "request_count": 1,
+            "cache_write_by_ttl": [],
+            "prompt_tokens": 100,
+            "total_tokens": 120
+          }
+        },
+        "context_length": 131072,
+        "assistant_content_chars": 17,
+        "assistant_tool_call_count": 0,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5"
+      }
+    },
+    {
+      "scenario": "s1_basic",
+      "input": {
+        "hook_event_name": "on_session_end",
+        "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "task_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "turn_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5:48c13df0",
+        "completed": true,
+        "failed": false,
+        "interrupted": false,
+        "turn_exit_reason": "text_response(finish_reason=stop)",
+        "model": "mock-model",
+        "platform": "cli",
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5"
+      }
+    },
+    {
+      "scenario": "s1_basic",
+      "input": {
+        "hook_event_name": "on_session_finalize",
+        "session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5",
+        "platform": "oneshot",
+        "reason": "cli_close",
+        "cwd": "C:\\Users\\dev",
+        "withhuman_session_id": "local-8974e067f231d0a95de43da7095999ff92415d7c3c6f9a3d60023c73b2d661b5"
+      }
+    },
+    {
+      "scenario": "s2_parallel",
+      "input": {
+        "hook_event_name": "on_session_start",
+        "session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+        "model": "mock-model",
+        "platform": "cli",
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d"
+      }
+    },
+    {
+      "scenario": "s2_parallel",
+      "input": {
+        "hook_event_name": "pre_llm_call",
+        "session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+        "task_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+        "turn_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:ad5ecbd2",
+        "user_message": "S2 세 가지를 한 번에 해줘",
+        "is_first_turn": true,
+        "model": "mock-model",
+        "platform": "cli",
+        "parent_session_id": "",
+        "sender_id": "sid:S-1-5-21-4069450475-111068158-3907667079-1001",
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d"
+      }
+    },
+    {
+      "scenario": "s2_parallel",
+      "input": {
+        "hook_event_name": "post_api_request",
+        "task_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+        "turn_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:ad5ecbd2",
+        "api_request_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:ad5ecbd2:api:1",
+        "session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+        "platform": "cli",
+        "model": "mock-model",
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "api_call_count": 1,
+        "api_duration": 0.8592095375061035,
+        "started_at": 1795420386.4224334,
+        "ended_at": 1795420387.281643,
+        "first_chunk_at": 1795420387.276841,
+        "finish_reason": "tool_calls",
+        "message_count": 2,
+        "response_model": "mock-model",
+        "response": {
+          "model": "mock-model",
+          "upstream_provider": null,
+          "finish_reason": "tool_calls",
+          "assistant_message": {
+            "role": "assistant",
+            "content": "[의도] 사용자는 세 가지 정보를 한 번에 보고 싶음",
+            "tool_calls": [
+              {
+                "id": "call_s2_a",
+                "name": "read_file",
+                "arguments": "{\"path\": \"README.md\"}",
+                "provider_data": null
+              },
+              {
+                "id": "call_s2_b",
+                "name": "terminal",
+                "arguments": "{\"command\": \"echo parallel\"}",
+                "provider_data": null
+              },
+              {
+                "id": "call_s2_c",
+                "name": "search_files",
+                "arguments": "{\"pattern\": \"hello\"}",
+                "provider_data": null
+              }
+            ]
+          },
+          "usage": {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "request_count": 1,
+            "cache_write_by_ttl": [],
+            "prompt_tokens": 100,
+            "total_tokens": 120
+          }
+        },
+        "context_length": 131072,
+        "assistant_content_chars": 29,
+        "assistant_tool_call_count": 3,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d"
+      }
+    },
+    {
+      "scenario": "s2_parallel",
+      "input": {
+        "hook_event_name": "pre_tool_call",
+        "task_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+        "session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+        "tool_call_id": "call_s2_a",
+        "turn_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:ad5ecbd2",
+        "api_request_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:ad5ecbd2:api:1",
+        "conversation_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+        "tool_name": "read_file",
+        "args": {
+          "path": "README.md"
+        },
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d"
+      }
+    },
+    {
+      "scenario": "s2_parallel",
+      "input": {
+        "hook_event_name": "post_tool_call",
+        "tool_name": "read_file",
+        "args": {
+          "path": "README.md"
+        },
+        "result": "{\"content\": \"1|# PoC workspace\\n2|hello\", \"total_lines\": 2, \"file_size\": 24, \"truncated\": false, \"is_binary\": false, \"is_image\": false, \"not_found\": false}",
+        "task_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+        "session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+        "tool_call_id": "call_s2_a",
+        "turn_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:ad5ecbd2",
+        "api_request_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:ad5ecbd2:api:1",
+        "conversation_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+        "duration_ms": 1013,
+        "status": "ok",
+        "error_type": null,
+        "error_message": null,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d"
+      }
+    },
+    {
+      "scenario": "s2_parallel",
+      "input": {
+        "hook_event_name": "pre_tool_call",
+        "task_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+        "session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+        "tool_call_id": "call_s2_b",
+        "turn_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:ad5ecbd2",
+        "api_request_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:ad5ecbd2:api:1",
+        "conversation_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+        "tool_name": "terminal",
+        "args": {
+          "command": "echo parallel"
+        },
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+        "withhuman_workdir": "C:\\work\\project"
+      }
+    },
+    {
+      "scenario": "s2_parallel",
+      "input": {
+        "hook_event_name": "post_tool_call",
+        "tool_name": "terminal",
+        "args": {
+          "command": "echo parallel"
+        },
+        "result": "{\"output\": \"parallel\", \"exit_code\": 0, \"error\": null}",
+        "task_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+        "session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+        "tool_call_id": "call_s2_b",
+        "turn_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:ad5ecbd2",
+        "api_request_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:ad5ecbd2:api:1",
+        "conversation_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+        "duration_ms": 331,
+        "status": "ok",
+        "error_type": null,
+        "error_message": null,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+        "withhuman_workdir": "C:\\work\\project"
+      }
+    },
+    {
+      "scenario": "s2_parallel",
+      "input": {
+        "hook_event_name": "pre_tool_call",
+        "task_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+        "session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+        "tool_call_id": "call_s2_c",
+        "turn_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:ad5ecbd2",
+        "api_request_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:ad5ecbd2:api:1",
+        "conversation_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+        "tool_name": "search_files",
+        "args": {
+          "pattern": "hello"
+        },
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d"
+      }
+    },
+    {
+      "scenario": "s2_parallel",
+      "input": {
+        "hook_event_name": "post_tool_call",
+        "tool_name": "search_files",
+        "args": {
+          "pattern": "hello"
+        },
+        "result": "{\"total_count\": 1, \"matches\": [{\"path\": \"/c/work/project/README.md\", \"line\": 2, \"content\": \"hello\"}]}",
+        "task_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+        "session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+        "tool_call_id": "call_s2_c",
+        "turn_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:ad5ecbd2",
+        "api_request_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:ad5ecbd2:api:1",
+        "conversation_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+        "duration_ms": 1077,
+        "status": "ok",
+        "error_type": null,
+        "error_message": null,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d"
+      }
+    },
+    {
+      "scenario": "s2_parallel",
+      "input": {
+        "hook_event_name": "post_api_request",
+        "task_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+        "turn_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:ad5ecbd2",
+        "api_request_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:ad5ecbd2:api:2",
+        "session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+        "platform": "cli",
+        "model": "mock-model",
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "api_call_count": 2,
+        "api_duration": 0.011178016662597656,
+        "started_at": 1795420389.8048456,
+        "ended_at": 1795420389.8160236,
+        "first_chunk_at": 1795420389.8139763,
+        "finish_reason": "stop",
+        "message_count": 6,
+        "response_model": "mock-model",
+        "response": {
+          "model": "mock-model",
+          "upstream_provider": null,
+          "finish_reason": "stop",
+          "assistant_message": {
+            "role": "assistant",
+            "content": "[완료] 시나리오가 끝났습니다.",
+            "tool_calls": []
+          },
+          "usage": {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "request_count": 1,
+            "cache_write_by_ttl": [],
+            "prompt_tokens": 100,
+            "total_tokens": 120
+          }
+        },
+        "context_length": 131072,
+        "assistant_content_chars": 17,
+        "assistant_tool_call_count": 0,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d"
+      }
+    },
+    {
+      "scenario": "s2_parallel",
+      "input": {
+        "hook_event_name": "on_session_end",
+        "session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+        "task_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+        "turn_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d:ad5ecbd2",
+        "completed": true,
+        "failed": false,
+        "interrupted": false,
+        "turn_exit_reason": "text_response(finish_reason=stop)",
+        "model": "mock-model",
+        "platform": "cli",
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d"
+      }
+    },
+    {
+      "scenario": "s2_parallel",
+      "input": {
+        "hook_event_name": "on_session_finalize",
+        "session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d",
+        "platform": "oneshot",
+        "reason": "cli_close",
+        "cwd": "C:\\Users\\dev",
+        "withhuman_session_id": "local-da725016bc95934f5cdab5a0c838066b8c6371a51e8ab095af3d6388eb16ee0d"
+      }
+    },
+    {
+      "scenario": "s3_block",
+      "input": {
+        "hook_event_name": "on_session_start",
+        "session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "model": "mock-model",
+        "platform": "cli",
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495"
+      }
+    },
+    {
+      "scenario": "s3_block",
+      "input": {
+        "hook_event_name": "pre_llm_call",
+        "session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "task_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "turn_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:b2da1e97",
+        "user_message": "S3 파일 세 개 만들어줘",
+        "is_first_turn": true,
+        "model": "mock-model",
+        "platform": "cli",
+        "parent_session_id": "",
+        "sender_id": "sid:S-1-5-21-4069450475-111068158-3907667079-1001",
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495"
+      }
+    },
+    {
+      "scenario": "s3_block",
+      "input": {
+        "hook_event_name": "post_api_request",
+        "task_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "turn_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:b2da1e97",
+        "api_request_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:b2da1e97:api:1",
+        "session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "platform": "cli",
+        "model": "mock-model",
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "api_call_count": 1,
+        "api_duration": 0.8314406871795654,
+        "started_at": 1795420414.9192612,
+        "ended_at": 1795420415.750702,
+        "first_chunk_at": 1795420415.7453542,
+        "finish_reason": "tool_calls",
+        "message_count": 2,
+        "response_model": "mock-model",
+        "response": {
+          "model": "mock-model",
+          "upstream_provider": null,
+          "finish_reason": "tool_calls",
+          "assistant_message": {
+            "role": "assistant",
+            "content": "[의도] 사용자는 파일을 만들고 싶음",
+            "tool_calls": [
+              {
+                "id": "call_s3_block",
+                "name": "terminal",
+                "arguments": "{\"command\": \"echo BLOCKME > blocked.txt\"}",
+                "provider_data": null
+              }
+            ]
+          },
+          "usage": {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "request_count": 1,
+            "cache_write_by_ttl": [],
+            "prompt_tokens": 100,
+            "total_tokens": 120
+          }
+        },
+        "context_length": 131072,
+        "assistant_content_chars": 20,
+        "assistant_tool_call_count": 1,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495"
+      }
+    },
+    {
+      "scenario": "s3_block",
+      "input": {
+        "hook_event_name": "pre_tool_call",
+        "task_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "tool_call_id": "call_s3_block",
+        "turn_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:b2da1e97",
+        "api_request_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:b2da1e97:api:1",
+        "conversation_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "tool_name": "terminal",
+        "args": {
+          "command": "echo BLOCKME > blocked.txt"
+        },
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "withhuman_workdir": "C:\\work\\project"
+      }
+    },
+    {
+      "scenario": "s3_block",
+      "input": {
+        "hook_event_name": "post_tool_call",
+        "tool_name": "terminal",
+        "args": {
+          "command": "echo BLOCKME > blocked.txt"
+        },
+        "result": "{\"error\": \"WithHuman: 이 호출은 차단되었습니다\"}",
+        "task_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "tool_call_id": "call_s3_block",
+        "turn_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:b2da1e97",
+        "api_request_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:b2da1e97:api:1",
+        "conversation_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "duration_ms": 0,
+        "status": "blocked",
+        "error_type": "plugin_block",
+        "error_message": "WithHuman: 이 호출은 차단되었습니다",
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "withhuman_workdir": "C:\\work\\project"
+      }
+    },
+    {
+      "scenario": "s3_block",
+      "input": {
+        "hook_event_name": "post_api_request",
+        "task_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "turn_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:b2da1e97",
+        "api_request_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:b2da1e97:api:2",
+        "session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "platform": "cli",
+        "model": "mock-model",
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "api_call_count": 2,
+        "api_duration": 0.00974273681640625,
+        "started_at": 1795420415.829702,
+        "ended_at": 1795420415.8394446,
+        "first_chunk_at": 1795420415.8377364,
+        "finish_reason": "tool_calls",
+        "message_count": 4,
+        "response_model": "mock-model",
+        "response": {
+          "model": "mock-model",
+          "upstream_provider": null,
+          "finish_reason": "tool_calls",
+          "assistant_message": {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "call_s3_raise",
+                "name": "terminal",
+                "arguments": "{\"command\": \"echo RAISEME > raised.txt\"}",
+                "provider_data": null
+              }
+            ]
+          },
+          "usage": {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "request_count": 1,
+            "cache_write_by_ttl": [],
+            "prompt_tokens": 100,
+            "total_tokens": 120
+          }
+        },
+        "context_length": 131072,
+        "assistant_content_chars": 0,
+        "assistant_tool_call_count": 1,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495"
+      }
+    },
+    {
+      "scenario": "s3_block",
+      "input": {
+        "hook_event_name": "pre_tool_call",
+        "task_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "tool_call_id": "call_s3_raise",
+        "turn_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:b2da1e97",
+        "api_request_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:b2da1e97:api:2",
+        "conversation_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "tool_name": "terminal",
+        "args": {
+          "command": "echo RAISEME > raised.txt"
+        },
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "withhuman_workdir": "C:\\work\\project"
+      }
+    },
+    {
+      "scenario": "s3_block",
+      "input": {
+        "hook_event_name": "post_tool_call",
+        "tool_name": "terminal",
+        "args": {
+          "command": "echo RAISEME > raised.txt"
+        },
+        "result": "{\"error\": \"pre_tool_call plugin callback _pre_tool_call raised RuntimeError: WithHuman PoC raised in pre_tool_call\"}",
+        "task_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "tool_call_id": "call_s3_raise",
+        "turn_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:b2da1e97",
+        "api_request_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:b2da1e97:api:2",
+        "conversation_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "duration_ms": 0,
+        "status": "blocked",
+        "error_type": "plugin_block",
+        "error_message": "pre_tool_call plugin callback _pre_tool_call raised RuntimeError: WithHuman PoC raised in pre_tool_call",
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "withhuman_workdir": "C:\\work\\project"
+      }
+    },
+    {
+      "scenario": "s3_block",
+      "input": {
+        "hook_event_name": "post_api_request",
+        "task_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "turn_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:b2da1e97",
+        "api_request_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:b2da1e97:api:3",
+        "session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "platform": "cli",
+        "model": "mock-model",
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "api_call_count": 3,
+        "api_duration": 0.00979304313659668,
+        "started_at": 1795420415.8702397,
+        "ended_at": 1795420415.8800328,
+        "first_chunk_at": 1795420415.8787346,
+        "finish_reason": "tool_calls",
+        "message_count": 6,
+        "response_model": "mock-model",
+        "response": {
+          "model": "mock-model",
+          "upstream_provider": null,
+          "finish_reason": "tool_calls",
+          "assistant_message": {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "call_s3_write",
+                "name": "write_file",
+                "arguments": "{\"path\": \"BLOCKME.txt\", \"content\": \"x\"}",
+                "provider_data": null
+              }
+            ]
+          },
+          "usage": {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "request_count": 1,
+            "cache_write_by_ttl": [],
+            "prompt_tokens": 100,
+            "total_tokens": 120
+          }
+        },
+        "context_length": 131072,
+        "assistant_content_chars": 0,
+        "assistant_tool_call_count": 1,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495"
+      }
+    },
+    {
+      "scenario": "s3_block",
+      "input": {
+        "hook_event_name": "pre_tool_call",
+        "task_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "tool_call_id": "call_s3_write",
+        "turn_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:b2da1e97",
+        "api_request_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:b2da1e97:api:3",
+        "conversation_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "tool_name": "write_file",
+        "args": {
+          "path": "BLOCKME.txt",
+          "content": "x"
+        },
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495"
+      }
+    },
+    {
+      "scenario": "s3_block",
+      "input": {
+        "hook_event_name": "post_tool_call",
+        "tool_name": "write_file",
+        "args": {
+          "path": "BLOCKME.txt",
+          "content": "x"
+        },
+        "result": "{\"error\": \"WithHuman: 이 호출은 차단되었습니다\"}",
+        "task_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "tool_call_id": "call_s3_write",
+        "turn_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:b2da1e97",
+        "api_request_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:b2da1e97:api:3",
+        "conversation_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "duration_ms": 0,
+        "status": "blocked",
+        "error_type": "plugin_block",
+        "error_message": "WithHuman: 이 호출은 차단되었습니다",
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495"
+      }
+    },
+    {
+      "scenario": "s3_block",
+      "input": {
+        "hook_event_name": "post_api_request",
+        "task_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "turn_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:b2da1e97",
+        "api_request_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:b2da1e97:api:4",
+        "session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "platform": "cli",
+        "model": "mock-model",
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "api_call_count": 4,
+        "api_duration": 0.009535789489746094,
+        "started_at": 1795420415.906298,
+        "ended_at": 1795420415.9158337,
+        "first_chunk_at": 1795420415.913977,
+        "finish_reason": "stop",
+        "message_count": 8,
+        "response_model": "mock-model",
+        "response": {
+          "model": "mock-model",
+          "upstream_provider": null,
+          "finish_reason": "stop",
+          "assistant_message": {
+            "role": "assistant",
+            "content": "[완료] 시나리오가 끝났습니다.",
+            "tool_calls": []
+          },
+          "usage": {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "request_count": 1,
+            "cache_write_by_ttl": [],
+            "prompt_tokens": 100,
+            "total_tokens": 120
+          }
+        },
+        "context_length": 131072,
+        "assistant_content_chars": 17,
+        "assistant_tool_call_count": 0,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495"
+      }
+    },
+    {
+      "scenario": "s3_block",
+      "input": {
+        "hook_event_name": "on_session_end",
+        "session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "task_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "turn_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495:b2da1e97",
+        "completed": true,
+        "failed": false,
+        "interrupted": false,
+        "turn_exit_reason": "text_response(finish_reason=stop)",
+        "model": "mock-model",
+        "platform": "cli",
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495"
+      }
+    },
+    {
+      "scenario": "s3_block",
+      "input": {
+        "hook_event_name": "on_session_finalize",
+        "session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495",
+        "platform": "oneshot",
+        "reason": "cli_close",
+        "cwd": "C:\\Users\\dev",
+        "withhuman_session_id": "local-ad2e769968fbf3df26fd2cb29d885a0b4ae294b1bc809a8ec88614d782c97495"
+      }
+    },
+    {
+      "scenario": "s5_execute_code",
+      "input": {
+        "hook_event_name": "on_session_start",
+        "session_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+        "model": "mock-model",
+        "platform": "cli",
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01"
+      }
+    },
+    {
+      "scenario": "s5_execute_code",
+      "input": {
+        "hook_event_name": "pre_llm_call",
+        "session_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+        "task_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+        "turn_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:eaa06d41",
+        "user_message": "S5 스크립트로 처리해줘",
+        "is_first_turn": true,
+        "model": "mock-model",
+        "platform": "cli",
+        "parent_session_id": "",
+        "sender_id": "sid:S-1-5-21-4069450475-111068158-3907667079-1001",
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01"
+      }
+    },
+    {
+      "scenario": "s5_execute_code",
+      "input": {
+        "hook_event_name": "post_api_request",
+        "task_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+        "turn_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:eaa06d41",
+        "api_request_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:eaa06d41:api:1",
+        "session_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+        "platform": "cli",
+        "model": "mock-model",
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "api_call_count": 1,
+        "api_duration": 0.8241672515869141,
+        "started_at": 1795420610.185896,
+        "ended_at": 1795420611.0100632,
+        "first_chunk_at": 1795420611.0054538,
+        "finish_reason": "tool_calls",
+        "message_count": 2,
+        "response_model": "mock-model",
+        "response": {
+          "model": "mock-model",
+          "upstream_provider": null,
+          "finish_reason": "tool_calls",
+          "assistant_message": {
+            "role": "assistant",
+            "content": "[의도] 사용자는 스크립트로 작업하고 싶음",
+            "tool_calls": [
+              {
+                "id": "call_s5_code",
+                "name": "execute_code",
+                "arguments": "{\"code\": \"from hermes_tools import terminal\\nprint(terminal('echo NESTED-BLOCKME > nested.txt'))\\nprint(terminal('echo nested-ok'))\\n\"}",
+                "provider_data": null
+              }
+            ]
+          },
+          "usage": {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "request_count": 1,
+            "cache_write_by_ttl": [],
+            "prompt_tokens": 100,
+            "total_tokens": 120
+          }
+        },
+        "context_length": 131072,
+        "assistant_content_chars": 23,
+        "assistant_tool_call_count": 1,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01"
+      }
+    },
+    {
+      "scenario": "s5_execute_code",
+      "input": {
+        "hook_event_name": "pre_tool_call",
+        "task_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+        "session_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+        "tool_call_id": "call_s5_code",
+        "turn_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:eaa06d41",
+        "api_request_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:eaa06d41:api:1",
+        "conversation_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+        "tool_name": "execute_code",
+        "args": {
+          "code": "from hermes_tools import terminal\nprint(terminal('echo NESTED-BLOCKME > nested.txt'))\nprint(terminal('echo nested-ok'))\n"
+        },
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01"
+      }
+    },
+    {
+      "scenario": "s5_execute_code",
+      "input": {
+        "hook_event_name": "pre_tool_call",
+        "task_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+        "session_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+        "tool_call_id": "withhuman-script-1",
+        "turn_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:eaa06d41",
+        "api_request_id": "",
+        "conversation_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+        "tool_name": "terminal",
+        "args": {
+          "command": "echo NESTED-BLOCKME > nested.txt",
+          "timeout": null,
+          "workdir": null
+        },
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+        "withhuman_workdir": "C:\\work\\project"
+      }
+    },
+    {
+      "scenario": "s5_execute_code",
+      "input": {
+        "hook_event_name": "pre_tool_call",
+        "task_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+        "session_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+        "tool_call_id": "withhuman-script-2",
+        "turn_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:eaa06d41",
+        "api_request_id": "",
+        "conversation_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+        "tool_name": "terminal",
+        "args": {
+          "command": "echo nested-ok",
+          "timeout": null,
+          "workdir": null
+        },
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+        "withhuman_workdir": "C:\\work\\project"
+      }
+    },
+    {
+      "scenario": "s5_execute_code",
+      "input": {
+        "hook_event_name": "post_tool_call",
+        "tool_name": "execute_code",
+        "args": {
+          "code": "from hermes_tools import terminal\nprint(terminal('echo NESTED-BLOCKME > nested.txt'))\nprint(terminal('echo nested-ok'))\n"
+        },
+        "result": "{\"status\": \"success\", \"output\": \"{'error': 'WithHuman: nested call blocked'}\\n{'output': 'nested-ok', 'exit_code': 0, 'error': None}\\n\", \"exit_code\": 0, \"tool_calls_made\": 2, \"duration_seconds\": 1.17, \"kernel\": {\"mode\": \"session\", \"reused\": false, \"execution_count\": 1, \"state_reset\": false}, \"stdout_truncated\": false, \"stdout_bytes_captured\": 99, \"stdout_bytes_total\": 99, \"stdout_bytes_omitted\": 0, \"tool_errors\": [{\"tool\": \"terminal\", \"error\": \"WithHuman: nested call blocked\"}]}",
+        "task_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+        "session_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+        "tool_call_id": "call_s5_code",
+        "turn_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:eaa06d41",
+        "api_request_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:eaa06d41:api:1",
+        "conversation_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+        "duration_ms": 1200,
+        "status": "ok",
+        "error_type": null,
+        "error_message": null,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01"
+      }
+    },
+    {
+      "scenario": "s5_execute_code",
+      "input": {
+        "hook_event_name": "post_api_request",
+        "task_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+        "turn_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:eaa06d41",
+        "api_request_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:eaa06d41:api:2",
+        "session_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+        "platform": "cli",
+        "model": "mock-model",
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "api_call_count": 2,
+        "api_duration": 0.009656906127929688,
+        "started_at": 1795420612.2914498,
+        "ended_at": 1795420612.3011067,
+        "first_chunk_at": 1795420612.299516,
+        "finish_reason": "stop",
+        "message_count": 4,
+        "response_model": "mock-model",
+        "response": {
+          "model": "mock-model",
+          "upstream_provider": null,
+          "finish_reason": "stop",
+          "assistant_message": {
+            "role": "assistant",
+            "content": "[완료] 시나리오가 끝났습니다.",
+            "tool_calls": []
+          },
+          "usage": {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "request_count": 1,
+            "cache_write_by_ttl": [],
+            "prompt_tokens": 100,
+            "total_tokens": 120
+          }
+        },
+        "context_length": 131072,
+        "assistant_content_chars": 17,
+        "assistant_tool_call_count": 0,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01"
+      }
+    },
+    {
+      "scenario": "s5_execute_code",
+      "input": {
+        "hook_event_name": "on_session_end",
+        "session_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+        "task_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+        "turn_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01:eaa06d41",
+        "completed": true,
+        "failed": false,
+        "interrupted": false,
+        "turn_exit_reason": "text_response(finish_reason=stop)",
+        "model": "mock-model",
+        "platform": "cli",
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01"
+      }
+    },
+    {
+      "scenario": "s5_execute_code",
+      "input": {
+        "hook_event_name": "on_session_finalize",
+        "session_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01",
+        "platform": "oneshot",
+        "reason": "cli_close",
+        "cwd": "C:\\Users\\dev",
+        "withhuman_session_id": "local-73a258e10ee6239e938fbe9ca8e42571ed89a91d0c1214babcb0cb730995af01"
+      }
+    },
+    {
+      "scenario": "s6_delegate",
+      "input": {
+        "hook_event_name": "on_session_start",
+        "session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+        "model": "mock-model",
+        "platform": "cli",
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c"
+      }
+    },
+    {
+      "scenario": "s6_delegate",
+      "input": {
+        "hook_event_name": "pre_llm_call",
+        "session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+        "task_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+        "turn_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:d5e9ee9e",
+        "user_message": "S6-DELEGATE 하위 작업을 맡겨줘",
+        "is_first_turn": true,
+        "model": "mock-model",
+        "platform": "cli",
+        "parent_session_id": "",
+        "sender_id": "sid:S-1-5-21-4069450475-111068158-3907667079-1001",
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c"
+      }
+    },
+    {
+      "scenario": "s6_delegate",
+      "input": {
+        "hook_event_name": "post_api_request",
+        "task_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+        "turn_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:d5e9ee9e",
+        "api_request_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:d5e9ee9e:api:1",
+        "session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+        "platform": "cli",
+        "model": "mock-model",
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "api_call_count": 1,
+        "api_duration": 0.8585872650146484,
+        "started_at": 1795420495.9848228,
+        "ended_at": 1795420496.84341,
+        "first_chunk_at": 1795420496.8383842,
+        "finish_reason": "tool_calls",
+        "message_count": 2,
+        "response_model": "mock-model",
+        "response": {
+          "model": "mock-model",
+          "upstream_provider": null,
+          "finish_reason": "tool_calls",
+          "assistant_message": {
+            "role": "assistant",
+            "content": "[의도] 사용자는 하위 작업을 위임하고 싶음",
+            "tool_calls": [
+              {
+                "id": "call_s6_delegate",
+                "name": "delegate_task",
+                "arguments": "{\"tasks\": [{\"goal\": \"CHILD-GOAL-7: run echo child-call\", \"context\": \"poc\"}]}",
+                "provider_data": null
+              }
+            ]
+          },
+          "usage": {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "request_count": 1,
+            "cache_write_by_ttl": [],
+            "prompt_tokens": 100,
+            "total_tokens": 120
+          }
+        },
+        "context_length": 131072,
+        "assistant_content_chars": 24,
+        "assistant_tool_call_count": 1,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c"
+      }
+    },
+    {
+      "scenario": "s6_delegate",
+      "input": {
+        "hook_event_name": "pre_tool_call",
+        "task_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+        "session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+        "tool_call_id": "call_s6_delegate",
+        "turn_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:d5e9ee9e",
+        "api_request_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:d5e9ee9e:api:1",
+        "conversation_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+        "tool_name": "delegate_task",
+        "args": {
+          "tasks": [
+            {
+              "goal": "CHILD-GOAL-7: run echo child-call",
+              "context": "poc"
+            }
+          ]
+        },
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c"
+      }
+    },
+    {
+      "scenario": "s6_delegate",
+      "input": {
+        "hook_event_name": "subagent_start",
+        "parent_session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+        "parent_turn_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:d5e9ee9e",
+        "parent_subagent_id": null,
+        "child_session_id": "20261123_165456_d84ed9",
+        "child_subagent_id": "sa-0-e6302e88",
+        "child_role": "leaf",
+        "child_goal": "CHILD-GOAL-7: run echo child-call",
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+        "withhuman_agent_id": "20261123_165456_d84ed9"
+      }
+    },
+    {
+      "scenario": "s6_delegate",
+      "input": {
+        "hook_event_name": "on_session_start",
+        "session_id": "20261123_165456_d84ed9",
+        "model": "mock-model",
+        "platform": "subagent",
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+        "withhuman_agent_id": "20261123_165456_d84ed9"
+      }
+    },
+    {
+      "scenario": "s6_delegate",
+      "input": {
+        "hook_event_name": "pre_llm_call",
+        "session_id": "20261123_165456_d84ed9",
+        "task_id": "sa-0-e6302e88",
+        "turn_id": "20261123_165456_d84ed9:sa-0-e6302e88:1fcd283b",
+        "user_message": "CONTEXT:\npoc\n\nTASK:\nCHILD-GOAL-7: run echo child-call",
+        "is_first_turn": true,
+        "model": "mock-model",
+        "platform": "subagent",
+        "parent_session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+        "sender_id": "",
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+        "withhuman_agent_id": "20261123_165456_d84ed9"
+      }
+    },
+    {
+      "scenario": "s6_delegate",
+      "input": {
+        "hook_event_name": "post_api_request",
+        "task_id": "sa-0-e6302e88",
+        "turn_id": "20261123_165456_d84ed9:sa-0-e6302e88:1fcd283b",
+        "api_request_id": "20261123_165456_d84ed9:sa-0-e6302e88:1fcd283b:api:1",
+        "session_id": "20261123_165456_d84ed9",
+        "platform": "subagent",
+        "model": "mock-model",
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "api_call_count": 1,
+        "api_duration": 0.010397195816040039,
+        "started_at": 1795420497.0410447,
+        "ended_at": 1795420497.051442,
+        "first_chunk_at": 1795420497.050061,
+        "finish_reason": "tool_calls",
+        "message_count": 2,
+        "response_model": "mock-model",
+        "response": {
+          "model": "mock-model",
+          "upstream_provider": null,
+          "finish_reason": "tool_calls",
+          "assistant_message": {
+            "role": "assistant",
+            "content": "child working",
+            "tool_calls": [
+              {
+                "id": "call_s6_child",
+                "name": "terminal",
+                "arguments": "{\"command\": \"echo child-call\"}",
+                "provider_data": null
+              }
+            ]
+          },
+          "usage": {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "request_count": 1,
+            "cache_write_by_ttl": [],
+            "prompt_tokens": 100,
+            "total_tokens": 120
+          }
+        },
+        "context_length": 131072,
+        "assistant_content_chars": 13,
+        "assistant_tool_call_count": 1,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+        "withhuman_agent_id": "20261123_165456_d84ed9"
+      }
+    },
+    {
+      "scenario": "s6_delegate",
+      "input": {
+        "hook_event_name": "pre_tool_call",
+        "task_id": "sa-0-e6302e88",
+        "session_id": "20261123_165456_d84ed9",
+        "tool_call_id": "call_s6_child",
+        "turn_id": "20261123_165456_d84ed9:sa-0-e6302e88:1fcd283b",
+        "api_request_id": "20261123_165456_d84ed9:sa-0-e6302e88:1fcd283b:api:1",
+        "conversation_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+        "tool_name": "terminal",
+        "args": {
+          "command": "echo child-call"
+        },
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+        "withhuman_agent_id": "20261123_165456_d84ed9",
+        "withhuman_workdir": "C:\\work\\project"
+      }
+    },
+    {
+      "scenario": "s6_delegate",
+      "input": {
+        "hook_event_name": "post_tool_call",
+        "tool_name": "terminal",
+        "args": {
+          "command": "echo child-call"
+        },
+        "result": "{\"output\": \"child-call\", \"exit_code\": 0, \"error\": null}",
+        "task_id": "sa-0-e6302e88",
+        "session_id": "20261123_165456_d84ed9",
+        "tool_call_id": "call_s6_child",
+        "turn_id": "20261123_165456_d84ed9:sa-0-e6302e88:1fcd283b",
+        "api_request_id": "20261123_165456_d84ed9:sa-0-e6302e88:1fcd283b:api:1",
+        "conversation_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+        "duration_ms": 1019,
+        "status": "ok",
+        "error_type": null,
+        "error_message": null,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+        "withhuman_agent_id": "20261123_165456_d84ed9",
+        "withhuman_workdir": "C:\\work\\project"
+      }
+    },
+    {
+      "scenario": "s6_delegate",
+      "input": {
+        "hook_event_name": "post_api_request",
+        "task_id": "sa-0-e6302e88",
+        "turn_id": "20261123_165456_d84ed9:sa-0-e6302e88:1fcd283b",
+        "api_request_id": "20261123_165456_d84ed9:sa-0-e6302e88:1fcd283b:api:2",
+        "session_id": "20261123_165456_d84ed9",
+        "platform": "subagent",
+        "model": "mock-model",
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "api_call_count": 2,
+        "api_duration": 0.009910106658935547,
+        "started_at": 1795420498.1471627,
+        "ended_at": 1795420498.1570728,
+        "first_chunk_at": 1795420498.1552737,
+        "finish_reason": "stop",
+        "message_count": 4,
+        "response_model": "mock-model",
+        "response": {
+          "model": "mock-model",
+          "upstream_provider": null,
+          "finish_reason": "stop",
+          "assistant_message": {
+            "role": "assistant",
+            "content": "[완료] 시나리오가 끝났습니다.",
+            "tool_calls": []
+          },
+          "usage": {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "request_count": 1,
+            "cache_write_by_ttl": [],
+            "prompt_tokens": 100,
+            "total_tokens": 120
+          }
+        },
+        "context_length": 131072,
+        "assistant_content_chars": 17,
+        "assistant_tool_call_count": 0,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+        "withhuman_agent_id": "20261123_165456_d84ed9"
+      }
+    },
+    {
+      "scenario": "s6_delegate",
+      "input": {
+        "hook_event_name": "on_session_end",
+        "session_id": "20261123_165456_d84ed9",
+        "task_id": "sa-0-e6302e88",
+        "turn_id": "20261123_165456_d84ed9:sa-0-e6302e88:1fcd283b",
+        "completed": true,
+        "failed": false,
+        "interrupted": false,
+        "turn_exit_reason": "text_response(finish_reason=stop)",
+        "model": "mock-model",
+        "platform": "subagent",
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+        "withhuman_agent_id": "20261123_165456_d84ed9"
+      }
+    },
+    {
+      "scenario": "s6_delegate",
+      "input": {
+        "hook_event_name": "subagent_stop",
+        "parent_session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+        "parent_turn_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:d5e9ee9e",
+        "child_session_id": "20261123_165456_d84ed9",
+        "child_role": "leaf",
+        "child_summary": "[완료] 시나리오가 끝났습니다.",
+        "child_status": "completed",
+        "tool_call_history": [
+          {
+            "tool_name": "terminal",
+            "tool_input": {
+              "argument_keys": [
+                "command"
+              ],
+              "targets": {}
+            },
+            "input_bytes": 30,
+            "output_bytes": 55,
+            "status": "ok"
+          }
+        ],
+        "duration_ms": 1220,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+        "withhuman_agent_id": "20261123_165456_d84ed9"
+      }
+    },
+    {
+      "scenario": "s6_delegate",
+      "input": {
+        "hook_event_name": "post_tool_call",
+        "tool_name": "delegate_task",
+        "args": {
+          "tasks": [
+            {
+              "goal": "CHILD-GOAL-7: run echo child-call",
+              "context": "poc"
+            }
+          ]
+        },
+        "result": "{\"results\": [{\"task_index\": 0, \"status\": \"completed\", \"summary\": \"[완료] 시나리오가 끝났습니다.\", \"api_calls\": 2, \"duration_seconds\": 1.22, \"model\": \"mock-model\", \"exit_reason\": \"completed\", \"truncated\": false, \"tokens\": {\"input\": 200, \"output\": 40}, \"tool_trace\": [{\"tool\": \"terminal\", \"args_bytes\": 30, \"input_summary\": {\"argument_keys\": [\"command\"], \"targets\": {}}, \"result_bytes\": 55, \"status\": \"ok\"}], \"cost_usd\": 0.0, \"cost_status\": \"unknown\", \"subagent_id\": \"sa-0-e6302e88\", \"live_transcript\": \"C:\\\\Users\\\\dev\\\\.hermes\\\\cache\\\\delegation\\\\live\\\\deleg_fd0f72ca\\\\task-0.log\"}], \"total_duration_seconds\": 1.28, \"delegation_id\": \"deleg_fd0f72ca\", \"live_transcripts\": [\"C:\\\\Users\\\\dev\\\\.hermes\\\\cache\\\\delegation\\\\live\\\\deleg_fd0f72ca\\\\task-0.log\"], \"note\": \"background=true is not available in this session — it cannot receive a detached subagent result after the turn ends (a finite chat using -Q, --oneshot, or non-TTY stdio, `hermes -z`, a /bg background task, a cron job, a Kanban worker, or a stateless HTTP endpoint). The subagent(s) ran SYNCHRONOUSLY and the result is included above.\"}",
+        "task_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+        "session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+        "tool_call_id": "call_s6_delegate",
+        "turn_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:d5e9ee9e",
+        "api_request_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:d5e9ee9e:api:1",
+        "conversation_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+        "duration_ms": 1314,
+        "status": "ok",
+        "error_type": null,
+        "error_message": null,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c"
+      }
+    },
+    {
+      "scenario": "s6_delegate",
+      "input": {
+        "hook_event_name": "post_api_request",
+        "task_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+        "turn_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:d5e9ee9e",
+        "api_request_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:d5e9ee9e:api:2",
+        "session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+        "platform": "cli",
+        "model": "mock-model",
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "api_call_count": 2,
+        "api_duration": 0.014833688735961914,
+        "started_at": 1795420498.2682095,
+        "ended_at": 1795420498.2830431,
+        "first_chunk_at": 1795420498.2804177,
+        "finish_reason": "stop",
+        "message_count": 4,
+        "response_model": "mock-model",
+        "response": {
+          "model": "mock-model",
+          "upstream_provider": null,
+          "finish_reason": "stop",
+          "assistant_message": {
+            "role": "assistant",
+            "content": "[완료] 시나리오가 끝났습니다.",
+            "tool_calls": []
+          },
+          "usage": {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "request_count": 1,
+            "cache_write_by_ttl": [],
+            "prompt_tokens": 100,
+            "total_tokens": 120
+          }
+        },
+        "context_length": 131072,
+        "assistant_content_chars": 17,
+        "assistant_tool_call_count": 0,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c"
+      }
+    },
+    {
+      "scenario": "s6_delegate",
+      "input": {
+        "hook_event_name": "on_session_end",
+        "session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+        "task_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+        "turn_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c:d5e9ee9e",
+        "completed": true,
+        "failed": false,
+        "interrupted": false,
+        "turn_exit_reason": "text_response(finish_reason=stop)",
+        "model": "mock-model",
+        "platform": "cli",
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c"
+      }
+    },
+    {
+      "scenario": "s6_delegate",
+      "input": {
+        "hook_event_name": "on_session_finalize",
+        "session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c",
+        "platform": "oneshot",
+        "reason": "cli_close",
+        "cwd": "C:\\Users\\dev",
+        "withhuman_session_id": "local-1078f44496fd46e253f96769953366b11f0b583e7831174e6bc6861cce098a9c"
+      }
+    },
+    {
+      "scenario": "s8_tool_call",
+      "input": {
+        "hook_event_name": "on_session_start",
+        "session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+        "model": "mock-model",
+        "platform": "cli",
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035"
+      }
+    },
+    {
+      "scenario": "s8_tool_call",
+      "input": {
+        "hook_event_name": "pre_llm_call",
+        "session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+        "task_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+        "turn_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:78e1d808",
+        "user_message": "S8 지연 도구를 tool_call로 부르기",
+        "is_first_turn": true,
+        "model": "mock-model",
+        "platform": "cli",
+        "parent_session_id": "",
+        "sender_id": "sid:S-1-5-21-4069450475-111068158-3907667079-1001",
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035"
+      }
+    },
+    {
+      "scenario": "s8_tool_call",
+      "input": {
+        "hook_event_name": "post_api_request",
+        "task_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+        "turn_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:78e1d808",
+        "api_request_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:78e1d808:api:1",
+        "session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+        "platform": "cli",
+        "model": "mock-model",
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "api_call_count": 1,
+        "api_duration": 0.8258998394012451,
+        "started_at": 1795420636.2120054,
+        "ended_at": 1795420637.0379052,
+        "first_chunk_at": 1795420637.033561,
+        "finish_reason": "tool_calls",
+        "message_count": 2,
+        "response_model": "mock-model",
+        "response": {
+          "model": "mock-model",
+          "upstream_provider": null,
+          "finish_reason": "tool_calls",
+          "assistant_message": {
+            "role": "assistant",
+            "content": "[의도] 사용자는 메아리를 듣고 싶음",
+            "tool_calls": [
+              {
+                "id": "call_s8_ok",
+                "name": "tool_call",
+                "arguments": "{\"calls\": [{\"name\": \"withhuman_poc_echo\", \"arguments\": {\"text\": \"plain\"}}]}",
+                "provider_data": null
+              }
+            ]
+          },
+          "usage": {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "request_count": 1,
+            "cache_write_by_ttl": [],
+            "prompt_tokens": 100,
+            "total_tokens": 120
+          }
+        },
+        "context_length": 131072,
+        "assistant_content_chars": 20,
+        "assistant_tool_call_count": 1,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035"
+      }
+    },
+    {
+      "scenario": "s8_tool_call",
+      "input": {
+        "hook_event_name": "pre_tool_call",
+        "task_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+        "session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+        "tool_call_id": "call_s8_ok",
+        "turn_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:78e1d808",
+        "api_request_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:78e1d808:api:1",
+        "conversation_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+        "tool_name": "withhuman_poc_echo",
+        "args": {
+          "text": "plain"
+        },
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035"
+      }
+    },
+    {
+      "scenario": "s8_tool_call",
+      "input": {
+        "hook_event_name": "post_tool_call",
+        "tool_name": "withhuman_poc_echo",
+        "args": {
+          "text": "plain"
+        },
+        "result": "{\"echo\": \"plain\"}",
+        "task_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+        "session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+        "tool_call_id": "call_s8_ok",
+        "turn_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:78e1d808",
+        "api_request_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:78e1d808:api:1",
+        "conversation_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+        "duration_ms": 21,
+        "status": "ok",
+        "error_type": null,
+        "error_message": null,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035"
+      }
+    },
+    {
+      "scenario": "s8_tool_call",
+      "input": {
+        "hook_event_name": "post_api_request",
+        "task_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+        "turn_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:78e1d808",
+        "api_request_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:78e1d808:api:2",
+        "session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+        "platform": "cli",
+        "model": "mock-model",
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "api_call_count": 2,
+        "api_duration": 0.00977635383605957,
+        "started_at": 1795420637.1460874,
+        "ended_at": 1795420637.1558638,
+        "first_chunk_at": 1795420637.1541889,
+        "finish_reason": "tool_calls",
+        "message_count": 4,
+        "response_model": "mock-model",
+        "response": {
+          "model": "mock-model",
+          "upstream_provider": null,
+          "finish_reason": "tool_calls",
+          "assistant_message": {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "call_s8_block",
+                "name": "tool_call",
+                "arguments": "{\"calls\": [{\"name\": \"withhuman_poc_echo\", \"arguments\": {\"text\": \"BLOCKME\"}}]}",
+                "provider_data": null
+              }
+            ]
+          },
+          "usage": {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "request_count": 1,
+            "cache_write_by_ttl": [],
+            "prompt_tokens": 100,
+            "total_tokens": 120
+          }
+        },
+        "context_length": 131072,
+        "assistant_content_chars": 0,
+        "assistant_tool_call_count": 1,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035"
+      }
+    },
+    {
+      "scenario": "s8_tool_call",
+      "input": {
+        "hook_event_name": "pre_tool_call",
+        "task_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+        "session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+        "tool_call_id": "call_s8_block",
+        "turn_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:78e1d808",
+        "api_request_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:78e1d808:api:2",
+        "conversation_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+        "tool_name": "withhuman_poc_echo",
+        "args": {
+          "text": "BLOCKME"
+        },
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035"
+      }
+    },
+    {
+      "scenario": "s8_tool_call",
+      "input": {
+        "hook_event_name": "post_tool_call",
+        "tool_name": "withhuman_poc_echo",
+        "args": {
+          "text": "BLOCKME"
+        },
+        "result": "{\"error\": \"WithHuman: blocked through tool_call\"}",
+        "task_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+        "session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+        "tool_call_id": "call_s8_block",
+        "turn_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:78e1d808",
+        "api_request_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:78e1d808:api:2",
+        "conversation_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+        "duration_ms": 0,
+        "status": "blocked",
+        "error_type": "plugin_block",
+        "error_message": "WithHuman: blocked through tool_call",
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035"
+      }
+    },
+    {
+      "scenario": "s8_tool_call",
+      "input": {
+        "hook_event_name": "post_api_request",
+        "task_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+        "turn_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:78e1d808",
+        "api_request_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:78e1d808:api:3",
+        "session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+        "platform": "cli",
+        "model": "mock-model",
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "api_call_count": 3,
+        "api_duration": 0.009653806686401367,
+        "started_at": 1795420637.1852596,
+        "ended_at": 1795420637.1949134,
+        "first_chunk_at": 1795420637.1936433,
+        "finish_reason": "tool_calls",
+        "message_count": 6,
+        "response_model": "mock-model",
+        "response": {
+          "model": "mock-model",
+          "upstream_provider": null,
+          "finish_reason": "tool_calls",
+          "assistant_message": {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              {
+                "id": "call_s8_core",
+                "name": "tool_call",
+                "arguments": "{\"calls\": [{\"name\": \"terminal\", \"arguments\": {\"command\": \"echo via-bridge\"}}]}",
+                "provider_data": null
+              }
+            ]
+          },
+          "usage": {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "request_count": 1,
+            "cache_write_by_ttl": [],
+            "prompt_tokens": 100,
+            "total_tokens": 120
+          }
+        },
+        "context_length": 131072,
+        "assistant_content_chars": 0,
+        "assistant_tool_call_count": 1,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035"
+      }
+    },
+    {
+      "scenario": "s8_tool_call",
+      "input": {
+        "hook_event_name": "pre_tool_call",
+        "task_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+        "session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+        "tool_call_id": "call_s8_core",
+        "turn_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:78e1d808",
+        "api_request_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:78e1d808:api:3",
+        "conversation_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+        "tool_name": "tool_call",
+        "args": {
+          "calls": [
+            {
+              "name": "terminal",
+              "arguments": {
+                "command": "echo via-bridge"
+              }
+            }
+          ]
+        },
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035"
+      }
+    },
+    {
+      "scenario": "s8_tool_call",
+      "input": {
+        "hook_event_name": "post_tool_call",
+        "tool_name": "tool_call",
+        "args": {
+          "calls": [
+            {
+              "name": "terminal",
+              "arguments": {
+                "command": "echo via-bridge"
+              }
+            }
+          ]
+        },
+        "result": "{\"error\": \"'terminal' is a directly-listed tool, not a deferred one. Call it directly instead of via tool_call.\"}",
+        "task_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+        "session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+        "tool_call_id": "call_s8_core",
+        "turn_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:78e1d808",
+        "api_request_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:78e1d808:api:3",
+        "conversation_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+        "duration_ms": 6,
+        "status": "error",
+        "error_type": "tool_error",
+        "error_message": "'terminal' is a directly-listed tool, not a deferred one. Call it directly instead of via tool_call.",
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035"
+      }
+    },
+    {
+      "scenario": "s8_tool_call",
+      "input": {
+        "hook_event_name": "post_api_request",
+        "task_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+        "turn_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:78e1d808",
+        "api_request_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:78e1d808:api:4",
+        "session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+        "platform": "cli",
+        "model": "mock-model",
+        "provider": "custom",
+        "api_mode": "chat_completions",
+        "api_call_count": 4,
+        "api_duration": 0.009365320205688477,
+        "started_at": 1795420637.2275784,
+        "ended_at": 1795420637.2369437,
+        "first_chunk_at": 1795420637.234986,
+        "finish_reason": "stop",
+        "message_count": 8,
+        "response_model": "mock-model",
+        "response": {
+          "model": "mock-model",
+          "upstream_provider": null,
+          "finish_reason": "stop",
+          "assistant_message": {
+            "role": "assistant",
+            "content": "[완료] 시나리오가 끝났습니다.",
+            "tool_calls": []
+          },
+          "usage": {
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cache_read_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "request_count": 1,
+            "cache_write_by_ttl": [],
+            "prompt_tokens": 100,
+            "total_tokens": 120
+          }
+        },
+        "context_length": 131072,
+        "assistant_content_chars": 17,
+        "assistant_tool_call_count": 0,
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035"
+      }
+    },
+    {
+      "scenario": "s8_tool_call",
+      "input": {
+        "hook_event_name": "on_session_end",
+        "session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+        "task_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+        "turn_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035:78e1d808",
+        "completed": true,
+        "failed": false,
+        "interrupted": false,
+        "turn_exit_reason": "text_response(finish_reason=stop)",
+        "model": "mock-model",
+        "platform": "cli",
+        "cwd": "C:\\work\\project",
+        "withhuman_session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035"
+      }
+    },
+    {
+      "scenario": "s8_tool_call",
+      "input": {
+        "hook_event_name": "on_session_finalize",
+        "session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035",
+        "platform": "oneshot",
+        "reason": "cli_close",
+        "cwd": "C:\\Users\\dev",
+        "withhuman_session_id": "local-80116b36529267c1127d9cd28566772426b2294455d3e61ed51e3a1d8b63b035"
+      }
+    }
+  ]
+}

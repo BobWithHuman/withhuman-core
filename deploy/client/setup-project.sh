@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# Sets up WithHuman for Claude Code or Codex CLI in the current folder (macOS, Linux), replacing
+# Sets up WithHuman for Claude Code, Codex CLI, Cursor CLI, GitHub Copilot CLI or Antigravity
+# CLI in the current folder (macOS, Linux), replacing
 # any earlier WithHuman setup. Run it in the folder you start the agent in:
 #
 #   WITHHUMAN_SERVER=https://withhuman.example.com \
 #     curl -fsSL https://raw.githubusercontent.com/BobWithHuman/withhuman-core/main/deploy/client/setup-project.sh | bash -s -- [team]
 #
 # WITHHUMAN_SERVER is the address of your own engine; WithHuman is self-hosted, so there is no
-# default. WITHHUMAN_KEY is the user's key from the security team, when the engine issues keys. WITHHUMAN_AGENT picks the agent: claude (default) or codex. Running it again updates
+# default. WITHHUMAN_KEY is the user's key from the security team, when the engine issues keys. WITHHUMAN_AGENT picks the agent: claude (default), antigravity, codex, copilot, cursor, hermes or openclaw (Hermes is
+# set up for its profile, HERMES_HOME, and OpenClaw for its state directory,
+# OPENCLAW_STATE_DIR, not for the folder). Running it again updates
 # the setup; WITHHUMAN_UNINSTALL=1 takes WithHuman out of the folder instead, keeping other hooks.
 # From a checkout it uses the checkout's files; otherwise it fetches them from WITHHUMAN_REF
 # (default: main), or from WITHHUMAN_BASE_URL (a deploy/client folder served elsewhere, for a
@@ -16,16 +19,23 @@ set -euo pipefail
 team=${1:-default}
 ref=${WITHHUMAN_REF:-main}
 agent=${WITHHUMAN_AGENT:-claude}
-case "$agent" in
-  claude|codex) ;;
-  *) echo "WITHHUMAN_AGENT must be claude or codex: $agent" >&2; exit 1 ;;
-esac
-# The files configure.py needs: the Claude Code hook, which the Codex hook also uses to attach
-# program files, and the Codex hook with its transcript reader.
+# The files configure.py needs. Claude Code takes only its own hook; every other agent also
+# takes the shared bridge, that same hook (its bridge uses it to attach the program files a
+# command would run) and its own. Adding an agent is one line here and one entry in
+# configure.py's AGENTS.
 files="configure.py hooks/pre-tool-use.py"
-if [ "$agent" = codex ]; then
-  files="$files codex/withhuman-hook.py codex/codex_transcript.py"
-fi
+case "$agent" in
+  claude) ;;
+  antigravity) files="$files hooks/withhuman_bridge.py antigravity/withhuman-hook.py antigravity/antigravity_transcript.py" ;;
+  codex) files="$files hooks/withhuman_bridge.py codex/withhuman-hook.py codex/codex_transcript.py" ;;
+  copilot) files="$files hooks/withhuman_bridge.py copilot/withhuman-hook.py copilot/copilot_transcript.py" ;;
+  cursor) files="$files hooks/withhuman_bridge.py cursor/withhuman-hook.py" ;;
+  hermes) files="$files hooks/withhuman_bridge.py hermes/__init__.py hermes/plugin.yaml hermes/withhuman-hook.py" ;;
+  # OpenClaw loads a plugin recorded in its own configuration, so its own files are that
+  # plugin and what OpenClaw needs to install it.
+  openclaw) files="$files hooks/withhuman_bridge.py openclaw/withhuman-hook.py openclaw/index.js openclaw/openclaw.plugin.json openclaw/package.json" ;;
+  *) echo "WITHHUMAN_AGENT must be claude, antigravity, codex, copilot, cursor, hermes or openclaw: $agent" >&2; exit 1 ;;
+esac
 
 if [ -z "${WITHHUMAN_SERVER:-}" ] && [ -z "${WITHHUMAN_UNINSTALL:-}" ]; then
   cat >&2 <<'USAGE'
@@ -73,8 +83,8 @@ if [ -z "$source_dir" ]; then
 fi
 if [ -n "${WITHHUMAN_UNINSTALL:-}" ]; then
   "$python" "$source_dir/configure.py" --uninstall --agent "$agent" --project "$PWD"
-elif [ "$agent" = codex ]; then
-  "$python" "$source_dir/configure.py" --agent codex --project "$PWD" --team "$team" --server "$WITHHUMAN_SERVER"
+elif [ "$agent" != claude ]; then
+  "$python" "$source_dir/configure.py" --agent "$agent" --project "$PWD" --team "$team" --server "$WITHHUMAN_SERVER"
 else
   "$python" "$source_dir/configure.py" --project "$PWD" --team "$team" --server "$WITHHUMAN_SERVER"
 fi

@@ -1,0 +1,173 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "bash": "python3 \"$COPILOT_HOOK_DIR/probe.py\" sessionStart"
+      }
+    ],
+    "sessionEnd": [
+      {
+        "type": "command",
+        "bash": "python3 \"$COPILOT_HOOK_DIR/probe.py\" sessionEnd"
+      }
+    ],
+    "userPromptSubmitted": [
+      {
+        "type": "command",
+        "bash": "python3 \"$COPILOT_HOOK_DIR/probe.py\" userPromptSubmitted"
+      }
+    ],
+    "userPromptTransformed": [
+      {
+        "type": "command",
+        "bash": "python3 \"$COPILOT_HOOK_DIR/probe.py\" userPromptTransformed"
+      }
+    ],
+    "preToolUse": [
+      {
+        "type": "command",
+        "bash": "python3 \"$COPILOT_HOOK_DIR/probe.py\" preToolUse"
+      }
+    ],
+    "preMcpToolCall": [
+      {
+        "type": "command",
+        "bash": "python3 \"$COPILOT_HOOK_DIR/probe.py\" preMcpToolCall"
+      }
+    ],
+    "postToolUse": [
+      {
+        "type": "command",
+        "bash": "python3 \"$COPILOT_HOOK_DIR/probe.py\" postToolUse"
+      }
+    ],
+    "postToolUseFailure": [
+      {
+        "type": "command",
+        "bash": "python3 \"$COPILOT_HOOK_DIR/probe.py\" postToolUseFailure"
+      }
+    ],
+    "permissionRequest": [
+      {
+        "type": "command",
+        "bash": "python3 \"$COPILOT_HOOK_DIR/probe.py\" permissionRequest"
+      }
+    ],
+    "subagentStart": [
+      {
+        "type": "command",
+        "bash": "python3 \"$COPILOT_HOOK_DIR/probe.py\" subagentStart"
+      }
+    ],
+    "subagentStop": [
+      {
+        "type": "command",
+        "bash": "python3 \"$COPILOT_HOOK_DIR/probe.py\" subagentStop"
+      }
+    ],
+    "agentStop": [
+      {
+        "type": "command",
+        "bash": "python3 \"$COPILOT_HOOK_DIR/probe.py\" agentStop"
+      }
+    ],
+    "preCompact": [
+      {
+        "type": "command",
+        "bash": "python3 \"$COPILOT_HOOK_DIR/probe.py\" preCompact"
+      }
+    ],
+    "errorOccurred": [
+      {
+        "type": "command",
+        "bash": "python3 \"$COPILOT_HOOK_DIR/probe.py\" errorOccurred"
+      }
+    ],
+    "notification": [
+      {
+        "type": "command",
+        "bash": "python3 \"$COPILOT_HOOK_DIR/probe.py\" notification"
+      }
+    ],
+    "SessionStart": [
+      {
+        "type": "command",
+        "bash": "python3 \"$COPILOT_HOOK_DIR/probe.py\" SessionStart"
+      }
+    ],
+    "SessionEnd": [
+      {
+        "type": "command",
+        "bash": "python3 \"$COPILOT_HOOK_DIR/probe.py\" SessionEnd"
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "type": "command",
+        "bash": "python3 \"$COPILOT_HOOK_DIR/probe.py\" UserPromptSubmit"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "type": "command",
+        "bash": "python3 \"$COPILOT_HOOK_DIR/probe.py\" PreToolUse"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "type": "command",
+        "bash": "python3 \"$COPILOT_HOOK_DIR/probe.py\" PostToolUse"
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "type": "command",
+        "bash": "python3 \"$COPILOT_HOOK_DIR/probe.py\" PostToolUseFailure"
+      }
+    ],
+    "ErrorOccurred": [
+      {
+        "type": "command",
+        "bash": "python3 \"$COPILOT_HOOK_DIR/probe.py\" ErrorOccurred"
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "bash": "python3 \"$COPILOT_HOOK_DIR/probe.py\" Stop"
+      }
+    ],
+    "SubagentStop": [
+      {
+        "type": "command",
+        "bash": "python3 \"$COPILOT_HOOK_DIR/probe.py\" SubagentStop"
+      }
+    ],
+    "PreCompact": [
+      {
+        "type": "command",
+        "bash": "python3 \"$COPILOT_HOOK_DIR/probe.py\" PreCompact"
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "type": "command",
+        "bash": "python3 \"$COPILOT_HOOK_DIR/probe.py\" PermissionRequest"
+      }
+    ],
+    "SubagentStart": [
+      {
+        "type": "command",
+        "bash": "python3 \"$COPILOT_HOOK_DIR/probe.py\" SubagentStart"
+      }
+    ],
+    "Notification": [
+      {
+        "type": "command",
+        "bash": "python3 \"$COPILOT_HOOK_DIR/probe.py\" Notification"
+      }
+    ]
+  }
+}

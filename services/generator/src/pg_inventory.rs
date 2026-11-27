@@ -2,9 +2,10 @@
 
 use tokio_postgres::Row;
 use withhuman_contracts::inventory::{
-    ClientRecord, ClientRegistrationRecord, ClientState, KeyDenial, KeyRecord, KeyStatus, NewKey,
-    Review, ReviewRequest, RevokeKeyRequest, SessionFlags, SessionStop, SessionStopRequest,
-    SetOwnerRequest, StopClientRequest, StopDenial, UserKind, VerifyKeyRequest, VerifyKeyResponse,
+    ClientRecord, ClientRegistrationRecord, ClientState, DeletedClient, KeyDenial, KeyRecord,
+    KeyStatus, NewKey, Review, ReviewRequest, RevokeKeyRequest, SessionFlags, SessionStop,
+    SessionStopRequest, SetOwnerRequest, StopClientRequest, StopDenial, UserKind, VerifyKeyRequest,
+    VerifyKeyResponse,
 };
 
 use crate::{
@@ -17,9 +18,9 @@ use crate::{
 // (`first_seen`, `last_seen`) is left to the Hooks, and the owner to the security team.
 const REGISTER_CLIENT: &str = "\
 INSERT INTO clients (client_id, team, hostname, os, os_user, hook_version, agent, user_email, \
-  registered_at, updated_at, serial) \
+  registered_at, updated_at, serial, other_serials) \
 VALUES ($1::text, $2::text, $3::text, $4::text, $5::text, $6::text, $7::text, $8::text, \
-  $9::bigint, $9::bigint, $10::text) \
+  $9::bigint, $9::bigint, $10::text, $11::text[]) \
 ON CONFLICT (client_id) DO UPDATE SET \
   team = coalesce(EXCLUDED.team, clients.team), \
   hostname = coalesce(EXCLUDED.hostname, clients.hostname), \
@@ -29,6 +30,8 @@ ON CONFLICT (client_id) DO UPDATE SET \
   agent = coalesce(EXCLUDED.agent, clients.agent), \
   user_email = coalesce(EXCLUDED.user_email, clients.user_email), \
   serial = coalesce(EXCLUDED.serial, clients.serial), \
+  other_serials = CASE WHEN cardinality(EXCLUDED.other_serials) > 0 \
+    THEN EXCLUDED.other_serials ELSE clients.other_serials END, \
   registered_at = coalesce(clients.registered_at, EXCLUDED.registered_at), \
   updated_at = EXCLUDED.updated_at";
 
@@ -63,6 +66,27 @@ WHERE client_id = $1::text AND stopped_at IS NULL";
 const RELEASE_CLIENT: &str = "\
 UPDATE clients SET stopped_at = NULL, stopped_by = NULL, stop_reason = NULL \
 WHERE client_id = $1::text";
+
+// The sessions a device ran: those whose Hooks first carried its client ID.
+const SESSIONS_OF_CLIENT: &str = "SELECT session_id FROM sessions WHERE client_id = $1::text";
+
+/// Every table that holds a session's records by `session_id`, deleted with the session.
+const SESSION_TABLES: [&str; 11] = [
+    "event_commits",
+    "nodes",
+    "subgraphs",
+    "paragraphs",
+    "tokens",
+    "token_mentions",
+    "file_refs",
+    "cause_edges",
+    "pending_paragraph_enrichments",
+    "pending_request_continuations",
+    "session_marks",
+];
+
+const DELETE_CLIENT_PROJECTS: &str = "DELETE FROM client_projects WHERE client_id = $1::text";
+const DELETE_CLIENT: &str = "DELETE FROM clients WHERE client_id = $1::text";
 
 const CLIENT_STOPPED: &str =
     "SELECT stopped_at IS NOT NULL FROM clients WHERE client_id = $1::text";
@@ -132,6 +156,11 @@ impl PgGraphRepository {
                     .map(|value| withhuman_common::postgres_text(value).into_owned())
             };
             let client_id = withhuman_common::postgres_text(&r.client_id).into_owned();
+            let other_serials: Vec<String> = r
+                .other_serials
+                .iter()
+                .map(|serial| withhuman_common::postgres_text(serial).into_owned())
+                .collect();
             let mut client = self.client().await?;
             let tx = client.transaction().await?;
             run(
@@ -148,6 +177,7 @@ impl PgGraphRepository {
                     &record.user,
                     &at,
                     &text(&r.serial),
+                    &other_serials,
                 ],
             )
             .await?;
@@ -244,6 +274,52 @@ impl PgGraphRepository {
         }
         .await;
         result?.ok_or(RepositoryError::NotFound)
+    }
+
+    /// Deletes the device (its row and its projects) and every session it ran, with all that
+    /// was recorded of them; `NotFound` when the store holds nothing of it. The audit of keys
+    /// (`key_events`) and the sources distrusted from its sessions stay. A device that sends
+    /// Hooks again is recorded again.
+    pub(crate) async fn remove_client(
+        &self,
+        client_id: &str,
+    ) -> Result<DeletedClient, RepositoryError> {
+        let result: Result<Option<u64>, PgError> = async {
+            let mut client = self.client().await?;
+            let tx = client.transaction().await?;
+            let sessions: Vec<String> = tx
+                .query(SESSIONS_OF_CLIENT, &[&client_id])
+                .await?
+                .iter()
+                .map(|row| row.get(0))
+                .collect();
+            for table in SESSION_TABLES {
+                tx.execute(
+                    &format!("DELETE FROM {table} WHERE session_id = ANY($1::text[])"),
+                    &[&sessions],
+                )
+                .await?;
+            }
+            tx.execute(
+                "DELETE FROM sessions WHERE session_id = ANY($1::text[])",
+                &[&sessions],
+            )
+            .await?;
+            tx.execute(DELETE_CLIENT_PROJECTS, &[&client_id]).await?;
+            let removed = tx.execute(DELETE_CLIENT, &[&client_id]).await?;
+            if removed == 0 && sessions.is_empty() {
+                return Ok(None);
+            }
+            tx.commit().await?;
+            Ok(Some(sessions.len() as u64))
+        }
+        .await;
+        result?
+            .map(|sessions| DeletedClient {
+                client_id: client_id.to_owned(),
+                sessions,
+            })
+            .ok_or(RepositoryError::NotFound)
     }
 
     /// Whether the device is stopped; a device the store does not hold is not.

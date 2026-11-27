@@ -1,0 +1,23 @@
+{
+  "name": "openclaw-plugin-withhuman",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "WithHuman's OpenClaw plugin: forwards each hook to the shared bridge and answers with the engine's verdict.",
+  "files": [
+    "index.js",
+    "withhuman-hook.py",
+    "withhuman_bridge.py",
+    "pre-tool-use.py",
+    "openclaw.plugin.json",
+    "server"
+  ],
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.11.7"
+    }
+  }
+}

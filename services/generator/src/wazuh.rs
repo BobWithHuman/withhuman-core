@@ -40,14 +40,37 @@ const PAGE_SIZE: usize = 500;
 /// An agent that never connected has sent no inventory.
 const NEVER_CONNECTED: &str = "never_connected";
 const AGENT_FIELDS: &str = "id,name,status,lastKeepAlive,os.name,os.version,os.platform";
-/// Packages whose name holds either word (`~` is "like", case-insensitive; `,` is "or").
-const PROGRAM_QUERY: &str = "name~claude,name~codex";
-/// Processes with either word in their name, executable or arguments. The manager's match is
-/// loose (`Claude Helper` passes), so each is judged again by [`process_agent`].
-const PROCESS_QUERY: &str = "name~claude,name~codex,cmd~claude,cmd~codex,argvs~claude,argvs~codex";
+/// Packages whose name holds any of the words (`~` is "like", case-insensitive; `,` is "or").
+const PROGRAM_QUERY: &str = "name~claude,name~codex,name~cursor,name~copilot,\
+                             name~antigravity,name~agy,name~openclaw";
+/// Processes with any of the words in their name, executable or arguments. The manager's match
+/// is loose (`Claude Helper` and `CursorUIViewService` pass), so each is judged again by
+/// [`process_agent`].
+///
+/// Cursor's CLI needs the `argvs` terms: it runs under `node` with its wrapper's name, so a
+/// session started as `agent` says `cursor` nowhere but in the script path among its arguments.
+/// Copilot needs them for the same reason, and its desktop app's own process is named
+/// `github`, which is too common a word to ask for: the app is found by its path instead.
+///
+/// Antigravity's CLI is asked for by its own short name as well (`agy`): the path it runs from
+/// says `antigravity` nowhere, and the binary is named neither after the product nor after the
+/// company.
+///
+/// OpenClaw's Gateway and CLI are both `openclaw`, a name nothing else carries, and both run
+/// under `node` out of its npm install — so the name is asked for in all three fields.
+const PROCESS_QUERY: &str = "name~claude,name~codex,name~cursor,name~copilot,\
+                             name~antigravity,name~agy,name~openclaw,\
+                             cmd~claude,cmd~codex,cmd~cursor,cmd~copilot,\
+                             cmd~antigravity,cmd~agy,cmd~openclaw,\
+                             argvs~claude,argvs~codex,argvs~cursor,argvs~copilot,\
+                             argvs~antigravity,argvs~agy,argvs~openclaw";
 const PROCESS_FIELDS: &str = "name,cmd,argvs,scan.time";
 const CLAUDE_CODE: &str = "claude-code";
 const CODEX: &str = "codex";
+const CURSOR: &str = "cursor";
+const COPILOT: &str = "copilot";
+const ANTIGRAVITY: &str = "antigravity";
+const OPENCLAW: &str = "openclaw";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WazuhError {
@@ -636,14 +659,21 @@ fn command_line(process: &Process) -> Option<String> {
     clean(Some(line.chars().take(COMMAND_CHARS).collect()))
 }
 
-/// Whether a process is Claude Code (`claude-code`) or Codex (`codex`), Claude Code first.
+/// Which coding agent a process is, Claude Code first and otherwise the first one seen.
 ///
-/// It is when its `name` is exactly `claude` or `codex` (`claude.exe` on Windows), or when its
-/// `cmd` or one of its `argvs` is such a program: a path whose last segment is exactly that
-/// name, a path into Claude Code's native install (`…/claude/versions/2.1.3`, which runs
-/// under its version's name), or a path into the npm packages `@anthropic-ai/claude-code` or
-/// `@openai/codex` (installed with npm, both run under `node`). The case counts: the Claude
-/// desktop app's processes (`Claude`, `Claude Helper (Renderer)`) are not Claude Code.
+/// It is one when its `name` is exactly `claude`, `codex`, `cursor-agent`, `cursor` or
+/// `openclaw`
+/// (`claude.exe` on Windows), or when its `cmd` or one of its `argvs` is such a program: a path
+/// whose last segment is exactly that name, a path into Claude Code's native install
+/// (`…/claude/versions/2.1.3`, which runs under its version's name) or Cursor's
+/// (`…/cursor-agent/versions/2026.11.22/index.js`), or a path into the npm packages
+/// `@anthropic-ai/claude-code` or `@openai/codex` (installed with npm, both run under
+/// `node`), or a path into OpenClaw's npm install (`…/node_modules/openclaw/…`).
+///
+/// The case counts: the Claude desktop app's processes (`Claude`, `Claude Helper (Renderer)`)
+/// are not Claude Code. Cursor's CLI is found by its install path rather than its name: it
+/// runs under `node` with the name it was started as, which is `agent` as often as
+/// `cursor-agent`, and `agent` says nothing on its own.
 fn process_agent(process: &Process) -> Option<&'static str> {
     let mut found = process
         .name
@@ -666,7 +696,8 @@ fn process_agent(process: &Process) -> Option<&'static str> {
     }
 }
 
-/// A program's file name, exactly `claude` or `codex` once a Windows `.exe` is taken off.
+/// A program's file name, exactly a coding agent's once a Windows `.exe` is taken off.
+/// `cursor-agent` is Cursor's CLI and `cursor` the editor it ships beside.
 fn program_agent(file_name: &str) -> Option<&'static str> {
     let file_name = file_name
         .strip_suffix(".exe")
@@ -675,6 +706,25 @@ fn program_agent(file_name: &str) -> Option<&'static str> {
     match file_name {
         "claude" => Some(CLAUDE_CODE),
         "codex" => Some(CODEX),
+        "cursor-agent" => Some(CURSOR),
+        // Cursor's editor is the same agent as its CLI and reads the same hooks, and unlike
+        // Claude Code it shares its name with no desktop app that is not one — so the name
+        // counts whatever the case (`Cursor` on macOS, `Cursor.exe` on Windows, `cursor` on
+        // Linux). Its helpers (`Cursor Helper (Renderer)`) are not this name and do not count.
+        name if name.eq_ignore_ascii_case("cursor") => Some(CURSOR),
+        // Copilot's CLI runs as `copilot`, and the process it does the work in as
+        // `copilot-runtime`. Its desktop app's binary is named `github`, which is left out:
+        // the word is far too common to take for a coding agent, and the app is found by the
+        // path it runs from instead.
+        "copilot" | "copilot-runtime" => Some(COPILOT),
+        // Antigravity's CLI is `agy`, a name nothing else on a developer's machine carries.
+        // Its own name appears only in the folder it keeps its state in, which `path_agent`
+        // reads.
+        "agy" => Some(ANTIGRAVITY),
+        // OpenClaw's Gateway and its CLI are the same program, and its name is its own: no
+        // desktop app or library shares it, so the name alone counts. Its own processes run
+        // under `node` with this name in the path, which [`path_agent`] reads.
+        "openclaw" => Some(OPENCLAW),
         _ => None,
     }
 }
@@ -688,10 +738,43 @@ fn path_agent(path: &str) -> Option<&'static str> {
     if path.contains("@openai/codex") {
         return Some(CODEX);
     }
+    if path.contains("@github/copilot") || path.contains("GitHub Copilot.app") {
+        return Some(COPILOT);
+    }
+    // Antigravity, by the folder it keeps its state and its CLI in, and by the editor that
+    // ships the same agent.
+    if path.contains("antigravity") || path.contains("Antigravity.app") {
+        return Some(ANTIGRAVITY);
+    }
     let segments: Vec<&str> = path
         .split('/')
         .filter(|segment| !segment.is_empty())
         .collect();
+    // Cursor's CLI runs `index.js` out of its install, so the folder pair is the signal; its
+    // own name is nowhere in the path a session started as `agent` reports.
+    if segments
+        .windows(2)
+        .any(|pair| pair == ["cursor-agent", "versions"])
+    {
+        return Some(CURSOR);
+    }
+    // Copilot's desktop app keeps a CLI of its own under a cache folder, which is what a
+    // session started from the app runs.
+    if segments
+        .windows(2)
+        .any(|pair| pair == ["copilot-sdk", "cli"])
+    {
+        return Some(COPILOT);
+    }
+    // OpenClaw is an npm package, and its Gateway runs out of it under `node`. The folder pair
+    // is the signal rather than the word: a project that merely depends on it would otherwise
+    // report a coding agent on a device that runs none.
+    if segments
+        .windows(2)
+        .any(|pair| pair == ["node_modules", "openclaw"])
+    {
+        return Some(OPENCLAW);
+    }
     match segments[..] {
         [.., "claude", "versions", _] => Some(CLAUDE_CODE),
         [.., last] => program_agent(last),
@@ -700,9 +783,9 @@ fn path_agent(path: &str) -> Option<&'static str> {
 }
 
 /// The coding agent among installed packages, Claude Code first: a name holding `claude` or
-/// `codex` in any case (`@anthropic-ai/claude-code`, `claude-code`, `codex`, `Codex CLI`).
-/// The Claude desktop app's package (`Claude`, or `Claude ` and more that is not
-/// `Claude Code`) is not Claude Code.
+/// `codex` in any case (`@anthropic-ai/claude-code`, `claude-code`, `codex`, `Codex CLI`), or
+/// one of Cursor's own names. The Claude desktop app's package (`Claude`, or `Claude ` and more
+/// that is not `Claude Code`) is not Claude Code.
 fn package_agent(packages: &[Named]) -> Option<&'static str> {
     let names: Vec<String> = packages
         .iter()
@@ -715,9 +798,59 @@ fn package_agent(packages: &[Named]) -> Option<&'static str> {
         Some(CLAUDE_CODE)
     } else if names.iter().any(|name| name.contains("codex")) {
         Some(CODEX)
+    } else if names.iter().any(|name| is_cursor_package(name)) {
+        Some(CURSOR)
+    } else if names.iter().any(|name| is_copilot_package(name)) {
+        Some(COPILOT)
+    } else if names.iter().any(|name| is_antigravity_package(name)) {
+        Some(ANTIGRAVITY)
+    } else if names.iter().any(|name| is_openclaw_package(name)) {
+        Some(OPENCLAW)
     } else {
         None
     }
+}
+
+/// Cursor's own packages, in lower case: `cursor`, `cursor-agent`, or a name opening with
+/// `cursor ` such as `Cursor CLI`.
+///
+/// Not a name that merely holds the word, as the rule for the others is: `libxcursor`,
+/// `xcursor-themes` and `adwaita-cursor-theme` sit on every Linux desktop, and matching them
+/// would report a coding agent on devices that have none.
+fn is_cursor_package(name: &str) -> bool {
+    name == "cursor" || name == "cursor-agent" || name.starts_with("cursor ")
+}
+
+/// Copilot's own packages, in lower case: the npm package its CLI is installed as, the command
+/// that package leaves behind, and the desktop app that ships a CLI inside it.
+///
+/// Not a name that merely holds the word: `copilot` names an editor extension on many devices
+/// that have no CLI, and reporting those would say a device runs a coding agent WithHuman can
+/// see when it does not.
+fn is_copilot_package(name: &str) -> bool {
+    name == "copilot" || name == "@github/copilot" || name.starts_with("github copilot")
+}
+
+/// Antigravity's own packages, in lower case: the editor and the CLI it ships, however they
+/// are named, and the command the CLI leaves behind.
+///
+/// Not a name that merely holds the word: `agy` is matched exactly, since a name holding those
+/// three letters (`legacy`, `imagy`) says nothing about a coding agent.
+fn is_antigravity_package(name: &str) -> bool {
+    name == "agy"
+        || name == "antigravity"
+        || name.starts_with("antigravity ")
+        || name.starts_with("google antigravity")
+}
+
+/// OpenClaw's own package, in lower case: `openclaw`, or a name opening with `openclaw ` such as
+/// `OpenClaw CLI`.
+///
+/// Not a name that merely holds the word, as Cursor's rule is not: a plugin of OpenClaw's
+/// (`openclaw-plugin-…`, which WithHuman's own client is one of) says a plugin was built, not
+/// that the agent runs here, and the agent's own package is there when it does.
+fn is_openclaw_package(name: &str) -> bool {
+    name == "openclaw" || name.starts_with("openclaw ")
 }
 
 fn is_claude_desktop(package: &str) -> bool {
@@ -945,6 +1078,293 @@ IqrADJzA8KwFbVE/cGxF1OOGU8eh5qnMQg7U\n\
             argvs: text(argvs).map(Argvs::Line),
             scan: None,
         }
+    }
+
+    /// Cursor's CLI, recorded from a real session: `node` runs its `index.js` under the name
+    /// the user started it as, which the installer leaves as both `cursor-agent` and `agent`.
+    /// So the install path is the signal, and the editor's own binary counts too.
+    #[test]
+    fn a_cursor_session_is_found_by_the_path_it_runs_from() {
+        let agent = |name, cmd, argvs| process_agent(&process(name, cmd, argvs));
+        // What `ps` showed for `agent status` on Linux: the thread's name, a wrapper called
+        // `agent`, and the install path among the arguments.
+        assert_eq!(
+            agent(
+                "MainThread",
+                "/home/u/.local/bin/agent",
+                "--disable-sigusr1 --use-system-ca \
+                 /home/u/.local/share/cursor-agent/versions/2026.11.22-e9042b2/index.js status"
+            ),
+            Some("cursor")
+        );
+        // Started by its own name, and on Windows.
+        assert_eq!(agent("cursor-agent", "", ""), Some("cursor"));
+        // OpenClaw's Gateway and its CLI are the same program, under its own name. Its sessions
+        // run under `node` out of the npm install, which the folder pair finds.
+        assert_eq!(agent("openclaw", "", ""), Some("openclaw"));
+        assert_eq!(
+            agent(
+                "node",
+                "/home/u/.nvm/versions/node/v26.13.1/bin/openclaw",
+                "chat"
+            ),
+            Some("openclaw")
+        );
+        assert_eq!(
+            agent(
+                "node",
+                "",
+                "/usr/lib/node_modules/openclaw/dist/index.js gateway"
+            ),
+            Some("openclaw")
+        );
+        // A project that merely depends on it is not a device running it.
+        assert_eq!(agent("node", "/srv/app/build.js", "--openclaw-theme"), None);
+        assert_eq!(
+            agent("", r"C:\Users\ana\.local\bin\cursor-agent.exe", ""),
+            Some("cursor")
+        );
+        // The editor it ships beside.
+        assert_eq!(
+            agent(
+                "Cursor",
+                "/Applications/Cursor.app/Contents/MacOS/Cursor",
+                ""
+            ),
+            Some("cursor")
+        );
+        // Anything else holding the word is not a coding agent. The first is macOS's own text
+        // input service, which the manager's loose match returns.
+        for other in [
+            "CursorUIViewService",
+            "Cursor Helper (Renderer)",
+            "cursor-agent-worker-sea",
+            "xcursorgen",
+            "libxcursor",
+        ] {
+            assert_eq!(agent(other, "", ""), None, "{other}");
+        }
+        assert_eq!(
+            agent(
+                "CursorUIViewService",
+                "/System/Library/PrivateFrameworks/TextInputUIMacHelper.framework/Versions/A/\
+                 XPCServices/CursorUIViewService.xpc/Contents/MacOS/CursorUIViewService",
+                ""
+            ),
+            None
+        );
+    }
+
+    /// Cursor's packages are matched by name and not by the word, unlike the others: a Linux
+    /// desktop is full of cursor themes.
+    #[test]
+    fn cursor_packages_are_told_from_cursor_themes() {
+        let named = |names: &[&str]| {
+            package_agent(
+                &names
+                    .iter()
+                    .map(|name| Named {
+                        name: Some((*name).to_owned()),
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        };
+        for packages in [
+            vec!["Cursor"],
+            vec!["cursor-agent"],
+            vec!["Cursor CLI"],
+            vec!["git", "Cursor", "ripgrep"],
+        ] {
+            assert_eq!(named(&packages), Some("cursor"), "{packages:?}");
+        }
+        for packages in [
+            vec!["openclaw"],
+            vec!["OpenClaw CLI"],
+            vec!["git", "openclaw"],
+        ] {
+            assert_eq!(named(&packages), Some("openclaw"), "{packages:?}");
+        }
+        // A plugin of OpenClaw's says a plugin was built, not that the agent runs here; the
+        // agent's own package is there when it does. WithHuman's own client is such a plugin.
+        for packages in [vec!["openclaw-plugin-withhuman"], vec!["openclaw-sdk"]] {
+            assert_eq!(named(&packages), None, "{packages:?}");
+        }
+        for packages in [
+            vec!["libxcursor1"],
+            vec!["xcursor-themes"],
+            vec!["adwaita-cursor-theme"],
+            vec!["breeze-cursor-theme", "git"],
+        ] {
+            assert_eq!(named(&packages), None, "{packages:?}");
+        }
+        // Claude Code still wins when more than one is installed.
+        assert_eq!(named(&["Cursor", "claude-code"]), Some("claude-code"));
+    }
+
+    /// Copilot's CLI is an npm package whose command is `copilot`, and the desktop app ships a
+    /// CLI of its own under a cache folder. The app's own process is named `github`, which is
+    /// deliberately not matched: the word says nothing about a coding agent.
+    #[test]
+    fn a_copilot_session_is_found_by_its_command_or_the_path_it_runs_from() {
+        let agent = |name, cmd, argvs| process_agent(&process(name, cmd, argvs));
+        // What `ps` showed on this device: the CLI installed as the npm package, and the
+        // process it does the work in.
+        assert_eq!(
+            agent("copilot", "/opt/homebrew/bin/copilot", ""),
+            Some("copilot")
+        );
+        assert_eq!(
+            agent(
+                "node",
+                "/opt/homebrew/bin/node",
+                "/opt/homebrew/lib/node_modules/@github/copilot/npm-loader.js"
+            ),
+            Some("copilot")
+        );
+        assert_eq!(
+            agent(
+                "copilot-runtime",
+                "/Users/ana/Library/Caches/copilot-sdk/cli/1.0.115-7/copilot-runtime",
+                ""
+            ),
+            Some("copilot")
+        );
+        // The desktop app, found by the path and not by the name its binary happens to have.
+        assert_eq!(
+            agent(
+                "github",
+                "/Applications/GitHub Copilot.app/Contents/MacOS/github",
+                ""
+            ),
+            Some("copilot")
+        );
+        assert_eq!(agent("github", "/usr/local/bin/github", ""), None);
+        // Anything else holding the word is not a coding agent. The first two are the editor
+        // extension's, which run no hook of ours.
+        for other in [
+            "copilot-language-server",
+            "git-credential-copilot",
+            "copilotd",
+        ] {
+            assert_eq!(agent(other, "", ""), None, "{other}");
+        }
+    }
+
+    /// Copilot's packages are matched by name and not by the word: `copilot` names an editor
+    /// extension on many devices that have no CLI.
+    #[test]
+    fn copilot_packages_are_told_from_the_editor_extension() {
+        let named = |names: &[&str]| {
+            package_agent(
+                &names
+                    .iter()
+                    .map(|name| Named {
+                        name: Some((*name).to_owned()),
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        };
+        for packages in [
+            vec!["copilot"],
+            vec!["@github/copilot"],
+            vec!["GitHub Copilot"],
+            vec!["git", "GitHub Copilot", "ripgrep"],
+        ] {
+            assert_eq!(named(&packages), Some("copilot"), "{packages:?}");
+        }
+        for packages in [
+            vec!["copilot-language-server"],
+            vec!["github-copilot-intellij"],
+            vec!["vscode-copilot-chat", "git"],
+        ] {
+            assert_eq!(named(&packages), None, "{packages:?}");
+        }
+        // Claude Code still wins when more than one is installed.
+        assert_eq!(
+            named(&["GitHub Copilot", "claude-code"]),
+            Some("claude-code")
+        );
+    }
+
+    /// Antigravity's CLI is a binary named `agy`, which says nothing about the product, and
+    /// it runs from a path that does not either. Its name is matched exactly, and the folder
+    /// it keeps its state in is the other signal.
+    #[test]
+    fn an_antigravity_session_is_found_by_its_command_or_its_state_folder() {
+        let agent = |name, cmd, argvs| process_agent(&process(name, cmd, argvs));
+        // What `ps` showed for this device's install.
+        assert_eq!(
+            agent("agy", "/Users/ana/.local/bin/agy", ""),
+            Some("antigravity")
+        );
+        assert_eq!(
+            agent(
+                "agy",
+                "/Users/ana/.local/bin/agy",
+                "-p \"fix the build\" --dangerously-skip-permissions"
+            ),
+            Some("antigravity")
+        );
+        // A helper that runs out of its state folder, whatever it is called.
+        assert_eq!(
+            agent(
+                "webm_encoder",
+                "/Users/ana/.gemini/antigravity-cli/bin/webm_encoder",
+                ""
+            ),
+            Some("antigravity")
+        );
+        // The editor that ships the same agent.
+        assert_eq!(
+            agent(
+                "Antigravity",
+                "/Applications/Antigravity.app/Contents/MacOS/Antigravity",
+                ""
+            ),
+            Some("antigravity")
+        );
+        // Three letters are not a coding agent on their own: the manager's match is loose, and
+        // these are what it returns for `agy`.
+        for (name, cmd) in [
+            ("legacy-sync", "/usr/bin/legacy-sync"),
+            ("imagy", "/opt/imagy/bin/imagy"),
+            ("agyrus", ""),
+        ] {
+            assert_eq!(agent(name, cmd, ""), None, "{name}");
+        }
+    }
+
+    /// Antigravity's packages are matched by name and not by the word, as the others' are.
+    #[test]
+    fn antigravity_packages_are_told_from_names_that_merely_hold_the_letters() {
+        let named = |names: &[&str]| {
+            package_agent(
+                &names
+                    .iter()
+                    .map(|name| Named {
+                        name: Some((*name).to_owned()),
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        };
+        for packages in [
+            vec!["Antigravity"],
+            vec!["agy"],
+            vec!["Antigravity CLI"],
+            vec!["Google Antigravity"],
+            vec!["git", "Antigravity", "ripgrep"],
+        ] {
+            assert_eq!(named(&packages), Some("antigravity"), "{packages:?}");
+        }
+        for packages in [
+            vec!["legacy"],
+            vec!["imagy"],
+            vec!["antigravity-themes", "git"],
+        ] {
+            assert_eq!(named(&packages), None, "{packages:?}");
+        }
+        // Claude Code still wins when more than one is installed.
+        assert_eq!(named(&["Antigravity", "claude-code"]), Some("claude-code"));
     }
 
     #[test]

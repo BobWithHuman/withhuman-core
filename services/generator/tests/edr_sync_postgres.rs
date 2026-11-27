@@ -95,7 +95,9 @@ async fn a_sync_mirrors_the_manager_and_matches_registered_clients() {
              ('t/cho', 'desktop-abc.corp.example.com', NULL, NULL, NULL), \
              ('t/dan', 'anas-macbook-pro.local', 'C02ZZZ', NULL, NULL), \
              ('t/eve', 'gone', NULL, '099', 'active'), \
-             ('t/fay', 'BUILD-7.local', 'PF3ABC', '001', 'active')",
+             ('t/fay', 'BUILD-7.local', 'PF3ABC', '001', 'active'); \
+             INSERT INTO clients (client_id, hostname, serial, other_serials) VALUES \
+             ('t/gus', 'lab-pc', 'BOARD9', '{\" c02xk1 \"}')",
         )
         .await
         .unwrap();
@@ -107,7 +109,7 @@ async fn a_sync_mirrors_the_manager_and_matches_registered_clients() {
         synced,
         EdrSync::Synced {
             devices: 6,
-            matched: 4
+            matched: 5
         }
     );
     assert_eq!(
@@ -196,6 +198,8 @@ async fn a_sync_mirrors_the_manager_and_matches_registered_clients() {
             ["t/eve", null, null],
             // Matched to another device before.
             ["t/fay", "004", "pending"],
+            // The EDR reports what the setup read as one of its other serials.
+            ["t/gus", "001", "active"],
         ])
     );
     {
@@ -228,8 +232,12 @@ async fn a_sync_mirrors_the_manager_and_matches_registered_clients() {
         );
         assert!(
             fake.requests.contains(
-                &"GET /syscollector/001/processes?q=name%7Eclaude%2Cname%7Ecodex%2Ccmd%7Eclaude\
-                  %2Ccmd%7Ecodex%2Cargvs%7Eclaude%2Cargvs%7Ecodex\
+                &"GET /syscollector/001/processes?q=name%7Eclaude%2Cname%7Ecodex%2Cname%7Ecursor\
+                  %2Cname%7Ecopilot%2Cname%7Eantigravity%2Cname%7Eagy%2Cname%7Eopenclaw\
+                  %2Ccmd%7Eclaude%2Ccmd%7Ecodex%2Ccmd%7Ecursor%2Ccmd%7Ecopilot\
+                  %2Ccmd%7Eantigravity%2Ccmd%7Eagy%2Ccmd%7Eopenclaw\
+                  %2Cargvs%7Eclaude%2Cargvs%7Ecodex%2Cargvs%7Ecursor%2Cargvs%7Ecopilot\
+                  %2Cargvs%7Eantigravity%2Cargvs%7Eagy%2Cargvs%7Eopenclaw\
                   &select=name%2Ccmd%2Cargvs%2Cscan.time&limit=500"
                     .to_owned()
             ),
@@ -244,11 +252,13 @@ async fn a_sync_mirrors_the_manager_and_matches_registered_clients() {
                 .any(|r| r.contains("/syscollector/001/packages"))
         );
         assert!(
-        fake.requests.contains(
-            &"GET /syscollector/002/packages?q=name%7Eclaude%2Cname%7Ecodex&select=name&limit=500"
-                .to_owned()
-        )
-    );
+            fake.requests.contains(
+                &"GET /syscollector/002/packages?q=name%7Eclaude%2Cname%7Ecodex%2Cname%7Ecursor\
+                  %2Cname%7Ecopilot%2Cname%7Eantigravity%2Cname%7Eagy%2Cname%7Eopenclaw\
+                  &select=name&limit=500"
+                    .to_owned()
+            )
+        );
     }
 
     // An hour later the manager has dropped 002, lost touch with 001, and a client registered.
@@ -268,7 +278,7 @@ async fn a_sync_mirrors_the_manager_and_matches_registered_clients() {
         synced,
         EdrSync::Synced {
             devices: 5,
-            matched: 4
+            matched: 5
         }
     );
     let devices = stack.devices().await;
@@ -295,6 +305,7 @@ async fn a_sync_mirrors_the_manager_and_matches_registered_clients() {
             ["t/eve", null, null],
             ["t/fay", "004", "pending"],
             ["t/gil", "005", "active"],
+            ["t/gus", "001", "disconnected"],
         ])
     );
     stack.stop().await;
@@ -725,7 +736,11 @@ async fn the_schema_names_what_the_viewer_reads() {
         json!([["001", null, null, null, null, null, "codex", 5, null]])
     );
     let clients = columns("clients").await;
-    for column in ["edr_agent_id text", "edr_status text"] {
+    for column in [
+        "edr_agent_id text",
+        "edr_status text",
+        "other_serials ARRAY",
+    ] {
         assert!(
             clients.as_array().unwrap().contains(&json!(column)),
             "{clients}"
@@ -916,11 +931,14 @@ async fn answer(
     if fake.refused.contains(&agent) {
         return problem(400, "Bad Request", "agent has no inventory");
     }
-    // As the manager applies `q`: any of these fields holding either word, in any case.
+    // As the manager applies `q`: any of these fields holding any of the words, in any case.
     let like = |fields: &[&str], item: &Value| {
         fields.iter().any(|field| {
             let value = item[*field].as_str().unwrap_or_default().to_lowercase();
-            value.contains("claude") || value.contains("codex")
+            value.contains("claude")
+                || value.contains("codex")
+                || value.contains("cursor")
+                || value.contains("openclaw")
         })
     };
     let expected = |q: &str, select: &str| {
@@ -934,8 +952,12 @@ async fn answer(
         },
         "processes" => {
             if !expected(
-                "name%7Eclaude%2Cname%7Ecodex%2Ccmd%7Eclaude%2Ccmd%7Ecodex%2Cargvs%7Eclaude\
-                 %2Cargvs%7Ecodex",
+                "name%7Eclaude%2Cname%7Ecodex%2Cname%7Ecursor%2Cname%7Ecopilot\
+                 %2Cname%7Eantigravity%2Cname%7Eagy%2Cname%7Eopenclaw\
+                 %2Ccmd%7Eclaude%2Ccmd%7Ecodex%2Ccmd%7Ecursor%2Ccmd%7Ecopilot\
+                 %2Ccmd%7Eantigravity%2Ccmd%7Eagy%2Ccmd%7Eopenclaw\
+                 %2Cargvs%7Eclaude%2Cargvs%7Ecodex%2Cargvs%7Ecursor%2Cargvs%7Ecopilot\
+                 %2Cargvs%7Eantigravity%2Cargvs%7Eagy%2Cargvs%7Eopenclaw",
                 "name%2Ccmd%2Cargvs%2Cscan.time",
             ) {
                 return problem(400, "Bad Request", "unexpected q or select");
@@ -952,7 +974,11 @@ async fn answer(
             items(found, total)
         }
         "packages" => {
-            if !expected("name%7Eclaude%2Cname%7Ecodex", "name") {
+            if !expected(
+                "name%7Eclaude%2Cname%7Ecodex%2Cname%7Ecursor%2Cname%7Ecopilot\
+                 %2Cname%7Eantigravity%2Cname%7Eagy%2Cname%7Eopenclaw",
+                "name",
+            ) {
                 return problem(400, "Bad Request", "unexpected q or select");
             }
             let found: Vec<Value> = fake
