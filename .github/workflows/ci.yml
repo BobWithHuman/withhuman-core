@@ -38,6 +38,13 @@ jobs:
           components: clippy
 
       - name: Run Clippy
+        # `--all-features` builds withhuman-local with `bundled`, whose build script fetches
+        # PostgreSQL's release list from GitHub's API: unauthenticated, the runners' shared
+        # addresses run out of requests (403). The job's token raises the limit, and the version
+        # is the one the personal app ships.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          POSTGRESQL_VERSION: "=16.16.0"
         run: cargo clippy --all-targets --all-features -- -D warnings
 
   nextest:
