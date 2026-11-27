@@ -50,8 +50,15 @@ impl HttpDecisionClient {
                 .map_err(|error| DecisionError::InvalidEndpoint(error.to_string()))?;
             headers.insert(withhuman_common::internal::HEADER, value);
         }
-        let client = reqwest::Client::builder()
+        // No redirect is followed, and with a token no proxy is used: the token goes to Decision
+        // alone.
+        let mut builder = reqwest::Client::builder()
             .default_headers(headers)
+            .redirect(reqwest::redirect::Policy::none());
+        if config.internal_token.is_some() {
+            builder = builder.no_proxy();
+        }
+        let client = builder
             .build()
             .map_err(|error| DecisionError::InvalidEndpoint(error.to_string()))?;
         Ok(Self { client, endpoint })

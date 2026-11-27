@@ -87,18 +87,22 @@ impl GeneratorHttpClient {
     }
 
     /// A client whose every call carries the engine's internal token
-    /// (`withhuman_common::internal`).
+    /// (`withhuman_common::internal`). It follows no redirect, and with a token goes through no
+    /// proxy, so the token reaches the Generator alone.
     pub fn with_token(base_url: impl Into<String>, token: Option<&str>) -> Self {
         let mut headers = reqwest::header::HeaderMap::new();
         if let Some(value) = token.and_then(|t| reqwest::header::HeaderValue::from_str(t).ok()) {
             headers.insert(withhuman_common::internal::HEADER, value);
         }
+        let mut builder = reqwest::Client::builder()
+            .default_headers(headers)
+            .redirect(reqwest::redirect::Policy::none());
+        if token.is_some() {
+            builder = builder.no_proxy();
+        }
         Self {
             base_url: base_url.into().trim_end_matches('/').to_owned(),
-            client: reqwest::Client::builder()
-                .default_headers(headers)
-                .build()
-                .unwrap_or_default(),
+            client: builder.build().unwrap_or_default(),
         }
     }
 }
