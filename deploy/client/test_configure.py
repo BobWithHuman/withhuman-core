@@ -1308,6 +1308,12 @@ class GlobalSetupTest(Setup):
         before = profile.read_text()
         self.run_scope("user", "--key", KEY, "--model-proxy")
         self.assertEqual(profile.read_text(), before)
+        # Set up again without the route, none of it is left.
+        result = self.run_scope("user", "--key", KEY)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("env", self.read(self.home / ".claude" / "settings.json"))
+        self.assertNotIn("ANTHROPIC_CUSTOM_HEADERS", profile.read_text())
+        self.run_scope("user", "--key", KEY, "--model-proxy")
         # Taken out with the setup, the key's header too; a project setup does not take the flag.
         self.assertEqual(self.run_scope("user", "--uninstall").returncode, 0)
         self.assertNotIn("env", self.read(self.home / ".claude" / "settings.json"))

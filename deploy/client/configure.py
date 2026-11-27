@@ -1582,6 +1582,11 @@ def setup_global(args, hook_source, key_path, key, stamp, report):
             env["ANTHROPIC_BASE_URL"] = args.server
             settings["env"] = env
         save(path, settings)
+        if not args.model_proxy:
+            # A setup without the model route leaves no earlier one behind: its base URL and the
+            # header that carries the key would send both on to the old engine.
+            drop_model_route(path, config_dir() / "server", stamp, report)
+            drop_model_headers(Path.home(), stamp, report)
         if not args.no_persist:
             persist(id_path, value, stamp, report)
     version = hook_version([hook] + ([checkin] if checkin else []))
