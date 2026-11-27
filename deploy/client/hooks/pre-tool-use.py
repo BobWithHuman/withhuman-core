@@ -52,13 +52,18 @@ UNREACHABLE_REASON = ("WithHuman에 연결하지 못해 이 도구 호출을 차
 
 def lets_through():
     """Whether the setup this hook belongs to lets calls through when the Collector gives no
-    judgment: `allow` in `on-unreachable` beside the hook's folder, never from the environment."""
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        "on-unreachable")
+    judgment: `allow` in `on-unreachable`, never from the environment. Only the user's own setup
+    keeps one, beside its hook in ~/.config/withhuman: a hook anywhere else — a project's, whose
+    folder the repository fills, or the device's — always denies. A file that cannot be read as
+    text denies too."""
+    config = os.path.join(os.path.expanduser("~"), ".config", "withhuman")
+    here = os.path.dirname(os.path.abspath(__file__))
+    if os.path.realpath(here) != os.path.realpath(os.path.join(config, "hooks")):
+        return False
     try:
-        with open(path, encoding="utf-8") as handle:
+        with open(os.path.join(config, "on-unreachable"), encoding="utf-8") as handle:
             return handle.read().strip().lower() == "allow"
-    except OSError:
+    except (OSError, ValueError):
         return False
 
 
