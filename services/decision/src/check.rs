@@ -568,17 +568,215 @@ const WRITING_FLAGS: &[&str] = &[
 ];
 
 /// Whether a part of a shell command (a pipeline) only prints what it reads: every program in it
-/// is a reader run without a writing flag, and nothing is redirected into a file.
+/// is a reader run without a writing flag, nothing is redirected into a file (`>`, `2>`, `&>`,
+/// `>&file`), no command is substituted in (`$(…)`, backticks, `<(…)`, `>(…)`), and a `sed` in it
+/// runs a script that only prints. Anything else in the part may change a file, so the part stays.
 fn reads_only(part: &str) -> bool {
+    if ["$(", "`", "<(", ">("].iter().any(|run| part.contains(run)) || redirects_into_file(part) {
+        return false;
+    }
     !writes_file(part)
         && part.split('|').all(|segment| {
             let words: Vec<&str> = segment.split_whitespace().collect();
-            words.first().is_some_and(|first| {
-                READ_ONLY_PROGRAMS.contains(&first.rsplit('/').next().unwrap_or(first))
-            }) && !words.iter().any(|word| {
-                WRITING_FLAGS.contains(word) || (word.starts_with("-i") && words[0] == "sed")
-            })
+            let Some(first) = words.first() else {
+                return false;
+            };
+            let program = first.rsplit('/').next().unwrap_or(first);
+            READ_ONLY_PROGRAMS.contains(&program)
+                && !words.iter().any(|word| WRITING_FLAGS.contains(word))
+                && (program != "sed" || sed_only_prints(segment))
         })
+}
+
+/// Whether `part` redirects output into a file, whichever descriptor (`>`, `2>`, `&>`, `>>`,
+/// `>&file`). `2>&1` and the like only join descriptors, `>/dev/null` discards, `->`, `=>`, `>=`
+/// are no redirects, and a `>` inside quotes is text.
+fn redirects_into_file(part: &str) -> bool {
+    let part = &unquoted(part);
+    let bytes = part.as_bytes();
+    let mut index = 0;
+    while let Some(offset) = part[index..].find('>') {
+        let at = index + offset;
+        index = at + 1;
+        if at
+            .checked_sub(1)
+            .is_some_and(|i| matches!(bytes[i], b'-' | b'=' | b'>'))
+        {
+            continue;
+        }
+        let rest = part[at + 1..].trim_start_matches('>');
+        if rest.starts_with('=') {
+            continue;
+        }
+        let rest = rest.trim_start();
+        if let Some(target) = rest.strip_prefix('&') {
+            // `>&2`, `>&-`: a descriptor. `>&file`: the file.
+            if target
+                .trim_start()
+                .starts_with(|c: char| c.is_ascii_digit() || c == '-')
+            {
+                continue;
+            }
+            return true;
+        }
+        if rest.starts_with("/dev/null") || rest.is_empty() {
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
+/// `text` with what stands inside quotes blanked out, the quotes kept.
+fn unquoted(text: &str) -> String {
+    let mut quote: Option<char> = None;
+    text.chars()
+        .map(|c| match (quote, c) {
+            (Some(open), c) if c == open => {
+                quote = None;
+                c
+            }
+            (Some(_), _) => ' ',
+            (None, '\'' | '"') => {
+                quote = Some(c);
+                c
+            }
+            (None, c) => c,
+        })
+        .collect()
+}
+
+/// The words of a pipeline segment, its quotes taken off (`sed -n '1, 20p' f` is `sed`, `-n`,
+/// `1, 20p`, `f`).
+fn quoted_words(segment: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut quote: Option<char> = None;
+    let mut started = false;
+    for c in segment.chars() {
+        match (quote, c) {
+            (Some(open), c) if c == open => quote = None,
+            (Some(_), c) => word.push(c),
+            (None, '\'' | '"') => {
+                quote = Some(c);
+                started = true;
+            }
+            (None, c) if c.is_whitespace() => {
+                if started || !word.is_empty() {
+                    words.push(std::mem::take(&mut word));
+                }
+                started = false;
+            }
+            (None, c) => word.push(c),
+        }
+    }
+    if started || !word.is_empty() {
+        words.push(word);
+    }
+    words
+}
+
+/// Whether a `sed` segment only prints: its options are ones that change no file, and its script
+/// is addresses with `p`, `q`, `=` or a `s///` whose flags neither write (`w`) nor run (`e`).
+/// `sed 'w file'` empties a file without `-i`, and `sed -f`, `-i` or a script it cannot read
+/// may do anything.
+fn sed_only_prints(segment: &str) -> bool {
+    const QUIET: &[&str] = &[
+        "-n",
+        "--quiet",
+        "--silent",
+        "-E",
+        "-r",
+        "--regexp-extended",
+        "-s",
+        "--separate",
+        "-u",
+        "--unbuffered",
+        "-z",
+        "--null-data",
+    ];
+    let words = quoted_words(segment);
+    let mut scripts = Vec::new();
+    let mut files = false;
+    let mut rest = words.iter().skip(1);
+    while let Some(word) = rest.next() {
+        if word == "-e" || word == "--expression" {
+            match rest.next() {
+                Some(script) => scripts.push(script.clone()),
+                None => return false,
+            }
+        } else if let Some(script) = word.strip_prefix("--expression=") {
+            scripts.push(script.to_owned());
+        } else if word.starts_with('-') && word.len() > 1 {
+            if !QUIET.contains(&word.as_str()) {
+                return false;
+            }
+        } else if scripts.is_empty() && !files {
+            scripts.push(word.clone());
+            files = true;
+        }
+    }
+    !scripts.is_empty()
+        && scripts
+            .iter()
+            .flat_map(|script| script.split([';', '\n']))
+            .all(|command| sed_command_prints(command.trim()))
+}
+
+/// One `sed` command that only prints: `[address[,address]]` then `p`, `q`, `=`, nothing, or a
+/// substitution without `w` or `e`.
+fn sed_command_prints(command: &str) -> bool {
+    let command = skip_sed_address(command).trim_start();
+    let command = skip_sed_address(command.strip_prefix(',').unwrap_or(command)).trim_start();
+    match command.chars().next() {
+        None => true,
+        Some('p' | 'q' | 'Q' | '=') => command.len() == 1,
+        Some('s') => substitution_only_prints(&command[1..]),
+        Some(_) => false,
+    }
+}
+
+/// `command` past a leading address: a line number, `$`, or a `/regex/`.
+fn skip_sed_address(command: &str) -> &str {
+    if let Some(regex) = command.strip_prefix('/') {
+        let mut escaped = false;
+        for (at, c) in regex.char_indices() {
+            match c {
+                '\\' if !escaped => escaped = true,
+                '/' if !escaped => return &regex[at + 1..],
+                _ => escaped = false,
+            }
+        }
+        return "";
+    }
+    command.trim_start_matches(|c: char| c.is_ascii_digit() || c == '$')
+}
+
+/// After `s`: the delimiter, the pattern, the replacement, and flags that neither write nor run.
+fn substitution_only_prints(after_s: &str) -> bool {
+    let mut chars = after_s.chars();
+    let Some(delimiter) = chars.next() else {
+        return false;
+    };
+    let mut seen = 0;
+    let mut escaped = false;
+    let mut flags = String::new();
+    for c in chars {
+        if seen == 2 {
+            flags.push(c);
+        } else if c == '\\' && !escaped {
+            escaped = true;
+        } else {
+            if c == delimiter && !escaped {
+                seen += 1;
+            }
+            escaped = false;
+        }
+    }
+    seen == 2
+        && flags
+            .chars()
+            .all(|c| matches!(c, 'g' | 'i' | 'I' | 'p') || c.is_ascii_digit())
 }
 
 /// `command` without its parts that only read: a part that prints a safeguard (`cat

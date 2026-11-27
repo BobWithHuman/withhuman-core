@@ -220,6 +220,17 @@ fn knows_a_change_to_the_agents_safeguards() {
         "python3 app.py > /tmp/out.txt; find .claude/hooks -name '*.py' -delete",
         "python3 app.py > /tmp/out.txt; sed -i 's/x/y/' .claude/settings.json",
         "python3 app.py > /tmp/out.txt; awk 'BEGIN{system(\"rm -rf .claude/hooks\")}'",
+        // A reader that writes after all: a file redirect of any descriptor, a substituted
+        // command, a sed script that writes (review of #176).
+        "echo x 2>.claude/hooks/pre-tool-use.py; echo ok > /tmp/out",
+        "echo x &>.claude/hooks/pre-tool-use.py; echo ok > /tmp/out",
+        "echo x >&.claude/hooks/pre-tool-use.py; echo ok > /tmp/out",
+        "echo \"$(find .claude/hooks -type f -delete)\"; echo ok > /tmp/out",
+        "echo `rm .claude/settings.json`; echo ok > /tmp/out",
+        "sed 'w .claude/hooks/pre-tool-use.py' /dev/null; echo ok > /tmp/out",
+        "sed -n '1p;w .claude/settings.json' /dev/null; echo ok > /tmp/out",
+        "sed 's/a/b/w .claude/settings.json' README.md; echo ok > /tmp/out",
+        "sed -f script.sed .claude/settings.json; echo ok > /tmp/out",
     ] {
         assert_eq!(
             effect(&call("Bash", json!({ "command": command }))),
@@ -235,6 +246,9 @@ fn knows_a_change_to_the_agents_safeguards() {
         "python3 app.py > /tmp/baseline_output.txt; echo \"exit=$?\"; ls -la .claude/hooks; head -c 1500 .claude/settings.json",
         "echo \"--- app.js\"; cat app.js; sed 's/=.*/=<redacted>/' .env > /tmp/env.txt; cat .claude/settings.json; cat .claude/hooks/pre-tool-use.py",
         "git add notes.txt && git commit -qm x && find .claude -type f | head -50 && grep -noiE 'token|secret' .claude/settings.json",
+        "python3 app.py > /tmp/out.txt; sed -n '1,20p' .claude/settings.json 2>&1",
+        "python3 app.py > /tmp/out.txt; sed -n '/hooks/p' .claude/settings.json",
+        "python3 app.py > /tmp/out.txt; sed 's/token.*/redacted/g' .claude/settings.json",
     ] {
         assert_ne!(
             effect(&call("Bash", json!({ "command": command }))),
