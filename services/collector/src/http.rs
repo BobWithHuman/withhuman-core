@@ -139,6 +139,7 @@ pub fn app_with_transport(service: CollectorService) -> Router {
         ));
     Router::new()
         .route("/healthz", get(health))
+        .route("/version", get(version))
         .merge(hooks)
         .route("/v1/clients/register", post(inventory::register_client))
         .route("/v1/admin/clients", get(inventory::clients))
@@ -187,6 +188,7 @@ pub fn app_with_transport(service: CollectorService) -> Router {
 #[openapi(
     paths(
         health,
+        version,
         session_start,
         session_end,
         user_prompt_submit,
@@ -234,6 +236,24 @@ async fn openapi_document() -> Json<utoipa::openapi::OpenApi> {
 
 async fn swagger_ui() -> Html<&'static str> {
     Html(SWAGGER_UI_HTML)
+}
+
+#[utoipa::path(
+    get,
+    path = "/version",
+    tag = "Collector",
+    responses((status = 200, description = "The engine's release, profile and the contract versions it speaks", body = withhuman_contracts::version::EngineVersion))
+)]
+async fn version(
+    State(service): State<CollectorService>,
+) -> Json<withhuman_contracts::version::EngineVersion> {
+    Json(withhuman_contracts::version::EngineVersion {
+        engine: env!("CARGO_PKG_VERSION").to_owned(),
+        profile: service.config.profile.name().to_owned(),
+        schema: withhuman_common::POSTGRES_SCHEMA_VERSION,
+        hook_api: withhuman_contracts::version::HOOK_API,
+        contracts: withhuman_contracts::version::CONTRACTS.to_owned(),
+    })
 }
 
 #[utoipa::path(

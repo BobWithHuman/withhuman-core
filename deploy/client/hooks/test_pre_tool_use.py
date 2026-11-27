@@ -214,6 +214,39 @@ class PreToolUseHookTest(unittest.TestCase):
         output = json.loads(result.stdout)["hookSpecificOutput"]
         self.assertEqual(output["permissionDecision"], "deny")
 
+    def test_a_user_setup_that_allows_lets_calls_through_when_unreachable(self):
+        # A user setup keeps the hook in <config>/hooks and `on-unreachable` in <config>.
+        config = tempfile.mkdtemp()
+        os.makedirs(os.path.join(config, "hooks"))
+        hook = os.path.join(config, "hooks", "pre-tool-use.py")
+        shutil.copyfile(HOOK, hook)
+        with open(os.path.join(config, "on-unreachable"), "w") as file:
+            file.write("allow\n")
+        result = self.run_hook(self.bash("ls"), url="http://127.0.0.1:9/v1/hooks/PreToolUse",
+                               hook=hook)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, b"")
+        self.assertIn(b"unreachable", result.stderr)
+        # A reachable engine still judges the call.
+        self.run_hook(self.bash("ls"), hook=hook)
+        self.assertEqual(Collector.received[-1][1]["tool_name"], "Bash")
+
+    def test_the_users_file_does_not_lift_a_device_setups_deny(self):
+        # The device's hook lives in a folder of its own; a file the user (or an agent) writes in
+        # ~/.config/withhuman is not beside it.
+        device = tempfile.mkdtemp()
+        os.makedirs(os.path.join(device, "hooks"))
+        hook = os.path.join(device, "hooks", "pre-tool-use.py")
+        shutil.copyfile(HOOK, hook)
+        home = tempfile.mkdtemp()
+        os.makedirs(os.path.join(home, ".config", "withhuman"))
+        with open(os.path.join(home, ".config", "withhuman", "on-unreachable"), "w") as file:
+            file.write("allow\n")
+        result = self.run_hook(self.bash("ls"), url="http://127.0.0.1:9/v1/hooks/PreToolUse",
+                               home=home, hook=hook)
+        output = json.loads(result.stdout)["hookSpecificOutput"]
+        self.assertEqual(output["permissionDecision"], "deny")
+
 
 if __name__ == "__main__":
     unittest.main()

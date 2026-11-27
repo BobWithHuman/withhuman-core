@@ -22,6 +22,8 @@ mod transport;
 mod triage;
 mod verdicts;
 
+mod serve;
+
 pub use config::{CollectorConfig, FailurePolicy, ReviewPolicy};
 pub use ext_authz::ExtAuthzService;
 pub use http::{CollectorService, HookPolicy, TrustedHookContext, app, app_with_transport};
@@ -31,6 +33,7 @@ pub use normalize::{
     MAX_PROGRAM_BYTES, MAX_PROGRAMS, MESSAGE_INCOMPLETE_FLAG, NormalizeError, NormalizedEvent,
     Normalizer, RESUME_ORDER_GAP,
 };
+pub use serve::serve;
 pub use state::{
     InMemorySessionStore, IntentAsk, MessageFragment, RedisSessionStore, SessionSnapshot,
     SessionStore, SessionUpdate, SubGraphStep,

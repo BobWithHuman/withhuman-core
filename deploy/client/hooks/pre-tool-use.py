@@ -15,7 +15,11 @@ Claude Code gets the same allow, deny or ask as from the HTTP hook.
 
 When the Collector cannot be reached, times out or answers with an error, the hook denies the
 call: with no judgment there is nothing to allow it on, and an engine that is merely switched off
-must not lift every control.
+must not lift every control. No environment variable changes that. Only a person's own setup of
+their own engine does, the setup for the user (--scope user --on-unreachable allow): it writes
+`allow` to `on-unreachable` in the folder above the hook's, and the hook then answers nothing, so
+Claude Code goes on as it would without WithHuman. The file is read beside the hook alone: a
+setup for the whole device keeps its hook in a folder only an administrator can write.
 
 It sends the device's client ID (WITHHUMAN_CLIENT_ID) and the user's WithHuman key
 (WITHHUMAN_KEY, as `Authorization: Bearer`). When Claude Code was started without them in its
@@ -46,14 +50,29 @@ UNREACHABLE_REASON = ("WithHuman에 연결하지 못해 이 도구 호출을 차
                       "엔진이 실행 중인지 확인한 뒤 다시 시도하세요.")
 
 
+def lets_through():
+    """Whether the setup this hook belongs to lets calls through when the Collector gives no
+    judgment: `allow` in `on-unreachable` beside the hook's folder, never from the environment."""
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "on-unreachable")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return handle.read().strip().lower() == "allow"
+    except OSError:
+        return False
+
+
 def unreachable(message):
-    """What the hook answers when the Collector gave no judgment: a deny.
+    """What the hook answers when the Collector gave no judgment: a deny, or nothing when its
+    setup lets calls through then.
 
     Written as UTF-8 bytes, as Claude Code reads it. Through the text stream, Windows encodes it
     in the console's code page: cp949 garbles the Korean reason, and cp1252 cannot encode it at
     all — the hook then dies with exit 1, which Claude Code takes as a non-blocking error and runs
     the call."""
     print(f"WithHuman: {message}", file=sys.stderr)
+    if lets_through():
+        return 0
     sys.stdout.buffer.write(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "permissionDecision": "deny",

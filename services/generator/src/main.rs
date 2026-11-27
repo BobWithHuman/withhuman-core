@@ -1,9 +1,7 @@
 use std::{env, io};
 
 use withhuman_common::graph_store::PostgresSettings;
-use withhuman_generator::{
-    GeneratorConfig, GeneratorService, HttpDecisionClient, PgGraphRepository, app, run_edr_sync,
-};
+use withhuman_generator::{GeneratorConfig, PgGraphRepository, serve};
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
@@ -42,19 +40,10 @@ async fn main() -> io::Result<()> {
         );
         return Ok(());
     }
-    // The company's device list from its EDR; nothing runs without WITHHUMAN_WAZUH_URL.
-    if let Some(wazuh) = config.wazuh.clone() {
-        tokio::spawn(run_edr_sync(repository.clone(), wazuh));
-    }
-    let decision = HttpDecisionClient::new(&config).map_err(io::Error::other)?;
-    let service = GeneratorService::with_decision(repository, decision);
-    let listener = tokio::net::TcpListener::bind(config.bind_address).await?;
-    eprintln!(
-        "generator listening on {} with PostgreSQL",
-        config.bind_address
-    );
-
-    axum::serve(listener, app(service))
-        .with_graceful_shutdown(withhuman_common::shutdown::shutdown_signal())
-        .await
+    serve(
+        config,
+        repository,
+        withhuman_common::shutdown::shutdown_signal(),
+    )
+    .await
 }

@@ -12,6 +12,8 @@ mod shell;
 mod target;
 pub mod trace;
 
+mod serve;
+
 pub use config::{DecisionConfig, JevSettings, RuntimeEnvironment};
 pub use http::{DecisionService, app};
 pub use pg_repository::PgDecisionRepository;
@@ -19,3 +21,4 @@ pub use provider::{DecisionProvider, JevDecisionProvider, MockDecisionProvider, 
 pub use repository::{
     DecisionRepository, DistrustedCause, RepositoryError, TraceRecord, TracedParent, TracedSegment,
 };
+pub use serve::serve;

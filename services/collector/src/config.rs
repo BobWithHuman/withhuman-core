@@ -1,5 +1,6 @@
 use std::{env, io, net::SocketAddr, time::Duration};
 
+use withhuman_common::profile::{Profile, personal};
 use withhuman_contracts::events::EnforcementMode;
 
 const DEFAULT_BIND_ADDRESS: &str = "0.0.0.0:8080";
@@ -23,6 +24,8 @@ pub enum ReviewPolicy {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CollectorConfig {
+    /// The product this Collector runs as (`WITHHUMAN_PROFILE`).
+    pub profile: Profile,
     pub bind_address: SocketAddr,
     pub ext_authz_address: SocketAddr,
     pub generator_url: String,
@@ -60,6 +63,7 @@ pub struct CollectorConfig {
 impl Default for CollectorConfig {
     fn default() -> Self {
         Self {
+            profile: Profile::Enterprise,
             bind_address: DEFAULT_BIND_ADDRESS
                 .parse()
                 .expect("default address is valid"),
@@ -89,15 +93,27 @@ impl Default for CollectorConfig {
 
 impl CollectorConfig {
     pub fn from_env() -> io::Result<Self> {
-        let value = env::var("COLLECTOR_ADDR").unwrap_or_else(|_| DEFAULT_BIND_ADDRESS.into());
+        Self::from_env_as(Profile::from_env()?)
+    }
+
+    /// The settings with `profile`'s defaults. The personal engine only watches (`record` or
+    /// `shadow`, never `enforce`), checks MCP at the hook (there is no gateway), and has no
+    /// shared state, key check or administration API: `REDIS_URL`, `WITHHUMAN_REQUIRE_KEY` and
+    /// `WITHHUMAN_ADMIN_TOKEN` are not read.
+    pub fn from_env_as(profile: Profile) -> io::Result<Self> {
+        let personal = profile.is_personal();
+        let value = env::var("COLLECTOR_ADDR").unwrap_or_else(|_| {
+            profile.bind_address(DEFAULT_BIND_ADDRESS, personal::COLLECTOR_PORT)
+        });
         let bind_address = value.parse().map_err(|error| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("invalid COLLECTOR_ADDR {value:?}: {error}"),
             )
         })?;
-        let ext_authz_value = env::var("COLLECTOR_EXT_AUTHZ_ADDR")
-            .unwrap_or_else(|_| DEFAULT_EXT_AUTHZ_ADDRESS.into());
+        let ext_authz_value = env::var("COLLECTOR_EXT_AUTHZ_ADDR").unwrap_or_else(|_| {
+            profile.bind_address(DEFAULT_EXT_AUTHZ_ADDRESS, personal::EXT_AUTHZ_PORT)
+        });
         let ext_authz_address = ext_authz_value.parse().map_err(|error| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -131,20 +147,32 @@ impl CollectorConfig {
 
         let intent_wait = Duration::from_millis(parse_env("WITHHUMAN_INTENT_WAIT_MS", 3_000)?);
 
+        let default_mode = if personal {
+            EnforcementMode::Shadow
+        } else {
+            EnforcementMode::Enforce
+        };
+        let enforcement_mode = match_env("WITHHUMAN_MODE", default_mode, |value| match value {
+            "record" => Some(EnforcementMode::Record),
+            "shadow" => Some(EnforcementMode::Shadow),
+            "enforce" => Some(EnforcementMode::Enforce),
+            _ => None,
+        })?;
+        if personal && enforcement_mode == EnforcementMode::Enforce {
+            return Err(invalid(
+                "WITHHUMAN_MODE=enforce is the enterprise engine's: the personal one records",
+            ));
+        }
+
         Ok(Self {
+            profile,
             bind_address,
             ext_authz_address,
-            generator_url: env::var("GENERATOR_URL")
-                .unwrap_or_else(|_| DEFAULT_GENERATOR_URL.into()),
+            generator_url: env::var("GENERATOR_URL").unwrap_or_else(|_| {
+                profile.service_url(DEFAULT_GENERATOR_URL, personal::GENERATOR_PORT)
+            }),
             decision_budget,
-            enforcement_mode: match_env("WITHHUMAN_MODE", EnforcementMode::Enforce, |value| {
-                match value {
-                    "record" => Some(EnforcementMode::Record),
-                    "shadow" => Some(EnforcementMode::Shadow),
-                    "enforce" => Some(EnforcementMode::Enforce),
-                    _ => None,
-                }
-            })?,
+            enforcement_mode,
             failure_policy: match_env("WITHHUMAN_ON_FAILURE", FailurePolicy::Closed, |value| {
                 match value {
                     "open" => Some(FailurePolicy::Open),
@@ -157,14 +185,16 @@ impl CollectorConfig {
                 "ask" => Some(ReviewPolicy::Ask),
                 _ => None,
             })?,
-            enforce_mcp_at_hook: env::var("WITHHUMAN_MCP_ENFORCE")
-                .is_ok_and(|value| value == "hook"),
+            enforce_mcp_at_hook: match env::var("WITHHUMAN_MCP_ENFORCE") {
+                Ok(value) => value == "hook",
+                Err(_) => personal,
+            },
             watch_paths: list_env("WITHHUMAN_WATCH_PATHS"),
             verdict_capacity,
             redis_url: env::var("REDIS_URL")
                 .ok()
                 .map(|value| value.trim().to_owned())
-                .filter(|value| !value.is_empty()),
+                .filter(|value| !value.is_empty() && !personal),
             verdict_ttl: Duration::from_secs(verdict_ttl),
             session_ttl: Duration::from_secs(session_ttl),
             intent_capture: match_env("WITHHUMAN_INTENT_CAPTURE", true, |value| match value {
@@ -174,15 +204,16 @@ impl CollectorConfig {
             })?,
             intent_wait,
             network_commands: list_env("WITHHUMAN_EXTERNAL_COMMANDS"),
-            require_key: match_env("WITHHUMAN_REQUIRE_KEY", false, |value| match value {
-                "on" | "true" | "1" => Some(true),
-                "off" | "false" | "0" | "" => Some(false),
-                _ => None,
-            })?,
+            require_key: !personal
+                && match_env("WITHHUMAN_REQUIRE_KEY", false, |value| match value {
+                    "on" | "true" | "1" => Some(true),
+                    "off" | "false" | "0" | "" => Some(false),
+                    _ => None,
+                })?,
             admin_token: env::var("WITHHUMAN_ADMIN_TOKEN")
                 .ok()
                 .map(|value| value.trim().to_owned())
-                .filter(|value| !value.is_empty()),
+                .filter(|value| !value.is_empty() && !personal),
             key_cache: Duration::from_millis(parse_env("WITHHUMAN_KEY_CACHE_MS", 5_000)?),
         })
     }

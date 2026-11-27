@@ -32,3 +32,9 @@ allow = ["BSL-1.0"]
 [[licenses.exceptions]]
 name = "webpki-roots"
 allow = ["CDLA-Permissive-2.0"]
+
+# webpki-root-certs carries the same Mozilla certificates, for withhuman-local's PostgreSQL
+# download (postgresql_embedded) over HTTPS.
+[[licenses.exceptions]]
+name = "webpki-root-certs"
+allow = ["CDLA-Permissive-2.0"]

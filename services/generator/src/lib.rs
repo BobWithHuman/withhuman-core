@@ -11,6 +11,8 @@ mod pg_triage;
 mod repository;
 mod wazuh;
 
+mod serve;
+
 pub use config::{GeneratorConfig, WazuhConfig, WazuhTls};
 pub use decision::{DecisionClient, DecisionError, HttpDecisionClient};
 pub use edr::{
@@ -21,4 +23,5 @@ pub use event::GeneratorEvent;
 pub use http::{GeneratorService, app};
 pub use pg_repository::PgGraphRepository;
 pub use repository::{BacktrackReport, GraphRepository, KeyScope, ReindexReport, RepositoryError};
+pub use serve::serve;
 pub use wazuh::{WazuhClient, WazuhError};

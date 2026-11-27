@@ -6,12 +6,16 @@ pub mod graph_store;
 pub mod hidden;
 pub mod intent;
 pub mod origin;
+pub mod profile;
 pub mod shutdown;
 pub mod source;
 pub mod tokens;
 
 /// The execution graph tables, initialized on startup by Generator and Decision.
 pub const POSTGRES_SCHEMA: &str = include_str!("../sql/postgres_schema.sql");
+
+/// The schema's contract version, kept in its `engine_meta` table as `schema_version`.
+pub const POSTGRES_SCHEMA_VERSION: u32 = 1;
 
 /// `text` as PostgreSQL can store it. Neither `text` nor `jsonb` holds U+0000, and a tool result
 /// carrying one (the `nul_char` hidden-text rule) would otherwise fail the whole commit and drop
@@ -34,7 +38,16 @@ pub fn make_postgres_text(text: &mut String) {
 
 #[cfg(test)]
 mod tests {
-    use super::POSTGRES_SCHEMA;
+    use super::{POSTGRES_SCHEMA, POSTGRES_SCHEMA_VERSION};
+
+    #[test]
+    fn the_schema_records_its_own_version() {
+        let row = format!("VALUES ('schema_version', '{POSTGRES_SCHEMA_VERSION}')");
+        assert!(
+            POSTGRES_SCHEMA.contains(&row),
+            "postgres_schema.sql writes {row}"
+        );
+    }
 
     /// The table names after `marker` up to the next `;`, in `sql`.
     fn listed(sql: &str, marker: &str) -> Vec<String> {

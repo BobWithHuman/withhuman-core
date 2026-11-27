@@ -1,5 +1,6 @@
 use std::{env, io, net::SocketAddr, time::Duration};
 
+use withhuman_common::profile::{Profile, personal};
 use withhuman_contracts::decisions::Decision;
 
 use crate::{
@@ -40,8 +41,20 @@ pub struct JevSettings {
 
 impl DecisionConfig {
     pub fn from_env() -> io::Result<Self> {
+        Self::from_env_as(Profile::from_env()?)
+    }
+
+    /// The settings with `profile`'s defaults: the personal engine asks Jev, as a production
+    /// engine does, once it has a key (`JEV_API_KEY`), and judges by the rules alone before.
+    pub fn from_env_as(profile: Profile) -> io::Result<Self> {
+        let has_key = env::var("JEV_API_KEY").is_ok_and(|key| !key.trim().is_empty());
+        let (default_environment, default_provider) = match profile {
+            Profile::Enterprise => ("development", "mock"),
+            Profile::Personal if has_key => ("production", "jev"),
+            Profile::Personal => ("production", "rules"),
+        };
         let environment = match env::var("WITHHUMAN_ENV")
-            .unwrap_or_else(|_| "development".into())
+            .unwrap_or_else(|_| default_environment.into())
             .to_ascii_lowercase()
             .as_str()
         {
@@ -50,7 +63,7 @@ impl DecisionConfig {
             "production" => RuntimeEnvironment::Production,
             value => return Err(invalid(format!("unsupported WITHHUMAN_ENV `{value}`"))),
         };
-        let provider = env::var("DECISION_PROVIDER").unwrap_or_else(|_| "mock".into());
+        let provider = env::var("DECISION_PROVIDER").unwrap_or_else(|_| default_provider.into());
         if environment == RuntimeEnvironment::Production && provider.eq_ignore_ascii_case("mock") {
             return Err(invalid(
                 "the mock decision provider is forbidden in production",
@@ -80,7 +93,7 @@ impl DecisionConfig {
                 api_key,
                 timeout: Duration::from_millis(timeout_ms),
             })
-        } else if provider.eq_ignore_ascii_case("mock") {
+        } else if provider.eq_ignore_ascii_case("mock") || provider.eq_ignore_ascii_case("rules") {
             None
         } else {
             return Err(invalid(format!(
@@ -136,7 +149,9 @@ impl DecisionConfig {
 
         Ok(Self {
             bind_address: env::var("DECISION_ADDR")
-                .unwrap_or_else(|_| DEFAULT_BIND_ADDRESS.into())
+                .unwrap_or_else(|_| {
+                    profile.bind_address(DEFAULT_BIND_ADDRESS, personal::DECISION_PORT)
+                })
                 .parse()
                 .map_err(|error| invalid(format!("invalid DECISION_ADDR: {error}")))?,
             environment,

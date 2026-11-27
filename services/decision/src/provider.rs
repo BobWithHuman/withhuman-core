@@ -16,7 +16,7 @@ use crate::{
     DecisionConfig, DecisionRepository, RepositoryError, category,
     causal::{self, RequestParent},
     check::{self, Branch, Effect, Verdict},
-    jev::{JevClient, JevError},
+    jev::{JevClient, JevError, JevRequest, JevResponse},
     provenance,
     repository::{DistrustedCause, TraceRecord, TracedParent, TracedSegment},
     target,
@@ -116,6 +116,22 @@ pub struct JevDecisionProvider {
     thresholds: Thresholds,
     /// Jev's recent failures, for the rules-only mode.
     breaker: Arc<std::sync::Mutex<Breaker>>,
+    /// No Jev at all (`DECISION_PROVIDER=rules`): every Call is judged by the rules alone.
+    rules_only: bool,
+}
+
+/// The Jev of a provider that has none: never asked, since the rules judge first.
+struct NoJev;
+
+#[async_trait]
+impl JevClient for NoJev {
+    async fn ask(
+        &self,
+        _request: &JevRequest,
+        _timeout: Duration,
+    ) -> Result<JevResponse, JevError> {
+        Err(JevError::Unavailable("no Jev key".into()))
+    }
 }
 
 /// Jev's failures in a row and, once they reach the limit, until when the rules judge alone.
@@ -155,6 +171,27 @@ impl JevDecisionProvider {
             jev_timeout,
             thresholds,
             breaker: Arc::default(),
+            rules_only: false,
+        }
+    }
+
+    /// Judges by the rules alone, without Jev: a personal engine before it has a Jev key. A
+    /// safeguard change is denied; what else the rules grade 2 or above, or sensitive, is
+    /// reviewed; the rest is allowed.
+    pub fn rules_only(
+        repository: Arc<dyn DecisionRepository>,
+        settings: TraceSettings,
+        thresholds: Thresholds,
+    ) -> Self {
+        Self {
+            rules_only: true,
+            ..Self::new(
+                repository,
+                Arc::new(NoJev),
+                settings,
+                Duration::from_secs(1),
+                thresholds,
+            )
         }
     }
 
@@ -167,6 +204,9 @@ impl JevDecisionProvider {
     /// Whether the rules-only mode is on now. When its time is up the next Call tries Jev again;
     /// one more failure starts the mode over.
     fn breaker_open(&self) -> bool {
+        if self.rules_only {
+            return true;
+        }
         let mut breaker = self.breaker();
         match breaker.open_until {
             Some(until) if Instant::now() < until => true,
@@ -250,7 +290,12 @@ impl JevDecisionProvider {
             (
                 Decision::Review,
                 format!(
-                    "WithHuman 판정 모델이 응답하지 않아 규칙으로만 판정했습니다. {}({}: {})이라 사용자 확인이 필요합니다.",
+                    "{} {}({}: {})이라 사용자 확인이 필요합니다.",
+                    if self.rules_only {
+                        "WithHuman이 판정 모델 없이 규칙으로만 판정했습니다."
+                    } else {
+                        "WithHuman 판정 모델이 응답하지 않아 규칙으로만 판정했습니다."
+                    },
                     graded.grade.label(),
                     graded.grade.as_str(),
                     graded.describe()

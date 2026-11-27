@@ -1,0 +1,23 @@
+[package]
+name = "withhuman-local"
+description = "The personal engine: Collector, Generator and Decision in one process, on its own PostgreSQL"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+postgresql_embedded = { version = "0.22", default-features = false, features = ["tokio", "theseus", "tls-rustls-ring"] }
+tokio = { version = "1.0", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+withhuman-collector = { version = "0.1.0", path = "../collector" }
+withhuman-common = { version = "0.1.0", path = "../../crates/common" }
+withhuman-decision = { version = "0.1.0", path = "../decision" }
+withhuman-generator = { version = "0.1.0", path = "../generator" }
+
+[features]
+# PostgreSQL inside the binary (fetched at build time, `POSTGRESQL_VERSION=16.16.0`), so the
+# first launch installs it without the network. The personal app's package is built with it.
+bundled = ["postgresql_embedded/bundled"]
