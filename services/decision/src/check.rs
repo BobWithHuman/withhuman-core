@@ -566,16 +566,21 @@ const WRITING_FLAGS: &[&str] = &[
     "-fprintf",
     "-fprint0",
     "-o",
-    "--output",
-    "--pre",
-    "--compress-program",
 ];
 
-/// Flags that make one reader write or run something, though they mean no such thing to another
-/// (`grep -R` only reads): `tree -R` writes an HTML file into every folder, `file -C` compiles a
-/// magic file into the current one.
-const PROGRAM_WRITING_FLAGS: &[(&str, &str)] =
-    &[("tree", "-R"), ("file", "-C"), ("file", "--compile")];
+/// The options that make one reader write or run something, though the same letters mean no such
+/// thing to another (`grep -R` only reads): by program, the short letters and the long names.
+/// `sort -o f`/`--output`, `--compress-program` (runs it); `tree -o f`, `-R` (an HTML file into
+/// every folder); `file -C` (compiles a magic file); `less`/`more` `-o`/`-O` (a log file); `rg
+/// --pre` (runs it on every file).
+const PROGRAM_WRITES: &[(&str, &str, &[&str])] = &[
+    ("sort", "o", &["output", "compress-program"]),
+    ("tree", "oR", &["output"]),
+    ("file", "C", &["compile"]),
+    ("less", "oO", &["log-file", "LOG-FILE"]),
+    ("more", "oO", &["log-file", "LOG-FILE"]),
+    ("rg", "", &["pre"]),
+];
 
 /// Whether a part of a shell command (a pipeline) only prints what it reads: every program in it
 /// is a reader run without a writing flag, nothing is redirected into a file (`>`, `2>`, `&>`,
@@ -600,16 +605,8 @@ fn reads_only(part: &str) -> bool {
             };
             let program = first.rsplit('/').next().unwrap_or(first);
             READ_ONLY_PROGRAMS.contains(&program)
-                && !words.iter().any(|word| {
-                    // `--output=f`, `--pre=cmd`: the flag with its value joined on.
-                    let flag = word.split('=').next().unwrap_or(word);
-                    WRITING_FLAGS.contains(word) || WRITING_FLAGS.contains(&flag)
-                })
-                && !words.iter().any(|word| {
-                    PROGRAM_WRITING_FLAGS
-                        .iter()
-                        .any(|(writer, flag)| program == *writer && (*word == *flag || bundles(word, flag)))
-                })
+                && !words.iter().any(|word| WRITING_FLAGS.contains(word))
+                && !writing_option(program, &words)
                 && (program != "sed" || sed_only_prints(segment))
                 // `uniq in out` writes its second file.
                 && (program != "uniq" || operands(segment) <= 1)
@@ -674,12 +671,34 @@ fn unquoted(text: &str) -> String {
         .collect()
 }
 
-/// Whether `word` is a bundle of short options holding `flag` (`-aR` holds `-R`).
-fn bundles(word: &str, flag: &str) -> bool {
-    let Some(letter) = flag.strip_prefix('-').filter(|l| l.len() == 1) else {
+/// Whether `words` give `program` one of its [`PROGRAM_WRITES`] options in any form getopt takes:
+/// a short letter alone, bundled or with its value joined on (`-o f`, `-ro`, `-ofile`), or a long
+/// name in full, abbreviated or with `=` (`--output=f`, `--out=f`, `--comp`). Words after `--` are
+/// operands.
+fn writing_option(program: &str, words: &[&str]) -> bool {
+    let Some((_, short, long)) = PROGRAM_WRITES.iter().find(|(name, _, _)| *name == program) else {
         return false;
     };
-    word.starts_with('-') && !word.starts_with("--") && word[1..].contains(letter)
+    for word in words.iter().skip(1) {
+        if *word == "--" {
+            break;
+        }
+        if let Some(name) = word.strip_prefix("--") {
+            let name = name.split('=').next().unwrap_or(name);
+            if !name.is_empty()
+                && long
+                    .iter()
+                    .any(|option| option.starts_with(name) || name.starts_with(option))
+            {
+                return true;
+            }
+        } else if let Some(letters) = word.strip_prefix('-')
+            && letters.chars().any(|letter| short.contains(letter))
+        {
+            return true;
+        }
+    }
+    false
 }
 
 /// How many operands (words that are no option) a pipeline segment gives its program.

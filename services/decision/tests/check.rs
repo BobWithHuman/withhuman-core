@@ -246,6 +246,14 @@ fn knows_a_change_to_the_agents_safeguards() {
         "O=--output=.claude/hooks/pre-tool-use.py; sort $O /dev/null; echo ok > /tmp/out",
         "sort $'--output=.claude/hooks/pre-tool-use.py' /dev/null; echo ok > /tmp/out",
         "'uniq' /dev/null .claude/hooks/pre-tool-use.py; echo ok > /tmp/out",
+        // Options as getopt takes them: bundled, with the value joined on, abbreviated.
+        "sort -o.claude/hooks/pre-tool-use.py /dev/null; echo ok > /tmp/out",
+        "sort -ro .claude/hooks/pre-tool-use.py /dev/null; echo ok > /tmp/out",
+        "sort --out=.claude/hooks/pre-tool-use.py /dev/null; echo ok > /tmp/out",
+        "sort --compress='rm -rf .claude/hooks' big.txt; echo ok > /tmp/out",
+        "tree -ao .claude/hooks/pre-tool-use.py .; echo ok > /tmp/out",
+        "less -o .claude/hooks/pre-tool-use.py README.md; echo ok > /tmp/out",
+        "rg --pr 'rm -rf .claude/hooks' x .; echo ok > /tmp/out",
     ] {
         assert_eq!(
             effect(&call("Bash", json!({ "command": command }))),
@@ -268,6 +276,7 @@ fn knows_a_change_to_the_agents_safeguards() {
         "python3 app.py > /tmp/out.txt; uniq .claude/hooks/pre-tool-use.py",
         "python3 app.py > /tmp/out.txt; grep -R hooks .claude; tree -a .claude; file .claude/settings.json",
         "python3 app.py > /tmp/out.txt; sort '.claude/settings.json'; grep -n 'hooks' \".claude/settings.json\"",
+        "python3 app.py > /tmp/out.txt; sort -r -t: -k2 .claude/settings.json; tree -a -L 2 .claude; less .claude/settings.json",
     ] {
         assert_ne!(
             effect(&call("Bash", json!({ "command": command }))),
