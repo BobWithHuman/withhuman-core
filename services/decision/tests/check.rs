@@ -231,6 +231,13 @@ fn knows_a_change_to_the_agents_safeguards() {
         "sed -n '1p;w .claude/settings.json' /dev/null; echo ok > /tmp/out",
         "sed 's/a/b/w .claude/settings.json' README.md; echo ok > /tmp/out",
         "sed -f script.sed .claude/settings.json; echo ok > /tmp/out",
+        "uniq /dev/null .claude/hooks/pre-tool-use.py; echo ok > /tmp/out",
+        "sort --output=.claude/settings.json /dev/null; echo ok > /tmp/out",
+        "rg --pre 'rm -rf .claude/hooks' x .; echo ok > /tmp/out",
+        "find . -fprint0 .claude/settings.json; echo ok > /tmp/out",
+        "sort --compress-program='rm -rf .claude/hooks' big.txt; echo ok > /tmp/out",
+        "tree -aRH . .claude/hooks; echo ok > /tmp/out",
+        "file -C -m .claude/hooks/magic; echo ok > /tmp/out",
     ] {
         assert_eq!(
             effect(&call("Bash", json!({ "command": command }))),
@@ -249,6 +256,9 @@ fn knows_a_change_to_the_agents_safeguards() {
         "python3 app.py > /tmp/out.txt; sed -n '1,20p' .claude/settings.json 2>&1",
         "python3 app.py > /tmp/out.txt; sed -n '/hooks/p' .claude/settings.json",
         "python3 app.py > /tmp/out.txt; sed 's/token.*/redacted/g' .claude/settings.json",
+        "python3 app.py > /tmp/out.txt; sort .claude/settings.json | uniq -c",
+        "python3 app.py > /tmp/out.txt; uniq .claude/hooks/pre-tool-use.py",
+        "python3 app.py > /tmp/out.txt; grep -R hooks .claude; tree -a .claude; file .claude/settings.json",
     ] {
         assert_ne!(
             effect(&call("Bash", json!({ "command": command }))),

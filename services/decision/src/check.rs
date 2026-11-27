@@ -564,8 +564,18 @@ const WRITING_FLAGS: &[&str] = &[
     "-fprint",
     "-fls",
     "-fprintf",
+    "-fprint0",
     "-o",
+    "--output",
+    "--pre",
+    "--compress-program",
 ];
+
+/// Flags that make one reader write or run something, though they mean no such thing to another
+/// (`grep -R` only reads): `tree -R` writes an HTML file into every folder, `file -C` compiles a
+/// magic file into the current one.
+const PROGRAM_WRITING_FLAGS: &[(&str, &str)] =
+    &[("tree", "-R"), ("file", "-C"), ("file", "--compile")];
 
 /// Whether a part of a shell command (a pipeline) only prints what it reads: every program in it
 /// is a reader run without a writing flag, nothing is redirected into a file (`>`, `2>`, `&>`,
@@ -583,8 +593,19 @@ fn reads_only(part: &str) -> bool {
             };
             let program = first.rsplit('/').next().unwrap_or(first);
             READ_ONLY_PROGRAMS.contains(&program)
-                && !words.iter().any(|word| WRITING_FLAGS.contains(word))
+                && !words.iter().any(|word| {
+                    // `--output=f`, `--pre=cmd`: the flag with its value joined on.
+                    let flag = word.split('=').next().unwrap_or(word);
+                    WRITING_FLAGS.contains(word) || WRITING_FLAGS.contains(&flag)
+                })
+                && !words.iter().any(|word| {
+                    PROGRAM_WRITING_FLAGS
+                        .iter()
+                        .any(|(writer, flag)| program == *writer && (word == flag || bundles(word, flag)))
+                })
                 && (program != "sed" || sed_only_prints(segment))
+                // `uniq in out` writes its second file.
+                && (program != "uniq" || operands(segment) <= 1)
         })
 }
 
@@ -644,6 +665,23 @@ fn unquoted(text: &str) -> String {
             (None, c) => c,
         })
         .collect()
+}
+
+/// Whether `word` is a bundle of short options holding `flag` (`-aR` holds `-R`).
+fn bundles(word: &str, flag: &str) -> bool {
+    let Some(letter) = flag.strip_prefix('-').filter(|l| l.len() == 1) else {
+        return false;
+    };
+    word.starts_with('-') && !word.starts_with("--") && word[1..].contains(letter)
+}
+
+/// How many operands (words that are no option) a pipeline segment gives its program.
+fn operands(segment: &str) -> usize {
+    quoted_words(segment)
+        .iter()
+        .skip(1)
+        .filter(|word| !word.starts_with('-') || word.as_str() == "-")
+        .count()
 }
 
 /// The words of a pipeline segment, its quotes taken off (`sed -n '1, 20p' f` is `sed`, `-n`,
