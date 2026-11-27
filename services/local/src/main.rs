@@ -251,12 +251,25 @@ async fn start_store(
     // A server left running by an engine that did not stop cleanly is taken as it is, but only
     // when it is this folder's own: anything else on the port (another user's server, a program
     // waiting for the password) is never connected to.
-    if let Err(error) = pg.start().await
-        && !runs_here(pg.settings(), port).await
-    {
-        return Err(io::Error::other(format!(
-            "could not start PostgreSQL, and what holds port {port} is not its server: {error}"
-        )));
+    if let Err(error) = pg.start().await {
+        match runs_here(pg.settings(), port).await {
+            Here::Ready => {}
+            // This folder's server, left by an earlier engine that let it listen beyond
+            // 127.0.0.1: stopped, and started again on 127.0.0.1 alone.
+            Here::Elsewhere => {
+                pg.stop()
+                    .await
+                    .map_err(|e| io::Error::other(format!("could not stop PostgreSQL: {e}")))?;
+                pg.start().await.map_err(|e| {
+                    io::Error::other(format!("could not start PostgreSQL again: {e}"))
+                })?;
+            }
+            Here::No => {
+                return Err(io::Error::other(format!(
+                    "could not start PostgreSQL, and what holds port {port} is not its server: {error}"
+                )));
+            }
+        }
     }
     let exists = pg
         .database_exists(DATABASE)
@@ -270,22 +283,35 @@ async fn start_store(
     Ok(pg)
 }
 
+/// What runs in the data folder of `settings`, for `port`.
+#[derive(Debug, PartialEq, Eq)]
+enum Here {
+    /// Its server, ready on 127.0.0.1: the address every part connects to is its alone.
+    Ready,
+    /// Its server, but listening elsewhere too or instead (as `localhost`, ::1 among it): what
+    /// holds 127.0.0.1 may be another program.
+    Elsewhere,
+    /// Not its server: never connected to.
+    No,
+}
+
 /// Whether the server on `port` is the one of `settings`' data folder: its `postmaster.pid` names
-/// that folder and that port and says it is ready, and `pg_ctl status` finds its process alive.
-async fn runs_here(settings: &postgresql_embedded::Settings, port: u16) -> bool {
+/// that folder and that port and says it is ready, and `pg_ctl status` finds its process alive;
+/// and whether it listens on 127.0.0.1 alone.
+async fn runs_here(settings: &postgresql_embedded::Settings, port: u16) -> Here {
     let data = &settings.data_dir;
     let Ok(pid_file) = std::fs::read_to_string(data.join("postmaster.pid")) else {
-        return false;
+        return Here::No;
     };
     if !pid_file_is_ours(&pid_file, data, port) {
-        return false;
+        return Here::No;
     }
     let pg_ctl = settings.binary_dir().join(if cfg!(windows) {
         "pg_ctl.exe"
     } else {
         "pg_ctl"
     });
-    tokio::process::Command::new(pg_ctl)
+    let alive = tokio::process::Command::new(pg_ctl)
         .arg("status")
         .arg("-D")
         .arg(data)
@@ -293,7 +319,17 @@ async fn runs_here(settings: &postgresql_embedded::Settings, port: u16) -> bool 
         .stderr(std::process::Stdio::null())
         .status()
         .await
-        .is_ok_and(|status| status.success())
+        .is_ok_and(|status| status.success());
+    match (alive, listens_on_loopback_v4(&pid_file)) {
+        (false, _) => Here::No,
+        (true, true) => Here::Ready,
+        (true, false) => Here::Elsewhere,
+    }
+}
+
+/// Whether a `postmaster.pid` says its server listens on 127.0.0.1 alone (its sixth line).
+fn listens_on_loopback_v4(pid_file: &str) -> bool {
+    pid_file.lines().nth(5).map(str::trim) == Some("127.0.0.1")
 }
 
 /// Whether a `postmaster.pid` is the one of a server of `data` on `port`, ready: its second line
@@ -363,6 +399,11 @@ mod tests {
             47432
         ));
         assert!(!pid_file_is_ours("", &data, 47432));
+        // Ready on 127.0.0.1 alone, or listening elsewhere as `localhost` does.
+        assert!(listens_on_loopback_v4(
+            &file(&folder, "47432", "ready").replace("localhost", "127.0.0.1")
+        ));
+        assert!(!listens_on_loopback_v4(&file(&folder, "47432", "ready")));
     }
 
     #[test]
