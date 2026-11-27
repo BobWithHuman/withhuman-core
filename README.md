@@ -938,6 +938,8 @@ One engine, packaged two ways. The judging code is the same in both; `WITHHUMAN_
 | | `enterprise` (default) | `personal` |
 |---|---|---|
 | Judging | can deny (`WITHHUMAN_MODE=enforce`) | records only (`shadow` or `record`; `enforce` is refused) |
+| A Call it could not judge | denied (`WITHHUMAN_ON_FAILURE=closed`) | runs and is recorded, as a judged deny does |
+| Between its services | the cluster's network; `WITHHUMAN_INTERNAL_TOKEN` when set | a token made at each start: Generator and Decision take only each other's calls |
 | Store | shared PostgreSQL and Redis | its own PostgreSQL, state in memory (`REDIS_URL` not read) |
 | Entry | gateway, keys when `WITHHUMAN_REQUIRE_KEY=on` | the Collector itself, no key, MCP checked at the hook |
 | EDR, administration, triage | with `WITHHUMAN_WAZUH_URL`, `WITHHUMAN_ADMIN_TOKEN` | off (neither is read) |
