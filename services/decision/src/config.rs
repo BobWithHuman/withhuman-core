@@ -30,6 +30,9 @@ pub struct DecisionConfig {
     /// Deviations at which a Call is denied or reviewed, by what it follows from.
     pub thresholds: Thresholds,
     pub trace: TraceSettings,
+    /// The engine's own calls carry this, and Decision takes no other
+    /// (`withhuman_common::internal`).
+    pub internal_token: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -162,6 +165,7 @@ impl DecisionConfig {
             jev,
             thresholds,
             trace,
+            internal_token: withhuman_common::internal::token_from_env(),
         })
     }
 }

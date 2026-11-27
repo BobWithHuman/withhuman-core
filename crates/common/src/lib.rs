@@ -5,6 +5,7 @@ pub mod grade;
 pub mod graph_store;
 pub mod hidden;
 pub mod intent;
+pub mod internal;
 pub mod origin;
 pub mod profile;
 pub mod shutdown;

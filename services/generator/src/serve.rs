@@ -24,7 +24,33 @@ pub async fn serve(
         config.bind_address
     );
 
-    axum::serve(listener, app(service))
-        .with_graceful_shutdown(shutdown)
-        .await
+    axum::serve(
+        listener,
+        guarded(app(service), config.internal_token.clone()),
+    )
+    .with_graceful_shutdown(shutdown)
+    .await
+}
+
+/// The router, taking only the engine's own calls (and `/healthz`) when a token is set.
+fn guarded(router: axum::Router, token: Option<String>) -> axum::Router {
+    let Some(token) = token else { return router };
+    router.layer(axum::middleware::from_fn(
+        move |request: axum::extract::Request, next: axum::middleware::Next| {
+            let token = token.clone();
+            async move {
+                let given = request
+                    .headers()
+                    .get(withhuman_common::internal::HEADER)
+                    .and_then(|value| value.to_str().ok());
+                if withhuman_common::internal::admits(request.uri().path(), given, &token) {
+                    next.run(request).await
+                } else {
+                    axum::response::IntoResponse::into_response(
+                        axum::http::StatusCode::UNAUTHORIZED,
+                    )
+                }
+            }
+        },
+    ))
 }

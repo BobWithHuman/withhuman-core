@@ -83,9 +83,22 @@ pub struct GeneratorHttpClient {
 
 impl GeneratorHttpClient {
     pub fn new(base_url: impl Into<String>) -> Self {
+        Self::with_token(base_url, None)
+    }
+
+    /// A client whose every call carries the engine's internal token
+    /// (`withhuman_common::internal`).
+    pub fn with_token(base_url: impl Into<String>, token: Option<&str>) -> Self {
+        let mut headers = reqwest::header::HeaderMap::new();
+        if let Some(value) = token.and_then(|t| reqwest::header::HeaderValue::from_str(t).ok()) {
+            headers.insert(withhuman_common::internal::HEADER, value);
+        }
         Self {
             base_url: base_url.into().trim_end_matches('/').to_owned(),
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .default_headers(headers)
+                .build()
+                .unwrap_or_default(),
         }
     }
 }

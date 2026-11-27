@@ -113,7 +113,10 @@ impl CollectorService {
 }
 
 pub fn app(config: CollectorConfig) -> Router {
-    let generator = Arc::new(GeneratorHttpClient::new(config.generator_url.clone()));
+    let generator = Arc::new(GeneratorHttpClient::with_token(
+        config.generator_url.clone(),
+        config.internal_token.as_deref(),
+    ));
     app_with_transport(CollectorService::new(config, generator))
 }
 

@@ -47,9 +47,15 @@ async fn run() -> io::Result<()> {
     let viewer_password = env::var("WITHHUMAN_VIEWER_PASSWORD")
         .ok()
         .filter(|password| !password.is_empty());
-    let decision = DecisionConfig::from_env_as(profile)?;
-    let generator = GeneratorConfig::from_env_as(profile)?;
-    let collector = CollectorConfig::from_env_as(profile)?;
+    let mut decision = DecisionConfig::from_env_as(profile)?;
+    let mut generator = GeneratorConfig::from_env_as(profile)?;
+    let mut collector = CollectorConfig::from_env_as(profile)?;
+    // The services take only each other's calls: another user of this machine reaches their
+    // ports, and the Generator's routes change the record. A token new at each start.
+    let token = Some(internal_token()?);
+    decision.internal_token.clone_from(&token);
+    generator.internal_token.clone_from(&token);
+    collector.internal_token = token;
     let pg_port = match env::var("WITHHUMAN_PG_PORT") {
         Ok(port) => port.parse().map_err(|error| {
             io::Error::new(
@@ -193,6 +199,13 @@ async fn listening(
     Ok(())
 }
 
+/// 32 random bytes in hex.
+fn internal_token() -> io::Result<String> {
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes).map_err(|error| io::Error::other(error.to_string()))?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
 fn required(name: &str) -> io::Result<String> {
     env::var(name)
         .ok()
@@ -222,19 +235,28 @@ async fn start_store(
         password: password.into(),
         temporary: false,
         timeout: Some(Duration::from_secs(60)),
+        // 127.0.0.1 alone, the address every part connects to: a server that cannot take it (a
+        // program already holds the port) fails to start instead of starting on ::1 alone while
+        // the connections go to whatever holds 127.0.0.1.
+        configuration: std::collections::HashMap::from([(
+            "listen_addresses".to_owned(),
+            "127.0.0.1".to_owned(),
+        )]),
         ..postgresql_embedded::Settings::default()
     };
     let mut pg = postgresql_embedded::PostgreSQL::new(settings);
     let setup = pg.setup().await;
     let _ = std::fs::remove_file(&password_file);
     setup.map_err(|e| io::Error::other(format!("could not install PostgreSQL: {e}")))?;
-    if let Err(error) = pg.start().await {
-        let at = SocketAddr::from(([127, 0, 0, 1], port));
-        if tokio::net::TcpStream::connect(at).await.is_err() {
-            return Err(io::Error::other(format!(
-                "could not start PostgreSQL: {error}"
-            )));
-        }
+    // A server left running by an engine that did not stop cleanly is taken as it is, but only
+    // when it is this folder's own: anything else on the port (another user's server, a program
+    // waiting for the password) is never connected to.
+    if let Err(error) = pg.start().await
+        && !runs_here(pg.settings(), port).await
+    {
+        return Err(io::Error::other(format!(
+            "could not start PostgreSQL, and what holds port {port} is not its server: {error}"
+        )));
     }
     let exists = pg
         .database_exists(DATABASE)
@@ -246,6 +268,45 @@ async fn start_store(
             .map_err(|e| io::Error::other(format!("could not create the database: {e}")))?;
     }
     Ok(pg)
+}
+
+/// Whether the server on `port` is the one of `settings`' data folder: its `postmaster.pid` names
+/// that folder and that port and says it is ready, and `pg_ctl status` finds its process alive.
+async fn runs_here(settings: &postgresql_embedded::Settings, port: u16) -> bool {
+    let data = &settings.data_dir;
+    let Ok(pid_file) = std::fs::read_to_string(data.join("postmaster.pid")) else {
+        return false;
+    };
+    if !pid_file_is_ours(&pid_file, data, port) {
+        return false;
+    }
+    let pg_ctl = settings.binary_dir().join(if cfg!(windows) {
+        "pg_ctl.exe"
+    } else {
+        "pg_ctl"
+    });
+    tokio::process::Command::new(pg_ctl)
+        .arg("status")
+        .arg("-D")
+        .arg(data)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .is_ok_and(|status| status.success())
+}
+
+/// Whether a `postmaster.pid` is the one of a server of `data` on `port`, ready: its second line
+/// is the data folder, its fourth the port, and a line says `ready`.
+fn pid_file_is_ours(pid_file: &str, data: &std::path::Path, port: u16) -> bool {
+    let lines: Vec<&str> = pid_file.lines().map(str::trim).collect();
+    let same_folder = lines.get(1).is_some_and(|folder| {
+        let canonical = |p: &std::path::Path| std::fs::canonicalize(p).ok();
+        let named = std::path::Path::new(folder);
+        named == data || (canonical(named).is_some() && canonical(named) == canonical(data))
+    });
+    let same_port = lines.get(3).and_then(|p| p.parse::<u16>().ok()) == Some(port);
+    same_folder && same_port && lines.contains(&"ready")
 }
 
 fn write_private(path: &std::path::Path, text: &str) -> io::Result<()> {
@@ -271,6 +332,38 @@ fn write_private(path: &std::path::Path, text: &str) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_this_folders_ready_server_on_this_port_is_taken() {
+        let data = std::env::temp_dir();
+        let folder = data.display().to_string();
+        let file = |folder: &str, port: &str, status: &str| {
+            format!(
+                "81358\n{folder}\n1795759641\n{port}\n/tmp\nlocalhost\n149183947    983040\n{status}\n"
+            )
+        };
+        assert!(pid_file_is_ours(
+            &file(&folder, "47432", "ready"),
+            &data,
+            47432
+        ));
+        assert!(!pid_file_is_ours(
+            &file(&folder, "5432", "ready"),
+            &data,
+            47432
+        ));
+        assert!(!pid_file_is_ours(
+            &file("/elsewhere/pg", "47432", "ready"),
+            &data,
+            47432
+        ));
+        assert!(!pid_file_is_ours(
+            &file(&folder, "47432", "starting"),
+            &data,
+            47432
+        ));
+        assert!(!pid_file_is_ours("", &data, 47432));
+    }
 
     #[test]
     fn the_personal_engine_listens_on_this_machine_and_stops_nothing() {

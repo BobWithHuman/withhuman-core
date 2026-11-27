@@ -44,10 +44,17 @@ impl HttpDecisionClient {
         let endpoint = reqwest::Url::parse(&config.decision_url)
             .and_then(|url| url.join("/v1/decide"))
             .map_err(|error| DecisionError::InvalidEndpoint(error.to_string()))?;
-        Ok(Self {
-            client: reqwest::Client::new(),
-            endpoint,
-        })
+        let mut headers = reqwest::header::HeaderMap::new();
+        if let Some(token) = &config.internal_token {
+            let value = reqwest::header::HeaderValue::from_str(token)
+                .map_err(|error| DecisionError::InvalidEndpoint(error.to_string()))?;
+            headers.insert(withhuman_common::internal::HEADER, value);
+        }
+        let client = reqwest::Client::builder()
+            .default_headers(headers)
+            .build()
+            .map_err(|error| DecisionError::InvalidEndpoint(error.to_string()))?;
+        Ok(Self { client, endpoint })
     }
 }
 

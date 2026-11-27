@@ -38,6 +38,7 @@ async fn persists_and_replays_execution_graph_through_real_http() {
     )
     .await;
     let config = GeneratorConfig {
+        internal_token: None,
         bind_address: "127.0.0.1:0".parse().unwrap(),
         decision_url,
         wazuh: None,

@@ -13,7 +13,10 @@ pub async fn serve(
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> io::Result<()> {
     let listener = tokio::net::TcpListener::bind(config.bind_address).await?;
-    let generator = Arc::new(GeneratorHttpClient::new(config.generator_url.clone()));
+    let generator = Arc::new(GeneratorHttpClient::with_token(
+        config.generator_url.clone(),
+        config.internal_token.as_deref(),
+    ));
     let service =
         CollectorService::from_config(config.clone(), generator).map_err(io::Error::other)?;
     let ext_authz = ExtAuthzService::new(service.verdicts.clone(), config.enforcement_mode);

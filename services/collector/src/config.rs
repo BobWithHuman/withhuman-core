@@ -26,6 +26,8 @@ pub enum ReviewPolicy {
 pub struct CollectorConfig {
     /// The product this Collector runs as (`WITHHUMAN_PROFILE`).
     pub profile: Profile,
+    /// Carried on its calls to the Generator (`withhuman_common::internal`).
+    pub internal_token: Option<String>,
     pub bind_address: SocketAddr,
     pub ext_authz_address: SocketAddr,
     pub generator_url: String,
@@ -64,6 +66,7 @@ impl Default for CollectorConfig {
     fn default() -> Self {
         Self {
             profile: Profile::Enterprise,
+            internal_token: None,
             bind_address: DEFAULT_BIND_ADDRESS
                 .parse()
                 .expect("default address is valid"),
@@ -166,6 +169,7 @@ impl CollectorConfig {
 
         Ok(Self {
             profile,
+            internal_token: withhuman_common::internal::token_from_env(),
             bind_address,
             ext_authz_address,
             generator_url: env::var("GENERATOR_URL").unwrap_or_else(|_| {

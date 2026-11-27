@@ -18,6 +18,9 @@ pub struct GeneratorConfig {
     pub decision_url: String,
     /// The Wazuh manager whose device list is synced; none while `WITHHUMAN_WAZUH_URL` is unset.
     pub wazuh: Option<WazuhConfig>,
+    /// The engine's own calls carry this, and the Generator takes no other
+    /// (`withhuman_common::internal`).
+    pub internal_token: Option<String>,
 }
 
 impl GeneratorConfig {
@@ -45,6 +48,7 @@ impl GeneratorConfig {
             } else {
                 WazuhConfig::from_lookup(|name| env::var(name).ok())?
             },
+            internal_token: withhuman_common::internal::token_from_env(),
         })
     }
 }
