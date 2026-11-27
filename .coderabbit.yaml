@@ -27,6 +27,14 @@ reviews:
       enabled: false
     fix_ci:
       enabled: false
+  # No pre-merge check table under every walkthrough.
+  pre_merge_checks:
+    title:
+      mode: "off"
+    description:
+      mode: "off"
+    issue_assessment:
+      mode: "off"
   auto_review:
     enabled: true
     drafts: false
