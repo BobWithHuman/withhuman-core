@@ -273,6 +273,11 @@ python3 deploy/client/configure.py \
   --hook "$PWD/deploy/client/hooks/pre-tool-use.py"
 ```
 
+`--server` takes plain http only for an engine on the same machine (`127.0.0.1`, `localhost`,
+`::1`); any other address needs https, since the key and every event go to it.
+`--allow-insecure-http` sets it up anyway. The setup's own requests follow no redirect, so the
+key is never sent on to another host.
+
 Or for every folder at once, instead of one project:
 
 ```sh

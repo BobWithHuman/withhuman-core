@@ -29,6 +29,17 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuses redirects: urllib would send the WithHuman key on to wherever one points."""
+
+    def redirect_request(self, *args, **kwargs):  # noqa: ARG002
+        return None
+
+
+# Every request that carries the key goes through this: a redirect is an error, not a new host.
+OPENER = urllib.request.build_opener(_NoRedirect)
+
 TIMEOUT = 20
 # Claude Code names a project's directory after its path, every other character than a letter or
 # digit made `-`, and cuts a longer name to this many characters.
@@ -124,7 +135,7 @@ def main():
                                      data=json.dumps(body).encode("utf-8"),
                                      headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+        with OPENER.open(request, timeout=TIMEOUT) as response:
             response.read()
     except urllib.error.HTTPError as error:
         print(f"WithHuman check-in: the engine answered {error.code}", file=sys.stderr)

@@ -204,6 +204,17 @@ class ConfigureTest(Setup):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("must be an http(s) URL", result.stderr)
 
+    def test_takes_plain_http_only_on_this_machine(self):
+        # The key and every event would cross the network unencrypted.
+        result = self.configure(server="http://withhuman.lan:3000")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must use https", result.stderr)
+        self.assertFalse((self.project / ".claude" / "settings.json").exists())
+        for server in ("http://127.0.0.1:3000", "http://localhost:3000", "http://[::1]:3000"):
+            self.assertEqual(self.configure(server=server).returncode, 0, server)
+        result = self.configure("--allow-insecure-http", server="http://withhuman.lan:3000")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
 
     def test_uninstall_takes_out_only_withhuman(self):
         self.write(self.project / ".claude" / "settings.json", {

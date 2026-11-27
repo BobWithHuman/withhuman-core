@@ -98,6 +98,7 @@ import argparse
 import datetime
 import getpass
 import hashlib
+import ipaddress
 import json
 import os
 import platform
@@ -108,9 +109,21 @@ import socket
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuses redirects: urllib would send the WithHuman key on to wherever one points."""
+
+    def redirect_request(self, *args, **kwargs):  # noqa: ARG002
+        return None
+
+
+# Every request that carries the key goes through this: a redirect is an error, not a new host.
+OPENER = urllib.request.build_opener(_NoRedirect)
 
 EVENTS = [
     "SessionStart",
@@ -832,6 +845,20 @@ def withhuman_hooks(server, command, client=None):
     }
 
 
+def encrypted_or_local(server):
+    """The engine is reached over https, or over plain http on this machine only."""
+    parts = urllib.parse.urlsplit(server)
+    if parts.scheme == "https":
+        return True
+    host = (parts.hostname or "").lower()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def hook_command(script, server):
     """Quoted absolute paths run alike from bash, zsh, cmd and PowerShell."""
     return f'"{Path(sys.executable).as_posix()}" "{Path(script).as_posix()}" {MARK_ARG} {server}'
@@ -1108,7 +1135,7 @@ def register(server, client, team, key, agent, project, version, scope=None):
         request = urllib.request.Request(f"{server}/v1/clients/register",
                                          data=json.dumps(body).encode("utf-8"),
                                          headers=headers, method="POST")
-        with urllib.request.urlopen(request, timeout=REGISTER_TIMEOUT) as response:
+        with OPENER.open(request, timeout=REGISTER_TIMEOUT) as response:
             response.read()
 
     try:
@@ -1547,6 +1574,9 @@ def main():
     parser.add_argument("--reset", nargs="*", metavar="FOLDER",
                         help="take every WithHuman setup out: the managed one, this user's, and "
                              "the project ones of the folders named; client IDs are kept")
+    parser.add_argument("--allow-insecure-http", action="store_true",
+                        help="allow a plain http --server that is not on this machine (the key "
+                             "and every event then travel unencrypted)")
     parser.add_argument("--no-checkin", action="store_true",
                         help="with --scope user or managed: do not schedule the daily check-in")
     parser.add_argument("--managed-hooks-only", action="store_true",
@@ -1609,6 +1639,11 @@ def main():
     args.server = args.server.rstrip("/")
     if not re.fullmatch(r"https?://[^\s/]+(/[^\s]*)?", args.server):
         sys.exit(f"--server must be an http(s) URL: {args.server}")
+    if not encrypted_or_local(args.server) and not args.allow_insecure_http:
+        sys.exit("--server must use https unless the engine runs on this machine (127.0.0.1, "
+                 "localhost, ::1): over plain http the WithHuman key, and every prompt and "
+                 f"command, cross the network unencrypted: {args.server}\n"
+                 "  --allow-insecure-http sets it up anyway.")
     if args.agent != "claude":
         agent = AGENTS[args.agent]
         project = Path(args.project).resolve()

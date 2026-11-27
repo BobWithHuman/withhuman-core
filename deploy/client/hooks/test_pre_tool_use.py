@@ -33,6 +33,12 @@ class Collector(http.server.BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(Collector.exceptions).encode())
 
     def do_POST(self):
+        if self.path.endswith("/redirect/v1/hooks/PreToolUse"):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(307)
+            self.send_header("Location", "http://127.0.0.1:9/elsewhere")
+            self.end_headers()
+            return
         body = self.rfile.read(int(self.headers["Content-Length"]))
         # Header names are compared without case, as HTTP has them.
         headers = {name.lower(): value for name, value in self.headers.items()}
@@ -304,6 +310,19 @@ class PreToolUseHookTest(unittest.TestCase):
         sent = Collector.received[-1][1]
         self.assertEqual(sent, {"session_id": "s", "hook_event_name": "PreToolUse",
                                 "tool_name": "Bash", "tool_use_id": "t", "cwd": "/work/app"})
+
+    def test_a_redirect_is_refused_and_the_call_denied(self):
+        # urllib would send the key on to wherever the redirect points.
+        home = tempfile.mkdtemp()
+        env = {**os.environ, "HOME": home, "USERPROFILE": home, "WITHHUMAN_KEY": "whk_x"}
+        server = self.url.rsplit("/v1/hooks/", 1)[0] + "/redirect"
+        result = subprocess.run([sys.executable, HOOK, "--withhuman-hook", server],
+                                input=json.dumps({"session_id": "s", "hook_event_name": "PreToolUse",
+                                                  "tool_name": "Bash", "tool_use_id": "t",
+                                                  "tool_input": {"command": "ls"}}).encode(),
+                                capture_output=True, env=env, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
 
     def test_a_stale_or_broken_cache_covers_nothing(self):
         home = tempfile.mkdtemp()

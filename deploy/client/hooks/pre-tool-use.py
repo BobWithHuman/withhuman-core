@@ -59,6 +59,17 @@ CONFIG = os.path.join(os.path.expanduser("~"), ".config", "withhuman")
 EXCEPTIONS_CACHE = os.path.join(CONFIG, "exceptions.json")
 EXCEPTIONS_MAX_AGE = 24 * 3600
 EXCEPTIONS_TIMEOUT = 3
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuses redirects: urllib would send the WithHuman key on to wherever one points."""
+
+    def redirect_request(self, *args, **kwargs):  # noqa: ARG002
+        return None
+
+
+# Every request that carries the key goes through this: a redirect is an error, not a new host.
+OPENER = urllib.request.build_opener(_NoRedirect)
 UNREACHABLE_REASON = ("WithHuman에 연결하지 못해 이 도구 호출을 차단했습니다. "
                       "엔진이 실행 중인지 확인한 뒤 다시 시도하세요.")
 
@@ -210,7 +221,7 @@ def fetch_exceptions(server, client_id, key):
         query = urllib.parse.urlencode({"client_id": client_id or ""})
         request = urllib.request.Request(f"{server}/v1/clients/exceptions?{query}",
                                          headers=auth_headers(client_id, key))
-        with urllib.request.urlopen(request, timeout=EXCEPTIONS_TIMEOUT) as response:
+        with OPENER.open(request, timeout=EXCEPTIONS_TIMEOUT) as response:
             found = json.loads(response.read())
         if not isinstance(found, list):
             raise ValueError("not a list")
@@ -320,7 +331,7 @@ def main():
     request = urllib.request.Request(url, data=raw, headers=auth_headers(client_id, key),
                                      method="POST")
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+        with OPENER.open(request, timeout=TIMEOUT_SECONDS) as response:
             body = response.read()
     except urllib.error.HTTPError as error:
         # A blocking answer the Collector sends with an error status (fail-closed) still counts.
