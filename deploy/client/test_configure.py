@@ -1308,9 +1308,11 @@ class GlobalSetupTest(Setup):
         before = profile.read_text()
         self.run_scope("user", "--key", KEY, "--model-proxy")
         self.assertEqual(profile.read_text(), before)
-        # Taken out with the setup; a project setup does not take the flag.
+        # Taken out with the setup, the key's header too; a project setup does not take the flag.
         self.assertEqual(self.run_scope("user", "--uninstall").returncode, 0)
         self.assertNotIn("env", self.read(self.home / ".claude" / "settings.json"))
+        self.assertNotIn("ANTHROPIC_CUSTOM_HEADERS", profile.read_text())
+        self.assertNotIn("# WithHuman model request headers", profile.read_text())
         self.assertNotEqual(self.run_scope("project", "--model-proxy").returncode, 0)
 
     def test_managed_scope_keeps_the_check_in_in_the_device_folder(self):

@@ -1448,12 +1448,42 @@ def drop_model_route(path, server_file, stamp, report):
     report.append(f"{path}: ANTHROPIC_BASE_URL removed")
 
 
+def drop_model_headers(home, stamp, report):
+    """Takes out the ANTHROPIC_CUSTOM_HEADERS a setup with --model-proxy exported: Claude Code
+    sends those headers wherever its model requests go, so the key must not outlive the setup.
+    Only ours, the ones naming x-withhuman-key, are taken out."""
+    if os.name == "nt":
+        if home != Path.home():
+            return
+        found = command_output(["reg", "query", r"HKCU\Environment", "/v",
+                                "ANTHROPIC_CUSTOM_HEADERS"])
+        if "x-withhuman-key" in found:
+            result = subprocess.run(["reg", "delete", r"HKCU\Environment", "/v",
+                                     "ANTHROPIC_CUSTOM_HEADERS", "/f"], capture_output=True)
+            if result.returncode == 0:
+                report.append("ANTHROPIC_CUSTOM_HEADERS removed from the user environment "
+                              "(new windows)")
+        return
+    for path in (home / ".zshrc", home / ".bashrc"):
+        if not path.is_file():
+            continue
+        lines = path.read_text(encoding="utf-8").splitlines()
+        kept = [line for line in lines if line.strip() != HEADERS_MARK
+                and not (line.lstrip().startswith("export ANTHROPIC_CUSTOM_HEADERS=")
+                         and "x-withhuman-key" in line)]
+        if kept != lines:
+            backup(path, stamp)
+            path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+            report.append(f"{path}: ANTHROPIC_CUSTOM_HEADERS removed (new shells)")
+
+
 def uninstall_user(home, stamp, report):
     """Takes the user setup of the user at `home` out: the WithHuman hooks of their settings and
     the hook in ~/.config/withhuman/hooks. Their client ID is kept."""
     clean(home / ".claude" / "settings.json", stamp, report)
     config = home / ".config" / "withhuman"
     drop_model_route(home / ".claude" / "settings.json", config / "server", stamp, report)
+    drop_model_headers(home, stamp, report)
     if home == Path.home():
         schedule(config / CHECKIN_NAME, config, False, report, remove=True)
     else:
