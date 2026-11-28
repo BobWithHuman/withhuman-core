@@ -1075,9 +1075,13 @@ impl DecisionProvider for JevDecisionProvider {
                 || part["instruction"]
                     .as_array()
                     .is_some_and(|found| !found.is_empty());
+            let explicit_breach = deviation
+                .as_ref()
+                .is_some_and(|deviation| deviation.explicit >= check::EXPLICIT_BREACH);
+            let parts_clear = 1.0 - score >= check::PART_CLEAR && !explicit_breach;
             Some(if score >= check::PART_CUT && backed {
                 Verdict::Deny
-            } else if checked.breach {
+            } else if checked.breach && !parts_clear {
                 Verdict::Review
             } else {
                 Verdict::Allow
