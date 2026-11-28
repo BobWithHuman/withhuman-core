@@ -563,9 +563,22 @@ impl DecisionProvider for JevDecisionProvider {
                 .is_some_and(provenance::git_restores);
         let undoes = (restored > 0 && provenance::is_empty_change(&judged_effect)) || git_restore;
 
-        // The rule grade, before Jev is asked.
-        let rule_graded =
-            withhuman_common::grade::grade(&graph.call.tool_name, &graph.call.tool_input);
+        // The rule grade, before Jev is asked. A shell command is graded on the user's latest
+        // prompt, so installing a package the prompt names is no step to put to them.
+        let rule_graded = match (
+            graph.call.tool_name.as_str(),
+            graph
+                .call
+                .tool_input
+                .get("command")
+                .and_then(serde_json::Value::as_str),
+            graph.prompt.as_deref(),
+        ) {
+            ("Bash" | "PowerShell" | "shell" | "exec_command", Some(command), Some(prompt)) => {
+                Some(withhuman_common::grade::command_for(command, prompt))
+            }
+            _ => withhuman_common::grade::grade(&graph.call.tool_name, &graph.call.tool_input),
+        };
         // Jev has kept failing, so the rules judge alone for a while.
         if self.breaker_open() {
             return Ok(self
@@ -929,11 +942,9 @@ impl DecisionProvider for JevDecisionProvider {
                 }
             }
         }
-        let budget = timeout();
-        let causal_task = judge_request
+        let path_parts = judge_request
             .as_ref()
             .zip(causal_parent)
-            .filter(|_| !budget.is_zero())
             .map(|(judged, parent)| {
                 let key = &parent.candidate.key;
                 let action = judged
@@ -941,7 +952,7 @@ impl DecisionProvider for JevDecisionProvider {
                     .get("action")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or_default();
-                let (path, links) = causal::path(&causal::PathParts {
+                causal::PathParts {
                     prompt: graph.prompt.as_deref(),
                     request_parent: request_parent.as_ref(),
                     hops: causal_hops.clone(),
@@ -958,7 +969,25 @@ impl DecisionProvider for JevDecisionProvider {
                         _ => causal::ParentLink::None,
                     },
                     influence: parents.influence.get(key).copied(),
-                });
+                }
+            });
+        // What the engine finds on the path itself: whether any tool result on it may instruct,
+        // and whether the user's request names the files the Call changes.
+        let grounds = path_parts.as_ref().map(|parts| causal::Grounds {
+            instruction: provenance::may_instruct(&causal::path_texts(parts)),
+            named_by_user: provenance::named_in_prompt(
+                &effect,
+                graph.prompt.as_deref(),
+                graph.call.cwd.as_deref(),
+            ),
+        });
+        let budget = timeout();
+        let causal_task = judge_request
+            .as_ref()
+            .zip(path_parts.as_ref())
+            .filter(|_| !budget.is_zero())
+            .map(|(judged, parts)| {
+                let (path, links) = causal::path(parts);
                 let sent = causal::request(
                     judged,
                     &path,
@@ -1037,12 +1066,14 @@ impl DecisionProvider for JevDecisionProvider {
                 added,
                 &sources,
                 graph.prompt.as_deref(),
+                graph.call.cwd.as_deref(),
             ),
             _ => provenance::call_from_instruction(
                 &graph.call.tool_name,
                 &graph.call.tool_input,
                 &sources,
                 graph.prompt.as_deref(),
+                graph.call.cwd.as_deref(),
             ),
         };
         let evidence = check::FileEvidence {
@@ -1072,6 +1103,7 @@ impl DecisionProvider for JevDecisionProvider {
                     &text,
                     &sources,
                     graph.prompt.as_deref(),
+                    graph.call.cwd.as_deref(),
                 ),
                 "text": text.chars().take(200).collect::<String>(),
             }))
@@ -1232,6 +1264,9 @@ impl DecisionProvider for JevDecisionProvider {
                 "answer": causal_answer,
                 "request_parent": request_parent,
             });
+            if let Some(grounds) = grounds.filter(|_| causal_answer.is_some()) {
+                trace_json["causal"]["grounds"] = serde_json::json!(grounds);
+            }
         }
         trace_json["jev"] = exchanges.into();
         let (deny_at, review_at) = self.thresholds.for_link(outcome.link);
@@ -1338,10 +1373,9 @@ impl DecisionProvider for JevDecisionProvider {
         // through that another check stopped.
         let targeted = checked.is_some_and(|checked| target::branch(group) == Some(checked.branch));
         let grade_level = graded.map_or(2, |graded| graded.grade.level());
-        let (mut decision, mut rule, mut reason) = match causal_answer
-            .as_ref()
-            .and_then(|answer| answer.verdict_for(targeted, grade_level))
-        {
+        let (mut decision, mut rule, mut reason) = match causal_answer.as_ref().and_then(|answer| {
+            answer.verdict_for(targeted, grade_level, grounds.unwrap_or_default())
+        }) {
             Some(causal::CausalVerdict::Deny) if decision != Decision::Deny => {
                 (Decision::Deny, "causal::instruction", mismatch())
             }

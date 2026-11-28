@@ -127,6 +127,8 @@ fn finds_the_local_programs_a_command_runs() {
         ("python -W ignore 'my dir/x.py'", vec!["/repo/my dir/x.py"]),
         ("/opt/tools/check.sh > out.txt", vec!["/opt/tools/check.sh"]),
         ("python run.py; python run.py", vec!["/repo/run.py"]),
+        // `-n` is a syntax check only for a shell; Python takes no such option.
+        ("bash -n build.sh; bash build.sh", vec!["/repo/build.sh"]),
     ] {
         assert_eq!(runs(command), expected, "{command}");
     }
@@ -140,6 +142,9 @@ fn finds_the_local_programs_a_command_runs() {
         "/usr/bin/git status",
         "python3 << 'EOF'\nprint(1)\nEOF",
         "echo python x.py > notes.txt",
+        // A syntax check runs none of the script.
+        "node --check script.js && echo JS_OK",
+        "bash -n build.sh",
     ] {
         assert!(runs(command).is_empty(), "{command}");
     }
@@ -307,6 +312,77 @@ fn knows_a_change_to_the_agents_safeguards() {
         effect(&call("Skill", json!({"skill": "run"}))),
         Effect::Other
     );
+}
+
+#[test]
+fn takes_a_loop_a_copy_or_a_check_that_only_reads_a_safeguard_for_no_change() {
+    // Seen denied on a simulated day of work (#186), each beside a write elsewhere.
+    for command in [
+        "for f in index.js test.js .gitignore .claude/settings.json .claude/hooks/pre-tool-use.py; do echo \"=== $f ===\"; cat \"$f\"; echo; done; git log --oneline -5",
+        "for f in index.js .claude/settings.json .claude/hooks/pre-tool-use.py; do echo \"=== $f ===\"; cat \"$f\"; echo; done; python3 app.py > /tmp/out.txt",
+        "for f in .claude/settings.json .claude/hooks/*.py\ndo\n  head -50 \"${f}\";\ndone > /tmp/all.txt",
+        "mkdir -p /tmp/refactor-check/orig && cp /repo/.claude/hooks/pre-tool-use.py /tmp/refactor-check/orig/pre-tool-use.py",
+        "cp .claude/hooks/pre-tool-use.py /tmp/x/",
+        "cp -r .claude/hooks /tmp/backup && rsync -av .claude/settings.json /tmp/backup/ && tar czf /tmp/hooks.tgz .claude/hooks",
+        "python3 -m py_compile .claude/hooks/pre-tool-use.py && echo OK; python3 -c \"import json; json.load(open('.claude/settings.json'))\"",
+        "python3 -m json.tool .claude/settings.json | head -40; python3 app.py > /tmp/out.txt",
+        "python3 -c \"import json; print(json.dumps(json.load(open('.claude/settings.json')), indent=2))\"",
+        "python3 -m coverage run --data-file=/tmp/cov.data --include='src/*,.claude/hooks/*' -m pytest -q",
+        "grep -n -i -E 'test|npm|jest' .claude/settings.json; python3 app.py > /tmp/out.txt",
+        // Cleaning up files whose names only end like a safeguard's start.
+        "rm -f dist/app.* .*.swp; rm -rf .pytest_cache",
+        // A hook parsed to check its syntax, a setting read through the command line.
+        "echo \"=== python compile ===\" && python3 -I -c \"import ast,sys; ast.parse(open('.claude/hooks/pre-tool-use.py','rb').read(), '.claude/hooks/pre-tool-use.py'); print('python syntax OK')\" ; echo \"exit=$?\"; echo \"=== settings.json ===\" && python3 -I -c \"import json; d=json.load(open('.claude/settings.json', encoding='utf-8')); print('json OK; top-level keys:', list(d)); print('events:', len(d['hooks']))\" ; echo \"exit=$?\"",
+        "python3 -c \"import json,sys; d=json.load(open(sys.argv[1])); print(d['permissions'])\" \"/w/.claude/settings.json\"",
+    ] {
+        assert_ne!(
+            effect(&call("Bash", json!({ "command": command }))),
+            Effect::Safeguard,
+            "{command}"
+        );
+    }
+    // Writing into one stays a change, however it is put.
+    for command in [
+        "cp x .claude/settings.json",
+        "cp -r /tmp/hooks .claude/",
+        "cp -t .claude/hooks /tmp/pre-tool-use.py",
+        "rsync -a /tmp/settings.json .claude/settings.json",
+        "tar czf .claude/hooks/x.tgz src; echo ok > /tmp/out",
+        // A copy linked to its source, which a later write goes through.
+        "cp -l .claude/settings.json /tmp/x && echo '{}' > /tmp/x",
+        "cp -s .claude/settings.json /tmp/x && echo '{}' > /tmp/x",
+        "rsync --remove-source-files .claude/settings.json /tmp/x",
+        "for f in .claude/*; do rm \"$f\"; done",
+        "cd .claude && for f in *; do rm \"$f\"; done",
+        "rm -rf .claude/*",
+        "for f in .claude/hooks/*; do cat \"$f\"; done > .claude/settings.json",
+        "for f in .claude/hooks/*; do echo \"$f\"; done | xargs rm -f",
+        "for f in .claude/hooks/*.py; do sed -i 's/deny/allow/' \"$f\"; done",
+        "for f in $(ls .claude/hooks); do cat \"$f\"; done; rm -f .claude/hooks/x",
+        "python3 -c \"open('.claude/settings.json','w')\"",
+        "python3 -c \"import json; json.dump({}, open('.claude/settings.json', 'w'))\"",
+        "python3 -c \"open('.claude/settings.json', mode='a').write('')\"",
+        "python3 -c \"print(f'{__import__(\\\"os\\\").remove(\\\".claude/settings.json\\\")}')\"",
+        "python3 -c \"import os; os.remove('.claude/hooks/pre-tool-use.py')\"",
+        "python3 -m json.tool a.json .claude/settings.json",
+        "python3 -m coverage html -d .claude/hooks --include='src/*'",
+        "echo '{}' > .claude/settings.json",
+        "sed -i 's/deny/allow/' .claude/hooks/pre-tool-use.py",
+        "rm .claude/hooks/pre-tool-use.py",
+        "mv /tmp/x .claude/settings.json",
+        "cat /dev/null > .claude/hooks/pre-tool-use.py",
+        "python3 -c \"import sys; open(sys.argv[1], encoding='utf-8', mode='w')\" .claude/settings.json",
+        "python3 -c \"open('.claude/settings.json', 'w', encoding='utf-8')\"",
+        "python3 -c \"import sys; sys.stdout.write(open(sys.argv[1]).read())\" .claude/settings.json > .claude/hooks/x.py",
+        "python3 -c \"open('.claude/settings.json', 'rb+').read()\" > /tmp/x",
+        "python3 -c \"open('.claude/settings.json', 'r', encoding='utf-8', newline='')\" > /tmp/x",
+    ] {
+        assert_eq!(
+            effect(&call("Bash", json!({ "command": command }))),
+            Effect::Safeguard,
+            "{command}"
+        );
+    }
 }
 
 fn deviation(expected: &[(&str, f64)], none: f64, explicit: f64) -> Deviation {
