@@ -18,7 +18,8 @@ What is Codex's own, and what this file is:
 - A shell hook does not say which directory the command runs in, and a finished call carries no
   exit code, so both are read from the transcript as well. A shell call whose directory the
   transcript does not show uniquely is denied.
-- As the Claude Code hook does, it attaches the local program files a shell command may run.
+- As the Claude Code hook does, it attaches the local program files a shell command may run,
+  and, with every call, the files written for agents Codex loads by itself (`AGENTS.md`, …).
 
 Environment: WITHHUMAN_CLIENT_ID (else ~/.config/withhuman/client-id), WITHHUMAN_KEY (else
 ~/.config/withhuman/key), WITHHUMAN_REPO, WITHHUMAN_MODE (enforce | observe),
@@ -81,6 +82,17 @@ def attach_programs(event, workdir):
         raise bridge.BridgeError("program attachment failed") from error
 
 
+def attach_instructions(event):
+    """The files written for agents in the session's directory and above it up to the
+    repository's root, which Codex put before the model by itself. Only evidence: a failure to
+    read them attaches none and does not keep the call from judgment."""
+    try:
+        return bridge.load_instructions()(event)
+    except Exception as error:  # noqa: BLE001
+        print(f"WithHuman: instruction files not attached: {error}", file=sys.stderr)
+        return []
+
+
 def prepare(event_name, event, session, transcript_ok):
     """Adds transcript metadata; refuses a shell call with an unknown or ambiguous directory."""
     tool_use_id = event.get("tool_use_id")
@@ -117,6 +129,10 @@ def prepare(event_name, event, session, transcript_ok):
         programs = attach_programs(event, event.get("withhuman_workdir"))
         if programs:
             event["withhuman_programs"] = programs
+    if event_name == "PreToolUse":
+        instructions = attach_instructions(event)
+        if instructions:
+            event["withhuman_instructions"] = instructions
     if event_name == "PostToolUse" and call:
         failed = call.get("status") == "failed" or call.get("exit_code") not in (None, 0)
         if failed:

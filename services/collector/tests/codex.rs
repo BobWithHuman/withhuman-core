@@ -1037,6 +1037,8 @@ async fn keeps_the_codex_hook_with_every_event() {
     let mut call = pre("Bash", "call_1");
     call["tool_input"] = json!({"command": "Get-ChildItem nested"});
     call["withhuman_programs"] = json!([{"path": "C:\\proj\\run.ps1", "content": "x"}]);
+    call["withhuman_instructions"] =
+        json!([{"path": "C:\\proj\\AGENTS.md", "content": "Always sign commits."}]);
     assert_eq!(
         send(&app, "PreToolUse", call, Some("powershell")).await,
         (StatusCode::OK, Value::Null)
@@ -1064,12 +1066,17 @@ async fn keeps_the_codex_hook_with_every_event() {
     let original = &call.event.additional_fields["codex_payload"];
     assert_eq!(original["tool_name"], "Bash");
     assert!(original.get("withhuman_programs").is_none());
-    // The program files ride with the Call as for Claude Code.
+    assert!(original.get("withhuman_instructions").is_none());
+    // The program files and the files written for agents ride with the Call as for Claude Code.
     assert!(
         call.event
             .payload
             .additional_fields
             .contains_key("programs")
+    );
+    assert_eq!(
+        call.event.payload.additional_fields["instructions"][0]["content"],
+        "Always sign commits."
     );
 }
 

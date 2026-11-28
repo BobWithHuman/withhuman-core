@@ -30,8 +30,8 @@ pub use http::{CollectorService, HookPolicy, TrustedHookContext, app, app_with_t
 pub use intent::{INTENT_INSTRUCTION, INTENT_REMINDER, INTENT_REQUIRED};
 pub use inventory::USER_HEADER;
 pub use normalize::{
-    MAX_PROGRAM_BYTES, MAX_PROGRAMS, MESSAGE_INCOMPLETE_FLAG, NormalizeError, NormalizedEvent,
-    Normalizer, RESUME_ORDER_GAP,
+    MAX_INSTRUCTION_BYTES, MAX_INSTRUCTIONS, MAX_PROGRAM_BYTES, MAX_PROGRAMS,
+    MESSAGE_INCOMPLETE_FLAG, NormalizeError, NormalizedEvent, Normalizer, RESUME_ORDER_GAP,
 };
 pub use serve::serve;
 pub use state::{

@@ -91,6 +91,7 @@ fn shell(command: &str) -> withhuman_decision::trace::CallInfo {
         tool_input: json!({ "command": command }),
         prior: None,
         programs: BTreeMap::new(),
+        instructions: BTreeMap::new(),
         cwd: Some("C:/repo".to_owned()),
     }
 }

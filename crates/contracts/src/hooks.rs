@@ -114,6 +114,12 @@ pub struct PreToolUseRequest {
     /// has none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub withhuman_programs: Vec<ProgramFile>,
+    /// The files written for agents (`AGENTS.md`, `CLAUDE.md`, …) the agent loads into its
+    /// context by itself at the start of a session, read by the WithHuman command hook just
+    /// before the Call: no tool result shows what they told the agent. Claude Code's own event
+    /// has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub withhuman_instructions: Vec<ProgramFile>,
 }
 
 /// The shell a client runs commands in, as its bridge reports it (`x-withhuman-shell`). It
@@ -142,7 +148,8 @@ impl ClientShell {
     }
 }
 
-/// A local program file as the client read it just before the Call.
+/// A local file (a program a command runs, or a file of instructions for the agent) as the
+/// client read it just before the Call.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, ToSchema)]
 pub struct ProgramFile {
     /// Absolute path.

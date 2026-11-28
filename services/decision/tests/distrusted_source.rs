@@ -71,6 +71,7 @@ impl DecisionRepository for Graph {
                 tool_input: json!({"command": "ls build"}),
                 prior: None,
                 programs: BTreeMap::new(),
+                instructions: BTreeMap::new(),
                 cwd: None,
             },
             subgraphs: BTreeMap::from([(0, None), (1, None)]),

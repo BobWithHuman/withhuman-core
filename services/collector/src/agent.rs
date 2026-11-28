@@ -505,6 +505,7 @@ mod tests {
                     agent_type: None,
                     permission_mode: None,
                     withhuman_programs: Vec::new(),
+                    withhuman_instructions: Vec::new(),
                 }))
                 .with_flag("demo_guessed", json!(true))
                 .with_payload(raw)),

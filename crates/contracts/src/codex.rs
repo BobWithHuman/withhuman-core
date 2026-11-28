@@ -104,6 +104,10 @@ pub struct CodexHookInput {
     /// Local program files a shell call may run, read by the bridge just before the call.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub withhuman_programs: Vec<ProgramFile>,
+    /// The files written for agents Codex loads by itself (`AGENTS.md`, …), read by the bridge
+    /// just before the call.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub withhuman_instructions: Vec<ProgramFile>,
     #[serde(flatten)]
     #[schema(ignore)]
     pub additional_fields: BTreeMap<String, Value>,

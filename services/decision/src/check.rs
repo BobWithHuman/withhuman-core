@@ -103,6 +103,17 @@ pub enum Effect {
     Other,
 }
 
+impl Effect {
+    /// The files the effect writes, by path.
+    pub fn paths(&self) -> Vec<&str> {
+        match self {
+            Self::FileChange { path, .. } => vec![path.as_str()],
+            Self::FileChanges { files } => files.iter().map(|file| file.path.as_str()).collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
 /// A local program file a Call runs.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
@@ -1113,6 +1124,23 @@ pub fn attached_programs(payload: &Value) -> BTreeMap<String, String> {
             let path = program.get("path")?.as_str()?;
             let content = program.get("content")?.as_str()?;
             Some((normalize_path(path), content.to_owned()))
+        })
+        .collect()
+}
+
+/// The files written for agents a Call's hook attached, by path: the files the agent loaded into
+/// its context by itself, as they were just before the Call, which the Collector keeps in the
+/// Call payload's `instructions`.
+pub fn attached_instructions(payload: &Value) -> BTreeMap<String, String> {
+    payload
+        .get("instructions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|file| {
+            let path = file.get("path")?.as_str()?;
+            let content = file.get("content")?.as_str()?;
+            Some((path.to_owned(), content.to_owned()))
         })
         .collect()
 }

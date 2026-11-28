@@ -250,6 +250,10 @@ pub struct CallInfo {
     /// read it just before the Call, or else as the session last saw it; none when neither
     /// has it whole.
     pub programs: BTreeMap<String, Option<String>>,
+    /// The files written for agents (`AGENTS.md`, `CLAUDE.md`, …) the agent loaded into its
+    /// context by itself, by path, as the client's hook read them just before the Call: what
+    /// they told the agent stands in no tool result.
+    pub instructions: BTreeMap<String, String>,
     /// The directory the Call was made in, against which a relative path it writes resolves.
     pub cwd: Option<String>,
 }

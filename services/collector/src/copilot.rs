@@ -158,6 +158,7 @@ pub fn translate(
                 agent_type: input.agent_type.clone(),
                 permission_mode: None,
                 withhuman_programs: input.withhuman_programs.clone(),
+                withhuman_instructions: Vec::new(),
             })
         }
         Event::PostToolUse => {

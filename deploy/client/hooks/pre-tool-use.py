@@ -13,6 +13,13 @@ with a script extension, or an executable one that starts with `#!`. Other files
 names, such as data or secrets, are never read. The Collector's answer is printed as is, so
 Claude Code gets the same allow, deny or ask as from the HTTP hook.
 
+It also attaches, with every call, the files written for agents that Claude Code puts before
+the agent by itself at the start of a session (`AGENTS.md`, `CLAUDE.md`, `CLAUDE.local.md`,
+`.claude/CLAUDE.md`, `.claude/rules/*.md`) in the working directory and each one above it up to
+the repository's root: no tool result shows what they told the agent, so without them the
+engine could not tell a value an agent took from them. The home directory's own are the user's
+and are not read.
+
 When the Collector cannot be reached, times out or answers with an error, the hook denies the
 call: with no judgment there is nothing to allow it on, and an engine that is merely switched off
 must not lift every control. No environment variable changes that. Only a person's own setup of
@@ -45,6 +52,14 @@ MAX_PROGRAMS = 8
 MAX_BYTES = 64 * 1024
 # Larger files are attached without a hash.
 MAX_HASHED_BYTES = 16 * 1024 * 1024
+# Files written for agents, in each directory from the working one up to the repository's root,
+# and the folder of rule files beside them. The Collector keeps at most this many, each cut to
+# this many bytes.
+INSTRUCTION_FILES = ("AGENTS.md", "CLAUDE.md", "CLAUDE.local.md",
+                     os.path.join(".claude", "CLAUDE.md"))
+RULES_DIRECTORY = os.path.join(".claude", "rules")
+MAX_INSTRUCTIONS = 8
+MAX_INSTRUCTION_BYTES = 32 * 1024
 TIMEOUT_SECONDS = float(os.environ.get("WITHHUMAN_HOOK_TIMEOUT", "30"))
 UNREACHABLE_REASON = ("WithHuman에 연결하지 못해 이 도구 호출을 차단했습니다. "
                       "엔진이 실행 중인지 확인한 뒤 다시 시도하세요.")
@@ -182,6 +197,77 @@ def programs(event):
     return found
 
 
+def project_directories(cwd):
+    """`cwd` and each directory above it up to the repository's root (the one holding `.git`),
+    nearest first; `cwd` alone outside a repository. The home directory is never one: what is
+    there the user wrote for every project."""
+    home = os.path.realpath(os.path.expanduser("~"))
+    found = []
+    here = os.path.normpath(cwd)
+    while os.path.realpath(here) != home:
+        found.append(here)
+        if os.path.exists(os.path.join(here, ".git")):
+            return found
+        parent = os.path.dirname(here)
+        if parent == here:
+            break
+        here = parent
+    return found[:1]
+
+
+def instruction_file(path):
+    """The attachment for the file of instructions at `path`, or None for a binary file."""
+    size = os.path.getsize(path)
+    with open(path, "rb") as file:
+        head = file.read(MAX_INSTRUCTION_BYTES)
+    if b"\0" in head[:8192]:
+        return None
+    # A file cut short may end inside a character: that piece is dropped, not replaced.
+    cut = size > MAX_INSTRUCTION_BYTES
+    attached = {
+        "path": path,
+        "content": head.decode("utf-8", errors="ignore" if cut else "replace"),
+        "size": size,
+    }
+    if cut:
+        attached["truncated"] = True
+    return attached
+
+
+def instructions(event):
+    """The files written for agents the agent loaded by itself, found from the event's working
+    directory, at most MAX_INSTRUCTIONS; a file reached twice (a link) is attached once."""
+    cwd = event.get("cwd")
+    if not isinstance(cwd, str) or not os.path.isabs(cwd):
+        return []
+    found = []
+    seen = set()
+    for directory in project_directories(cwd):
+        candidates = [os.path.join(directory, name) for name in INSTRUCTION_FILES]
+        rules = os.path.join(directory, RULES_DIRECTORY)
+        try:
+            candidates += [os.path.join(rules, name) for name in sorted(os.listdir(rules))
+                           if name.lower().endswith(".md")]
+        except OSError:
+            pass
+        for path in candidates:
+            try:
+                if not os.path.isfile(path):
+                    continue
+                real = os.path.realpath(path)
+                if real in seen:
+                    continue
+                seen.add(real)
+                attached = instruction_file(path)
+            except OSError:
+                continue
+            if attached is not None:
+                found.append(attached)
+            if len(found) >= MAX_INSTRUCTIONS:
+                return found
+    return found
+
+
 def setting(name, file):
     """The environment variable `name`, else the setup's file of that name: the user's, else the
     one beside the folder this hook is installed in, where a setup for the whole device keeps the
@@ -208,14 +294,19 @@ def main():
     raw = sys.stdin.buffer.read()
     try:
         event = json.loads(raw)
-        # Reading the programs must never keep the event from being judged.
-        try:
-            attached = programs(event)
-        except Exception as error:  # noqa: BLE001
-            print(f"WithHuman: programs not attached: {error}", file=sys.stderr)
-            attached = []
-        if attached:
-            event["withhuman_programs"] = attached
+        changed = False
+        # Reading the files must never keep the event from being judged.
+        for field, read in (("withhuman_programs", programs),
+                            ("withhuman_instructions", instructions)):
+            try:
+                attached = read(event)
+            except Exception as error:  # noqa: BLE001
+                print(f"WithHuman: {field} not attached: {error}", file=sys.stderr)
+                attached = []
+            if attached:
+                event[field] = attached
+                changed = True
+        if changed:
             raw = json.dumps(event).encode("utf-8")
     except ValueError:
         pass  # Not JSON: forwarded as is, for the Collector to reject.

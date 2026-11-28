@@ -65,9 +65,8 @@ def key():
     return setting("WITHHUMAN_KEY", "key")
 
 
-def load_programs():
-    """`programs()` of the Claude Code PreToolUse hook beside this one, reused as it is: the
-    program files a shell command may run, read just before the call."""
+def load_pre_tool_use():
+    """The Claude Code PreToolUse hook beside this one, as a module."""
     here = os.path.dirname(os.path.abspath(__file__))
     path = os.path.join(here, "pre-tool-use.py")
     if not os.path.isfile(path):
@@ -75,7 +74,20 @@ def load_programs():
     spec = importlib.util.spec_from_file_location("withhuman_pre_tool_use", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.programs
+    return module
+
+
+def load_programs():
+    """`programs()` of the Claude Code PreToolUse hook beside this one, reused as it is: the
+    program files a shell command may run, read just before the call."""
+    return load_pre_tool_use().programs
+
+
+def load_instructions():
+    """`instructions()` of the Claude Code PreToolUse hook beside this one, reused as it is: the
+    files written for agents (`AGENTS.md`, …) in the event's working directory and above it up
+    to the repository's root, read just before the call."""
+    return load_pre_tool_use().instructions
 
 
 # ---- the engine ----
