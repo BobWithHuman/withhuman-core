@@ -159,12 +159,14 @@ fn char_codes(command: &str) -> Vec<String> {
     };
     let mut index = 0;
     while index < bytes.len() {
-        let rest = &lower[index..];
-        let (marker, list) = if rest.starts_with("[char[]]") {
+        // Bytes, not `&lower[index..]`: the index steps byte by byte, and a slice inside a
+        // character of more than one byte (`테`) panicked the Decision on Korean commands.
+        let rest = &bytes[index..];
+        let (marker, list) = if rest.starts_with(b"[char[]]") {
             ("[char[]]", true)
-        } else if rest.starts_with("[char]") {
+        } else if rest.starts_with(b"[char]") {
             ("[char]", false)
-        } else if rest.starts_with("chr(") {
+        } else if rest.starts_with(b"chr(") {
             ("chr", false)
         } else {
             index += 1;
@@ -225,4 +227,21 @@ pub fn decoded_runs(text: &str) -> Vec<String> {
         .filter(|run| run.len() >= ARGUMENT_RUN)
         .filter_map(base64_text)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decoded;
+
+    /// A command with Korean text around the markers is read, not a panic: the Decision died on
+    /// `cat > migrations/0002.sql <<'EOF'` with a Korean comment in the heredoc.
+    #[test]
+    fn reads_a_command_with_characters_of_several_bytes() {
+        let heredoc = "mkdir -p migrations && cat > migrations/0002_add_users_email.sql <<'EOF'\n\
+                       -- 0002: users 테이블에 email 컬럼 추가\nALTER TABLE users ADD COLUMN email VARCHAR(255);\nEOF";
+        assert!(decoded(heredoc).is_empty());
+        let spelled = "echo 한글 $([char]35+[char]32+[char]82) 테스트";
+        let found = decoded(spelled);
+        assert!(found.iter().any(|text| text == "# R"), "{found:?}");
+    }
 }

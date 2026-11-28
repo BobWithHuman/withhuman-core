@@ -183,6 +183,7 @@ impl Graded {
             "edit" => "작업 공간 파일 수정",
             "delete_file" => "파일 삭제",
             "recursive_delete" => "폴더 통째 삭제",
+            "clear_cache" => "다시 만들어지는 캐시 삭제",
             "discard_changes" => "변경 내용 버리기",
             "push" => "원격 저장소에 올리기",
             "push_force" => "원격 저장소 강제 덮어쓰기",
@@ -496,6 +497,28 @@ fn deletes_everything(text: &str) -> bool {
     })
 }
 
+/// Directories a tool rebuilds by itself whenever it runs: deleting them loses nothing.
+const CACHE_DIRS: &[&str] = &["__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"];
+
+/// Whether every target of a delete is such a cache (`rm -rf __pycache__ tests/__pycache__`).
+/// Cleaning up after a test run was graded as deleting a folder for good (3-1), which keeps a
+/// call from being cleared on the first question. A target that climbs out (`..`), expands
+/// (`*`, `$`, `~`) or names anything else is no cache.
+fn only_caches(args: &[&str]) -> bool {
+    let targets: Vec<&str> = args
+        .iter()
+        .copied()
+        .filter(|word| !word.starts_with('-'))
+        .collect();
+    !targets.is_empty()
+        && targets.iter().all(|target| {
+            let target = target.trim_matches(['\'', '"']).trim_end_matches('/');
+            !target.contains("..")
+                && !target.contains(['*', '$', '~'])
+                && CACHE_DIRS.contains(&target.rsplit('/').next().unwrap_or(target))
+        })
+}
+
 /// One step of a shell command, its words in lower case.
 fn step(words: &[String], text: &str) -> Graded {
     let Some(first) = words.first() else {
@@ -516,7 +539,9 @@ fn step(words: &[String], text: &str) -> Graded {
                     && word.contains('r')
                     && command == "rm")
         });
-        return if recursive {
+        return if recursive && only_caches(&rest) {
+            Graded::of(Grade::ONE, "clear_cache")
+        } else if recursive {
             Graded::of(Grade::THREE_ONE, "recursive_delete")
         } else {
             Graded::of(Grade::TWO_ONE, "delete_file")
@@ -1004,9 +1029,32 @@ pub fn grade(tool_name: &str, tool_input: &Value) -> Option<Graded> {
                 Graded::of(Grade::ZERO, "read")
             }
         }
-        "Glob" | "LS" | "WebSearch" | "TodoWrite" | "TaskOutput" | "ToolSearch" => {
-            Graded::of(Grade::ZERO, "read")
-        }
+        // The agent's own bookkeeping inside Claude Code: its to-dos, the background tasks it
+        // started, its next wake-up, its plan mode and a question to the user. Nothing outside
+        // the harness changes; graded by name they fell to Jev's "acts" (2-1) and a `TaskStop`
+        // or `ScheduleWakeup` was put to the user. Scheduling a prompt for later
+        // (`CronCreate`) is a later action and keeps its grade.
+        "Glob"
+        | "LS"
+        | "WebSearch"
+        | "TodoWrite"
+        | "TaskOutput"
+        | "ToolSearch"
+        | "TaskStop"
+        | "KillShell"
+        | "KillBash"
+        | "BashOutput"
+        | "ScheduleWakeup"
+        | "Monitor"
+        | "TaskCreate"
+        | "TaskList"
+        | "TaskGet"
+        | "TaskUpdate"
+        | "EnterPlanMode"
+        | "ExitPlanMode"
+        | "AskUserQuestion"
+        | "ListMcpResourcesTool"
+        | "CronList" => Graded::of(Grade::ZERO, "read"),
         "WebFetch" => Graded::of(Grade::ZERO, "external_fetch"),
         "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => {
             let path = match text("file_path") {

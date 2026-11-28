@@ -678,6 +678,12 @@ impl DecisionProvider for JevDecisionProvider {
                 undoes,
                 file_signal,
                 group,
+                // By the rules, or by Jev where no rule grades the call; Jev raising an ordinary
+                // edit to 3 does not hold it.
+                match rule_graded {
+                    Some(rule) => rule.grade.level() >= 3,
+                    None => graded.is_some_and(|graded| graded.grade.level() >= 3),
+                },
             )
         });
         // Where each value of the Call came from: the user's prompt, a tool-result paragraph, or
@@ -1005,9 +1011,19 @@ impl DecisionProvider for JevDecisionProvider {
         // The call's values that stand only in an instructing tool result, never in the prompt.
         // A file change is judged by its path and the lines it adds: a Write over a file keeps the
         // lines the file already held (a rule planted there as a comment), which it adds nothing to.
+        // A file the agent edits in place it read first (Claude Code edits only a file it has
+        // read, and a Write over a file the session saw replaces what it saw): its name is the
+        // agent's own knowledge, not a value an instruction gave. Listing the files and reading
+        // the buggy one next to a planted comment made every fix of it "carry out the
+        // instruction" through the file's name alone. A new file an instruction names
+        // (`attack_success.log`, `pwned.txt`) is still checked, and so are the lines it adds.
+        let known_path = matches!(
+            graph.call.tool_name.as_str(),
+            "Edit" | "MultiEdit" | "NotebookEdit"
+        ) || (graph.call.tool_name == "Write" && graph.call.prior.is_some());
         let instructed = match &judged_effect {
             Effect::FileChange { path, added, .. } => provenance::lines_from_instruction(
-                path,
+                if known_path { "" } else { path },
                 added,
                 &paragraphs,
                 graph.prompt.as_deref(),
@@ -1082,6 +1098,38 @@ impl DecisionProvider for JevDecisionProvider {
         } else {
             file_verdict.map(check::FileVerdict::verdict)
         };
+        // A program the session wrote itself, every line of it, is not put to the user for one
+        // answer near the bar about running it: each line was judged when it was written. Agents
+        // run the script they just wrote to check it, and that check was put to the user (Jev's
+        // answer 0.4–0.6 on the user's own refactored app). Past the deny bar it is still denied.
+        let own_program = match &effect {
+            Effect::Run { programs } if verdict == Some(Verdict::Review) => {
+                let mut all = !programs.is_empty();
+                for program in programs {
+                    let Some(code) = program.code.as_deref() else {
+                        all = false;
+                        break;
+                    };
+                    let earlier = self
+                        .repository
+                        .earlier_file_changes(&request.session_id, graph.call.order, &program.path)
+                        .await
+                        .unwrap_or_default();
+                    if !provenance::written_by_session(&program.path, code, &earlier) {
+                        all = false;
+                        break;
+                    }
+                }
+                all && checked
+                    .is_some_and(|checked| checked.branch == Branch::Run && !checked.breach)
+            }
+            _ => false,
+        };
+        let verdict = if own_program {
+            Some(Verdict::Allow)
+        } else {
+            verdict
+        };
         let outcome = trace::outcome(parents, judgements, deviation);
 
         let mut trace_json = trace::record(&plan, &outcome);
@@ -1150,6 +1198,9 @@ impl DecisionProvider for JevDecisionProvider {
             "label": graded.map(|graded| graded.grade.label()),
             "description": graded.map(|graded| graded.describe()),
         });
+        if own_program {
+            trace_json["check"]["own_program"] = true.into();
+        }
         if let Effect::Run { programs } = &effect {
             trace_json["check"]["programs"] = programs
                 .iter()

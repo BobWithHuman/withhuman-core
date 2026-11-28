@@ -599,7 +599,7 @@ fn reads_only(part: &str) -> bool {
         return false;
     }
     !writes_file(part)
-        && part.split('|').all(|segment| {
+        && pipeline_segments(part).iter().all(|segment| {
             // The words as the shell hands them over, quotes and escapes taken off
             // (`sort '--output=f'` is `--output=f`). A word that expands (`$OPT`, `$'…'`) may
             // become any flag, so a segment with one is no reader.
@@ -867,6 +867,28 @@ fn substitution_only_prints(after_s: &str) -> bool {
         && flags
             .chars()
             .all(|c| matches!(c, 'g' | 'i' | 'I' | 'p') || c.is_ascii_digit())
+}
+
+/// The programs of a pipeline, split at each `|` outside quotes: `grep -E 'token|secret' f | head`
+/// is two programs, not four.
+fn pipeline_segments(part: &str) -> Vec<String> {
+    let mut segments = vec![String::new()];
+    let mut quote: Option<char> = None;
+    for c in part.chars() {
+        match (quote, c) {
+            (Some(open), _) if c == open => quote = None,
+            (None, '\'' | '"') => quote = Some(c),
+            (None, '|') => {
+                segments.push(String::new());
+                continue;
+            }
+            _ => {}
+        }
+        if let Some(last) = segments.last_mut() {
+            last.push(c);
+        }
+    }
+    segments
 }
 
 /// `command` without its parts that only read: a part that prints a safeguard (`cat
@@ -1608,12 +1630,18 @@ pub fn check_call(
         undoes,
         file_signal,
         crate::category::Group::Unknown,
+        false,
     )
 }
 
 /// [`check_call`] for a call of `group`: a service call that sends, deletes, moves money or
 /// grants access is asked about its target (`target`), and like a file change is not cleared on
 /// the first question alone when a tool result could have put something in it.
+///
+/// `irreversible`: the call cannot be undone (grade 3). It is never cleared on the first
+/// question alone: on ATBench-Codex, deletes, deployments and broadcasts Jev rated harm 0.8–1.0
+/// and irreversibility 0.65–0.88 were let through because the first question showed little
+/// doubt, against the grade table's own rule that such a call is approved right before it runs.
 pub fn check_call_in(
     deviation: &Deviation,
     link: Link,
@@ -1621,6 +1649,7 @@ pub fn check_call_in(
     undoes: bool,
     file_signal: bool,
     group: crate::category::Group,
+    irreversible: bool,
 ) -> Check {
     let target = match effect {
         Effect::Other => crate::target::branch(group),
@@ -1644,7 +1673,9 @@ pub fn check_call_in(
         // Its command line leaves Jev no doubt to show; only its code tells.
         Effect::Run { .. } => Branch::Run,
         _ if undoes => Branch::Clear,
-        _ if clearable && !breach && doubt < LOW_DOUBT && link != Link::None => Branch::Clear,
+        _ if clearable && !irreversible && !breach && doubt < LOW_DOUBT && link != Link::None => {
+            Branch::Clear
+        }
         Effect::FileChange { .. } | Effect::FileChanges { .. } | Effect::ShellWrite { .. } => {
             Branch::File
         }

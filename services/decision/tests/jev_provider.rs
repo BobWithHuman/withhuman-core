@@ -33,12 +33,33 @@ struct Graph {
     programs: BTreeMap<String, Option<String>>,
     /// What SubGraph 1's tool result printed, when not `ok`.
     result: Option<&'static str>,
+    /// The session's earlier changes to files, by path: the lines each added.
+    earlier: BTreeMap<String, Vec<String>>,
 }
 
 #[async_trait]
 impl DecisionRepository for Graph {
     async fn health(&self) -> Result<(), RepositoryError> {
         Ok(())
+    }
+
+    async fn earlier_file_changes(
+        &self,
+        _session_id: &str,
+        _call_order: u64,
+        path: &str,
+    ) -> Result<Vec<withhuman_decision::check::FileDiff>, RepositoryError> {
+        Ok(self
+            .earlier
+            .get(path)
+            .map(|added| {
+                vec![withhuman_decision::check::FileDiff {
+                    path: path.to_owned(),
+                    added: added.clone(),
+                    removed: Vec::new(),
+                }]
+            })
+            .unwrap_or_default())
     }
 
     async fn verify_graph(&self, _: &DecisionRequest) -> Result<(), RepositoryError> {
@@ -477,7 +498,7 @@ async fn bounds_the_jev_call_by_the_decision_deadline() {
 
 #[tokio::test]
 async fn falls_back_to_the_nearest_subgraph_when_no_cause_is_offered() {
-    let (provider, graph, jev) = provider(0.95, false);
+    let (provider, graph, jev) = undoable_provider(0.95, None);
     let response = provider
         .decide(&request(Some("빌드 고치기"), Some(4_000)))
         .await
@@ -522,6 +543,43 @@ async fn falls_back_to_the_nearest_subgraph_when_no_cause_is_offered() {
 }
 
 /// A provider over a graph whose latest prompt is in SubGraph 0, with Jev picking `cause`.
+/// [`provider_picking`] over a call the rules grade as undoable in part (`git push`, 2-1): tests
+/// of the trace and the cause, which a call that cannot be undone would send on to the second
+/// question.
+fn undoable_provider(
+    intent_score: f64,
+    cause: Option<&'static str>,
+) -> (JevDecisionProvider, Arc<Graph>, Arc<Jev>) {
+    let graph = Arc::new(Graph {
+        prompt: cause.is_some(),
+        call: Some(("Bash", json!({"command": "git push origin main"}))),
+        ..Graph::default()
+    });
+    let jev = Arc::new(Jev {
+        intent_score,
+        cause,
+        fail: false,
+        unwanted: None,
+        asked: Mutex::default(),
+        requests: Mutex::default(),
+        reversible: 0.0,
+        concern: 0.0,
+        causal: 0.0,
+    });
+    let provider = JevDecisionProvider::new(
+        graph.clone(),
+        jev.clone(),
+        TraceSettings::default(),
+        Duration::from_secs(3),
+        Thresholds {
+            untrusted_deny: 0.15,
+            untrusted_review: 0.08,
+            ..Thresholds::default()
+        },
+    );
+    (provider, graph, jev)
+}
+
 fn provider_picking(cause: &'static str) -> (JevDecisionProvider, Arc<Graph>, Arc<Jev>) {
     let graph = Arc::new(Graph {
         prompt: true,
@@ -555,7 +613,7 @@ fn provider_picking(cause: &'static str) -> (JevDecisionProvider, Arc<Graph>, Ar
 
 #[tokio::test]
 async fn traces_the_call_to_the_cause_jev_picks() {
-    let (provider, graph, jev) = provider_picking("s0");
+    let (provider, graph, jev) = undoable_provider(0.9, Some("s0"));
     let response = provider
         .decide(&request(Some("빌드 고치기"), Some(4_000)))
         .await
@@ -920,7 +978,7 @@ async fn puts_a_target_picked_among_several_to_the_user() {
         ),
         // A shell command is judged part by part, not asked this.
         (
-            ("Bash", json!({ "command": "git push --force origin main" })),
+            ("Bash", json!({ "command": "git push origin main" })),
             0.9,
             Decision::Allow,
             "intent::match",
@@ -1325,6 +1383,101 @@ async fn the_causal_path_alone_does_not_hold_a_harmless_read() {
             (response.decision, response.rule.as_str()),
             (decision, rule),
             "{tool} {input} causal {causal}"
+        );
+    }
+}
+
+/// A call the rules grade as impossible to undo goes on to the second question however calm the
+/// first one reads; one they grade as undoable in part is cleared as before.
+#[tokio::test]
+async fn sends_an_irreversible_call_on_to_the_second_question() {
+    for (command, branch) in [
+        ("git push --force origin main", "purpose"),
+        ("git push origin main", "clear"),
+    ] {
+        let graph = Arc::new(Graph {
+            prompt: true,
+            call: Some(("Bash", json!({ "command": command }))),
+            ..Graph::default()
+        });
+        let jev = Arc::new(Jev {
+            intent_score: 0.99,
+            cause: Some("s0"),
+            fail: false,
+            unwanted: Some(0.1),
+            asked: Mutex::default(),
+            requests: Mutex::default(),
+            reversible: 0.0,
+            concern: 0.0,
+            causal: 0.0,
+        });
+        let provider = JevDecisionProvider::new(
+            graph.clone(),
+            jev.clone(),
+            TraceSettings::default(),
+            Duration::from_secs(3),
+            Thresholds::default(),
+        );
+        let response = provider
+            .decide(&request(Some("빌드 고치기"), Some(4_000)))
+            .await
+            .unwrap();
+        assert_eq!(response.decision, Decision::Allow, "{command}");
+        assert_eq!(
+            graph.traces.lock().unwrap()[0].trace["check"]["branch"],
+            branch,
+            "{command}"
+        );
+    }
+}
+
+/// A script the session wrote itself, every line, is run without asking for one answer near the
+/// bar; one the repository held is still asked about, and past the deny bar either is denied.
+#[tokio::test]
+async fn runs_a_script_the_session_wrote_without_asking() {
+    let code = "import json\nprint(json.dumps({'ok': True}))\n";
+    let lines = || code.lines().map(str::to_owned).collect::<Vec<_>>();
+    for (written, unwanted, decision) in [
+        (true, 0.45, Decision::Allow),
+        (false, 0.45, Decision::Review),
+        (true, 0.9, Decision::Deny),
+    ] {
+        let graph = Arc::new(Graph {
+            prompt: true,
+            call: Some(("Bash", json!({"command": "python /work/check_out.py"}))),
+            programs: BTreeMap::from([("/work/check_out.py".to_owned(), Some(code.to_owned()))]),
+            earlier: if written {
+                BTreeMap::from([("/work/check_out.py".to_owned(), lines())])
+            } else {
+                BTreeMap::new()
+            },
+            ..Graph::default()
+        });
+        let jev = Arc::new(Jev {
+            intent_score: 0.99,
+            cause: Some("s0"),
+            fail: false,
+            unwanted: Some(unwanted),
+            asked: Mutex::default(),
+            requests: Mutex::default(),
+            reversible: 0.0,
+            concern: 0.0,
+            causal: 0.0,
+        });
+        let provider = JevDecisionProvider::new(
+            graph.clone(),
+            jev.clone(),
+            TraceSettings::default(),
+            Duration::from_secs(3),
+            Thresholds::default(),
+        );
+        let response = provider
+            .decide(&request(Some("빌드 고치기"), Some(4_000)))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.decision, decision,
+            "written {written} unwanted {unwanted}"
         );
     }
 }

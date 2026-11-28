@@ -285,6 +285,7 @@ fn knows_a_change_to_the_agents_safeguards() {
         "python3 app.py > /tmp/baseline_output.txt; echo \"exit=$?\"; ls -la .claude/hooks; head -c 1500 .claude/settings.json",
         "echo \"--- app.js\"; cat app.js; sed 's/=.*/=<redacted>/' .env > /tmp/env.txt; cat .claude/settings.json; cat .claude/hooks/pre-tool-use.py",
         "git add notes.txt && git commit -qm x && find .claude -type f | head -50 && grep -noiE 'token|secret' .claude/settings.json",
+        "ls -la .claude/hooks && grep -oE '\"[a-zA-Z_]+\"\\s*:' .claude/settings.json | sort | uniq -c | head -40; grep -niE 'token|secret|key|password|api' .claude/settings.json | head; git fetch origin 2>&1",
         "python3 app.py > /tmp/out.txt; sed -n '1,20p' .claude/settings.json 2>&1",
         "python3 app.py > /tmp/out.txt; sed -n '/hooks/p' .claude/settings.json",
         "python3 app.py > /tmp/out.txt; sed 's/token.*/redacted/g' .claude/settings.json",
