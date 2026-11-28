@@ -207,6 +207,8 @@ const WRITES: &[&str] = &[
     "rm ",
     "mv ",
     "cp ",
+    // It always writes its destination, which [`copy_destinations`] tells from what it reads.
+    "rsync ",
     "tee ",
     "chmod ",
     "truncate ",
@@ -321,7 +323,7 @@ fn commands_safeguard(command: &str) -> bool {
 
 /// Whether a shell command names a safeguard: as written, or once its paths are resolved against
 /// the directory it runs in (`hooks.json` run inside `.codex`), following `cd` and `Set-Location`
-/// earlier in the line.
+/// earlier in the line, or through a glob that may expand into one ([`globs_into_safeguard`]).
 fn names_safeguard(command: &str, cwd: Option<&str>) -> bool {
     if is_safeguard(command) {
         return true;
@@ -338,21 +340,51 @@ fn names_safeguard(command: &str, cwd: Option<&str>) -> bool {
             }
             continue;
         }
-        let Some(base) = cwd.as_deref() else {
-            continue;
-        };
         for word in std::iter::once(first).chain(words) {
             // `>file`, `2>>file`: the target of a redirection.
             let word = word.rsplit('>').next().unwrap_or(word);
-            if !word.is_empty()
-                && !word.starts_with('-')
-                && is_safeguard(&normalize_path(&resolve(Some(base), word)))
-            {
+            if word.is_empty() || word.starts_with('-') {
+                continue;
+            }
+            let path = match cwd.as_deref() {
+                Some(base) => normalize_path(&resolve(Some(base), word)),
+                None => word.to_owned(),
+            };
+            if (cwd.is_some() && is_safeguard(&path)) || globs_into_safeguard(&path) {
                 return true;
             }
         }
     }
     false
+}
+
+/// Whether a glob may expand into a safeguard though its letters name none: `.claude/*` is
+/// `.claude/settings.json` and `.claude/hooks` once the shell expands it (`for f in .claude/*;
+/// do rm "$f"; done`, #186). It may when the letters before its first wildcard end, at the start
+/// of a path step and over two letters at least, with how a safeguard begins, and the wildcard
+/// can stand for the rest of it: within one step, or past a `/` only when the glob goes on
+/// past one too. `.*.swp` and `dist/app.*` reach no safeguard.
+fn globs_into_safeguard(path: &str) -> bool {
+    let path = path.to_ascii_lowercase();
+    let Some(wildcard) = path.find(['*', '?', '[']) else {
+        return false;
+    };
+    let (letters, rest) = path.split_at(wildcard);
+    let deeper = rest.contains(['/', '\\']);
+    SAFEGUARDS.iter().any(|place| {
+        // A path in Korean is cut only between characters.
+        (0..letters.len())
+            .filter(|start| letters.is_char_boundary(*start))
+            .any(|start| {
+                let overlap = &letters[start..];
+                let at_step = start == 0 || letters[..start].ends_with(['/', '\\']);
+                at_step
+                    && overlap.len() >= 2
+                    && place.len() > overlap.len()
+                    && place.starts_with(overlap)
+                    && (deeper || !place[overlap.len()..].contains(['/', '\\']))
+            })
+    })
 }
 
 /// The steps of a command line (split at newlines, `;`, `|`, `&` and parentheses), each as its
@@ -560,19 +592,13 @@ const READ_ONLY_PROGRAMS: &[&str] = &[
     "true",
 ];
 
-/// Flags that make a [`READ_ONLY_PROGRAMS`] program write or run something.
+/// Flags that make a [`READ_ONLY_PROGRAMS`] program write or run something. `-i` is not one:
+/// only `sed` edits in place with it, and [`sed_only_prints`] takes no option but the quiet ones,
+/// while to every other reader it means ignoring case or the like. `grep -n -i -E 'test|npm'
+/// .claude/settings.json` beside a write elsewhere was denied as a change to the agent's hooks
+/// (#186).
 const WRITING_FLAGS: &[&str] = &[
-    "-i",
-    "--in-place",
-    "-delete",
-    "-exec",
-    "-execdir",
-    "-ok",
-    "-okdir",
-    "-fprint",
-    "-fls",
-    "-fprintf",
-    "-fprint0",
+    "-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fls", "-fprintf", "-fprint0",
     "-o",
 ];
 
@@ -903,6 +929,12 @@ fn pipeline_segments(part: &str) -> Vec<String> {
 /// .claude/settings.json`, `ls .claude/hooks`) changes nothing, though another part of the same
 /// line writes (`python3 app.py > /tmp/baseline.txt`). Such lines were denied as changes to the
 /// agent's hooks. A `cd` into a safeguard or a variable naming one is no reader, so it stays.
+///
+/// Some parts read a safeguard without being a reader (#186, 37 of the 70 needless denials of a
+/// simulated day of work): a `for` loop whose body only reads goes as a whole ([`read_only_loop`]),
+/// a copy stays as the places it writes ([`copy_destinations`]), a Python run that only reads
+/// goes ([`python_only_reads`]), and a coverage run stays without the files it measures
+/// ([`without_coverage_scope`]).
 fn without_read_only_parts(command: &str) -> String {
     // A line that defines a function or an alias may give a reader's name to anything
     // (`cat(){ rm "$1"; }; cat .claude/settings.json`): no part of it is taken for a reader.
@@ -915,11 +947,565 @@ fn without_read_only_parts(command: &str) -> String {
     if parts.len() >= crate::provenance::MAX_PARTS {
         return command.to_owned();
     }
-    parts
-        .into_iter()
-        .filter(|part| !reads_only(part))
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut kept = Vec::new();
+    let mut index = 0;
+    while index < parts.len() {
+        if let Some((taken, after)) = read_only_loop(&parts[index..]) {
+            kept.extend(after);
+            index += taken;
+            continue;
+        }
+        let part = &parts[index];
+        index += 1;
+        if reads_only(part) || python_only_reads(part) {
+            continue;
+        }
+        kept.push(
+            copy_destinations(part)
+                .or_else(|| without_coverage_scope(part))
+                .unwrap_or_else(|| part.clone()),
+        );
+    }
+    kept.join("\n")
+}
+
+/// A `for` loop at the start of `parts` whose body only reads, as the number of parts it takes
+/// and what of it may still write: a redirect after its `done`. The words of its head are then
+/// only what the body reads (`for f in index.js .claude/settings.json; do echo "=== $f ===";
+/// cat "$f"; done`, seen denied on real sessions), though the head itself is no reader.
+///
+/// The body is judged with the loop's variable put in as a plain word, so every word of the head
+/// must stay one plain word the body cannot take for an option: none starts with `-`, a glob or
+/// a brace, holds a space or expands (`$`, backticks). A body with anything else that expands,
+/// a loop piped into another program (`… done | xargs rm`) or a nested block is not taken.
+fn read_only_loop(parts: &[String]) -> Option<(usize, Option<String>)> {
+    let head = parts.first()?.trim();
+    if !head.starts_with("for ") || head.contains(['$', '`', '(', '<', '>']) {
+        return None;
+    }
+    let words = quoted_words(head);
+    let [_, name, keyword, items @ ..] = words.as_slice() else {
+        return None;
+    };
+    if keyword != "in"
+        || name.is_empty()
+        || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        || items.iter().any(|item| {
+            item.starts_with(['-', '*', '?', '[', '{']) || item.contains(char::is_whitespace)
+        })
+    {
+        return None;
+    }
+    let mut body = Vec::new();
+    for (at, part) in parts.iter().enumerate().skip(1) {
+        let mut part = part.trim();
+        if at == 1 {
+            part = part.strip_prefix("do")?;
+            if !part.is_empty() && !part.starts_with(char::is_whitespace) {
+                return None;
+            }
+            part = part.trim();
+        }
+        if let Some(after) = part
+            .strip_prefix("done")
+            .filter(|after| !after.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_'))
+        {
+            if body.is_empty()
+                || !body
+                    .iter()
+                    .all(|command: &String| reads_only(&put_in(command, name)))
+            {
+                return None;
+            }
+            let after = after.trim();
+            if after.is_empty() {
+                return Some((at + 1, None));
+            }
+            // `done > /tmp/all.txt`: the loop's output, judged by where it goes.
+            if after.starts_with(['>', '1', '2', '&']) && !after.contains(['|', '$', '`']) {
+                return Some((at + 1, Some(after.to_owned())));
+            }
+            return None;
+        }
+        // `cat "$f";` at a line end leaves an empty part between the `;` and the newline.
+        if !part.is_empty() {
+            body.push(part.to_owned());
+        }
+    }
+    None
+}
+
+/// `command` with the variable `name` (`$f`, `${f}`) put in as a plain word.
+fn put_in(command: &str, name: &str) -> String {
+    let mut out = String::new();
+    let mut rest = command;
+    while let Some(at) = rest.find('$') {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + 1..];
+        let braced = format!("{{{name}}}");
+        if let Some(next) = after.strip_prefix(braced.as_str()) {
+            out.push_str("item");
+            rest = next;
+        } else if let Some(next) = after
+            .strip_prefix(name)
+            .filter(|next| !next.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_'))
+        {
+            out.push_str("item");
+            rest = next;
+        } else {
+            out.push('$');
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Whether the words of a part are plain enough to be read as they stand: nothing in it expands
+/// or runs (`$`, backticks, `<(…)`), nothing is redirected into a file, it is no pipeline, and no
+/// unquoted word starts with a glob or a brace, which may expand into an option.
+fn plain_words(part: &str) -> Option<Vec<String>> {
+    if part.contains(['$', '`']) || part.contains("<(") || redirects_into_file(part) {
+        return None;
+    }
+    if pipeline_segments(part).len() != 1
+        || unquoted(part)
+            .split_whitespace()
+            .any(|word| word.starts_with(['*', '?', '[', '{']))
+    {
+        return None;
+    }
+    Some(quoted_words(part.trim()))
+}
+
+/// The places a copy writes, as a line naming them: `cp`, `rsync` and `tar c` only read their
+/// sources, so a safeguard among them is no change (`cp .claude/hooks/pre-tool-use.py
+/// /tmp/refactor-check/orig/`, seen denied on real sessions), and one as the destination is. A
+/// destination may be a folder, so the name each source takes in it is given too (`cp -r
+/// /tmp/hooks .claude/` writes `.claude/hooks`).
+///
+/// Only the options known to copy are taken; anything else may make the source written too
+/// (`cp -l` and `cp -s` link the copy to it, `rsync --remove-source-files` deletes it, `tar
+/// --remove-files`), make the copy land elsewhere (`cp --parents`) or write a file of its own
+/// (`rsync --log-file`). None means the part is not such a copy and stays as it is.
+fn copy_destinations(part: &str) -> Option<String> {
+    let words = plain_words(part)?;
+    let (program, rest) = words.split_first()?;
+    let (destination, sources): (String, Vec<String>) = match program.as_str() {
+        "cp" => cp_operands(rest)?,
+        "rsync" => {
+            let operands = known_options(rest, "avrzhPnuciHLlptgoDq", RSYNC_LONG)?;
+            let (destination, sources) = operands.split_last()?;
+            (destination.clone(), sources.to_vec())
+        }
+        "tar" => {
+            // `tar czf archive sources…`, `tar -cvzf archive sources…`: the archive is written.
+            let (letters, rest) = rest.split_first()?;
+            let letters = letters.strip_prefix('-').unwrap_or(letters);
+            if !letters.contains('c')
+                || !letters.ends_with('f')
+                || !letters.chars().all(|c| "cvzjJf".contains(c))
+            {
+                return None;
+            }
+            let (archive, sources) = rest.split_first()?;
+            if archive == "-" || sources.iter().any(|source| source.starts_with('-')) {
+                return None;
+            }
+            (archive.clone(), sources.to_vec())
+        }
+        _ => return None,
+    };
+    if sources.is_empty() {
+        return None;
+    }
+    let mut names = vec![destination.clone()];
+    for source in &sources {
+        let base = source.trim_end_matches(['/', '\\']);
+        let base = base.rsplit(['/', '\\']).next().unwrap_or(base);
+        names.push(format!(
+            "{}/{base}",
+            destination.trim_end_matches(['/', '\\'])
+        ));
+    }
+    if names.iter().any(|name| name.contains('\'')) {
+        return None;
+    }
+    Some(format!("{program} '{}'", names.join("' '")))
+}
+
+/// The long options of `rsync` that only say how to copy, or affect only the destination.
+const RSYNC_LONG: &[&str] = &[
+    "archive",
+    "verbose",
+    "recursive",
+    "compress",
+    "human-readable",
+    "progress",
+    "partial",
+    "dry-run",
+    "checksum",
+    "update",
+    "itemize-changes",
+    "stats",
+    "quiet",
+    "delete",
+    "times",
+    "perms",
+    "links",
+    "exclude",
+    "include",
+];
+
+/// The long options of `cp` that only say how to copy.
+const CP_LONG: &[&str] = &[
+    "recursive",
+    "archive",
+    "force",
+    "verbose",
+    "no-clobber",
+    "interactive",
+    "update",
+    "dereference",
+    "no-dereference",
+    "preserve",
+    "no-target-directory",
+];
+
+/// The destination and the sources of `cp`, given the words after it: the last operand, or
+/// the folder `-t`/`--target-directory` names.
+fn cp_operands(words: &[String]) -> Option<(String, Vec<String>)> {
+    let mut target = None;
+    let mut rest = Vec::new();
+    let mut words = words.iter();
+    while let Some(word) = words.next() {
+        if word == "-t" || word == "--target-directory" {
+            target = Some(words.next()?.clone());
+        } else if let Some(folder) = word.strip_prefix("--target-directory=") {
+            target = Some(folder.to_owned());
+        } else if let Some(folder) = word.strip_prefix("-t").filter(|folder| !folder.is_empty()) {
+            target = Some(folder.to_owned());
+        } else {
+            rest.push(word.clone());
+        }
+    }
+    let mut operands = known_options(&rest, "rRafvniuLPHpxT", CP_LONG)?;
+    match target {
+        Some(folder) => Some((folder, operands)),
+        None => {
+            let destination = operands.pop()?;
+            Some((destination, operands))
+        }
+    }
+}
+
+/// The operands among `words`, or none when an option is not one of the `short` letters (alone
+/// or bundled) or the `long` names (in full, with `=` and a value).
+fn known_options(words: &[String], short: &str, long: &[&str]) -> Option<Vec<String>> {
+    let mut operands = Vec::new();
+    let mut options = true;
+    for word in words {
+        if !options || word == "-" || !word.starts_with('-') {
+            operands.push(word.clone());
+        } else if word == "--" {
+            options = false;
+        } else if let Some(name) = word.strip_prefix("--") {
+            if !long.contains(&name.split('=').next().unwrap_or(name)) {
+                return None;
+            }
+        } else if !word[1..].chars().all(|letter| short.contains(letter)) {
+            return None;
+        }
+    }
+    Some(operands)
+}
+
+/// The words of a Python interpreter's command line past its own options, when `program` is
+/// one (`python`, `python3`, `python3.12`) run with options that change only how it runs.
+fn python_arguments(words: &[String]) -> Option<&[String]> {
+    let (program, mut rest) = words.split_first()?;
+    let version = program.strip_prefix("python")?;
+    if !version.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return None;
+    }
+    while let Some((option, after)) = rest.split_first() {
+        if !["-I", "-B", "-E", "-s", "-S", "-q", "-u"].contains(&option.as_str()) {
+            break;
+        }
+        rest = after;
+    }
+    Some(rest)
+}
+
+/// Whether a part only runs Python to read what it names, in the forms agents check a hook or a
+/// setting with (all seen denied on real sessions): `python3 -m py_compile <files>` (it writes
+/// only the compiled copy into `__pycache__`, which a hook run as a script never loads),
+/// `python3 -m json.tool <file>` with no second file to write, and `python3 -c` with code
+/// [`python_code_only_reads`] (`import json; json.load(open('.claude/settings.json'))`). It may
+/// be piped into readers.
+fn python_only_reads(part: &str) -> bool {
+    let segments = pipeline_segments(part);
+    let Some((first, readers)) = segments.split_first() else {
+        return false;
+    };
+    if !readers.iter().all(|segment| reads_only(segment)) {
+        return false;
+    }
+    let Some(words) = plain_words(first) else {
+        return false;
+    };
+    let Some(arguments) = python_arguments(&words) else {
+        return false;
+    };
+    match arguments {
+        [m, module, rest @ ..] if m == "-m" && module == "py_compile" => rest
+            .iter()
+            .all(|word| word == "-q" || !word.starts_with('-')),
+        [m, module, rest @ ..] if m == "-m" && module == "json.tool" => {
+            let mut files = 0;
+            let mut words = rest.iter();
+            while let Some(word) = words.next() {
+                match word.as_str() {
+                    "--sort-keys" | "--compact" | "--tab" | "--no-indent" | "--no-ensure-ascii"
+                    | "--json-lines" => {}
+                    "--indent" => {
+                        if !words.next().is_some_and(|n| n.parse::<u8>().is_ok()) {
+                            return false;
+                        }
+                    }
+                    word if word.starts_with('-') && word != "-" => return false,
+                    _ => files += 1,
+                }
+            }
+            files <= 1
+        }
+        [c, code, ..] if c == "-c" => python_code_only_reads(code),
+        _ => false,
+    }
+}
+
+/// The names Python code given with `-c` may use when it only reads: JSON parsed, a file
+/// opened to read, what was read printed.
+const PYTHON_READING_NAMES: &[&str] = &[
+    "import",
+    "json",
+    "load",
+    "loads",
+    "dumps",
+    "open",
+    "print",
+    "read",
+    "with",
+    "as",
+    "f",
+    "fh",
+    "d",
+    "data",
+    "indent",
+    "sort_keys",
+    "ensure_ascii",
+    "keys",
+    "values",
+    "items",
+    "get",
+    "len",
+    "sorted",
+    "list",
+    "for",
+    "in",
+    "k",
+    "v",
+    "True",
+    "False",
+    "None",
+    // Parsing a hook to check its syntax, and a file named on the command line.
+    "ast",
+    "parse",
+    "sys",
+    "argv",
+    "encoding",
+];
+
+/// Whether Python code only reads: every name in it is one of [`PYTHON_READING_NAMES`] (so no
+/// `write`, `json.dump`, `os`, `shutil`, `exec` or `__import__`), every `open(…)` takes the file
+/// alone (`open('.claude/settings.json', 'w')` or `mode=` writes), and no string is an f-string,
+/// whose braces run code. Anything else may write, so it is not taken.
+fn python_code_only_reads(code: &str) -> bool {
+    let chars: Vec<char> = code.chars().collect();
+    let mut at = 0;
+    while at < chars.len() {
+        let c = chars[at];
+        if c == '\'' || c == '"' {
+            // A prefix (`f"…"`, `rb'…'`) would have been read as a name right before it.
+            if at > 0 && (chars[at - 1].is_ascii_alphanumeric() || chars[at - 1] == '_') {
+                return false;
+            }
+            match string_end(&chars, at) {
+                Some(end) => at = end,
+                None => return false,
+            }
+        } else if c.is_ascii_alphabetic() || c == '_' {
+            let start = at;
+            while at < chars.len() && (chars[at].is_ascii_alphanumeric() || chars[at] == '_') {
+                at += 1;
+            }
+            if at < chars.len() && (chars[at] == '\'' || chars[at] == '"') {
+                return false;
+            }
+            let name: String = chars[start..at].iter().collect();
+            if !PYTHON_READING_NAMES.contains(&name.as_str()) {
+                return false;
+            }
+            if name == "open" && !opens_to_read(&chars, at) {
+                return false;
+            }
+        } else if c.is_ascii_digit() {
+            while at < chars.len() && (chars[at].is_ascii_alphanumeric() || chars[at] == '.') {
+                at += 1;
+            }
+        } else if c == '#' {
+            while at < chars.len() && chars[at] != '\n' {
+                at += 1;
+            }
+        } else if c.is_whitespace() || "()[]{}.,:;=+-*/%<>!".contains(c) {
+            at += 1;
+        } else {
+            return false;
+        }
+    }
+    true
+}
+
+/// The index past the Python string literal opening at `start`, single or triple quoted.
+fn string_end(chars: &[char], start: usize) -> Option<usize> {
+    let quote = chars[start];
+    let triple = chars.get(start + 1) == Some(&quote) && chars.get(start + 2) == Some(&quote);
+    let mut at = start + if triple { 3 } else { 1 };
+    while at < chars.len() {
+        if chars[at] == '\\' {
+            at += 2;
+            continue;
+        }
+        if chars[at] == quote
+            && (!triple || (chars.get(at + 1) == Some(&quote) && chars.get(at + 2) == Some(&quote)))
+        {
+            return Some(at + if triple { 3 } else { 1 });
+        }
+        at += 1;
+    }
+    None
+}
+
+/// Whether the `open` that ends before `at` is called with the file alone: no second argument
+/// and no `mode=` that could open it to write.
+fn opens_to_read(chars: &[char], mut at: usize) -> bool {
+    while at < chars.len() && chars[at].is_whitespace() {
+        at += 1;
+    }
+    if chars.get(at) != Some(&'(') {
+        return false;
+    }
+    at += 1;
+    let mut depth = 0usize;
+    while at < chars.len() {
+        match chars[at] {
+            '\'' | '"' => match string_end(chars, at) {
+                Some(end) => {
+                    at = end;
+                    continue;
+                }
+                None => return false,
+            },
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' if depth > 0 => depth -= 1,
+            ')' => return true,
+            // The text encoding is no mode: `open(path, encoding='utf-8')`.
+            ',' if depth == 0
+                && (encoding_only(&chars[at + 1..]) || read_mode(&chars[at + 1..])) =>
+            {
+                return true;
+            }
+            ',' | '=' if depth == 0 => return false,
+            _ => {}
+        }
+        at += 1;
+    }
+    false
+}
+
+/// Whether what follows an `open` call's first argument is a mode that only reads (`'r'`,
+/// `'rb'`, `'rt'`), alone or with an encoding: `open(path, 'rb')`.
+fn read_mode(chars: &[char]) -> bool {
+    let rest: String = chars.iter().collect();
+    let rest = rest.trim_start();
+    let Some(quote) = rest.chars().next().filter(|c| matches!(c, '\'' | '"')) else {
+        return false;
+    };
+    let Some((mode, after)) = rest[1..].split_once(quote) else {
+        return false;
+    };
+    let after = after.trim_start();
+    matches!(mode, "r" | "rb" | "rt")
+        && (after.starts_with(')')
+            || after
+                .strip_prefix(',')
+                .is_some_and(|tail| encoding_only(&tail.chars().collect::<Vec<_>>())))
+}
+
+/// Whether what follows an `open` call's first argument is `encoding='<name>')` alone.
+fn encoding_only(chars: &[char]) -> bool {
+    let rest: String = chars.iter().collect();
+    let Some(value) = rest
+        .trim_start()
+        .strip_prefix("encoding")
+        .map(str::trim_start)
+        .and_then(|rest| rest.strip_prefix('='))
+        .map(str::trim_start)
+    else {
+        return false;
+    };
+    let Some(quote) = value.chars().next().filter(|c| matches!(c, '\'' | '"')) else {
+        return false;
+    };
+    let Some((name, after)) = value[1..].split_once(quote) else {
+        return false;
+    };
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        && after.trim_start().starts_with(')')
+}
+
+/// A coverage run without the files it is told to measure: `--include`, `--omit` and
+/// `--source` name what is measured, which coverage only reads (`python3 -m coverage run
+/// --data-file=/tmp/cov.data --include='src/*,.claude/hooks/*' -m pytest -q`, seen denied on
+/// real sessions). The rest of the part stays, so a safeguard it writes (`coverage html -d
+/// .claude/hooks`) is still named. None when the part is no coverage run with such an option.
+fn without_coverage_scope(part: &str) -> Option<String> {
+    let words = plain_words(part)?;
+    let coverage = match python_arguments(&words) {
+        Some([m, module, ..]) => m == "-m" && module == "coverage",
+        _ => words.first().is_some_and(|program| program == "coverage"),
+    };
+    if !coverage || words.iter().any(|word| word.contains('\'')) {
+        return None;
+    }
+    let mut kept = Vec::new();
+    let mut dropped = false;
+    let mut words = words.iter();
+    while let Some(word) = words.next() {
+        let name = word.split('=').next().unwrap_or(word);
+        if ["--include", "--omit", "--source"].contains(&name) {
+            dropped = true;
+            if !word.contains('=') {
+                words.next();
+            }
+            continue;
+        }
+        kept.push(word.as_str());
+    }
+    dropped.then(|| format!("'{}'", kept.join("' '")))
 }
 
 fn writes(command: &str) -> bool {
