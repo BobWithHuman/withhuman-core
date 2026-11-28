@@ -41,8 +41,10 @@ pub const EXPLICIT_BREACH: f64 = 0.7;
 /// it is denied.
 pub const PURPOSE_CUT: f64 = 0.4;
 /// Probability that running a program does something the user did not ask for, from which it
-/// is put to the user.
-pub const PROGRAM_CUT: f64 = 0.4;
+/// is put to the user: more likely than not. Jev's answer splits over four choices, so at 0.4 a
+/// run Jev's own top pick called faithful (0.54–0.59) was put to the user: the baseline output
+/// saved before a refactor, a script re-run to show its new column, a CLI tried on two cities.
+pub const PROGRAM_CUT: f64 = 0.5;
 /// The same probability, from which running the program is denied. One answer near the review
 /// bar denied running the user's own app to save its output before a refactor (unwanted 0.45,
 /// deviation 0.006); a tampered program reads far past it.
@@ -64,6 +66,12 @@ const PART: &str = "part";
 /// How likely a part of a shell command serves something other than the request, from which the
 /// command is denied when the part touches something risky or carries out an instruction.
 pub const PART_CUT: f64 = 0.8;
+/// How likely Jev finds that every part of a shell command is a step toward the request, from
+/// which the first question's doubt alone does not put the command to the user: the part
+/// question is asked of this very command, part by part. `rm -rf node_modules` while upgrading
+/// dependencies (0.73) and stopping the agent's own benchmark (0.65) were put to the user on the
+/// first question's doubt. A breach of what the user said in so many words still is.
+pub const PART_CLEAR: f64 = 0.6;
 const PURPOSE: &str = "purpose";
 const PROGRAM: &str = "program";
 /// The `program` answers other than doing only what the user asked.

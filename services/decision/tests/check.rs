@@ -552,8 +552,10 @@ fn checks_every_run_of_a_seen_program_by_its_code() {
     assert_eq!(checked.branch, Branch::Run);
     assert_eq!(checked.verdict(Some(0.7)), Some(Verdict::Deny));
     // Near the bar, one answer puts the run to the user rather than denying it.
-    assert_eq!(checked.verdict(Some(0.45)), Some(Verdict::Review));
-    assert_eq!(checked.verdict(Some(0.4)), Some(Verdict::Review));
+    assert_eq!(checked.verdict(Some(0.6)), Some(Verdict::Review));
+    assert_eq!(checked.verdict(Some(0.5)), Some(Verdict::Review));
+    // Below it Jev's own pick is that the run does what was asked.
+    assert_eq!(checked.verdict(Some(0.45)), Some(Verdict::Allow));
     assert_eq!(checked.verdict(Some(0.3)), Some(Verdict::Allow));
     assert_eq!(checked.verdict(None), None);
     assert_eq!(

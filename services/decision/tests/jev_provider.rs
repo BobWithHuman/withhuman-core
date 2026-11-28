@@ -173,6 +173,9 @@ struct Jev {
     /// How likely the Call's causal path carries out a tool result's instruction (and the Call
     /// would not be made without it); unanswered when 0.
     causal: f64,
+    /// How likely the first question finds the Call follows a goal a tool result brought in
+    /// (`hijacked_goal`); `none` gets the rest. 0 unless a test says otherwise.
+    hijacked: f64,
 }
 
 #[async_trait]
@@ -198,6 +201,13 @@ impl JevClient for Jev {
                 let answer = match id.as_str() {
                     "cause" => self.cause.map_or_else(|| noul(1.0), choice),
                     "explicit" => noul(1.0 - self.intent_score),
+                    "expected" if self.hijacked > 0.0 => JevAnswer {
+                        probabilities: BTreeMap::from([
+                            ("hijacked_goal".to_owned(), self.hijacked),
+                            ("none".to_owned(), 1.0 - self.hijacked),
+                        ]),
+                        ..Default::default()
+                    },
                     "expected" => choice("none"),
                     "harm" => choice("high"),
                     "reversible" => noul(self.reversible),
@@ -307,6 +317,7 @@ fn provider_on(
         reversible: 0.0,
         concern: 0.0,
         causal: 0.0,
+        hijacked: 0.0,
     });
     let provider = JevDecisionProvider::new(
         graph.clone(),
@@ -565,6 +576,7 @@ fn undoable_provider(
         reversible: 0.0,
         concern: 0.0,
         causal: 0.0,
+        hijacked: 0.0,
     });
     let provider = JevDecisionProvider::new(
         graph.clone(),
@@ -595,6 +607,7 @@ fn provider_picking(cause: &'static str) -> (JevDecisionProvider, Arc<Graph>, Ar
         reversible: 0.0,
         concern: 0.0,
         causal: 0.0,
+        hijacked: 0.0,
     });
     let provider = JevDecisionProvider::new(
         graph.clone(),
@@ -749,6 +762,7 @@ async fn checks_a_doubtful_shell_command_part_by_part() {
             reversible: 0.0,
             concern: 0.0,
             causal: 0.0,
+            hijacked: 0.0,
         });
         let provider = JevDecisionProvider::new(
             graph.clone(),
@@ -789,7 +803,9 @@ async fn checks_a_script_run_by_its_code_however_clear_its_command() {
     for (unwanted, decision, rule) in [
         (0.9, Decision::Deny, "intent::mismatch"),
         // One answer near the bar puts the run to the user instead of denying it.
-        (0.45, Decision::Review, "intent::review"),
+        (0.55, Decision::Review, "intent::review"),
+        // Below it Jev's own pick is that the run does what was asked.
+        (0.45, Decision::Allow, "intent::match"),
         (0.1, Decision::Allow, "intent::match"),
     ] {
         let graph = Arc::new(Graph {
@@ -815,6 +831,7 @@ async fn checks_a_script_run_by_its_code_however_clear_its_command() {
             reversible: 0.0,
             concern: 0.0,
             causal: 0.0,
+            hijacked: 0.0,
         });
         let provider = JevDecisionProvider::new(
             graph.clone(),
@@ -884,6 +901,7 @@ async fn checks_a_cleared_file_change_line_by_line() {
             reversible: 0.0,
             concern: 0.0,
             causal: 0.0,
+            hijacked: 0.0,
         });
         let provider = JevDecisionProvider::new(
             graph.clone(),
@@ -928,6 +946,7 @@ async fn checks_a_cleared_file_change_line_by_line() {
         reversible: 0.0,
         concern: 0.0,
         causal: 0.0,
+        hijacked: 0.0,
     });
     let provider = JevDecisionProvider::new(
         graph.clone(),
@@ -1004,6 +1023,7 @@ async fn puts_a_target_picked_among_several_to_the_user() {
             reversible: 0.0,
             concern: 0.0,
             causal: 0.0,
+            hijacked: 0.0,
         });
         let provider = JevDecisionProvider::new(
             graph.clone(),
@@ -1065,6 +1085,7 @@ fn graded_provider(
         reversible: 0.0,
         concern: 0.0,
         causal: 0.0,
+        hijacked: 0.0,
     });
     let provider = JevDecisionProvider::new(
         Arc::new(Graph::default()),
@@ -1094,6 +1115,7 @@ async fn records_the_grade_without_changing_the_verdict() {
             reversible: 0.0,
             concern: 0.0,
             causal: 0.0,
+            hijacked: 0.0,
         });
         let provider = JevDecisionProvider::new(
             graph.clone(),
@@ -1239,6 +1261,7 @@ async fn puts_a_call_to_the_user_when_the_first_concern_holds() {
             reversible: 0.0,
             concern,
             causal: 0.0,
+            hijacked: 0.0,
         });
         let provider = JevDecisionProvider::new(
             graph.clone(),
@@ -1282,6 +1305,7 @@ async fn the_causal_path_makes_the_verdict_stricter() {
             reversible: 0.0,
             concern: 0.0,
             causal,
+            hijacked: 0.0,
         });
         let provider = JevDecisionProvider::new(
             graph.clone(),
@@ -1363,6 +1387,7 @@ async fn the_causal_path_alone_does_not_hold_a_harmless_read() {
             reversible: 1.0,
             concern: 0.0,
             causal,
+            hijacked: 0.0,
         });
         let provider = JevDecisionProvider::new(
             graph.clone(),
@@ -1410,6 +1435,7 @@ async fn sends_an_irreversible_call_on_to_the_second_question() {
             reversible: 0.0,
             concern: 0.0,
             causal: 0.0,
+            hijacked: 0.0,
         });
         let provider = JevDecisionProvider::new(
             graph.clone(),
@@ -1438,8 +1464,8 @@ async fn runs_a_script_the_session_wrote_without_asking() {
     let code = "import json\nprint(json.dumps({'ok': True}))\n";
     let lines = || code.lines().map(str::to_owned).collect::<Vec<_>>();
     for (written, unwanted, decision) in [
-        (true, 0.45, Decision::Allow),
-        (false, 0.45, Decision::Review),
+        (true, 0.55, Decision::Allow),
+        (false, 0.55, Decision::Review),
         (true, 0.9, Decision::Deny),
     ] {
         let graph = Arc::new(Graph {
@@ -1463,6 +1489,7 @@ async fn runs_a_script_the_session_wrote_without_asking() {
             reversible: 0.0,
             concern: 0.0,
             causal: 0.0,
+            hijacked: 0.0,
         });
         let provider = JevDecisionProvider::new(
             graph.clone(),
@@ -1478,6 +1505,67 @@ async fn runs_a_script_the_session_wrote_without_asking() {
         assert_eq!(
             response.decision, decision,
             "written {written} unwanted {unwanted}"
+        );
+    }
+}
+
+/// A shell command whose parts Jev finds all toward the request is not put to the user for the
+/// first question's doubt alone; one whose parts it doubts, or that breaks what the user said in
+/// so many words, still is.
+#[tokio::test]
+async fn lets_a_command_whose_parts_all_serve_the_request_through() {
+    for (intent_score, part_doubt, decision) in [
+        // `rm -rf node_modules` while upgrading the dependencies: every part a step (0.73).
+        (0.95, 0.27, Decision::Allow),
+        // Jev less sure of the parts (0.55): put to the user.
+        (0.95, 0.45, Decision::Review),
+        // The user's own words broken: put to the user whatever the parts.
+        (0.2, 0.27, Decision::Review),
+    ] {
+        let graph = Arc::new(Graph {
+            prompt: true,
+            call: Some((
+                "Bash",
+                json!({"command": "rm -rf node_modules && git status --short"}),
+            )),
+            ..Graph::default()
+        });
+        let jev = Arc::new(Jev {
+            intent_score,
+            cause: Some("s0"),
+            fail: false,
+            unwanted: Some(part_doubt),
+            asked: Mutex::default(),
+            requests: Mutex::default(),
+            reversible: 0.0,
+            concern: 0.0,
+            causal: 0.0,
+            hijacked: 0.6,
+        });
+        let provider = JevDecisionProvider::new(
+            graph.clone(),
+            jev.clone(),
+            TraceSettings::default(),
+            Duration::from_secs(3),
+            Thresholds::default(),
+        );
+        let response = provider
+            .decide(&request(Some("빌드 고치기"), Some(4_000)))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.decision, decision,
+            "intent {intent_score} parts {part_doubt}: {}",
+            response.rule
+        );
+        let traces = graph.traces.lock().unwrap();
+        assert_eq!(
+            traces[0].trace["check"]["breach"], true,
+            "intent {intent_score}"
+        );
+        assert!(
+            traces[0].trace["check"]["part"].is_object(),
+            "intent {intent_score}"
         );
     }
 }
