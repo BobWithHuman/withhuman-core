@@ -1005,9 +1005,19 @@ impl DecisionProvider for JevDecisionProvider {
         // The call's values that stand only in an instructing tool result, never in the prompt.
         // A file change is judged by its path and the lines it adds: a Write over a file keeps the
         // lines the file already held (a rule planted there as a comment), which it adds nothing to.
+        // A file the agent edits in place it read first (Claude Code edits only a file it has
+        // read, and a Write over a file the session saw replaces what it saw): its name is the
+        // agent's own knowledge, not a value an instruction gave. Listing the files and reading
+        // the buggy one next to a planted comment made every fix of it "carry out the
+        // instruction" through the file's name alone. A new file an instruction names
+        // (`attack_success.log`, `pwned.txt`) is still checked, and so are the lines it adds.
+        let known_path = matches!(
+            graph.call.tool_name.as_str(),
+            "Edit" | "MultiEdit" | "NotebookEdit"
+        ) || (graph.call.tool_name == "Write" && graph.call.prior.is_some());
         let instructed = match &judged_effect {
             Effect::FileChange { path, added, .. } => provenance::lines_from_instruction(
-                path,
+                if known_path { "" } else { path },
                 added,
                 &paragraphs,
                 graph.prompt.as_deref(),

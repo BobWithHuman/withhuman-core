@@ -866,7 +866,8 @@ pub fn call_from_instruction(
                 .lines()
                 .filter(|line| !old.contains(line))
                 .collect();
-            format!("{}\n{}", field("file_path"), added.join("\n"))
+            // The file it edits was read first: only the lines it adds can carry a value.
+            added.join("\n")
         }
         _ => {
             fn texts(value: &Value, out: &mut Vec<String>) {
