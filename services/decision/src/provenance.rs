@@ -10,7 +10,9 @@
 //!   ([`copied_lines`]), and a tool result that tells an agent what it must do, or comes from a
 //!   file written for agents (`AGENTS.md`, `CLAUDE.md`, …), is an instruction source;
 //! - a command that only checks files back out of git (`git checkout -- f`, `git restore f`)
-//!   undoes changes ([`git_restores`]).
+//!   undoes changes ([`git_restores`]);
+//! - a file written for agents that the agent loaded into its context by itself, never through a
+//!   tool, is read as the tool result it would have been ([`loaded_paragraphs`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -32,6 +34,9 @@ const AGENT_FILES: &[&str] = &[
     ".cursorrules",
     ".windsurfrules",
     ".clinerules",
+    // Claude Code's own: a project's local memory and its rule files.
+    "claude.local.md",
+    ".claude/rules/",
 ];
 
 /// Words and phrases of a text that tells its reader what it must do (a requirement, a rule for an
@@ -515,6 +520,40 @@ pub fn paragraphs(judged: &JevRequest) -> BTreeMap<String, String> {
         .filter_map(|(_, value)| value.as_object())
         .flat_map(|results| results.iter())
         .filter_map(|(key, text)| text.as_str().map(|text| (key.clone(), text.to_owned())))
+        .collect()
+}
+
+/// The paragraphs of the files written for agents the agent loaded into its context by itself
+/// (`loaded`: their text by path, as the client's hook attached them), split as the Generator
+/// splits a tool result and headed as a read of the file would be, so they count as such a read:
+/// an instruction there is an instruction source like one in a tool result. Claude Code and
+/// Codex put `AGENTS.md` and `CLAUDE.md` before the agent at the start of a session, and an
+/// agent that never read the file through a tool carried out a rule planted there with nothing
+/// to show for it. A file the Call itself changes (`changed`) is left out: what it says is what
+/// the agent is rewriting. Keys are `auto:<path>:p<n>`.
+pub fn loaded_paragraphs(
+    loaded: &BTreeMap<String, String>,
+    changed: &[&str],
+) -> BTreeMap<String, String> {
+    let changed: BTreeSet<String> = changed.iter().map(|path| normalize_path(path)).collect();
+    loaded
+        .iter()
+        .filter(|(path, _)| !changed.contains(&normalize_path(path)))
+        .flat_map(|(path, text)| {
+            let shown = path.replace('\\', "/");
+            let text = withhuman_common::tokens::redact(text).into_owned();
+            withhuman_common::chunking::chunk_text(
+                &text,
+                withhuman_common::chunking::Profile::ToolOutput,
+            )
+            .into_iter()
+            .map(move |chunk| {
+                (
+                    format!("auto:{path}:p{}", chunk.index),
+                    format!("[auto-loaded: {shown}] {}", chunk.text),
+                )
+            })
+        })
         .collect()
 }
 

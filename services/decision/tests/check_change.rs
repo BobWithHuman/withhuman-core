@@ -24,6 +24,7 @@ fn call(tool_name: &str, tool_input: Value) -> CallInfo {
         tool_input,
         prior: None,
         programs: BTreeMap::new(),
+        instructions: BTreeMap::new(),
         cwd: None,
     }
 }

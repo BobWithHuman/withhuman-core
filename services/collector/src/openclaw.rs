@@ -217,6 +217,7 @@ pub fn translate(
                     agent_type: None,
                     permission_mode: None,
                     withhuman_programs: input.withhuman_programs.clone(),
+                    withhuman_instructions: Vec::new(),
                 }),
                 untranslated: call.untranslated,
             }

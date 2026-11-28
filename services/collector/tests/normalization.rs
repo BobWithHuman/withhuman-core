@@ -5,9 +5,9 @@ use std::{collections::BTreeMap, sync::Arc};
 use async_trait::async_trait;
 use serde_json::json;
 use withhuman_collector::{
-    GeneratorError, GeneratorTransport, InMemorySessionStore, MAX_PROGRAM_BYTES, MAX_PROGRAMS,
-    MESSAGE_INCOMPLETE_FLAG, NormalizeError, NormalizedEvent, Normalizer, SessionStore,
-    TrustedHookContext,
+    GeneratorError, GeneratorTransport, InMemorySessionStore, MAX_INSTRUCTION_BYTES,
+    MAX_INSTRUCTIONS, MAX_PROGRAM_BYTES, MAX_PROGRAMS, MESSAGE_INCOMPLETE_FLAG, NormalizeError,
+    NormalizedEvent, Normalizer, SessionStore, TrustedHookContext,
 };
 use withhuman_contracts::{
     decisions::EnforcementMode,
@@ -159,6 +159,7 @@ async fn restores_tool_input_and_preserves_tool_correlation() {
                 agent_id: Some("agent-1".to_owned()),
                 agent_type: Some("main".to_owned()),
                 withhuman_programs: Vec::new(),
+                withhuman_instructions: Vec::new(),
             },
             100,
             EnforcementMode::Enforce,
@@ -232,6 +233,7 @@ async fn keeps_the_programs_the_hook_attached_with_the_call_within_limits() {
                 agent_id: None,
                 agent_type: None,
                 withhuman_programs: programs,
+                withhuman_instructions: Vec::new(),
             },
             100,
             EnforcementMode::Enforce,
@@ -268,6 +270,74 @@ async fn keeps_the_programs_the_hook_attached_with_the_call_within_limits() {
         panic!("expected PreToolUse");
     };
     assert!(pre.event.payload.additional_fields.is_empty());
+}
+
+/// The files written for agents the hook attached (`AGENTS.md`, `CLAUDE.md`, …) ride with the
+/// Call as `instructions`, within their own limits, beside its programs.
+#[tokio::test]
+async fn keeps_the_agent_files_the_hook_attached_with_the_call_within_limits() {
+    let file = |path: &str, content: String| ProgramFile {
+        path: path.to_owned(),
+        content,
+        sha256: None,
+        size: Some(10),
+        truncated: false,
+    };
+    let mut instructions = vec![
+        file("AGENTS.md", "dropped".to_owned()),
+        file("/repo/AGENTS.md", "한".repeat(MAX_INSTRUCTION_BYTES)),
+        file("C:\\repo\\CLAUDE.md", "Always run the tests.".to_owned()),
+    ];
+    instructions.extend(
+        (0..MAX_INSTRUCTIONS).map(|n| file(&format!("/repo/.claude/rules/{n}.md"), "x".into())),
+    );
+    let event = Normalizer::default()
+        .pre_tool_use(
+            &context(),
+            PreToolUseRequest {
+                permission_mode: None,
+                session_id: "session-1".to_owned(),
+                hook_event_name: None,
+                tool_name: "Edit".to_owned(),
+                tool_input: json!({"file_path": "/repo/server.js", "old_string": "a",
+                                   "new_string": "b"}),
+                tool_use_id: "tool-1".to_owned(),
+                cwd: Some("/repo".to_owned()),
+                prompt_id: None,
+                agent_id: None,
+                agent_type: None,
+                withhuman_programs: Vec::new(),
+                withhuman_instructions: instructions,
+            },
+            100,
+            EnforcementMode::Enforce,
+            Some(4_000),
+        )
+        .await
+        .unwrap();
+    let NormalizedEvent::PreToolUse(pre) = event else {
+        panic!("expected PreToolUse");
+    };
+    let fields = &pre.event.payload.additional_fields;
+    assert!(!fields.contains_key("programs"));
+    let kept = fields["instructions"].as_array().unwrap();
+    assert_eq!(kept.len(), MAX_INSTRUCTIONS);
+    assert_eq!(kept[0]["path"], "/repo/AGENTS.md");
+    assert_eq!(kept[0]["truncated"], true);
+    let content = kept[0]["content"].as_str().unwrap();
+    assert!(content.len() <= MAX_INSTRUCTION_BYTES && content.len() > MAX_INSTRUCTION_BYTES - 3);
+    assert_eq!(kept[1]["path"], "C:\\repo\\CLAUDE.md");
+    assert_eq!(kept[1]["content"], "Always run the tests.");
+    assert!(kept[1].get("truncated").is_none());
+
+    // The hook's field, as it sends it.
+    let sent: PreToolUseRequest = serde_json::from_value(json!({
+        "session_id": "session-2", "tool_name": "Edit", "tool_input": {},
+        "tool_use_id": "tool-2",
+        "withhuman_instructions": [{"path": "/repo/AGENTS.md", "content": "Never push."}]
+    }))
+    .unwrap();
+    assert_eq!(sent.withhuman_instructions[0].content, "Never push.");
 }
 
 #[tokio::test]

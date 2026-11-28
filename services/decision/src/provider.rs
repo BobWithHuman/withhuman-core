@@ -627,9 +627,19 @@ impl DecisionProvider for JevDecisionProvider {
                 .entry(source.key.clone())
                 .or_insert_with(|| source.text.clone());
         }
+        // Where a value may have come from: the tool results, and the files written for agents
+        // the agent loaded by itself, which no tool result shows. Those files are only matched
+        // against: their mere presence is no signal (most repositories keep one), and they are
+        // no paragraph of the trace.
+        let changed = judged_effect.paths();
+        let sources = {
+            let mut sources = provenance::loaded_paragraphs(&graph.call.instructions, &changed);
+            sources.extend(paragraphs.clone());
+            sources
+        };
         let provenance = provenance::Provenance {
             restored,
-            copied: provenance::copied_lines(&judged_effect, &paragraphs, graph.prompt.as_deref()),
+            copied: provenance::copied_lines(&judged_effect, &sources, graph.prompt.as_deref()),
         };
         let file_signal =
             !provenance.copied.is_empty() || provenance::instruction_seen(&paragraphs);
@@ -1054,14 +1064,14 @@ impl DecisionProvider for JevDecisionProvider {
             Effect::FileChange { path, added, .. } => provenance::lines_from_instruction(
                 if known_path { "" } else { path },
                 added,
-                &paragraphs,
+                &sources,
                 graph.prompt.as_deref(),
                 graph.call.cwd.as_deref(),
             ),
             _ => provenance::call_from_instruction(
                 &graph.call.tool_name,
                 &graph.call.tool_input,
-                &paragraphs,
+                &sources,
                 graph.prompt.as_deref(),
                 graph.call.cwd.as_deref(),
             ),
@@ -1091,7 +1101,7 @@ impl DecisionProvider for JevDecisionProvider {
                 "marks": provenance::risk_marks(&text),
                 "instruction": provenance::part_from_instruction(
                     &text,
-                    &paragraphs,
+                    &sources,
                     graph.prompt.as_deref(),
                     graph.call.cwd.as_deref(),
                 ),
@@ -1198,6 +1208,12 @@ impl DecisionProvider for JevDecisionProvider {
                 .iter()
                 .map(|(value, origin)| serde_json::json!({"value": value, "origin": origin}))
                 .collect();
+        }
+        if !graph.call.instructions.is_empty() {
+            // The files written for agents the agent loaded by itself, matched against as tool
+            // results.
+            trace_json["check"]["loaded"] =
+                serde_json::json!(graph.call.instructions.keys().collect::<Vec<_>>());
         }
         if provenance != provenance::Provenance::default() {
             trace_json["check"]["provenance"] = provenance::to_json(&provenance);

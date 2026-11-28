@@ -163,6 +163,7 @@ pub fn translate(
                 agent_type: input.agent_type,
                 permission_mode: input.permission_mode,
                 withhuman_programs: input.withhuman_programs,
+                withhuman_instructions: input.withhuman_instructions,
             })
         }
         CodexHookEvent::PostToolUse => {
@@ -704,10 +705,12 @@ impl Agent for Codex {
         }
         let translation = translate(event, input, shell)
             .map_err(|_| Rejection::new(StatusCode::BAD_REQUEST, "invalid_codex_hook"))?;
-        // Program files are kept with the Call already; the copy keeps the rest as sent.
+        // Program and instruction files are kept with the Call already; the copy keeps the rest
+        // as sent.
         let mut payload = raw;
         if let Some(fields) = payload.as_object_mut() {
             fields.remove("withhuman_programs");
+            fields.remove("withhuman_instructions");
         }
         let mut incoming = Incoming::new(translation.request).with_payload(payload);
         if record {

@@ -415,7 +415,10 @@ impl Normalizer {
                 PreToolUsePayload {
                     tool_name: request.tool_name,
                     tool_input: request.tool_input,
-                    additional_fields: programs_field(request.withhuman_programs),
+                    additional_fields: attached_fields(
+                        request.withhuman_programs,
+                        request.withhuman_instructions,
+                    ),
                 },
             ),
             mode,
@@ -821,33 +824,55 @@ impl Normalizer {
 /// trusted to be small.
 pub const MAX_PROGRAMS: usize = 8;
 pub const MAX_PROGRAM_BYTES: usize = 64 * 1024;
+/// Files of instructions for the agent kept with a Call, and bytes kept of each.
+pub const MAX_INSTRUCTIONS: usize = 8;
+pub const MAX_INSTRUCTION_BYTES: usize = 32 * 1024;
 
-/// The `programs` field of a PreToolUse payload: the program files the client attached, with
-/// an absolute path, at most [`MAX_PROGRAMS`] of them, each cut to [`MAX_PROGRAM_BYTES`].
-fn programs_field(programs: Vec<ProgramFile>) -> withhuman_contracts::events::AdditionalFields {
-    let kept: Vec<ProgramFile> = programs
-        .into_iter()
-        .filter(|program| program.path.starts_with('/') || program.path.get(1..2) == Some(":"))
-        .take(MAX_PROGRAMS)
-        .map(|mut program| {
-            if program.content.len() > MAX_PROGRAM_BYTES {
-                let mut end = MAX_PROGRAM_BYTES;
-                while !program.content.is_char_boundary(end) {
-                    end -= 1;
-                }
-                program.content.truncate(end);
-                program.truncated = true;
-            }
-            program
-        })
-        .collect();
+/// The fields of a PreToolUse payload the client's hook attached: `programs`, the program files
+/// a command may run, and `instructions`, the files written for agents the agent loaded by
+/// itself. Each keeps only files with an absolute path, at most so many, each cut short.
+fn attached_fields(
+    programs: Vec<ProgramFile>,
+    instructions: Vec<ProgramFile>,
+) -> withhuman_contracts::events::AdditionalFields {
     let mut fields = withhuman_contracts::events::AdditionalFields::new();
-    if !kept.is_empty() {
-        if let Ok(value) = serde_json::to_value(kept) {
-            fields.insert("programs".to_owned(), value);
+    for (name, files, most, bytes) in [
+        ("programs", programs, MAX_PROGRAMS, MAX_PROGRAM_BYTES),
+        (
+            "instructions",
+            instructions,
+            MAX_INSTRUCTIONS,
+            MAX_INSTRUCTION_BYTES,
+        ),
+    ] {
+        let kept = kept_files(files, most, bytes);
+        if !kept.is_empty() {
+            if let Ok(value) = serde_json::to_value(kept) {
+                fields.insert(name.to_owned(), value);
+            }
         }
     }
     fields
+}
+
+/// `files` with an absolute path, at most `most` of them, each cut to `bytes`.
+fn kept_files(files: Vec<ProgramFile>, most: usize, bytes: usize) -> Vec<ProgramFile> {
+    files
+        .into_iter()
+        .filter(|file| file.path.starts_with('/') || file.path.get(1..2) == Some(":"))
+        .take(most)
+        .map(|mut file| {
+            if file.content.len() > bytes {
+                let mut end = bytes;
+                while !file.content.is_char_boundary(end) {
+                    end -= 1;
+                }
+                file.content.truncate(end);
+                file.truncated = true;
+            }
+            file
+        })
+        .collect()
 }
 
 /// A copy of `value` with sensitive values masked, for state the Collector keeps between Hooks.

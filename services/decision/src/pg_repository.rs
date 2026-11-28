@@ -510,6 +510,7 @@ impl DecisionRepository for PgDecisionRepository {
                 .unwrap_or(Value::Null),
             prior: None,
             programs: BTreeMap::new(),
+            instructions: check::attached_instructions(&call_payload),
             cwd: row.get(10),
         };
         // A file the Call writes whole is shown as its change to what the session last saw.
@@ -642,6 +643,7 @@ impl DecisionRepository for PgDecisionRepository {
                     .unwrap_or(Value::Null),
                 prior: None,
                 programs: BTreeMap::new(),
+                instructions: BTreeMap::new(),
                 cwd: row.get(1),
             };
             match check::effect(&call) {
