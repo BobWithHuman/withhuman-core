@@ -126,6 +126,8 @@ fn finds_the_local_programs_a_command_runs() {
         ("python -W ignore 'my dir/x.py'", vec!["/repo/my dir/x.py"]),
         ("/opt/tools/check.sh > out.txt", vec!["/opt/tools/check.sh"]),
         ("python run.py; python run.py", vec!["/repo/run.py"]),
+        // `-n` is a syntax check only for a shell; Python takes no such option.
+        ("bash -n build.sh; bash build.sh", vec!["/repo/build.sh"]),
     ] {
         assert_eq!(runs(command), expected, "{command}");
     }
@@ -139,6 +141,9 @@ fn finds_the_local_programs_a_command_runs() {
         "/usr/bin/git status",
         "python3 << 'EOF'\nprint(1)\nEOF",
         "echo python x.py > notes.txt",
+        // A syntax check runs none of the script.
+        "node --check script.js && echo JS_OK",
+        "bash -n build.sh",
     ] {
         assert!(runs(command).is_empty(), "{command}");
     }
