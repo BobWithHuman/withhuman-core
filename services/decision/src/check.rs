@@ -592,9 +592,10 @@ fn reads_only(part: &str) -> bool {
     if ["$(", "`", "<(", ">("].iter().any(|run| part.contains(run)) || redirects_into_file(part) {
         return false;
     }
-    // A glob is expanded before the program sees it, into names that may be options (`-?` into
-    // `-o`, `*` into a file named `-o`): its words are not known.
-    if unquoted(part).contains(['*', '?', '[']) {
+    // A glob or a brace is expanded before the program sees it, into names that may be options
+    // (`-?` into `-o`, `*` into a file named `-o`, `--{output=f,}` into `--output=f`): its words
+    // are not known.
+    if unquoted(part).contains(['*', '?', '[', '{']) {
         return false;
     }
     !writes_file(part)
@@ -625,8 +626,9 @@ fn reads_only(part: &str) -> bool {
 }
 
 /// Whether `part` redirects output into a file, whichever descriptor (`>`, `2>`, `&>`, `>>`,
-/// `>&file`). `2>&1` and the like only join descriptors, `>/dev/null` discards, `->`, `=>`, `>=`
-/// are no redirects, and a `>` inside quotes is text.
+/// `>&file`). `2>&1` and the like only join descriptors and `>/dev/null` discards. A `>` inside
+/// quotes is text; any other is a redirect whatever stands next to it (`a=>f`, `a->f`, `>=f`
+/// write a file).
 fn redirects_into_file(part: &str) -> bool {
     let part = &unquoted(part);
     let bytes = part.as_bytes();
@@ -634,17 +636,10 @@ fn redirects_into_file(part: &str) -> bool {
     while let Some(offset) = part[index..].find('>') {
         let at = index + offset;
         index = at + 1;
-        if at
-            .checked_sub(1)
-            .is_some_and(|i| matches!(bytes[i], b'-' | b'=' | b'>'))
-        {
+        if at.checked_sub(1).is_some_and(|i| bytes[i] == b'>') {
             continue;
         }
-        let rest = part[at + 1..].trim_start_matches('>');
-        if rest.starts_with('=') {
-            continue;
-        }
-        let rest = rest.trim_start();
+        let rest = part[at + 1..].trim_start_matches('>').trim_start();
         if let Some(target) = rest.strip_prefix('&') {
             // `>&2`, `>&-`: a descriptor. `>&file`: the file.
             if target

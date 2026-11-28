@@ -258,6 +258,11 @@ fn knows_a_change_to_the_agents_safeguards() {
         "sort --temporary-directory -- --output=.claude/hooks/pre-tool-use.py /dev/null; echo ok > /tmp/out",
         "printf -v f .claude/hooks/pre-tool-use.py; echo x > \"$f\"",
         "echo \\\" 2>.claude/hooks/pre-tool-use.py; echo ok > /tmp/out",
+        // A redirect right after `=` or `-` and an option built by brace expansion (review of
+        // #176).
+        "echo a=>.claude/hooks/pre-tool-use.py; echo ok > /tmp/out",
+        "echo a->.claude/hooks/pre-tool-use.py; echo ok > /tmp/out",
+        "sort --{output=.claude/hooks/pre-tool-use.py,} /dev/null; echo ok > /tmp/out",
         // A glob, a program named by a path, a reader's name given to something else.
         "sort -? .claude/hooks/pre-tool-use.py /dev/null; echo ok > /tmp/out",
         "sort * .claude/hooks/pre-tool-use.py; echo ok > /tmp/out",
