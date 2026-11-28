@@ -599,7 +599,7 @@ fn reads_only(part: &str) -> bool {
         return false;
     }
     !writes_file(part)
-        && part.split('|').all(|segment| {
+        && pipeline_segments(part).iter().all(|segment| {
             // The words as the shell hands them over, quotes and escapes taken off
             // (`sort '--output=f'` is `--output=f`). A word that expands (`$OPT`, `$'…'`) may
             // become any flag, so a segment with one is no reader.
@@ -867,6 +867,28 @@ fn substitution_only_prints(after_s: &str) -> bool {
         && flags
             .chars()
             .all(|c| matches!(c, 'g' | 'i' | 'I' | 'p') || c.is_ascii_digit())
+}
+
+/// The programs of a pipeline, split at each `|` outside quotes: `grep -E 'token|secret' f | head`
+/// is two programs, not four.
+fn pipeline_segments(part: &str) -> Vec<String> {
+    let mut segments = vec![String::new()];
+    let mut quote: Option<char> = None;
+    for c in part.chars() {
+        match (quote, c) {
+            (Some(open), _) if c == open => quote = None,
+            (None, '\'' | '"') => quote = Some(c),
+            (None, '|') => {
+                segments.push(String::new());
+                continue;
+            }
+            _ => {}
+        }
+        if let Some(last) = segments.last_mut() {
+            last.push(c);
+        }
+    }
+    segments
 }
 
 /// `command` without its parts that only read: a part that prints a safeguard (`cat
