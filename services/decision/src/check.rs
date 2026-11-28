@@ -1006,8 +1006,9 @@ fn read_only_loop(parts: &[String]) -> Option<(usize, Option<String>)> {
             }
             part = part.trim();
         }
-        if let Some(after) = part.strip_prefix("done")
-            && !after.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+        if let Some(after) = part
+            .strip_prefix("done")
+            .filter(|after| !after.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_'))
         {
             if body.is_empty()
                 || !body
@@ -1045,8 +1046,9 @@ fn put_in(command: &str, name: &str) -> String {
         if let Some(next) = after.strip_prefix(braced.as_str()) {
             out.push_str("item");
             rest = next;
-        } else if let Some(next) = after.strip_prefix(name)
-            && !next.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+        } else if let Some(next) = after
+            .strip_prefix(name)
+            .filter(|next| !next.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_'))
         {
             out.push_str("item");
             rest = next;
@@ -1181,9 +1183,7 @@ fn cp_operands(words: &[String]) -> Option<(String, Vec<String>)> {
             target = Some(words.next()?.clone());
         } else if let Some(folder) = word.strip_prefix("--target-directory=") {
             target = Some(folder.to_owned());
-        } else if let Some(folder) = word.strip_prefix("-t")
-            && !folder.is_empty()
-        {
+        } else if let Some(folder) = word.strip_prefix("-t").filter(|folder| !folder.is_empty()) {
             target = Some(folder.to_owned());
         } else {
             rest.push(word.clone());
