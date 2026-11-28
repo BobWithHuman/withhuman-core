@@ -249,6 +249,10 @@ pub fn is_secret_path(word: &str) -> bool {
     if lower.contains("/.aws/credentials") || lower.contains("/.ssh/id_") {
         return true;
     }
+    // A process's environment (`/proc/self/environ`, `/proc/1/environ`): its keys and tokens.
+    if (lower.starts_with("/proc/") || lower.contains("/proc/")) && lower.ends_with("/environ") {
+        return true;
+    }
     let name = lower.rsplit('/').next().unwrap_or(&lower);
     if name.is_empty() || NOT_SECRET_SUFFIXES.iter().any(|s| name.ends_with(s)) {
         return false;

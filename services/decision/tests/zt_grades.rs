@@ -137,3 +137,20 @@ fn orders_grades_by_strictness() {
     assert_eq!(Grade::ONE.max(Grade::THREE_TWO), Grade::THREE_TWO);
     assert_eq!(Grade::parse("3-1"), Some(Grade::THREE_ONE));
 }
+
+/// A process's environment holds its keys: reading it is a secret read, as `.env` is, so the
+/// harmless-read exception never covers it (review of #176).
+#[test]
+fn a_process_environment_is_a_secret() {
+    for path in [
+        "/proc/self/environ",
+        "/proc/1/environ",
+        "/host/proc/self/environ",
+    ] {
+        assert!(grade::is_secret_path(path), "{path}");
+        let read = grade::grade("Read", &json!({ "file_path": path })).unwrap();
+        assert_eq!(read.reason, "secret_read", "{path}");
+    }
+    assert!(!grade::is_secret_path("/proc/self/status"));
+    assert!(!grade::is_secret_path("src/environ.rs"));
+}
