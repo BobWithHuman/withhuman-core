@@ -184,6 +184,7 @@ impl Graded {
             "delete_file" => "파일 삭제",
             "recursive_delete" => "폴더 통째 삭제",
             "clear_cache" => "다시 만들어지는 캐시 삭제",
+            "clear_temp" => "임시 파일 정리",
             "discard_changes" => "변경 내용 버리기",
             "push" => "원격 저장소에 올리기",
             "push_force" => "원격 저장소 강제 덮어쓰기",
@@ -519,6 +520,182 @@ fn only_caches(args: &[&str]) -> bool {
         })
 }
 
+/// Where the system keeps temporary files, as a path starts in lower case.
+const TEMP_ROOTS: &[&str] = &[
+    "/tmp/",
+    "/private/tmp/",
+    "/var/tmp/",
+    "/var/folders/",
+    "/private/var/folders/",
+    "$tmpdir/",
+    "${tmpdir}/",
+];
+/// Files a test run writes and rebuilds whenever it runs.
+const CACHE_FILES: &[&str] = &[".coverage", "htmlcov", ".nyc_output", ".eslintcache"];
+/// Endings of files a build or a test run writes and rebuilds whenever it runs.
+const CACHE_SUFFIXES: &[&str] = &[".pyc", ".tsbuildinfo"];
+
+/// Whether every target of a delete is scratch the agent made to check its work: a cache, a path
+/// under a temporary directory, or a variable this very command set to one (`D=$(mktemp -d)` …
+/// `rm -rf "$D"`). Agents copy the project to `/tmp/mut` to break it and see a test fail, then
+/// remove the copy; of the folder deletions put to the user on 7 benign day-1 and vibe-coding
+/// sessions, almost all were such copies. A target that climbs out (`..`), expands (`*`, `?`,
+/// `~`) or is a temporary directory itself (`/tmp/`) is no scratch.
+fn only_scratch(args: &[&str], text: &str) -> bool {
+    let mut targets = Vec::new();
+    for word in args {
+        // A redirect ends the targets: `rm -f /tmp/x.pid 2>/dev/null`.
+        if redirect(word) {
+            break;
+        }
+        if !word.starts_with('-') {
+            targets.push(*word);
+        }
+    }
+    !targets.is_empty() && targets.iter().all(|target| scratch(target, text))
+}
+
+/// Whether a word is a redirect (`>out.txt`, `2>/dev/null`, `<in`), not an argument.
+fn redirect(word: &str) -> bool {
+    word.trim_start_matches(|c: char| c.is_ascii_digit())
+        .starts_with(['>', '<'])
+}
+
+fn scratch(target: &str, text: &str) -> bool {
+    let target = target.trim_matches(['\'', '"']).trim_end_matches('/');
+    if target.contains("..") {
+        return false;
+    }
+    let name = target.rsplit('/').next().unwrap_or(target);
+    // `*.pyc` names every compiled file and nothing else; any other wildcard may name anything.
+    let cache_glob = name
+        .strip_prefix('*')
+        .is_some_and(|suffix| CACHE_SUFFIXES.contains(&suffix));
+    let parent = &target[..target.len() - name.len()];
+    if target.contains(['*', '?', '~', '['])
+        && !(cache_glob && !parent.contains(['*', '?', '~', '[']))
+    {
+        return false;
+    }
+    if !target.contains('$')
+        && (CACHE_DIRS.contains(&name)
+            || CACHE_FILES.contains(&name)
+            || cache_glob
+            || CACHE_SUFFIXES
+                .iter()
+                .any(|suffix| name.len() > suffix.len() && name.ends_with(suffix)))
+    {
+        return true;
+    }
+    // A plain name relative to a temporary directory the command just went into: `cd
+    // /tmp/inv-check && rm -f inventory.json`.
+    if !target.starts_with(['/', '$', '\\']) && in_temp_directory(target, text) {
+        return true;
+    }
+    if let Some(rest) = TEMP_ROOTS.iter().find_map(|root| target.strip_prefix(root)) {
+        return !rest.is_empty() && !rest.contains('$');
+    }
+    let Some(reference) = target.strip_prefix('$') else {
+        return false;
+    };
+    let (name, rest) = match reference.strip_prefix('{') {
+        Some(braced) => match braced.split_once('}') {
+            Some(parts) => parts,
+            None => return false,
+        },
+        None => reference.split_at(reference.find('/').unwrap_or(reference.len())),
+    };
+    !name.is_empty()
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !rest.contains('$')
+        && temp_variable(name, text)
+}
+
+/// Whether `text` deletes `target` right after going into a temporary directory, in the same
+/// chain of `&&`: nothing but `&&`-joined steps between the `cd` and the delete, and no other
+/// `cd`. A `;`, a pipe, a subshell or a line break ends the chain, as the directory may differ
+/// after it.
+fn in_temp_directory(target: &str, text: &str) -> bool {
+    text.match_indices("cd ").any(|(at, _)| {
+        if text[..at]
+            .chars()
+            .next_back()
+            .is_some_and(|c| !c.is_whitespace() && !matches!(c, ';' | '&' | '(' | '|'))
+        {
+            return false;
+        }
+        let rest = text[at + 3..].trim_start();
+        let directory: String = rest
+            .chars()
+            .take_while(|c| !c.is_whitespace() && !matches!(c, ';' | '&' | '|' | ')'))
+            .collect();
+        let directory = directory.trim_matches(['\'', '"']).trim_end_matches('/');
+        let temp = TEMP_ROOTS.iter().any(|root| {
+            directory
+                .strip_prefix(root)
+                .is_some_and(|rest| !rest.is_empty() && !rest.contains(['$', '*', '?', '~']))
+        }) || directory.strip_prefix('$').is_some_and(|name| {
+            !name.is_empty()
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                && temp_variable(name, text)
+        });
+        if !temp || directory.contains("..") {
+            return false;
+        }
+        let after = &rest[rest.find(char::is_whitespace).unwrap_or(rest.len())..];
+        if !after.trim_start().starts_with("&&") {
+            return false;
+        }
+        let chain_end = after.find([';', '(', ')', '\n']).unwrap_or(after.len());
+        let chain = &after[..chain_end];
+        let chain = chain.split(" cd ").next().unwrap_or(chain);
+        chain.split("&&").any(|step| {
+            if step.contains('|') {
+                return false;
+            }
+            let words: Vec<&str> = step.split_whitespace().collect();
+            words
+                .first()
+                .is_some_and(|first| DELETE_COMMANDS.contains(first))
+                && words
+                    .iter()
+                    .skip(1)
+                    .any(|word| word.trim_matches(['\'', '"']).trim_end_matches('/') == target)
+        })
+    })
+}
+
+/// Whether `text` sets the shell variable `name`, every time it sets it, to a new temporary
+/// directory or file (`$(mktemp -d)`) or to a path under one.
+fn temp_variable(name: &str, text: &str) -> bool {
+    let assignment = format!("{name}=");
+    let mut values = text.match_indices(&assignment).filter_map(|(at, _)| {
+        let before = text[..at].chars().next_back();
+        if before.is_some_and(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '$' | '-')) {
+            return None;
+        }
+        Some(text[at + assignment.len()..].trim_start_matches(['"', '\'']))
+    });
+    let temp = |value: &str| {
+        if value.starts_with("$(mktemp") || value.starts_with("`mktemp") {
+            return true;
+        }
+        let literal: String = value
+            .chars()
+            .take_while(|c| !c.is_whitespace() && !matches!(c, ';' | '&' | '|' | '"' | '\'' | ')'))
+            .collect();
+        !literal.contains("..")
+            && !literal.contains(['*', '?', '~', '$'])
+            && TEMP_ROOTS.iter().any(|root| {
+                literal
+                    .strip_prefix(root)
+                    .is_some_and(|rest| !rest.is_empty())
+            })
+    };
+    let first = values.next();
+    first.is_some_and(temp) && values.all(temp)
+}
+
 /// One step of a shell command, its words in lower case.
 fn step(words: &[String], text: &str) -> Graded {
     let Some(first) = words.first() else {
@@ -541,6 +718,8 @@ fn step(words: &[String], text: &str) -> Graded {
         });
         return if recursive && only_caches(&rest) {
             Graded::of(Grade::ONE, "clear_cache")
+        } else if only_scratch(&rest, text) {
+            Graded::of(Grade::ONE, "clear_temp")
         } else if recursive {
             Graded::of(Grade::THREE_ONE, "recursive_delete")
         } else {
@@ -672,6 +851,190 @@ pub fn writes(text: &str) -> bool {
 
 /// The grade of a shell command: its worst step, or the whole line's marks.
 pub fn command(command: &str) -> Graded {
+    graded_command(command, true)
+}
+
+/// [`command`] for a command run on the user's `prompt`: installing a package the prompt itself
+/// names (`Use better-sqlite3`, `write pytest tests`) is part of what the user asked, not a step
+/// to put to them. Of the shell commands put to the user in ten-turn vibe-coding sessions, nine
+/// were graded by such an install. A command that installs anything else, from a list, a path, a
+/// URL or another index, keeps its grade.
+pub fn command_for(command: &str, prompt: &str) -> Graded {
+    let graded = graded_command(command, true);
+    if graded.reason != "install" {
+        return graded;
+    }
+    let prompt = prompt.to_lowercase();
+    match named_installs(command) {
+        // The install still changes the workspace: never graded a read.
+        Some(packages)
+            if !packages.is_empty() && packages.iter().all(|name| names(&prompt, name)) =>
+        {
+            graded_command(command, false).max(Graded::of(Grade::ONE, "edit"))
+        }
+        _ => graded,
+    }
+}
+
+/// Options of an install that point it at packages other than the names on its line.
+const INSTALL_SOURCES: &[&str] = &[
+    "-r",
+    "--requirement",
+    "-c",
+    "--constraint",
+    "-e",
+    "--editable",
+    "-i",
+    "--index-url",
+    "--extra-index-url",
+    "-f",
+    "--find-links",
+    "--registry",
+];
+
+/// The packages a command installs, each install naming its packages one by one; none when a
+/// step installs in some other way (a list, a path, a URL, another index, the system's package
+/// manager) or names nothing (`npm install` alone installs what the manifest lists).
+pub fn named_installs(command: &str) -> Option<Vec<String>> {
+    let mut packages = Vec::new();
+    for words in steps(command) {
+        let joined = format!("{} ", words.join(" "));
+        let Some(start) = install_args(&words) else {
+            if INSTALL_MARKS.iter().any(|mark| joined.contains(mark)) {
+                return None;
+            }
+            continue;
+        };
+        let before = packages.len();
+        for word in &words[start..] {
+            if redirect(word) {
+                break;
+            }
+            if word.starts_with('-') {
+                let flag = word.split('=').next().unwrap_or(word);
+                if INSTALL_SOURCES.contains(&flag) {
+                    return None;
+                }
+                continue;
+            }
+            packages.push(package_name(word)?);
+        }
+        if packages.len() == before {
+            return None;
+        }
+    }
+    Some(packages)
+}
+
+/// Where the package names of an install step start, when the step is one.
+fn install_args(words: &[String]) -> Option<usize> {
+    let word = |index: usize| words.get(index).map_or("", String::as_str);
+    let first = word(0).rsplit(['/', '\\']).next().unwrap_or_default();
+    let python = first
+        .strip_prefix("python")
+        .is_some_and(|version| version.chars().all(|c| c.is_ascii_digit() || c == '.'));
+    match first {
+        "pip" | "pip3" if word(1) == "install" => Some(2),
+        "uv" if word(1) == "pip" && word(2) == "install" => Some(3),
+        "uv" | "yarn" if word(1) == "add" => Some(2),
+        "npm" | "pnpm" if matches!(word(1), "install" | "i" | "add") => Some(2),
+        _ if python
+            && word(1) == "-m"
+            && matches!(word(2), "pip" | "pip3")
+            && word(3) == "install" =>
+        {
+            Some(4)
+        }
+        _ => None,
+    }
+}
+
+/// A package's name without its version or extras (`fastapi[all]==0.110`, `jest@29`,
+/// `@types/node@20`); none for anything that is not a plain name (a path, a URL, a file).
+fn package_name(word: &str) -> Option<String> {
+    let (scope, rest) = match word.strip_prefix('@') {
+        Some(scoped) => {
+            let (scope, rest) = scoped.split_once('/')?;
+            (Some(scope), rest)
+        }
+        None => (None, word),
+    };
+    let name = rest
+        .split(['@', '=', '<', '>', '!', '~', '[', ';'])
+        .next()
+        .unwrap_or_default();
+    let plain = |part: &str| {
+        !part.is_empty()
+            && part
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            && !part.starts_with('.')
+    };
+    if !plain(name) || scope.is_some_and(|scope| !plain(scope)) {
+        return None;
+    }
+    Some(match scope {
+        Some(scope) => format!("@{scope}/{name}"),
+        None => name.to_owned(),
+    })
+}
+
+/// Whether the lower-case `prompt` names `package` as a word of its own.
+fn names(prompt: &str, package: &str) -> bool {
+    // Only ASCII continues a package name: a Korean particle right after it (`pytest로`,
+    // `better-sqlite3를`) ends it.
+    let part = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '@' | '/');
+    prompt.match_indices(package).any(|(at, _)| {
+        let before = prompt[..at].chars().next_back();
+        let mut after = prompt[at + package.len()..].chars();
+        let next = after.next();
+        let ends = match next {
+            None => true,
+            // A full stop ends a sentence; a dot before more of a name does not.
+            Some('.') => !after.next().is_some_and(|c| c.is_ascii_alphanumeric()),
+            Some(c) => !part(c),
+        };
+        !before.is_some_and(part) && ends
+    })
+}
+
+/// Whether a command installs packages. Installing what the project already declares, with
+/// install scripts off (`npm ci --ignore-scripts`, `npm install --ignore-scripts` with no package
+/// named), prepares the checkout and runs nothing new: "set up the dev environment" was put to
+/// the user for it. `npm ci` with scripts on runs every dependency's install script and is an
+/// install. An install mark anywhere else (inside a script's string, a package named) still is.
+fn installs_packages(command: &str) -> bool {
+    let lower = command.to_lowercase();
+    let mut any = false;
+    for words in steps(command) {
+        let joined = format!("{} ", words.join(" "));
+        let first = words
+            .first()
+            .map(|word| word.rsplit(['/', '\\']).next().unwrap_or(word));
+        let sub = words.get(1).map(String::as_str);
+        let manager = matches!(first, Some("npm" | "pnpm" | "yarn"));
+        let ci = manager && sub == Some("ci");
+        if !(ci || INSTALL_MARKS.iter().any(|mark| joined.contains(mark))) {
+            continue;
+        }
+        let declared = manager
+            && matches!(sub, Some("ci" | "install" | "i"))
+            && words.iter().any(|word| word == "--ignore-scripts")
+            && words
+                .iter()
+                .skip(2)
+                .take_while(|word| !redirect(word))
+                .all(|word| word.starts_with('-'));
+        if !declared {
+            return true;
+        }
+        any = true;
+    }
+    // A mark no step accounts for (split oddly by quoting) is an install.
+    !any && INSTALL_MARKS.iter().any(|mark| lower.contains(mark))
+}
+
+fn graded_command(command: &str, installs: bool) -> Graded {
     let lower = command.to_lowercase();
     let compact: String = lower.chars().filter(|c| !c.is_whitespace()).collect();
     let all = steps(command);
@@ -706,7 +1069,7 @@ pub fn command(command: &str) -> Graded {
     if SECURITY_MARKS.iter().any(|mark| lower.contains(mark)) {
         worst = worst.max(Graded::of(Grade::TWO_ONE, "security"));
     }
-    if INSTALL_MARKS.iter().any(|mark| lower.contains(mark)) {
+    if installs && installs_packages(command) {
         worst = worst.max(Graded::of(Grade::TWO_ONE, "install"));
     }
     if SCHEDULE_MARKS.iter().any(|mark| {

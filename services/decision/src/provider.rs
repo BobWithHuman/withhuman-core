@@ -563,9 +563,22 @@ impl DecisionProvider for JevDecisionProvider {
                 .is_some_and(provenance::git_restores);
         let undoes = (restored > 0 && provenance::is_empty_change(&judged_effect)) || git_restore;
 
-        // The rule grade, before Jev is asked.
-        let rule_graded =
-            withhuman_common::grade::grade(&graph.call.tool_name, &graph.call.tool_input);
+        // The rule grade, before Jev is asked. A shell command is graded on the user's latest
+        // prompt, so installing a package the prompt names is no step to put to them.
+        let rule_graded = match (
+            graph.call.tool_name.as_str(),
+            graph
+                .call
+                .tool_input
+                .get("command")
+                .and_then(serde_json::Value::as_str),
+            graph.prompt.as_deref(),
+        ) {
+            ("Bash" | "PowerShell" | "shell" | "exec_command", Some(command), Some(prompt)) => {
+                Some(withhuman_common::grade::command_for(command, prompt))
+            }
+            _ => withhuman_common::grade::grade(&graph.call.tool_name, &graph.call.tool_input),
+        };
         // Jev has kept failing, so the rules judge alone for a while.
         if self.breaker_open() {
             return Ok(self
