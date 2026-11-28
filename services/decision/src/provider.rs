@@ -919,11 +919,9 @@ impl DecisionProvider for JevDecisionProvider {
                 }
             }
         }
-        let budget = timeout();
-        let causal_task = judge_request
+        let path_parts = judge_request
             .as_ref()
             .zip(causal_parent)
-            .filter(|_| !budget.is_zero())
             .map(|(judged, parent)| {
                 let key = &parent.candidate.key;
                 let action = judged
@@ -931,7 +929,7 @@ impl DecisionProvider for JevDecisionProvider {
                     .get("action")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or_default();
-                let (path, links) = causal::path(&causal::PathParts {
+                causal::PathParts {
                     prompt: graph.prompt.as_deref(),
                     request_parent: request_parent.as_ref(),
                     hops: causal_hops.clone(),
@@ -948,7 +946,25 @@ impl DecisionProvider for JevDecisionProvider {
                         _ => causal::ParentLink::None,
                     },
                     influence: parents.influence.get(key).copied(),
-                });
+                }
+            });
+        // What the engine finds on the path itself: whether any tool result on it may instruct,
+        // and whether the user's request names the files the Call changes.
+        let grounds = path_parts.as_ref().map(|parts| causal::Grounds {
+            instruction: provenance::may_instruct(&causal::path_texts(parts)),
+            named_by_user: provenance::named_in_prompt(
+                &effect,
+                graph.prompt.as_deref(),
+                graph.call.cwd.as_deref(),
+            ),
+        });
+        let budget = timeout();
+        let causal_task = judge_request
+            .as_ref()
+            .zip(path_parts.as_ref())
+            .filter(|_| !budget.is_zero())
+            .map(|(judged, parts)| {
+                let (path, links) = causal::path(parts);
                 let sent = causal::request(
                     judged,
                     &path,
@@ -1027,12 +1043,14 @@ impl DecisionProvider for JevDecisionProvider {
                 added,
                 &paragraphs,
                 graph.prompt.as_deref(),
+                graph.call.cwd.as_deref(),
             ),
             _ => provenance::call_from_instruction(
                 &graph.call.tool_name,
                 &graph.call.tool_input,
                 &paragraphs,
                 graph.prompt.as_deref(),
+                graph.call.cwd.as_deref(),
             ),
         };
         let evidence = check::FileEvidence {
@@ -1062,6 +1080,7 @@ impl DecisionProvider for JevDecisionProvider {
                     &text,
                     &paragraphs,
                     graph.prompt.as_deref(),
+                    graph.call.cwd.as_deref(),
                 ),
                 "text": text.chars().take(200).collect::<String>(),
             }))
@@ -1216,6 +1235,9 @@ impl DecisionProvider for JevDecisionProvider {
                 "answer": causal_answer,
                 "request_parent": request_parent,
             });
+            if let Some(grounds) = grounds.filter(|_| causal_answer.is_some()) {
+                trace_json["causal"]["grounds"] = serde_json::json!(grounds);
+            }
         }
         trace_json["jev"] = exchanges.into();
         let (deny_at, review_at) = self.thresholds.for_link(outcome.link);
@@ -1322,10 +1344,9 @@ impl DecisionProvider for JevDecisionProvider {
         // through that another check stopped.
         let targeted = checked.is_some_and(|checked| target::branch(group) == Some(checked.branch));
         let grade_level = graded.map_or(2, |graded| graded.grade.level());
-        let (mut decision, mut rule, mut reason) = match causal_answer
-            .as_ref()
-            .and_then(|answer| answer.verdict_for(targeted, grade_level))
-        {
+        let (mut decision, mut rule, mut reason) = match causal_answer.as_ref().and_then(|answer| {
+            answer.verdict_for(targeted, grade_level, grounds.unwrap_or_default())
+        }) {
             Some(causal::CausalVerdict::Deny) if decision != Decision::Deny => {
                 (Decision::Deny, "causal::instruction", mismatch())
             }
