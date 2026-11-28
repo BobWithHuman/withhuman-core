@@ -333,6 +333,25 @@ pub fn paragraphs(judged: &JevRequest) -> BTreeMap<String, String> {
         .collect()
 }
 
+/// Whether every line of the program at `path` holding something was put there by the session's
+/// own earlier changes to it (`earlier`): the session wrote the program, and each of those writes
+/// was judged when it was made. Running such a program is no new thing to ask about; code the
+/// repository already held, or a file the session only touched up, is.
+pub fn written_by_session(path: &str, code: &str, earlier: &[FileDiff]) -> bool {
+    let wanted = normalize_path(path);
+    let added: BTreeSet<&str> = earlier
+        .iter()
+        .filter(|diff| normalize_path(&diff.path) == wanted)
+        .flat_map(|diff| diff.added.iter().map(|line| line.trim()))
+        .collect();
+    let mut lines = code
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .peekable();
+    lines.peek().is_some() && lines.all(|line| added.contains(line))
+}
+
 /// `effect` without the lines `earlier` changes to the same file took out (now put back) or put in
 /// (now taken out), and how many such lines there were. An undoing comes back with no line left.
 pub fn strip_restored(effect: &Effect, earlier: &[FileDiff]) -> (Effect, usize) {

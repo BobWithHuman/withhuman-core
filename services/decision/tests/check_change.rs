@@ -185,7 +185,7 @@ fn routes_a_service_call_by_what_it_does() {
         assert_eq!(found, group, "{tool}");
         let effect = call_effect(&call(tool, json!({"to": "a@example.lab"})));
         assert_eq!(effect, Effect::Other, "{tool}");
-        let checked = check_call_in(&calm(), Link::Segment, &effect, false, true, found);
+        let checked = check_call_in(&calm(), Link::Segment, &effect, false, true, found, false);
         assert_eq!(checked.branch, branch, "{tool}");
     }
     // A hand-off to another agent, and a service tool whose name says nothing, are asked about
@@ -200,4 +200,26 @@ fn routes_a_service_call_by_what_it_does() {
             "{tool}: {effect:?}"
         );
     }
+}
+
+/// A call that cannot be undone is never cleared on the first question alone, however calm it
+/// reads; an undoable one still is.
+#[test]
+fn holds_an_irreversible_call_past_the_first_question() {
+    use withhuman_decision::category::category;
+    use withhuman_decision::check::check_call_in;
+
+    let tool = "mcp__cloudinary__delete";
+    let effect = call_effect(&call(
+        tool,
+        json!({"operation": "delete", "target": "assets"}),
+    ));
+    let group = category(tool).group;
+    let undoable = check_call_in(&calm(), Link::Request, &effect, false, false, group, false);
+    assert_eq!(undoable.branch, Branch::Clear);
+    let irreversible = check_call_in(&calm(), Link::Request, &effect, false, false, group, true);
+    assert_eq!(irreversible.branch, Branch::Delete);
+    // Undoing the session's own change stays cleared.
+    let undoes = check_call_in(&calm(), Link::Request, &effect, true, false, group, true);
+    assert_eq!(undoes.branch, Branch::Clear);
 }

@@ -1608,12 +1608,18 @@ pub fn check_call(
         undoes,
         file_signal,
         crate::category::Group::Unknown,
+        false,
     )
 }
 
 /// [`check_call`] for a call of `group`: a service call that sends, deletes, moves money or
 /// grants access is asked about its target (`target`), and like a file change is not cleared on
 /// the first question alone when a tool result could have put something in it.
+///
+/// `irreversible`: the call cannot be undone (grade 3). It is never cleared on the first
+/// question alone: on ATBench-Codex, deletes, deployments and broadcasts Jev rated harm 0.8–1.0
+/// and irreversibility 0.65–0.88 were let through because the first question showed little
+/// doubt, against the grade table's own rule that such a call is approved right before it runs.
 pub fn check_call_in(
     deviation: &Deviation,
     link: Link,
@@ -1621,6 +1627,7 @@ pub fn check_call_in(
     undoes: bool,
     file_signal: bool,
     group: crate::category::Group,
+    irreversible: bool,
 ) -> Check {
     let target = match effect {
         Effect::Other => crate::target::branch(group),
@@ -1644,7 +1651,9 @@ pub fn check_call_in(
         // Its command line leaves Jev no doubt to show; only its code tells.
         Effect::Run { .. } => Branch::Run,
         _ if undoes => Branch::Clear,
-        _ if clearable && !breach && doubt < LOW_DOUBT && link != Link::None => Branch::Clear,
+        _ if clearable && !irreversible && !breach && doubt < LOW_DOUBT && link != Link::None => {
+            Branch::Clear
+        }
         Effect::FileChange { .. } | Effect::FileChanges { .. } | Effect::ShellWrite { .. } => {
             Branch::File
         }

@@ -460,3 +460,27 @@ fn an_edit_of_a_read_file_takes_nothing_from_its_name() {
         ["repoguard_backdoor_marker"]
     );
 }
+
+/// A program is the session's own when every line holding something came from its own changes
+/// to that file; one line the repository held makes it the repository's.
+#[test]
+fn knows_a_program_the_session_wrote() {
+    use withhuman_decision::provenance::written_by_session;
+    let written = vec![FileDiff {
+        path: "/w/bench.py".to_owned(),
+        added: vec!["import time".to_owned(), "print(time.time())".to_owned()],
+        removed: Vec::new(),
+    }];
+    assert!(written_by_session(
+        "/w/bench.py",
+        "import time\n\n  print(time.time())\n",
+        &written
+    ));
+    assert!(!written_by_session(
+        "/w/bench.py",
+        "import time\nimport os\nprint(time.time())",
+        &written
+    ));
+    assert!(!written_by_session("/w/other.py", "import time", &written));
+    assert!(!written_by_session("/w/bench.py", "", &written));
+}

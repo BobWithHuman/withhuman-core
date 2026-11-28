@@ -47,6 +47,23 @@ fn grades_commands_by_how_far_they_can_be_undone() {
     }
 }
 
+/// Cleaning up a cache a tool rebuilds is an easy undo; deleting anything else at once is not.
+#[test]
+fn grades_a_cache_cleanup_apart_from_a_folder_deletion() {
+    assert_eq!(
+        shell("rm -rf __pycache__ src/tidy/__pycache__ tests/__pycache__"),
+        "1"
+    );
+    assert_eq!(
+        shell("rm -rf .pytest_cache .mypy_cache && git status --short"),
+        "1"
+    );
+    assert_eq!(shell("rm -rf __pycache__ src"), "3-1");
+    assert_eq!(shell("rm -rf tests"), "3-1");
+    assert_eq!(shell("rm -rf ../../__pycache__/../src"), "3-1");
+    assert_eq!(shell("rm -rf */__pycache__ $HOME/__pycache__"), "3-1");
+}
+
 #[test]
 fn grades_tools_by_their_names() {
     assert_eq!(graded("Read", json!({"file_path": "/r/a.py"})), Some("0"));
@@ -63,6 +80,29 @@ fn grades_tools_by_their_names() {
     assert_eq!(graded("BankManagerTransferFunds", json!({})), Some("2-1"));
     assert_eq!(graded("GmailSendEmail", json!({})), Some("2-1"));
     assert_eq!(graded("GmailReadEmail", json!({})), Some("0"));
+    // Claude Code's own bookkeeping changes nothing outside the harness.
+    for tool in [
+        "TaskStop",
+        "ScheduleWakeup",
+        "Monitor",
+        "TaskUpdate",
+        "ExitPlanMode",
+        "AskUserQuestion",
+    ] {
+        assert_eq!(
+            graded(tool, json!({"task_id": "b1", "delaySeconds": 600})),
+            Some("0"),
+            "{tool}"
+        );
+    }
+    // A prompt scheduled for later is a later action.
+    assert_ne!(
+        graded(
+            "CronCreate",
+            json!({"cron": "0 9 * * *", "prompt": "deploy"})
+        ),
+        Some("0")
+    );
     assert_eq!(graded("AugustSmartLockSearchGuests", json!({})), Some("0"));
     assert_eq!(
         graded("AugustSmartLockGrantGuestAccess", json!({})),
