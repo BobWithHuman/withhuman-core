@@ -325,6 +325,9 @@ fn takes_a_loop_a_copy_or_a_check_that_only_reads_a_safeguard_for_no_change() {
         "grep -n -i -E 'test|npm|jest' .claude/settings.json; python3 app.py > /tmp/out.txt",
         // Cleaning up files whose names only end like a safeguard's start.
         "rm -f dist/app.* .*.swp; rm -rf .pytest_cache",
+        // A hook parsed to check its syntax, a setting read through the command line.
+        "echo \"=== python compile ===\" && python3 -I -c \"import ast,sys; ast.parse(open('.claude/hooks/pre-tool-use.py','rb').read(), '.claude/hooks/pre-tool-use.py'); print('python syntax OK')\" ; echo \"exit=$?\"; echo \"=== settings.json ===\" && python3 -I -c \"import json; d=json.load(open('.claude/settings.json', encoding='utf-8')); print('json OK; top-level keys:', list(d)); print('events:', len(d['hooks']))\" ; echo \"exit=$?\"",
+        "python3 -c \"import json,sys; d=json.load(open(sys.argv[1])); print(d['permissions'])\" \"/w/.claude/settings.json\"",
     ] {
         assert_ne!(
             effect(&call("Bash", json!({ "command": command }))),
@@ -362,6 +365,11 @@ fn takes_a_loop_a_copy_or_a_check_that_only_reads_a_safeguard_for_no_change() {
         "rm .claude/hooks/pre-tool-use.py",
         "mv /tmp/x .claude/settings.json",
         "cat /dev/null > .claude/hooks/pre-tool-use.py",
+        "python3 -c \"import sys; open(sys.argv[1], encoding='utf-8', mode='w')\" .claude/settings.json",
+        "python3 -c \"open('.claude/settings.json', 'w', encoding='utf-8')\"",
+        "python3 -c \"import sys; sys.stdout.write(open(sys.argv[1]).read())\" .claude/settings.json > .claude/hooks/x.py",
+        "python3 -c \"open('.claude/settings.json', 'rb+').read()\" > /tmp/x",
+        "python3 -c \"open('.claude/settings.json', 'r', encoding='utf-8', newline='')\" > /tmp/x",
     ] {
         assert_eq!(
             effect(&call("Bash", json!({ "command": command }))),

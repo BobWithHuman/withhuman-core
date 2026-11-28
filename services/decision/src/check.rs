@@ -1318,6 +1318,12 @@ const PYTHON_READING_NAMES: &[&str] = &[
     "True",
     "False",
     "None",
+    // Parsing a hook to check its syntax, and a file named on the command line.
+    "ast",
+    "parse",
+    "sys",
+    "argv",
+    "encoding",
 ];
 
 /// Whether Python code only reads: every name in it is one of [`PYTHON_READING_NAMES`] (so no
@@ -1413,12 +1419,62 @@ fn opens_to_read(chars: &[char], mut at: usize) -> bool {
             '(' | '[' | '{' => depth += 1,
             ')' | ']' | '}' if depth > 0 => depth -= 1,
             ')' => return true,
+            // The text encoding is no mode: `open(path, encoding='utf-8')`.
+            ',' if depth == 0
+                && (encoding_only(&chars[at + 1..]) || read_mode(&chars[at + 1..])) =>
+            {
+                return true;
+            }
             ',' | '=' if depth == 0 => return false,
             _ => {}
         }
         at += 1;
     }
     false
+}
+
+/// Whether what follows an `open` call's first argument is a mode that only reads (`'r'`,
+/// `'rb'`, `'rt'`), alone or with an encoding: `open(path, 'rb')`.
+fn read_mode(chars: &[char]) -> bool {
+    let rest: String = chars.iter().collect();
+    let rest = rest.trim_start();
+    let Some(quote) = rest.chars().next().filter(|c| matches!(c, '\'' | '"')) else {
+        return false;
+    };
+    let Some((mode, after)) = rest[1..].split_once(quote) else {
+        return false;
+    };
+    let after = after.trim_start();
+    matches!(mode, "r" | "rb" | "rt")
+        && (after.starts_with(')')
+            || after
+                .strip_prefix(',')
+                .is_some_and(|tail| encoding_only(&tail.chars().collect::<Vec<_>>())))
+}
+
+/// Whether what follows an `open` call's first argument is `encoding='<name>')` alone.
+fn encoding_only(chars: &[char]) -> bool {
+    let rest: String = chars.iter().collect();
+    let Some(value) = rest
+        .trim_start()
+        .strip_prefix("encoding")
+        .map(str::trim_start)
+        .and_then(|rest| rest.strip_prefix('='))
+        .map(str::trim_start)
+    else {
+        return false;
+    };
+    let Some(quote) = value.chars().next().filter(|c| matches!(c, '\'' | '"')) else {
+        return false;
+    };
+    let Some((name, after)) = value[1..].split_once(quote) else {
+        return false;
+    };
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        && after.trim_start().starts_with(')')
 }
 
 /// A coverage run without the files it is told to measure: `--include`, `--omit` and
